@@ -1,0 +1,5 @@
+[
+  {"id": "chatcmpl-abc", "object": "chat.completion.chunk", "created": 1800000000, "model": "deepseek-v4-flash", "choices": [{"index": 0, "delta": {"role": "assistant", "content": null, "reasoning_content": "用户问3的平方加5"}}]},
+  {"id": "chatcmpl-abc", "object": "chat.completion.chunk", "created": 1800000000, "model": "deepseek-v4-flash", "choices": [{"index": 0, "delta": {"content": "14", "reasoning_content": null}}]},
+  {"id": "chatcmpl-abc", "object": "chat.completion.chunk", "created": 1800000000, "model": "deepseek-v4-flash", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+]

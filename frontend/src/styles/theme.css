@@ -1,0 +1,23 @@
+:root {
+  --主色: #409eff;
+  --主色浅: #ecf5ff;
+  --主色深: #337ecc;
+  --成功色: #67c23a;
+  --警告色: #e6a23c;
+  --危险色: #f56c6c;
+  --信息色: #909399;
+  --背景色: #f0f2f5;
+  --卡片背景: #fff;
+  --边框色: #e4e7ed;
+  --文字主色: #303133;
+  --文字次要: #606266;
+  --文字占位: #c0c4cc;
+  --文字信息: #909399;
+  --圆角小: 4px;
+  --圆角中: 8px;
+  --圆角大: 12px;
+  --阴影轻: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --阴影中: 0 2px 12px rgba(0, 0, 0, 0.08);
+  --阴影重: 0 4px 16px rgba(0, 0, 0, 0.1);
+  --字体栈: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}

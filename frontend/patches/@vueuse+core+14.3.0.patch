@@ -1,0 +1,41 @@
+diff --git a/node_modules/@vueuse/core/dist/index.iife.js b/node_modules/@vueuse/core/dist/index.iife.js
+index 40c671d..d8b73f1 100644
+--- a/node_modules/@vueuse/core/dist/index.iife.js
++++ b/node_modules/@vueuse/core/dist/index.iife.js
+@@ -3358,7 +3358,6 @@
+ 	}
+ 	//#endregion
+ 	//#region useEventBus/internal.ts
+-	/* #__PURE__ */
+ 	const events = /* @__PURE__ */ new Map();
+ 	//#endregion
+ 	//#region useEventBus/index.ts
+@@ -5776,7 +5775,6 @@
+ 	}
+ 	//#endregion
+ 	//#region usePointer/index.ts
+-	const defaultState = (	/* #__PURE__ */ {
+ 		x: 0,
+ 		y: 0,
+ 		pointerId: 0,
+diff --git a/node_modules/@vueuse/core/dist/index.js b/node_modules/@vueuse/core/dist/index.js
+index fbd5761..819ad2d 100644
+--- a/node_modules/@vueuse/core/dist/index.js
++++ b/node_modules/@vueuse/core/dist/index.js
+@@ -3359,7 +3359,6 @@ function useElementVisibility(element, options = {}) {
+ }
+ //#endregion
+ //#region useEventBus/internal.ts
+-/* #__PURE__ */
+ const events = /* @__PURE__ */ new Map();
+ //#endregion
+ //#region useEventBus/index.ts
+@@ -5777,7 +5776,7 @@ function usePerformanceObserver(options, callback) {
+ }
+ //#endregion
+ //#region usePointer/index.ts
+-const defaultState = (/* #__PURE__ */ {
++const defaultState = ({
+ 	x: 0,
+ 	y: 0,
+ 	pointerId: 0,

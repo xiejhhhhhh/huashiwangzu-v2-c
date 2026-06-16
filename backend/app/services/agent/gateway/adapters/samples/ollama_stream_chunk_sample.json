@@ -1,0 +1,10 @@
+[
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": "3"}, "done": false},
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": "的"}, "done": false},
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": "平"}, "done": false},
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": "方"}, "done": false},
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": "是"}, "done": false},
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": "9"}, "done": false},
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": "。"}, "done": false},
+  {"model": "gemma-4-26b", "message": {"role": "assistant", "content": ""}, "done": true, "done_reason": "stop"}
+]

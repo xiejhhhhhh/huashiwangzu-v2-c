@@ -1,0 +1,749 @@
+[
+  {
+    "key": "core-system",
+    "name": "系统核心",
+    "icon": "Setting",
+    "category": "系统工具",
+    "component_key": "应用/core-system/入口.vue",
+    "route_prefix": "/api/system",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 1,
+    "default_width": 800,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "app-manager",
+    "name": "应用管理器",
+    "icon": "Tools",
+    "category": "系统管理",
+    "component_key": "应用/app-manager/入口.vue",
+    "route_prefix": "/api/app-manager",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 2,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "dashboard",
+    "name": "仪表盘",
+    "icon": "DataAnalysis",
+    "category": "系统概览",
+    "component_key": "应用/dashboard/入口.vue",
+    "route_prefix": "/api/dashboard",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 3,
+    "default_width": 1200,
+    "default_height": 800,
+    "singleton": true,
+    "show_in_sidebar": true,
+    "window_type": "panel",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "desktop",
+    "name": "文件管理",
+    "icon": "Folder",
+    "category": "文件管理",
+    "component_key": "应用/desktop/入口.vue",
+    "route_prefix": "/api/files",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 10,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_on_desktop": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0",
+    "supported_formats": [
+      "*"
+    ],
+    "editable_formats": []
+  },
+  {
+    "key": "recycle",
+    "name": "回收站",
+    "icon": "Delete",
+    "category": "文件管理",
+    "component_key": "应用/recycle/入口.vue",
+    "route_prefix": "/api/recycle",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 11,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": true,
+    "show_on_desktop": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "textEditor",
+    "name": "文本编辑器",
+    "icon": "Edit",
+    "category": "文件管理",
+    "component_key": "应用/textEditor/入口.vue",
+    "route_prefix": "/api/text-editor",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 12,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": false,
+    "allow_multiple": true,
+    "window_type": "tool",
+    "min_width": 300,
+    "min_height": 200,
+    "supported_formats": [
+      "txt",
+      "md",
+      "json",
+      "xml",
+      "yaml",
+      "csv"
+    ],
+    "editable_formats": [
+      "txt",
+      "md"
+    ],
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "filePreview",
+    "name": "文件预览",
+    "icon": "View",
+    "category": "文件管理",
+    "component_key": "应用/filePreview/入口.vue",
+    "route_prefix": "/api/file-preview",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 13,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": false,
+    "allow_multiple": true,
+    "window_type": "tool",
+    "min_width": 300,
+    "min_height": 200,
+    "supported_formats": [
+      "pdf",
+      "jpg",
+      "png",
+      "gif",
+      "svg",
+      "mp4",
+      "mov"
+    ],
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "file-toolbox",
+    "name": "文件工具箱",
+    "icon": "FolderOpened",
+    "category": "文件管理",
+    "component_key": "应用/file-toolbox/入口.vue",
+    "route_prefix": "/api/file-toolbox",
+    "permissions": [
+      "editor",
+      "admin"
+    ],
+    "sort_order": 14,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "docxEditor",
+    "name": "Word编辑器",
+    "icon": "DocumentCopy",
+    "category": "文件管理",
+    "component_key": "应用/docxEditor/入口.vue",
+    "route_prefix": "/api/word-editor",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 15,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": false,
+    "allow_multiple": true,
+    "window_type": "tool",
+    "min_width": 400,
+    "min_height": 300,
+    "supported_formats": [
+      "docx",
+      "doc"
+    ],
+    "editable_formats": [
+      "docx"
+    ],
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "office-workbench",
+    "name": "Office工作台",
+    "icon": "Notebook",
+    "category": "文件管理",
+    "component_key": "应用/office-workbench/入口.vue",
+    "route_prefix": "/api/office-workbench",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 16,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0",
+    "dependency_declaration": {
+      "modules": [
+        "文件与Office"
+      ]
+    }
+  },
+  {
+    "key": "pptxEditor",
+    "name": "PPT编辑器",
+    "icon": "DataBoard",
+    "category": "文件管理",
+    "component_key": "应用/pptxEditor/入口.vue",
+    "route_prefix": "/api/ppt-editor",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 17,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": false,
+    "allow_multiple": true,
+    "window_type": "tool",
+    "min_width": 400,
+    "min_height": 300,
+    "supported_formats": [
+      "pptx",
+      "ppt"
+    ],
+    "editable_formats": [
+      "pptx"
+    ],
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "excelEditor",
+    "name": "Excel编辑器",
+    "icon": "Grid",
+    "category": "文件管理",
+    "component_key": "应用/excelEditor/入口.vue",
+    "route_prefix": "/api/excel-editor",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 18,
+    "default_width": 1100,
+    "default_height": 700,
+    "singleton": false,
+    "allow_multiple": true,
+    "window_type": "tool",
+    "min_width": 400,
+    "min_height": 300,
+    "supported_formats": [
+      "xlsx",
+      "xls",
+      "csv"
+    ],
+    "editable_formats": [
+      "xlsx"
+    ],
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "csvEditor",
+    "name": "CSV编辑器",
+    "icon": "Document",
+    "category": "文件管理",
+    "component_key": "应用/csvEditor/入口.vue",
+    "route_prefix": "/api/csv-editor",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 19,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": false,
+    "allow_multiple": true,
+    "window_type": "tool",
+    "min_width": 400,
+    "min_height": 300,
+    "supported_formats": [
+      "csv",
+      "tsv"
+    ],
+    "editable_formats": [
+      "csv"
+    ],
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "user-admin",
+    "name": "用户管理",
+    "icon": "User",
+    "category": "系统管理",
+    "component_key": "应用/user-admin/入口.vue",
+    "route_prefix": "/api/user-management",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 20,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "role-matrix",
+    "name": "角色权限",
+    "icon": "Key",
+    "category": "系统管理",
+    "component_key": "应用/role-matrix/入口.vue",
+    "route_prefix": "/api/role-permissions",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 21,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "system-config",
+    "name": "系统配置",
+    "icon": "Operation",
+    "category": "系统管理",
+    "component_key": "应用/system-config/入口.vue",
+    "route_prefix": "/api/system-config",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 22,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "system-logs",
+    "name": "系统日志",
+    "icon": "Document",
+    "category": "系统管理",
+    "component_key": "应用/system-logs/入口.vue",
+    "route_prefix": "/api/system-logs",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 23,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "backup-restore",
+    "name": "备份恢复",
+    "icon": "FolderChecked",
+    "category": "系统管理",
+    "component_key": "应用/backup-restore/入口.vue",
+    "route_prefix": "/api/backup",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 24,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "system-status",
+    "name": "系统状态",
+    "icon": "Monitor",
+    "category": "系统管理",
+    "component_key": "应用/system-status/入口.vue",
+    "route_prefix": "/api/system-status",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 25,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "feedback-center",
+    "name": "内测反馈",
+    "icon": "ChatLineRound",
+    "category": "系统管理",
+    "component_key": "应用/feedback-center/入口.vue",
+    "route_prefix": "/api/feedback",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 26,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "maintenance-center",
+    "name": "运维诊断中心",
+    "icon": "Tools",
+    "category": "系统管理",
+    "component_key": "应用/maintenance-center/入口.vue",
+    "route_prefix": "/api/ops-diagnostics",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 27,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "settings",
+    "name": "设置",
+    "icon": "Setting",
+    "category": "系统工具",
+    "component_key": "应用/settings/入口.vue",
+    "route_prefix": "/api/settings",
+    "permissions": [
+      "editor",
+      "admin"
+    ],
+    "sort_order": 30,
+    "default_width": 800,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_tray": true,
+    "show_in_sidebar": true,
+    "window_type": "panel",
+    "min_width": 600,
+    "min_height": 400,
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "notification-center",
+    "name": "通知中心",
+    "icon": "Bell",
+    "category": "系统工具",
+    "component_key": "应用/notification-center/入口.vue",
+    "route_prefix": "/api/notifications",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 31,
+    "default_width": 800,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "tasks",
+    "name": "我的任务",
+    "icon": "List",
+    "category": "系统工具",
+    "component_key": "应用/tasks/入口.vue",
+    "route_prefix": "/api/my-tasks",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 32,
+    "default_width": 800,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_tray": true,
+    "show_in_sidebar": true,
+    "window_type": "tool",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "agent",
+    "name": "AI助手",
+    "icon": "ChatDotRound",
+    "category": "AI",
+    "component_key": "ai-assistant/index.vue",
+    "route_prefix": "/api/agent",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 40,
+    "default_width": 900,
+    "default_height": 700,
+    "singleton": true,
+    "show_on_desktop": true,
+    "show_in_tray": true,
+    "show_in_sidebar": true,
+    "window_type": "tool",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "ai-toolbox",
+    "name": "AI工具箱",
+    "icon": "MagicStick",
+    "category": "AI",
+    "component_key": "应用/ai-toolbox/入口.vue",
+    "route_prefix": "/api/agent-toolbox",
+    "permissions": [
+      "editor",
+      "admin"
+    ],
+    "sort_order": 41,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0",
+    "dependency_declaration": {
+      "modules": [
+        "agent"
+      ]
+    }
+  },
+  {
+    "key": "prompt-manager",
+    "name": "提示词管理",
+    "icon": "ChatLineSquare",
+    "category": "AI",
+    "component_key": "应用/prompt-manager/入口.vue",
+    "route_prefix": "/api/prompt-management",
+    "permissions": [
+      "editor",
+      "admin"
+    ],
+    "sort_order": 42,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "knowledge",
+    "name": "知识库",
+    "icon": "Collection",
+    "category": "知识库",
+    "component_key": "应用/knowledge/入口.vue",
+    "route_prefix": "/api/knowledge",
+    "permissions": [
+      "viewer",
+      "editor",
+      "admin"
+    ],
+    "sort_order": 50,
+    "default_width": 1100,
+    "default_height": 750,
+    "singleton": true,
+    "show_on_desktop": true,
+    "show_in_tray": true,
+    "show_in_sidebar": true,
+    "window_type": "tool",
+    "module_version": "1.0.0",
+    "contract_version": "2.0",
+    "dependency_declaration": {
+      "modules": [
+        "文件与Office"
+      ]
+    },
+    "event_handler_declaration": {
+      "events": [
+        "file.uploaded"
+      ]
+    }
+  },
+  {
+    "key": "knowledge-toolbox",
+    "name": "知识库工具箱",
+    "icon": "Tools",
+    "category": "知识库",
+    "component_key": "应用/knowledge-toolbox/入口.vue",
+    "route_prefix": "/api/knowledge-toolbox",
+    "permissions": [
+      "editor",
+      "admin"
+    ],
+    "sort_order": 51,
+    "default_width": 900,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "visual-extraction-console",
+    "name": "图片视觉抽取控制台",
+    "icon": "Picture",
+    "category": "知识库",
+    "component_key": "应用/visual-extraction-console/入口.vue",
+    "route_prefix": "/api/image-vision",
+    "permissions": [
+      "editor",
+      "admin"
+    ],
+    "sort_order": 52,
+    "default_width": 1000,
+    "default_height": 700,
+    "singleton": true,
+    "show_in_launcher": true,
+    "window_type": "normal",
+    "module_version": "1.0.0",
+    "contract_version": "2.0",
+    "dependency_declaration": {
+      "modules": [
+        "knowledge"
+      ]
+    }
+  },
+  {
+    "key": "file-and-office",
+    "name": "文件与Office",
+    "icon": "Folder",
+    "category": "系统工具",
+    "component_key": "",
+    "route_prefix": "/api/office",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 90,
+    "default_width": 800,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": false,
+    "enabled": true,
+    "window_type": "background",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  },
+  {
+    "key": "settings-center",
+    "name": "设置中心",
+    "icon": "Operation",
+    "category": "系统工具",
+    "component_key": "",
+    "route_prefix": "",
+    "permissions": [
+      "admin"
+    ],
+    "sort_order": 91,
+    "default_width": 800,
+    "default_height": 600,
+    "singleton": true,
+    "show_in_launcher": false,
+    "enabled": true,
+    "window_type": "background",
+    "module_version": "1.0.0",
+    "contract_version": "2.0"
+  }
+]

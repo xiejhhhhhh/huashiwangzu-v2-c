@@ -1,0 +1,178 @@
+{
+  "_notes": [
+    "This file is the single source of truth for all model configuration.",
+    "Edit here instead of modifying Python code for day-to-day model changes.",
+    "Each profile needs a response_adapter matching an adapter in gateway/adapters/."
+  ],
+
+  "watchdog_defaults": {
+    "poll_interval": 2.0,
+    "launch_timeout": 120,
+    "model_load_seconds": 20
+  },
+
+  "providers": {
+    "opencode": {
+      "type": "opencode",
+      "api_url": "https://opencode.ai/zen/go/v1/chat/completions",
+      "api_key_env": "DEEPSEEK_API_KEY"
+    },
+    "llama": {
+      "type": "openai_compat",
+      "api_url": "http://127.0.0.1:30003/v1/chat/completions",
+      "provider_name": "llama"
+    },
+    "local": {
+      "type": "local",
+      "provider_name": "local"
+    }
+  },
+
+  "model_types": {
+    "llm": {
+      "primary": "deepseek-v4-flash",
+      "fallback_chain": ["deepseek-v4-pro", "gemma-4"],
+      "profiles": {
+        "deepseek-v4-flash": {
+          "provider": "opencode",
+          "model": "deepseek-v4-flash",
+          "temperature": 0.7,
+          "max_tokens": 8192,
+          "system_prompt": "You are a helpful AI assistant.",
+          "response_adapter": "deepseek"
+        },
+        "deepseek-v4-pro": {
+          "provider": "opencode",
+          "model": "deepseek-v4-pro",
+          "temperature": 0.4,
+          "max_tokens": 8192,
+          "system_prompt": "You are a helpful AI assistant.",
+          "response_adapter": "deepseek"
+        },
+        "gemma-4": {
+          "provider": "llama",
+          "model": "gemma-4",
+          "temperature": 0.7,
+          "max_tokens": 4096,
+          "system_prompt": "You are a helpful AI assistant.",
+          "watchdog": "gemma-4",
+          "response_adapter": "gemma"
+        },
+        "local-test": {
+          "provider": "local",
+          "model": "local-test",
+          "temperature": 0.7,
+          "max_tokens": 2048,
+          "system_prompt": "This is a test assistant.",
+          "response_adapter": "openai_compat"
+        }
+      }
+    },
+    "embedding": {
+      "primary": "bge-m3",
+      "fallback_chain": [],
+      "profiles": {
+        "bge-m3": {
+          "provider": "llama",
+          "model": "bge-m3",
+          "server_url": "http://127.0.0.1:30000",
+          "watchdog": "bge-m3",
+          "response_adapter": "openai_compat"
+        }
+      }
+    },
+    "rerank": {
+      "primary": "bge-reranker",
+      "fallback_chain": [],
+      "profiles": {
+        "bge-reranker": {
+          "provider": "llama",
+          "model": "bge-reranker",
+          "server_url": "http://127.0.0.1:30001",
+          "watchdog": "bge-reranker",
+          "response_adapter": "openai_compat"
+        }
+      }
+    },
+    "vision": {
+      "primary": "mimo",
+      "fallback_chain": ["qwen3-vl"],
+      "profiles": {
+        "mimo": {
+          "provider": "mimo",
+          "model": "mimo-v2.5",
+          "response_adapter": "openai_compat"
+        },
+        "qwen3-vl": {
+          "provider": "llama",
+          "model": "qwen3-vl",
+          "server_url": "http://127.0.0.1:30002",
+          "watchdog": "qwen3-vl",
+          "response_adapter": "qwen"
+        }
+      }
+    }
+  },
+
+  "watchdog_models": {
+    "bge-m3": {
+      "purpose": "embedding",
+      "endpoint": "http://127.0.0.1:30000",
+      "health_path": "/v1/models",
+      "model_type": "local",
+      "startup_script": "start_bge_m3_embedding.sh",
+      "port": 30000,
+      "description": "BGE-M3 embedding model for vector retrieval"
+    },
+    "bge-reranker": {
+      "purpose": "rerank",
+      "endpoint": "http://127.0.0.1:30001",
+      "health_path": "/v1/models",
+      "model_type": "local",
+      "startup_script": "start_bge_reranker.sh",
+      "port": 30001,
+      "description": "BGE-Reranker-V2-M3 for relevance sorting"
+    },
+    "qwen3-vl": {
+      "purpose": "vision",
+      "endpoint": "http://127.0.0.1:30002",
+      "health_path": "/v1/models",
+      "model_type": "local",
+      "startup_script": "start_qwen3_vl_vision.sh",
+      "port": 30002,
+      "description": "Qwen3VL-8B vision-language model for image analysis"
+    },
+    "gemma-4": {
+      "purpose": "text",
+      "endpoint": "http://127.0.0.1:30003",
+      "health_path": "/v1/models",
+      "model_type": "local",
+      "startup_script": "start_gemma4_text.sh",
+      "port": 30003,
+      "description": "Gemma-4-26B local text model"
+    },
+    "opencode-go": {
+      "purpose": "text",
+      "endpoint": "https://opencode.ai/zen/go/v1",
+      "health_path": "/chat/completions",
+      "model_type": "cloud",
+      "startup_script": "",
+      "port": 0,
+      "description": "OpenCode Go subscription (deepseek-v4-flash)"
+    },
+    "mimo": {
+      "purpose": "vision",
+      "endpoint": "https://token-plan-cn.xiaomimimo.com/v1",
+      "health_path": "/chat/completions",
+      "model_type": "cloud",
+      "startup_script": "",
+      "port": 0,
+      "description": "MiMo cloud multimodal model (mimo-v2.5)"
+    }
+  },
+
+  "local_bin": {
+    "llama_server": "",
+    "model_root": ""
+  }
+}

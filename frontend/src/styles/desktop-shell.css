@@ -1,0 +1,139 @@
+.桌面壳-容器 {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+.桌面壳-壁纸 {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  z-index: 0;
+}
+.桌面壳-壁纸::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.08);
+}
+.桌面壳-图标层 {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 100px;
+  z-index: 1;
+  padding-top: 12px;
+  overflow-y: auto;
+}
+.桌面壳-图标层::-webkit-scrollbar {
+  width: 3px;
+}
+.桌面壳-图标层::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.2);
+  border-radius: 3px;
+}
+.桌面壳-提示 {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  color: rgba(255,255,255,0.5);
+  font-size: 12px;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.桌面窗口 {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: rgba(250,250,252,0.98);
+  border-radius: 14px;
+  box-shadow: 0 20px 56px rgba(15,23,42,0.18);
+  overflow: hidden;
+  min-width: 400px;
+  min-height: 260px;
+  border: 1px solid rgba(225,229,235,0.96);
+}
+.桌面窗口-激活 {
+  border-color: rgba(226,232,240,0.98);
+  box-shadow: 0 24px 64px rgba(15,23,42,0.20);
+}
+.桌面窗口-最大化 {
+  border-radius: 10px 10px 0 0;
+}
+.窗口标题栏 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  height: 32px;
+  background: linear-gradient(180deg, rgba(248,248,249,0.98), rgba(240,240,242,0.96));
+  border-bottom: 1px solid rgba(228,228,230,0.96);
+  cursor: default;
+  user-select: none;
+  flex-shrink: 0;
+  position: relative;
+}
+.桌面窗口-激活 .窗口标题栏 {
+  background: linear-gradient(180deg, rgba(251,251,252,1), rgba(242,242,244,0.98));
+}
+.窗口标题信息 {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 108px;
+}
+.窗口标题 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.窗口操作按钮 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: auto;
+}
+.窗口操作-btn {
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 50%;
+  background: #d1d5db;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.窗口操作-关闭 { order: 1; background: #ff5f57; border-color: #e0443e; }
+.窗口操作-最小化 { order: 2; background: #febc2e; border-color: #d5a028; }
+.窗口操作-最大化 { order: 3; background: #28c840; border-color: #20a934; }
+.窗口操作-btn:hover { filter: brightness(0.96); transform: scale(0.96); }
+.窗口内容 {
+  flex: 1;
+  overflow: auto;
+  background: linear-gradient(180deg, #fcfcfd 0%, #ffffff 100%);
+}
+.窗口内容内边距 {
+  height: 100%;
+}
+
+/* ── 桌面图标拖拽 ── */
+.桌面-拖拽中 .桌面图标项:not(.桌面图标项-拖拽悬停) {
+  pointer-events: none;
+}
+

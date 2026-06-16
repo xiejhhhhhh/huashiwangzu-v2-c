@@ -1,0 +1,16 @@
+.通知按钮 {
+  position: relative;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.通知按钮:hover {
+  background: var(--背景色);
+}
+
+.通知角标 .el-badge__content {
+  top: 4px;
+  right: 4px;
+}
