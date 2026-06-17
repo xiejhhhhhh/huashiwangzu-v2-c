@@ -24,13 +24,6 @@ async def get_my_tasks(db: AsyncSession = Depends(get_db), user: User = Depends(
     items = await svc.get_tasks(db, user.id)
     return ApiResponse(data=[TaskResponse.model_validate(i) for i in items])
 
-# ── Knowledge / Catalog ──
-@router.get("/api/knowledge/catalogs")
-async def list_catalogs(db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
-    from app.models.knowledge import Catalog
-    r = await db.execute(select(Catalog).order_by(desc(Catalog.id)))
-    return ApiResponse(data=[CatalogResponse.model_validate(c) for c in r.scalars().all()])
-
 # ── File Preview ──
 import os
 @router.get("/api/desktop/file-preview/{file_id}")

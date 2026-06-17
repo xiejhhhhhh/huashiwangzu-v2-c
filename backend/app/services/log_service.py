@@ -9,7 +9,7 @@ LOG_LEVELS = {
 
 CATEGORIES = {
     "GENERAL": "general", "AUTH": "auth", "DESKTOP": "desktop",
-    "KNOWLEDGE": "knowledge", "AGENT": "agent", "BACKGROUND_TASK": "background_task",
+    "BACKGROUND_TASK": "background_task",
     "SYSTEM_CONFIG": "system_config", "NOTIFICATION": "notification",
     "PERMISSION": "permission", "EXCEPTION": "exception",
 }

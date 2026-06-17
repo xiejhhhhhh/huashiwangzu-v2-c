@@ -24,15 +24,16 @@ async def check_database(db: AsyncSession) -> dict:
 
 
 async def check_worker() -> dict:
+    """Check for background task worker process."""
     processes = [
         proc.info
         for proc in psutil.process_iter(["pid", "cmdline"])
-        if "knowledge_worker.py" in " ".join(proc.info.get("cmdline") or [])
+        if "background_worker" in " ".join(proc.info.get("cmdline") or [])
     ]
     if processes:
         pids = ", ".join(str(item["pid"]) for item in processes)
-        return {"status": True, "message": f"Knowledge worker running: {pids}"}
-    return {"status": False, "message": "Knowledge worker process not found"}
+        return {"status": True, "message": f"Background worker running: {pids}"}
+    return {"status": False, "message": "Background worker process not found"}
 
 
 async def check_model_service() -> dict:
