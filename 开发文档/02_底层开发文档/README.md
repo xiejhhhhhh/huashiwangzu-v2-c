@@ -12,14 +12,13 @@
 - 当前数据库初始化和释放在 `backend/app/database.py`，应用生命周期在 `backend/app/main.py`。
 - 当前统一异常处理在 `backend/app/core/handlers.py`，自定义异常在 `backend/app/core/exceptions.py`。
 - 当前 ORM model 在 `backend/app/models/`，schema 在 `backend/app/schemas/`，router 在 `backend/app/routers/`，service 在 `backend/app/services/`。
-- 当前已注册认证、桌面、文件、回收站、用户、角色、系统、日志、仪表盘、设置、备份、任务、Office、通知、反馈、应用管理、AI 助手、图片视觉、知识库、菜单、健康检查等 router。
-- 当前 AI 助手服务仍在 `backend/app/services/agent/`。
-- 当前知识库服务仍在 `backend/app/services/knowledge/`。
+- 当前已注册 21 个平台 router：认证、桌面、文件、回收站、用户、角色、系统、日志、仪表盘、设置、备份、任务、Office、通知、反馈、应用管理、菜单等。
+- 当前平台层已无模块业务代码：AI 助手服务、知识库服务及其 router 已删除，模型网关迁至 `backend/app/gateway/`。
 - 当前模型看门狗在 `backend/app/services/model_watchdog/`。
-- 当前默认 AI 助手模型为 `deepseek-v4-flash`，通过 `backend/app/services/agent/gateway/router.py` 路由。
-- 当前模型配置由 `backend/app/config/models.json` 驱动。
-- 当前旧 `/api/chat/*` 兼容入口已删除，AI 助手统一使用 `/api/agent/sessions/*`。
-- 当前 `/api/health` 是唯一健康检查入口，`/api/health/deep` 已删除。
+- 当前模型网关在 `backend/app/gateway/`，支持 DeepSeek/OpenCode/OpenAI 兼容协议，含指数退避重试（429/502/503/504 及连接超时）。
+- 当前模型配置由 `data/config/models.json` 驱动，缺失时网关降级为空配置不崩溃。
+- 当前 `/api/health` 是健康检查入口，返回数据库连通性状态。
+- 当前后端 router 注册在 `backend/app/routers/registry.py`，支持模块 manifest 驱动挂载（prefix 冲突检测、`backend.enabled` 开关、加载失败 graceful degradation）。
 
 ## 当前底层职责
 
@@ -62,10 +61,6 @@
 |------|------|------|
 | `GET /api/files/download/{file_id}` | `StreamingResponse` | 单文件下载 |
 | `POST /api/files/download-multiple` | `StreamingResponse` | ZIP 下载 |
-| `GET /api/knowledge/visual/page-image/{catalog_id}/{page_num}` | `FileResponse` | 知识库页图 |
-| `GET /api/knowledge/visual/thumbnail/{catalog_id}/{page_num}` | `FileResponse` | 知识库缩略图 |
-| `GET /api/knowledge/tasks/stream` | `text/event-stream` | 知识库任务进度 SSE |
-| `POST /api/agent/sessions/{session_id}/stream` | `text/event-stream` | AI 助手流式回复 |
 | `GET /api/roles/matrix/export` | `text/csv` | 角色矩阵导出 |
 
 新增非 JSON 端点必须在这里登记，并在代码中明确返回类型。
@@ -76,7 +71,7 @@
 - 后端 JSON blob 字段优先使用 `TypedDict` 或具体类型，不用 `Any` 扩散类型边界。
 - 当前 `backend/app/` 中仅保留 `backend/app/services/model_watchdog/router.py` 的 `**kwargs: Any`，用于兼容模型 provider 标准调用参数。
 - 前端 API 类型必须与后端真实返回字段一致，后端返回 `entry_component_key`，前端也读取 `entry_component_key`。
-- `frontend/src/` 仍存在一批历史中文变量名、函数名、类型名和 CSS 类名；新增或触达代码必须改为英文，历史代码随模块迁移继续分批清理。
+- 前端框架契约层中文标识符已清理完毕，新增代码必须使用英文命名。
 - 除 `开发文档/` 外，目录名和文件名必须是英文。
 
 ## 脚本和部署
@@ -115,20 +110,18 @@ backend/_废弃/
 
 | 检查项 | 当前结果 |
 |--------|----------|
-| 后端测试 | `cd backend && .venv/bin/python -m pytest`：33 passed |
+| 后端测试 | `cd backend && .venv/bin/python -m pytest`：41 passed |
 | 前端构建 | `cd frontend && npm run build`：通过 |
-| 后端 `Any` | 仅剩模型看门狗标准 `**kwargs: Any` 和文档字符串提及 |
+| 后端 `Any` | 仅模型看门狗标准 `**kwargs: Any` |
 | `return ApiResponse(success=False, ...)` | 0 处 |
 | `HTTPException` 业务路由直接抛出 | 0 处 |
 | `.DS_Store` 残留 | 已清理 |
 | `转中文()` 响应层调用 | 已移除 |
-| `as any` / `@ts-ignore` 绕过 | 当前源码扫描为 0 处 |
+| `as any` / `@ts-ignore` 绕过 | 0 处 |
+| ORJSONResponse | 已迁移为 JSONResponse |
 
 ## 当前架构债务
 
-- 知识库、AI 助手、Office / 文件管理仍有大量业务 router、service、model、schema 位于 `backend/app/`，应按模块规范迁入 `modules/`。
-- `modules/ai-assistant/` 已有前端模块和 sandbox 雏形，但后端、runtime、tests、test-data、assets、module-docs 和 sandbox pass/fail 门禁仍需补齐。
-- `backend/app/main.py` 仍直接导入并注册大量业务 router，后续应改为模块清单扫描和动态挂载。
-- 测试覆盖仍偏低，当前 33 个测试主要覆盖路由注册、网关 adapter 和少量桌面路由；后续应补统一响应契约、鉴权、关键业务 happy path 和非 JSON 豁免端点测试。
-- 前端 `frontend/src/` 仍有历史中文标识符，后续按共享 API、desktop shell、window manager、context menu、module shell 分批英文化。
-- `element-plus` 构建 chunk 仍较大，后续可结合按需导入或 vendor 分包处理。
+- 知识库、AI 助手、文件管理模块尚未按新规范迁入 `modules/`。后端代码已从平台层清理，前端仅有 ai-assistant 占位入口。完整迁移时从 V1 代码库重建。
+- `modules/ai-assistant/` 已有前端模块、sandbox 雏形和 manifest，后端 router 和 runtime 待补齐。
+- `modules/_template/` 已标准化 sandbox 模板和 runtime 中间层，后续模块按模板创建即可。
