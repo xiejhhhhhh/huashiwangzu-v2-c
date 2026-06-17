@@ -2,12 +2,16 @@ from collections.abc import Iterable
 import json
 from importlib import import_module
 import importlib.util
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MODULES_ROOT = PROJECT_ROOT / "modules"
+logger = logging.getLogger("v2.module_registry")
+
+_module_load_errors: dict[str, str] = {}
 
 PLATFORM_ROUTER_MODULES: tuple[str, ...] = (
     "app.routers.auth",
@@ -76,6 +80,8 @@ def iter_module_router_files(modules_root: Path = MODULES_ROOT) -> Iterable[tupl
             continue
         if not isinstance(backend_config, dict):
             raise RuntimeError(f"Module backend config must be an object: {manifest_path}")
+        if backend_config.get("enabled") is False:
+            continue
         router_entry = backend_config.get("router")
         if not router_entry:
             continue
@@ -98,9 +104,51 @@ def import_module_router(module_key: str, router_path: Path) -> APIRouter:
     return router
 
 
+def get_module_load_errors() -> dict[str, str]:
+    return dict(_module_load_errors)
+
+
+def _normalize_router_prefix(prefix: str) -> str:
+    if not prefix:
+        return "/"
+    return prefix.rstrip("/") or "/"
+
+
+def _prefixes_overlap(left: str, right: str) -> bool:
+    if left == "/" or right == "/":
+        return left == right
+    return left == right or left.startswith(f"{right}/") or right.startswith(f"{left}/")
+
+
+def _ensure_prefix_available(prefix: str, module_key: str, seen_prefixes: dict[str, str]) -> None:
+    for existing_prefix, owner_module in seen_prefixes.items():
+        if _prefixes_overlap(prefix, existing_prefix):
+            if prefix == existing_prefix:
+                raise RuntimeError(
+                    f"Route prefix conflict: module '{module_key}' declares prefix '{prefix}', "
+                    f"already claimed by module '{owner_module}'"
+                )
+            raise RuntimeError(
+                f"Route prefix overlap: module '{module_key}' declares prefix '{prefix}', "
+                f"overlaps with prefix '{existing_prefix}' from module '{owner_module}'"
+            )
+
+
 def register_module_routers(app: FastAPI, modules_root: Path = MODULES_ROOT) -> None:
+    seen_prefixes: dict[str, str] = {}
+    _module_load_errors.clear()
     for module_key, router_path in iter_module_router_files(modules_root):
-        app.include_router(import_module_router(module_key, router_path))
+        try:
+            router = import_module_router(module_key, router_path)
+        except Exception as exc:
+            _module_load_errors[module_key] = str(exc)
+            logger.error("Failed to load module router '%s': %s", module_key, exc)
+            continue
+        prefix = _normalize_router_prefix(router.prefix)
+        _ensure_prefix_available(prefix, module_key, seen_prefixes)
+        seen_prefixes[prefix] = module_key
+        app.include_router(router)
+        logger.info("Loaded module router: %s (prefix=%s)", module_key, prefix)
 
 
 def register_routers(

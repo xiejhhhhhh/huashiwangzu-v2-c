@@ -28,14 +28,10 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int = 4096, tools: list[dict] | None = None,
     ) -> dict:
         payload = _payload(messages, model, temperature, max_tokens, False, tools)
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(self.api_url, json=payload, headers=self._headers())
-                resp.raise_for_status()
-                return resp.json()
-        except Exception as e:
-            logger.error("OpenAI-compatible chat error: %s", e)
-            return {"error": str(e), "content": f"(Model error: {e})"}
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(self.api_url, json=payload, headers=self._headers())
+            resp.raise_for_status()
+            return resp.json()
 
     async def chat_stream(
         self, messages: list[dict], model: str, temperature: float = 0.7,

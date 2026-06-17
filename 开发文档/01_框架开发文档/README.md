@@ -43,7 +43,7 @@ modules/    被框架加载的业务模块
 - 当前 API 类型已修复（~30处中文属性名、语法损坏均已修正）。
 - 当前外围 TypeScript 类型已修复：全量 `vue-tsc -b` 通过，0 错误。修复 20 处类型错误，涉及 7 个文件。
 - 当前后端 router 注册已从 `main.py` 抽出到 `backend/app/routers/registry.py`，入口文件只调用 `register_routers(app)`。
-- 当前后端 router registry 已支持模块 manifest 驱动挂载：模块 manifest 若声明 `backend.router`，框架会导入该文件并挂载其中名为 `router` 的 `APIRouter`；当前已有模块尚未声明后端 router，因此不会生成假路由。
+- 当前后端 router registry 已支持模块 manifest 驱动挂载：模块 manifest 若声明 `backend.router`，框架会导入该文件并挂载其中名为 `router` 的 `APIRouter`；同时支持 `backend.enabled` 独立启停、路由 prefix 冲突/重叠检测，以及单模块加载失败时记录错误并跳过，不会拖垮整个平台。
 - 当前 `shared/api/settings.ts` 已使用明确后端响应接口，不再用宽泛 `Record<string, unknown>` 解析主响应。
 - 当前桌面根文件列表通过 API 层转换为英文 `items` 字段，消费侧不再读取中文 `列表` 字段。
 - 当前后端 500 响应按 `APP_DEBUG` 控制错误详情：debug 模式返回异常详情，非 debug 模式返回固定错误文案。
@@ -59,6 +59,8 @@ modules/    被框架加载的业务模块
 - 当前框架样式契约已完成第三轮收尾：全局布局 class、共享状态组件 class、回收站 class、任务栏用户菜单 class、反馈提示 class、文件格式矩阵 class 已改为英文；CSS 自定义属性 `--边框色` 已改为 `--border-color`。
 - 当前窗口类型使用英文值：`normal`、`panel`、`tool`、`fullscreen`、`background-service`。
 - 当前后端框架 API 返回 message 已避免中文硬编码，`seed.py` 使用 logging 记录初始化结果，不再使用 `print()`。
+- 当前后端健康检查已对数据库做实际连通性探测，`/api/health` 会返回 `database: ok/unreachable`。
+- 当前 AI 网关对临时性 429/502/503/504 与连接超时错误使用指数退避重试，最终失败仍会明确返回错误，不会伪成功。
 
 ## 已修复的 TypeScript 文件
 
@@ -75,10 +77,8 @@ modules/    被框架加载的业务模块
 ## 待办
 
 - 数据库同步：当前 DB 可能仍存有旧中文 `component_key`，需在下次 `sync_apps_from_manifest` 运行后更新。同步前由 `component-key-map.ts` 兼容层翻译旧 key；同步后应以英文 key 为准。
-- 后端模块动态挂载已有 manifest 驱动骨架，但还未进入完整 runtime 阶段。后续模块需要在 manifest 中声明后端 router，并继续补齐 `backend.prefix`、启停开关、权限声明、路由冲突检测和模块级测试。
-- `frontend/src` 的框架契约层已完成英文清理；仍允许中文 UI 展示文案、toast、菜单 `label`、确认弹窗和业务显示值。若未来发现中文标识符出现在导出 API、props、emits、CSS class、DOM data 属性或类型字段中，应继续英文化。
 - 开发辅助页 `desktop/design-system/module-layout-template.vue` 仍保留中文示例 class、布局名称和说明文字；它不属于运行时模块接入契约，后续可在设计系统整理时单独英文化。
-- 测试覆盖率仍需提升，但模块尚未填充，窗口加载失败、组件注册失败、鉴权与 API 契约等更完整用例后置到模块接入阶段补齐；框架层改动仍必须保留 `pytest` 与 `npm run build` 通过。
+- 框架契约层中文标识符已清理完毕；仍允许中文 UI 展示文案、toast、菜单 `label`、确认弹窗和业务显示值。若未来发现中文标识符出现在导出 API、props、emits、CSS class、DOM data 属性或类型字段中，应继续英文化。
 
 ## 当前框架能力
 
@@ -87,7 +87,8 @@ modules/    被框架加载的业务模块
 - 应用注册、应用打开、窗口承载。
 - 应用组件注册错误的显式展示。
 - 共享请求器、响应转换、权限、主题、基础 UI 规范。
-- 平台 API、数据库、队列、模型网关、文件存储。
+- 平台 API、数据库、队列、模型网关、文件存储、健康检查。
+- 模块 manifest 动态挂载、模块加载错误可观测。
 
 ## 当前不属于框架的业务目标
 
@@ -160,7 +161,7 @@ modules/{module}/runtime.config.json
 
 **C6. Router 注册**：当前平台 router 通过 `backend/app/routers/registry.py` 集中注册，避免 `main.py` 堆叠 import/include；模块 router 由 manifest 的 `backend.router` 声明驱动，声明后必须真实导入并导出 `APIRouter`，失败即报错。
 
-**C7. 模块后端动态挂载**：后端动态挂载必须由 manifest/runtime 驱动，不允许只靠手写 import 列表伪装动态化。当前已支持 `backend.router` 文件入口；后续可继续扩展 `backend.prefix`、`backend.enabled`、权限声明和路由冲突检测。
+**C7. 模块后端动态挂载**：后端动态挂载必须由 manifest/runtime 驱动，不允许只靠手写 import 列表伪装动态化。当前已支持 `backend.router` 文件入口，并已补齐 `backend.enabled`、路由 prefix 冲突/重叠检测以及模块加载失败的可观测降级；后续再扩展权限声明和更细的运行时配置。
 
 **C8. 应用入口 key**：`component_key` 是应用清单和数据库字段，决定前端加载哪个 Vue 入口组件；`.env` 是环境配置，不参与组件 key 解析。旧中文 `component_key` 只作为迁移兼容项存在，不能作为新模块写法。
 
@@ -172,15 +173,17 @@ modules/{module}/runtime.config.json
 
 **C12. 框架中文残留分类**：菜单 `label`、按钮文案、toast、确认框、表格列名、业务分类展示值属于正常 UI 中文展示；导出 API、props、emits、CSS class、DOM data 属性、TypeScript 类型字段、后端响应字段读取不允许使用中文绕过。兼容旧数据的中文 key 只能存在于明确命名的兼容映射或 API 边界转换中。
 
-**C13. 测试覆盖策略**：框架当前以后端 35 个测试和前端生产构建作为基础可用性门槛。模块尚未填充前，不强行补齐模块业务测试；鉴权、窗口加载失败、组件注册失败、API 契约等更完整覆盖在模块接入阶段补齐，但框架新增能力必须补对应框架测试。
+**C13. 测试覆盖策略**：框架测试与模块测试分层，互不冲突。框架测试（`backend/tests/`）覆盖框架自身——路由注册、API 契约、认证流、异常处理、健康检查、AI 网关重试——是模块接入的前提。模块测试在各自的 `sandbox/` 中运行，用 mini-shell 模拟桌面壳环境独立验证模块功能。框架测试不测试模块业务逻辑，模块 sandbox 不测试框架能力；两者互补，不存在重复或冲突。框架新增能力必须补对应框架测试；模块接入时模块作者在 sandbox 中写模块级测试。
 
 **C14. 样式变量命名**：运行时框架 CSS class 和 CSS 自定义属性必须使用英文命名。主题色、文本色、圆角、阴影等旧中文变量后续触达时继续迁移为英文；新增样式不得引入中文 class 或中文 CSS 变量。
+
+**C15. 部署场景与扩容决策**：本项目目标部署场景为单机局域网（20-50 人），后端和数据库在同一台机器上运行。基于此场景，以下扩容措施已评估为不需要：Redis 缓存层（PostgreSQL 连接池已满足 50 并发）、速率限制（内网信任环境）、JWT refresh_token（24h 过期足够工作日内使用）、水平扩展（单机单进程）。这些不是未完成事项，而是在目标场景下的主动决策；扩容需求变化时再重新评估。若部署场景扩大到公网或多机，优先考虑 Redis session store 和数据库读写分离。
 
 ### 验证
 
 ```bash
 cd backend && .venv/bin/python -m pytest
-# 35 passed
+# 48 passed
 
 cd frontend && npm run build
 # 0 TS errors

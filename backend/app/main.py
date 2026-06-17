@@ -3,6 +3,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
+from sqlalchemy import text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,8 +60,20 @@ register_routers(app)
 
 @app.get("/api/health")
 async def health_check():
+    from app.database import engine
     from app.schemas.common import ApiResponse
-    return ApiResponse(data={"status": "ok", "version": "2.0.0"})
+
+    database_status = "ok"
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception:
+        database_status = "unreachable"
+    return ApiResponse(data={
+        "status": "ok",
+        "version": "2.0.0",
+        "database": database_status,
+    })
 
 
 # ── Serve Vue frontend static files ──
