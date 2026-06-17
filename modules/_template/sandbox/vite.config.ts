@@ -11,7 +11,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: SANDBOX_PORT,
+    port: Number(process.env.VITE_SANDBOX_PORT) || 5173,
     strictPort: true,
     proxy: {
       '/api': {

@@ -5,7 +5,7 @@ from app.models.base import Base, TimestampMixin
 
 
 class PromptCategory(Base, TimestampMixin):
-    __tablename__ = "prompt_categories"
+    __tablename__ = "framework_prompt_categories"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, comment="Category name")
@@ -14,11 +14,11 @@ class PromptCategory(Base, TimestampMixin):
 
 
 class PromptTemplate(Base, TimestampMixin):
-    __tablename__ = "prompt_templates"
+    __tablename__ = "framework_prompt_templates"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     category_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("prompt_categories.id", ondelete="SET NULL"), nullable=True
+        Integer, ForeignKey("framework_prompt_categories.id", ondelete="SET NULL"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, comment="Template name")
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="Prompt content with {{variable}} placeholders")

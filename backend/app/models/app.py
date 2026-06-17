@@ -5,10 +5,10 @@ from app.models.base import Base, TimestampMixin
 
 
 class App(Base, TimestampMixin):
-    __tablename__ = "apps"
+    __tablename__ = "framework_app_registry"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="Unique identifier, e.g. knowledge, agent")
+    key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="Unique identifier, e.g. desktop, core-system, settings")
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="Display name")
     app_type: Mapped[str] = mapped_column(String(32), default="builtin", comment="builtin | custom")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, comment="App description")
@@ -39,8 +39,9 @@ class App(Base, TimestampMixin):
     show_in_sidebar: Mapped[bool] = mapped_column(Boolean, default=False, comment="Show in right sidebar")
 
     # File associations
-    supported_formats: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="Openable file extensions")
-    editable_formats: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="Editable file extension subset")
+    supported_formats: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="Openable file extensions")
+    editable_formats: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="Editable file extension subset")
+    creatable_formats: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="Creatable file type declarations")
 
     # Enabled state
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, comment="Enabled / disabled")

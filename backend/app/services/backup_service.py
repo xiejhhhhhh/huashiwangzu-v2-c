@@ -3,7 +3,7 @@ import json
 import shutil
 from datetime import datetime
 
-BACKUP_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "备份")
+BACKUP_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "backups")
 
 
 def _ensure_backup_dir() -> str:
@@ -73,7 +73,7 @@ def get_backup_list() -> list[dict]:
             "backup_time": manifest.get("backup_time", name),
             "database_name": manifest.get("database_name", "unknown"),
             "backup_size": _format_size(_dir_size(dir_path)),
-            "backup_status": "完整" if _is_complete(dir_path, manifest) else "缺文件",
+            "backup_status": "complete" if _is_complete(dir_path, manifest) else "incomplete",
         })
     return results
 
@@ -95,7 +95,7 @@ def get_backup_detail(name: str) -> dict | None:
         "upload_source": manifest.get("upload_source", ""),
         "upload_source_note": manifest.get("upload_source_note", ""),
         "backup_size": _format_size(_dir_size(dir_path)),
-        "backup_status": "完整" if _is_complete(dir_path, manifest) else "缺文件",
+        "backup_status": "complete" if _is_complete(dir_path, manifest) else "incomplete",
         "file_count": len(file_list) if isinstance(file_list, list) else 0,
         "file_list": file_list if isinstance(file_list, list) else [],
     }

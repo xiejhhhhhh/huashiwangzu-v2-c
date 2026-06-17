@@ -8,7 +8,7 @@ from .adapters import get_adapter
 from .base import BaseProvider
 from .stream_parse import error_message, extract_stream_payload, format_error
 
-logger = logging.getLogger("v2.agent.openai_compat")
+logger = logging.getLogger("v2.gateway.openai_compat")
 
 
 class OpenAIProvider(BaseProvider):

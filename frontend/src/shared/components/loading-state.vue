@@ -1,23 +1,23 @@
 <template>
-  <div class="loading-state" :class="[类型]">
-    <el-icon class="loading-spin" :size="图标大小" color="#409eff"><Loading /></el-icon>
-    <p v-if="消息" class="loading-message">{{ 消息 }}</p>
-    <p v-if="说明" class="loading-description">{{ 说明 }}</p>
+  <div class="loading-state" :class="[props.variant]">
+    <el-icon class="loading-spin" :size="props.iconSize" color="#409eff"><Loading /></el-icon>
+    <p v-if="props.message" class="loading-message">{{ props.message }}</p>
+    <p v-if="props.description" class="loading-description">{{ props.description }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
 import { Loading } from '@element-plus/icons-vue'
 
-withDefaults(defineProps<{
-  类型?: 'full' | 'card' | 'inline'
-  消息?: string
-  说明?: string
-  图标大小?: number
+const props = withDefaults(defineProps<{
+  variant?: 'full' | 'card' | 'inline'
+  message?: string
+  description?: string
+  iconSize?: number
 }>(), {
-  类型: 'full',
-  消息: '加载中，请稍候...',
-  图标大小: 48,
+  variant: 'full',
+  message: '加载中，请稍候...',
+  iconSize: 48,
 })
 </script>
 

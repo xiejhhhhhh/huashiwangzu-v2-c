@@ -16,8 +16,10 @@ class TextEditorService:
         if not file or file.deleted:
             raise NotFound("文件不存在")
 
-        storage_root = Path(get_settings().UPLOAD_DIR)
-        full_path = storage_root / file.storage_path
+        storage_root = Path(get_settings().UPLOAD_DIR).resolve()
+        full_path = (storage_root / file.storage_path).resolve()
+        if not str(full_path).startswith(str(storage_root)):
+            raise NotFound("文件物理路径不存在")
 
         if not full_path.exists():
             raise NotFound("文件物理路径不存在")
@@ -37,8 +39,10 @@ class TextEditorService:
         if not file or file.deleted:
             raise NotFound("文件不存在")
 
-        storage_root = Path(get_settings().UPLOAD_DIR)
-        full_path = storage_root / file.storage_path
+        storage_root = Path(get_settings().UPLOAD_DIR).resolve()
+        full_path = (storage_root / file.storage_path).resolve()
+        if not str(full_path).startswith(str(storage_root)):
+            raise NotFound("文件物理路径不存在")
 
         if client_mtime and full_path.exists():
             current_mtime = str(os.path.getmtime(full_path))

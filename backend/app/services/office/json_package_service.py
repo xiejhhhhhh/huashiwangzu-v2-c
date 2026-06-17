@@ -46,12 +46,12 @@ class JsonPackageService:
                 db, existing.id, json_content, file.name[:200], user_id,
             )
             existing.current_version_id = version_id
-            existing.package_status = "可用"
+            existing.package_status = "available"
             package_id = existing.id
         else:
             pkg = FileJsonPackage(
                 file_id=file_id, format_type=fmt,
-                package_status="可用", current_version_id=None,
+                package_status="available", current_version_id=None,
                 creator_id=user_id,
             )
             db.add(pkg)
@@ -64,7 +64,7 @@ class JsonPackageService:
             package_id = pkg.id
 
         await db.commit()
-        return {"package_id": package_id, "version_id": version_id, "package_status": "可用"}
+        return {"package_id": package_id, "version_id": version_id, "package_status": "available"}
 
     async def read_package(self, db: AsyncSession, package_id: int) -> dict | None:
         pkg = await db.get(FileJsonPackage, package_id)

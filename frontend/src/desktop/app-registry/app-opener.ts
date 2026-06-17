@@ -9,9 +9,6 @@ export type { FileOpenPayload }
 
 /**
  * Open app window by appKey with permission check via V2 handle
- * @param appId App identifier
- * @param payload Optional window payload
- * @returns window ID, null on failure
  */
 export function openAppById(appId: string, payload?: Record<string, unknown>): string | null {
   const handle = useDesktopAppHandleV2()
@@ -19,10 +16,8 @@ export function openAppById(appId: string, payload?: Record<string, unknown>): s
 }
 
 /**
- * Open app window by file record
- * Uses file association dispatcher to auto-match the app
- * @param fileRecord File record { fileId, fileName, format }
- * @returns window ID, null on failure
+ * Open app window by file record.
+ * Uses file association dispatcher to auto-match the app.
  */
 export function openFileByRecord(fileRecord: FileOpenPayload): string | null {
   const { fileId, fileName, format, page } = fileRecord
@@ -31,19 +26,32 @@ export function openFileByRecord(fileRecord: FileOpenPayload): string | null {
     return null
   }
   if (!format) {
-    ElMessage.warning(`Cannot open file "${fileName}": unknown format`)
+    ElMessage.warning(`当前没有可打开该文件的软件`)
     return null
   }
+
   const userStore = useUserStore()
   const currentRole = userStore.userInfo?.role || 'viewer'
   const association = getAppByFileFormat(format, currentRole)
-  const app = getApp(association.appKey)
-  if (!app) {
-    ElMessage.warning(`Unsupported file format: ${format.toUpperCase()}`)
+
+  if (!association) {
+    ElMessage.warning(`当前没有可打开 .${format} 文件的软件`)
     return null
   }
+
+  const app = getApp(association.appKey)
+  if (!app) {
+    ElMessage.warning(`当前没有可打开 .${format} 文件的软件`)
+    return null
+  }
+
   const handle = useDesktopAppHandleV2()
-  const payload: Record<string, unknown> = { fileId, fileName, format }
+  const payload: Record<string, unknown> = {
+    fileId,
+    fileName,
+    format,
+    mode: association.editable ? 'edit' : 'view',
+  }
   if (page !== undefined) payload.page = page
   return handle.openApp(association.appKey, payload)
 }

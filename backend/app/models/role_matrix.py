@@ -4,7 +4,7 @@ from app.models.base import Base, TimestampMixin
 
 
 class RoleMatrix(Base, TimestampMixin):
-    __tablename__ = "role_matrix"
+    __tablename__ = "framework_role_matrices"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     role_key: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, comment="admin / editor / viewer")

@@ -10,6 +10,7 @@ from app.schemas.file import UploadResponse
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.services import file_upload_service, file_preview_service, file_service
+from app.services import file_share_service
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -32,7 +33,8 @@ async def download(file_id: int, db: AsyncSession = Depends(get_db), user: User 
     file = await file_service.get_file_record(db, file_id)
     if not file:
         raise NotFound("File not found")
-    if file.owner_id != user.id:
+    access = await file_share_service.check_file_access(db, file_id, user.id)
+    if not access["accessible"]:
         raise PermissionDenied("Permission denied")
     safe_path = file_preview_service._resolve_storage_path(file)
     if not safe_path:
@@ -47,7 +49,10 @@ async def download_multiple(file_ids: list[int], db: AsyncSession = Depends(get_
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fid in file_ids:
             file = await file_service.get_file_record(db, fid)
-            if not file or file.owner_id != user.id:
+            if not file:
+                continue
+            access = await file_share_service.check_file_access(db, fid, user.id)
+            if not access["accessible"]:
                 continue
             safe_path = file_preview_service._resolve_storage_path(file)
             if not safe_path:

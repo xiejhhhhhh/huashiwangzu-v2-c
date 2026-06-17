@@ -9,7 +9,9 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.models.recycle import RecycleItem
 from app.services import file_service, file_ops_service
+from app.services.system_service import create_log
 from datetime import datetime, timezone
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -72,4 +74,62 @@ async def delete_item(body: DeleteRequest, db: AsyncSession = Depends(get_db), u
 @router.get("/search")
 async def search(keyword: str = Query(""), extension: str = Query(None), page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
     result = await file_service.search_files(db, user.id, keyword, extension, page, page_size)
+    return ApiResponse(data=result)
+
+
+# ── Batch operations ─────────────────────────────────────────────────
+
+
+class BatchItem(BaseModel):
+    id: int
+    item_type: str = "file"
+
+
+class BatchRequest(BaseModel):
+    items: list[BatchItem]
+    target_folder_id: int | None = None
+
+
+@router.post("/batch-delete")
+async def batch_delete(body: BatchRequest, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("editor"))):
+    results = []
+    success_count = 0
+    failed_count = 0
+    for item in body.items:
+        try:
+            deleted = await file_service.delete_to_trash(db, item.item_type, item.id, user.id)
+            recycle_item = RecycleItem(origin_id=item.id, item_type=item.item_type, name=deleted.name, owner_id=user.id, deleted_at=datetime.now(timezone.utc))
+            db.add(recycle_item)
+            await db.commit()
+            results.append({"id": item.id, "type": item.item_type, "success": True, "error": None})
+            success_count += 1
+            await create_log(db, "info", "file_system", "delete_to_trash", f"Batch deleted {item.item_type} {item.id}", user_id=user.id)
+        except Exception as e:
+            await db.rollback()
+            results.append({"id": item.id, "type": item.item_type, "success": False, "error": str(e)})
+            failed_count += 1
+    return ApiResponse(data={"items": results, "success_count": success_count, "failed_count": failed_count})
+
+
+@router.post("/batch-move")
+async def batch_move(body: BatchRequest, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("editor"))):
+    results = []
+    success_count = 0
+    failed_count = 0
+    for item in body.items:
+        try:
+            await file_service.move_item(db, item.item_type, item.id, body.target_folder_id, user.id)
+            results.append({"id": item.id, "type": item.item_type, "success": True, "error": None})
+            success_count += 1
+            await create_log(db, "info", "file_system", "move", f"Moved {item.item_type} {item.id} to folder {body.target_folder_id}", user_id=user.id)
+        except Exception as e:
+            await db.rollback()
+            results.append({"id": item.id, "type": item.item_type, "success": False, "error": str(e)})
+            failed_count += 1
+    return ApiResponse(data={"items": results, "success_count": success_count, "failed_count": failed_count})
+
+
+@router.get("/path/{item_type}/{item_id}")
+async def get_item_path(item_type: str, item_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
+    result = await file_service.get_item_path(db, item_type, item_id, user.id)
     return ApiResponse(data=result)

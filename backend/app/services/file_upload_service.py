@@ -3,14 +3,14 @@ import os
 import magic
 from pathlib import Path
 from typing import BinaryIO
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.file import Folder, File
-from app.core.exceptions import NotFound
+from app.core.exceptions import NotFound, AppException
 from app.config import get_settings
 
 settings = get_settings()
-UPLOAD_ROOT = Path(settings.UPLOAD_DIR)
+UPLOAD_ROOT = Path(settings.UPLOAD_DIR).resolve()
 
 
 async def upload_file(
@@ -30,60 +30,92 @@ async def upload_file(
         folder = await db.get(Folder, target_folder_id)
         if not folder or folder.deleted:
             raise NotFound("Target folder not found")
+        if folder.owner_id != owner_id:
+            raise AppException("Access denied: target folder does not belong to current user", status_code=403)
 
     file_bytes = file_obj.read()
     md5_hash = hashlib.md5(file_bytes).hexdigest()
 
-    existing = await db.execute(
-        select(File).where(File.md5 == md5_hash, File.deleted == False)
-    )
-    existing_file = existing.scalar_one_or_none()
-    if existing_file:
-        return {
-            "exists": True,
-            "id": existing_file.id,
-            "name": existing_file.name,
-            "extension": existing_file.extension,
-        }
-
     if relative_path:
         target_folder_id = await _ensure_folder_path(db, relative_path, owner_id, target_folder_id)
 
+    # Check name conflict in target directory (after path resolution)
+    existing_name = await db.execute(
+        select(File).where(
+            File.name == name_part,
+            File.extension == ext_part,
+            File.folder_id == target_folder_id,
+            File.owner_id == owner_id,
+            File.deleted == False,
+        )
+    )
+    if existing_name.scalar_one_or_none():
+        raise AppException("A file with the same name already exists in this directory", status_code=409)
+
     mime_type = _detect_mime(file_bytes, ext_part)
 
-    new_file = File(
-        name=name_part,
-        extension=ext_part or "",
-        size=len(file_bytes),
-        folder_id=target_folder_id,
-        owner_id=owner_id,
-        storage_path="",
-        mime_type=mime_type,
-        md5=md5_hash,
-        deleted=False,
+    # Content-addressable storage path: {md5[0:2]}/{md5[2:4]}/{md5}.{ext}
+    content_path = f"{md5_hash[:2]}/{md5_hash[2:4]}/{md5_hash}.{ext_part}" if ext_part else f"{md5_hash[:2]}/{md5_hash[2:4]}/{md5_hash}"
+    abs_content_path = UPLOAD_ROOT / content_path
+
+    # Check if content already exists on disk (search across all users for same md5_hash)
+    existing_content = await db.execute(
+        select(File).where(File.md5_hash == md5_hash, File.deleted == False).limit(1)
     )
-    db.add(new_file)
-    await db.flush()
+    existing_file = existing_content.scalar_one_or_none()
 
-    storage_name = f"{new_file.id}.{ext_part}" if ext_part else f"{new_file.id}"
-    relative_storage = f"source/{storage_name}"
-    abs_dir = UPLOAD_ROOT / "source"
-    abs_dir.mkdir(parents=True, exist_ok=True)
-    abs_path = abs_dir / storage_name
-    abs_path.write_bytes(file_bytes)
+    deduplicated = False
+    if existing_file and abs_content_path.exists():
+        # Content already on disk — create own record, share storage_path, increment ref_count
+        deduplicated = True
+        new_file = File(
+            name=name_part,
+            extension=ext_part or "",
+            size=len(file_bytes),
+            folder_id=target_folder_id,
+            owner_id=owner_id,
+            storage_path=existing_file.storage_path,
+            mime_type=mime_type,
+            md5_hash=md5_hash,
+            ref_count=1,
+            deleted=False,
+        )
+        db.add(new_file)
+        await db.flush()
+        # Increment ref_count on the existing content-bearing record
+        await db.execute(
+            update(File).where(File.id == existing_file.id).values(ref_count=File.ref_count + 1)
+        )
+        await db.commit()
+        await db.refresh(new_file)
+    else:
+        # New content — write to disk first, then create DB record
+        abs_content_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_content_path.write_bytes(file_bytes)
 
-    new_file.storage_path = relative_storage
-    new_file.size = abs_path.stat().st_size
-    await db.commit()
-    await db.refresh(new_file)
+        new_file = File(
+            name=name_part,
+            extension=ext_part or "",
+            size=len(file_bytes),
+            folder_id=target_folder_id,
+            owner_id=owner_id,
+            storage_path=content_path,
+            mime_type=mime_type,
+            md5_hash=md5_hash,
+            ref_count=1,
+            deleted=False,
+        )
+        db.add(new_file)
+        await db.commit()
+        await db.refresh(new_file)
 
     return {
-        "exists": False,
         "id": new_file.id,
         "name": new_file.name,
         "extension": new_file.extension,
         "size": new_file.size,
         "mime_type": new_file.mime_type,
+        "deduplicated": deduplicated,
     }
 
 

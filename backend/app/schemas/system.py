@@ -93,15 +93,3 @@ class SystemTaskQueueResponse(BaseModel):
 
 class WorkerStatusResponse(BaseModel):
     pending: int; running: int; completed: int; failed: int; oldest_waiting_seconds: int | None
-
-class ChatSessionResponse(BaseModel):
-    id: int; title: str; model: str; message_count: int; created_at: datetime
-    model_config = {"from_attributes": True}
-
-class ChatMessageResponse(BaseModel):
-    id: int; role: str; content: str; tokens: int; created_at: datetime
-    model_config = {"from_attributes": True}
-
-class CatalogResponse(BaseModel):
-    id: int; file_name: str; file_size: int; mime_type: str; status: str; created_at: datetime
-    model_config = {"from_attributes": True}

@@ -69,12 +69,12 @@ def test_backend_enabled_false_skips_module_router(tmp_path: Path) -> None:
 
 
 def test_module_router_prefix_conflict_fails_fast(tmp_path: Path) -> None:
-    for module_key in ("knowledge", "knowledge-copy"):
+    for module_key in ("sample-module-a", "sample-module-a-copy"):
         module_dir = tmp_path / module_key
         module_dir.mkdir()
         (module_dir / "backend_router.py").write_text(
             "from fastapi import APIRouter\n"
-            "router = APIRouter(prefix='/api/knowledge')\n",
+            "router = APIRouter(prefix='/api/sample-module-a')\n",
             encoding="utf-8",
         )
         (module_dir / "manifest.json").write_text(
@@ -96,8 +96,8 @@ def test_module_router_prefix_conflict_fails_fast(tmp_path: Path) -> None:
 
 def test_module_router_prefix_overlap_fails_fast(tmp_path: Path) -> None:
     modules = {
-        "knowledge": "/api/knowledge",
-        "knowledge-v2": "/api/knowledge/v2",
+        "sample-module-b": "/api/sample-module-b",
+        "sample-module-b-v2": "/api/sample-module-b/v2",
     }
     for module_key, prefix in modules.items():
         module_dir = tmp_path / module_key

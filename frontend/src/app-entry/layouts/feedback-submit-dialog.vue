@@ -4,30 +4,30 @@
     title="哪里不好用，直接告诉我们"
     width="520px"
     :close-on-click-modal="false"
-    @close="关闭弹窗"
+    @close="handleClose"
   >
     <p class="feedback-hint">你遇到了什么问题？我们会认真看每一条反馈。</p>
     <el-form
-      ref="表单ref"
-      :model="反馈表单"
-      :rules="表单规则"
+      ref="formRef"
+      :model="feedbackForm"
+      :rules="formRules"
       label-width="80px"
       label-position="left"
     >
-      <el-form-item label="问题类型" prop="反馈类型">
-        <el-select v-model="反馈表单.反馈类型" placeholder="请选择问题类型" style="width: 100%">
+      <el-form-item label="问题类型" prop="feedbackType">
+        <el-select v-model="feedbackForm.feedbackType" placeholder="请选择问题类型" style="width: 100%">
           <el-option
-            v-for="(标签, 值) in 反馈类型映射"
-            :key="值"
-            :label="标签"
-            :value="值"
+            v-for="(label, value) in feedbackTypeLabels"
+            :key="value"
+            :label="label"
+            :value="value"
           />
         </el-select>
       </el-form-item>
 
-      <el-form-item label="问题描述" prop="反馈内容">
+      <el-form-item label="问题描述" prop="content">
         <el-input
-          v-model="反馈表单.反馈内容"
+          v-model="feedbackForm.content"
           type="textarea"
           :rows="4"
           maxlength="2000"
@@ -38,7 +38,7 @@
 
       <el-form-item label="当前页面">
         <el-input
-          :model-value="当前页面地址"
+          :model-value="currentPageUrl"
           disabled
           placeholder="自动获取"
         />
@@ -46,8 +46,8 @@
     </el-form>
 
     <template #footer>
-      <el-button @click="关闭弹窗">取消</el-button>
-      <el-button type="primary" :loading="提交中" @click="提交反馈">
+      <el-button @click="handleClose">取消</el-button>
+      <el-button type="primary" :loading="submitting" @click="submitFeedback">
         提交反馈
       </el-button>
     </template>
@@ -60,14 +60,14 @@ import type { FormInstance } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import api from '@/shared/api'
 
-const 反馈类型映射: Record<string, string> = {
-  'bug': '功能异常',
-  'suggestion': '改进建议',
-  'question': '使用疑问',
-  'other': '其他',
+const feedbackTypeLabels: Record<string, string> = {
+  bug: '功能异常',
+  suggestion: '改进建议',
+  question: '使用疑问',
+  other: '其他',
 }
 
-const props = defineProps<{
+defineProps<{
   show: boolean
 }>()
 
@@ -76,51 +76,51 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const 表单ref = ref<FormInstance>()
-const 提交中 = ref(false)
-const 当前页面地址 = computed(() => window.location.href)
+const formRef = ref<FormInstance>()
+const submitting = ref(false)
+const currentPageUrl = computed(() => window.location.href)
 
-const 反馈表单 = reactive({
-  反馈类型: '',
-  反馈内容: '',
+const feedbackForm = reactive({
+  feedbackType: '',
+  content: '',
 })
 
-const 表单规则 = {
-  反馈类型: [{ required: true, message: '请选择问题类型', trigger: 'change' }],
-  反馈内容: [
+const formRules = {
+  feedbackType: [{ required: true, message: '请选择问题类型', trigger: 'change' }],
+  content: [
     { required: true, message: '请填写问题描述', trigger: 'blur' },
     { min: 5, message: '描述至少 5 个字', trigger: 'blur' },
   ],
 }
 
-function 关闭弹窗() {
-  if (!提交中.value) {
+function handleClose() {
+  if (!submitting.value) {
     emit('close')
   }
 }
 
-async function 提交反馈() {
-  const 有效 = await 表单ref.value?.validate().catch(() => false)
-  if (!有效) return
+async function submitFeedback() {
+  const valid = await formRef.value?.validate().catch(() => false)
+  if (!valid) return
 
-  提交中.value = true
+  submitting.value = true
   try {
     await api.post('/feedback', {
-      feedback_type: 反馈表单.反馈类型,
-      content: 反馈表单.反馈内容,
-      page_url: 当前页面地址.value,
+      feedback_type: feedbackForm.feedbackType,
+      content: feedbackForm.content,
+      page_url: currentPageUrl.value,
       user_agent: navigator.userAgent,
     })
     ElMessage.success('已经收到，我们会尽快处理')
-    反馈表单.反馈类型 = ''
-    反馈表单.反馈内容 = ''
-    表单ref.value?.resetFields()
+    feedbackForm.feedbackType = ''
+    feedbackForm.content = ''
+    formRef.value?.resetFields()
     emit('submit-success')
     emit('close')
   } catch {
     ElMessage.error('提交失败，请稍后重试')
   } finally {
-    提交中.value = false
+    submitting.value = false
   }
 }
 </script>

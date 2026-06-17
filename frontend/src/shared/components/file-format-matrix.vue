@@ -1,26 +1,26 @@
 <template>
-  <el-table :data="过滤后数据" stripe border size="small" style="width: 100%" class="format-matrix-table" :row-class-name="行样式">
-    <el-table-column prop="格式" label="格式" width="85" />
-    <el-table-column prop="中文名称" label="中文名称" width="115" />
-    <el-table-column prop="分类" label="分类" width="90" />
+  <el-table :data="filteredRows" stripe border size="small" style="width: 100%" class="format-matrix-table" :row-class-name="getRowClass">
+    <el-table-column prop="format" label="格式" width="85" />
+    <el-table-column prop="displayName" label="中文名称" width="115" />
+    <el-table-column prop="category" label="分类" width="90" />
     <el-table-column label="可预览" width="78">
       <template #default="{ row }">
-        <el-tag :type="row.可预览 ? 'success' : 'danger'" size="small" effect="plain" :class="row.可预览 ? '' : 'format-incompatible'">
-          {{ row.可预览 ? '是' : '否' }}
+        <el-tag :type="row.previewable ? 'success' : 'danger'" size="small" effect="plain" :class="row.previewable ? '' : 'format-incompatible'">
+          {{ row.previewable ? '是' : '否' }}
         </el-tag>
       </template>
     </el-table-column>
-    <el-table-column v-if="显示editable列" label="editable" width="78">
+    <el-table-column v-if="showEditableColumn" label="editable" width="78">
       <template #default="{ row }">
         <el-tag :type="row.editable ? 'success' : 'danger'" size="small" effect="plain">
           {{ row.editable ? '是' : '否' }}
         </el-tag>
       </template>
     </el-table-column>
-    <el-table-column v-if="显示编辑器列" prop="编辑器" label="编辑器" width="105" />
+    <el-table-column v-if="showEditorColumn" prop="editor" label="编辑器" width="105" />
     <el-table-column label="说明" min-width="160">
       <template #default="{ row }">
-        <span :class="['format-hint', 说明样式(row.description)]">{{ row.description }}</span>
+        <span :class="['format-hint', getDescriptionClass(row.description)]">{{ row.description }}</span>
       </template>
     </el-table-column>
   </el-table>
@@ -29,14 +29,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-interface 格式条目 {
-  格式: string
-  中文名称: string
-  分类: string
-  可预览: boolean
+interface FormatRow {
+  format: string
+  displayName: string
+  category: string
+  previewable: boolean
   editable: boolean
-  编辑器: string
-  说明: string
+  editor: string
+  description: string
 }
 
 const props = withDefaults(defineProps<{
@@ -47,13 +47,13 @@ const props = withDefaults(defineProps<{
   compact: false,
 })
 
-const 不兼容格式 = ['doc', 'xls', 'ppt', 'vsd', 'vsdx', 'mpp', 'zip', 'rar']
+const incompatibleFormats = ['doc', 'xls', 'ppt', 'vsd', 'vsdx', 'mpp', 'zip', 'rar']
 
-function 行样式({ row }: { row: 格式条目 }) {
-  return 不兼容格式.includes(row.格式) ? 'format-support-row format-incompatible-row' : 'format-support-row'
+function getRowClass({ row }: { row: FormatRow }) {
+  return incompatibleFormats.includes(row.format) ? 'format-support-row format-incompatible-row' : 'format-support-row'
 }
 
-const 中文名: Record<string, string> = {
+const displayNames: Record<string, string> = {
   txt: '纯文本', md: 'Markdown 文档', log: '日志文件', json: 'JSON 数据',
   xml: 'XML 文档', yaml: 'YAML 配置', yml: 'YAML 配置', php: 'PHP 脚本',
   js: 'JavaScript 脚本', ts: 'TypeScript 脚本', vue: 'Vue 组件', css: 'CSS 样式',
@@ -74,47 +74,47 @@ const 中文名: Record<string, string> = {
   zip: 'ZIP 压缩包', rar: 'RAR 压缩包',
 }
 
-const 显示editable列 = computed(() => props.filterRole !== 'viewer' && !props.compact)
-const 显示编辑器列 = computed(() => !props.compact)
+const showEditableColumn = computed(() => props.filterRole !== 'viewer' && !props.compact)
+const showEditorColumn = computed(() => !props.compact)
 
-function 构建条目(格式组: string[], attr: Partial<格式条目>): 格式条目[] {
-  return 格式组.map(f => ({
-    格式: f,
-    中文名称: 中文名[f] || f.toUpperCase(),
-    分类: attr.分类 || '',
-    可预览: attr.可预览 || false,
-    editable: attr.editable || false,
-    编辑器: attr.编辑器 || '—',
-    说明: attr.说明 || '',
+function buildRows(formatGroup: string[], attrs: Partial<FormatRow>): FormatRow[] {
+  return formatGroup.map(format => ({
+    format,
+    displayName: displayNames[format] || format.toUpperCase(),
+    category: attrs.category || '',
+    previewable: attrs.previewable || false,
+    editable: attrs.editable || false,
+    editor: attrs.editor || '—',
+    description: attrs.description || '',
   }))
 }
 
-const 完整数据: 格式条目[] = [
-  ...构建条目(['txt','md','log','json','xml','yaml','yml','php','js','ts','vue','css','html','py','java','go','rs','kt','c','cpp','h','hpp','cs','rb','sh','bash','zsh','ini','cfg','conf','env','sql','toml','dockerfile','makefile'], { 分类: '文本/代码', 可预览: false, editable: true, 编辑器: 'textEditor', 说明: '直接编辑' }),
-  ...构建条目(['csv'], { 分类: '表格', 可预览: false, editable: true, 编辑器: 'csvEditor', 说明: '直接编辑' }),
-  ...构建条目(['png','jpg','jpeg','gif','webp','bmp','ico','svg'], { 分类: '图片', 可预览: true, editable: false, 说明: '只读预览' }),
-  ...构建条目(['pdf'], { 分类: 'PDF', 可预览: true, editable: false, 说明: '只读预览' }),
-  ...构建条目(['mp3','wav','aac','ogg','flac','m4a'], { 分类: '音频', 可预览: true, editable: false, 说明: '只读预览' }),
-  ...构建条目(['mp4','webm','mov','m4v'], { 分类: '视频', 可预览: true, editable: false, 说明: '只读预览' }),
-  ...构建条目(['xlsx'], { 分类: '表格', 可预览: false, editable: true, 编辑器: 'excelEditor', 说明: '需创建JSON包' }),
-  ...构建条目(['docx'], { 分类: '文档', 可预览: false, editable: true, 编辑器: 'docxEditor', 说明: '需创建JSON包' }),
-  ...构建条目(['pptx'], { 分类: '演示', 可预览: false, editable: true, 编辑器: 'pptxEditor', 说明: '需创建JSON包' }),
-  ...构建条目(['doc','xls','ppt'], { 分类: '旧格式', 可预览: true, editable: false, 说明: '不支持在线编辑，请下载' }),
-  ...构建条目(['vsd','vsdx','mpp','zip','rar'], { 分类: '其他', 可预览: true, editable: false, 说明: '不支持在线预览，请下载' }),
+const allRows: FormatRow[] = [
+  ...buildRows(['txt','md','log','json','xml','yaml','yml','php','js','ts','vue','css','html','py','java','go','rs','kt','c','cpp','h','hpp','cs','rb','sh','bash','zsh','ini','cfg','conf','env','sql','toml','dockerfile','makefile'], { category: '文本/代码', previewable: false, editable: true, editor: 'textEditor', description: '直接编辑' }),
+  ...buildRows(['csv'], { category: '表格', previewable: false, editable: true, editor: 'csvEditor', description: '直接编辑' }),
+  ...buildRows(['png','jpg','jpeg','gif','webp','bmp','ico','svg'], { category: '图片', previewable: true, editable: false, description: '只读预览' }),
+  ...buildRows(['pdf'], { category: 'PDF', previewable: true, editable: false, description: '只读预览' }),
+  ...buildRows(['mp3','wav','aac','ogg','flac','m4a'], { category: '音频', previewable: true, editable: false, description: '只读预览' }),
+  ...buildRows(['mp4','webm','mov','m4v'], { category: '视频', previewable: true, editable: false, description: '只读预览' }),
+  ...buildRows(['xlsx'], { category: '表格', previewable: false, editable: true, editor: 'excelEditor', description: '需创建JSON包' }),
+  ...buildRows(['docx'], { category: '文档', previewable: false, editable: true, editor: 'docxEditor', description: '需创建JSON包' }),
+  ...buildRows(['pptx'], { category: '演示', previewable: false, editable: true, editor: 'pptxEditor', description: '需创建JSON包' }),
+  ...buildRows(['doc','xls','ppt'], { category: '旧格式', previewable: true, editable: false, description: '不支持在线编辑，请下载' }),
+  ...buildRows(['vsd','vsdx','mpp','zip','rar'], { category: '其他', previewable: true, editable: false, description: '不支持在线预览，请下载' }),
 ]
 
-const 过滤后数据 = computed(() => {
-  if (!props.filterRole) return 完整数据
-  const 角色 = props.filterRole.toLowerCase()
-  if (角色 === 'viewer') {
-    return 完整数据.map(r => ({ ...r, editable: false }))
+const filteredRows = computed(() => {
+  if (!props.filterRole) return allRows
+  const role = props.filterRole.toLowerCase()
+  if (role === 'viewer') {
+    return allRows.map(row => ({ ...row, editable: false }))
   }
-  return 完整数据
+  return allRows
 })
 
-function 说明样式(说明: string): string {
-  if (说明.includes('不支持')) return 'text-unsupported'
-  if (说明.includes('需创建') || 说明.includes('只读')) return 'text-limited'
+function getDescriptionClass(description: string): string {
+  if (description.includes('不支持')) return 'text-unsupported'
+  if (description.includes('需创建') || description.includes('只读')) return 'text-limited'
   return 'text-supported'
 }
 </script>

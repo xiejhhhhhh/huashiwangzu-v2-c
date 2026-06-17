@@ -60,6 +60,7 @@ register_routers(app)
 async def health_check():
     from app.database import engine
     from app.schemas.common import ApiResponse
+    from app.routers.registry import get_module_load_errors
 
     database_status = "ok"
     try:
@@ -67,10 +68,13 @@ async def health_check():
             await conn.execute(text("SELECT 1"))
     except Exception:
         database_status = "unreachable"
+
+    module_errors = get_module_load_errors()
     return ApiResponse(data={
         "status": "ok",
         "version": "2.0.0",
         "database": database_status,
+        "module_errors": module_errors if module_errors else None,
     })
 
 

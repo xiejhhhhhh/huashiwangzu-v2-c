@@ -26,8 +26,8 @@ async def restore(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    await recycle_service.restore_item(db, body.item_type, body.id, user.id)
-    return ApiResponse(data={"message": "Restored"})
+    result = await recycle_service.restore_item(db, body.item_type, body.id, user.id)
+    return ApiResponse(data={"message": "Restored", **result})
 
 
 @router.post("/delete-permanently")

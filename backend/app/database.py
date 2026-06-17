@@ -1,15 +1,14 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import NullPool
 from app.config import get_settings
 
 settings = get_settings()
 
+# Use NullPool to avoid asyncpg event-loop binding issues between tests and between requests.
+# Single-machine deployment (20-50 users) doesn't need connection pooling.
 engine = create_async_engine(
     settings.DATABASE_URL,
-    pool_size=20,
-    max_overflow=10,
-    pool_recycle=3600,
-    pool_pre_ping=True,
-    pool_timeout=30,
+    poolclass=NullPool,
     echo=settings.APP_DEBUG,
 )
 

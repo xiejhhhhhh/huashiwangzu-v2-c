@@ -3,7 +3,6 @@ export const symbolIcons = {
   catalog: '▦',
   taskProgress: '↻',
   evidenceChain: '◎',
-  knowledgeMap: '⌬',
   dictionary: '◇',
   pending: '✓',
   qualityEvaluation: '◉',
@@ -37,8 +36,6 @@ export const symbolIcons = {
   alignGrid: '⌗',
   autoArrange: '⋮',
   startMenu: '⊞',
-  knowledgeBase: '◇',
-  Agent: '◉',
   task: '✓',
 } as const
 

@@ -11,6 +11,7 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 APPS_MANIFEST = Path(__file__).parent.parent / "seed_data" / "apps.json"
+MODULES_ROOT = Path(__file__).resolve().parents[3] / "modules"
 
 
 async def list_apps(db: AsyncSession, current_user: User, category: str | None = None):
@@ -68,10 +69,76 @@ async def create_app(db: AsyncSession, data: dict):
     return app
 
 
-async def sync_apps_from_manifest(db: AsyncSession) -> dict:
+def _read_platform_app_manifests() -> list[dict]:
     raw = APPS_MANIFEST.read_text(encoding="utf-8")
-    rows = json.loads(raw)
-    manifest_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return json.loads(raw)
+
+
+def _module_manifest_to_app_payload(module_dir: Path, manifest: dict) -> dict:
+    component_key = str(manifest.get("component_key") or "index.vue")
+    module_key = str(manifest.get("key") or module_dir.name)
+    backend_config = manifest.get("backend") if isinstance(manifest.get("backend"), dict) else {}
+    route_prefix = manifest.get("route_prefix") or backend_config.get("route_prefix") or ""
+    return {
+        "key": module_key,
+        "name": manifest.get("name") or module_key,
+        "icon": manifest.get("icon") or "Collection",
+        "category": manifest.get("category") or "",
+        "component_key": f"{module_dir.name}/{component_key}",
+        "route_prefix": route_prefix,
+        "permissions": manifest.get("permissions") or [],
+        "sort_order": manifest.get("sort_order") or 200,
+        "default_width": manifest.get("default_width") or 900,
+        "default_height": manifest.get("default_height") or 600,
+        "min_width": manifest.get("min_width") or 400,
+        "min_height": manifest.get("min_height") or 300,
+        "singleton": manifest.get("singleton", True),
+        "allow_multiple": manifest.get("allow_multiple", False),
+        "window_type": manifest.get("window_type") or "normal",
+        "show_on_desktop": manifest.get("show_on_desktop", False),
+        "show_in_tray": manifest.get("show_in_tray", False),
+        "show_in_launcher": manifest.get("show_in_launcher", True),
+        "show_in_sidebar": manifest.get("show_in_sidebar", False),
+        "enabled": manifest.get("enabled", True),
+        "module_version": manifest.get("module_version") or "1.0.0",
+        "contract_version": manifest.get("contract_version") or "2.0",
+        "capabilities": manifest.get("capabilities"),
+        "public_actions": manifest.get("public_actions"),
+        "permission_declaration": manifest.get("permission_declaration"),
+        "db_migration_declaration": manifest.get("db_migration_declaration"),
+        "event_handler_declaration": manifest.get("event_handler_declaration"),
+        "dependency_declaration": manifest.get("dependency_declaration"),
+        "openable_types_declaration": manifest.get("openable_types_declaration"),
+        "supported_formats": manifest.get("supported_formats"),
+        "editable_formats": manifest.get("editable_formats"),
+        "creatable_formats": manifest.get("creatable_formats"),
+    }
+
+
+def _read_module_app_manifests(modules_root: Path = MODULES_ROOT) -> list[dict]:
+    if not modules_root.exists():
+        return []
+    rows: list[dict] = []
+    for manifest_path in sorted(modules_root.glob("*/manifest.json")):
+        module_dir = manifest_path.parent
+        if module_dir.name.startswith(("_", ".")):
+            continue
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("enabled") is False:
+            continue
+        rows.append(_module_manifest_to_app_payload(module_dir, manifest))
+    return rows
+
+
+def load_app_manifests(modules_root: Path = MODULES_ROOT) -> list[dict]:
+    return [*_read_platform_app_manifests(), *_read_module_app_manifests(modules_root)]
+
+
+async def sync_apps_from_manifest(db: AsyncSession) -> dict:
+    rows = load_app_manifests()
+    manifest_hash = hashlib.sha256(
+        json.dumps(rows, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     scan_time = datetime.now(timezone.utc)
     created = 0
     updated = 0
@@ -137,6 +204,7 @@ def app_to_dict(app: App) -> dict:
         "show_in_sidebar": app.show_in_sidebar,
         "supported_formats": app.supported_formats,
         "editable_formats": app.editable_formats,
+        "creatable_formats": app.creatable_formats,
         "enabled": app.enabled,
         "needs_frontend_build": app.needs_frontend_build,
         "manifest_hash": app.manifest_hash,

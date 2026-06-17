@@ -1,4 +1,4 @@
-.通知按钮 {
+.notification-button {
   position: relative;
   cursor: pointer;
   padding: 6px;
@@ -6,11 +6,11 @@
   transition: background 0.2s;
 }
 
-.通知按钮:hover {
-  background: var(--背景色);
+.notification-button:hover {
+  background: var(--page-bg);
 }
 
-.通知角标 .el-badge__content {
+.notification-badge .el-badge__content {
   top: 4px;
   right: 4px;
 }

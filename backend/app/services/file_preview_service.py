@@ -2,6 +2,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.file import File
 from app.core.exceptions import NotFound, PermissionDenied, AppException
+from app.services.file_share_service import check_file_access
 from app.config import get_settings
 
 settings = get_settings()
@@ -31,11 +32,12 @@ SIZE_LIMITS = {
 MAX_TEXT_PREVIEW = settings.MAX_PREVIEW_SIZE
 
 
-async def preview_file(db: AsyncSession, file_id: int, owner_id: int) -> dict:
+async def preview_file(db: AsyncSession, file_id: int, user_id: int) -> dict:
     file = await db.get(File, file_id)
     if not file or file.deleted:
         raise NotFound("File not found or deleted")
-    if file.owner_id != owner_id:
+    access = await check_file_access(db, file_id, user_id)
+    if not access["accessible"]:
         raise PermissionDenied("No permission to preview this file")
 
     ext = (file.extension or "").lower()
@@ -85,7 +87,11 @@ async def preview_file(db: AsyncSession, file_id: int, owner_id: int) -> dict:
 def _resolve_storage_path(file: File) -> Path | None:
     if not file.storage_path:
         return None
-    full_path = Path(settings.UPLOAD_DIR) / file.storage_path
+    upload_dir = Path(settings.UPLOAD_DIR).resolve()
+    full_path = (upload_dir / file.storage_path).resolve()
+    # Prevent path traversal attacks
+    if not str(full_path).startswith(str(upload_dir)):
+        return None
     return full_path if full_path.exists() else None
 
 

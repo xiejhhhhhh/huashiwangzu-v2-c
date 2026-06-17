@@ -26,13 +26,12 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 from app.models.base import Base
 from app.models import (  # noqa: F401 - ensure models are loaded
-    User, App, Folder, File, RecycleItem,
-    Catalog, Chunk, PageSource, PageFusion, ChunkVector,
-    Entity, EntityAlias, EntityMerge,
-    Attribute, ExtractCandidate, DisambigCandidate,
-    GraphNode, GraphEdge, SemanticRole,
-    Label, Evidence, KnowledgeTask, LlmLog, DocProfile, KnowledgeEvaluation,
-    ChatSession, ChatMessage,
+    User, App, Folder, File, FileShare, RecycleItem,
+    SystemLog, Notification, UserNotificationRead, Feedback, Task,
+    Setting, SystemTaskQueue,
+    RoleMatrix, DesktopState,
+    FileJsonPackage, FileJsonVersion, FileJsonPatch, FileJsonTask,
+    PromptCategory, PromptTemplate,
 )
 target_metadata = Base.metadata
 

@@ -35,7 +35,7 @@
            <FeedbackSubmitDialog :show="showFeedbackDialog" @close="showFeedbackDialog = false" @submit-success="showFeedbackDialog = false" />
           <el-dropdown trigger="click" @command="handleDropdown">
             <span style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
-              <el-avatar :size="32" style="background: var(--主色);">
+              <el-avatar :size="32" style="background: var(--primary-color);">
                 {{ store.userInfo?.displayName?.charAt(0) || '?' }}
               </el-avatar>
               <span>{{ store.userInfo?.displayName || '用户' }}</span>

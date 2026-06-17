@@ -73,33 +73,6 @@ class VersionInfoDict(TypedDict, total=False):
     version_number: int | None
 
 
-# ── Knowledge ────────────────────────────────────────────────────────
-
-class GraphNeighborDict(TypedDict, total=False):
-    """Graph neighbor in lightweight index."""
-    entity_id: int
-    entity_name: str
-    relation: str
-    weight: float
-
-
-class GovernanceReportDict(TypedDict, total=False):
-    """L0→L4 pipeline report dict."""
-    l0_ignored: int
-    l1_merged: int
-    l2_passed: dict
-    l3_processed: dict
-    remaining_pending: int
-
-
-class LlmBatchResultDict(TypedDict, total=False):
-    """L3 LLM batch judgment result."""
-    processed: int
-    accepted: int
-    rejected: int
-    errors: int
-
-
 # ── Gate pool ────────────────────────────────────────────────────────
 
 class GateConfigDict(TypedDict, total=False):

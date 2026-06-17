@@ -4,7 +4,7 @@ from app.models.base import Base, TimestampMixin
 
 
 class DesktopState(Base, TimestampMixin):
-    __tablename__ = "desktop_states"
+    __tablename__ = "framework_desktop_states"
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False, comment="User ID, FK to users.id")
     state_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, comment="Desktop layout / window states JSON")

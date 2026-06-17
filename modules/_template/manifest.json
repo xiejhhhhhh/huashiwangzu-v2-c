@@ -2,6 +2,7 @@
   "key": "MODULE_KEY",
   "name": "Module Display Name",
   "icon": "ModuleIcon",
+  "icon_asset": "",
   "category": "tools",
   "component_key": "index.vue",
   "route_prefix": null,
@@ -16,7 +17,9 @@
   "show_in_sidebar": false,
   "window_type": "normal",
   "allow_multiple": false,
-  "supported_file_formats": [],
+  "supported_formats": [],
+  "editable_formats": [],
+  "creatable_formats": [],
   "module_version": "1.0.0",
   "contract_version": "2.0",
   "backend": {

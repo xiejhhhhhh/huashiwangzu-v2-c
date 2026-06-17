@@ -67,7 +67,7 @@ function handleMarkAllRead() {
 .notification-panel-title {
   font-size: 15px;
   font-weight: 600;
-  color: var(--文字主色);
+  color: var(--text-primary);
 }
 
 .notification-item {
@@ -87,7 +87,7 @@ function handleMarkAllRead() {
 }
 
 .notification-item-unread {
-  background: var(--主色浅);
+  background: var(--primary-color-light);
 }
 
 .notification-item-content {
@@ -104,7 +104,7 @@ function handleMarkAllRead() {
 
 .notification-title {
   font-size: 14px;
-  color: var(--文字主色);
+  color: var(--text-primary);
   line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 1;
@@ -122,7 +122,7 @@ function handleMarkAllRead() {
 
 .notification-time {
   font-size: 12px;
-  color: var(--文字占位);
+  color: var(--text-placeholder);
 }
 
 .notification-actions {
@@ -133,18 +133,18 @@ function handleMarkAllRead() {
 
 .notification-mark-read {
   font-size: 12px;
-  color: var(--主色);
+  color: var(--primary-color);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .notification-mark-read:hover {
-  color: var(--主色深);
+  color: var(--primary-color-dark);
 }
 
 .notification-read-label {
   font-size: 12px;
-  color: var(--文字占位);
+  color: var(--text-placeholder);
   white-space: nowrap;
 }
 

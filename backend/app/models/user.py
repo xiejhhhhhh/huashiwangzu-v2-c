@@ -6,7 +6,7 @@ from app.models.base import Base, TimestampMixin
 
 
 class User(Base, TimestampMixin):
-    __tablename__ = "users"
+    __tablename__ = "framework_user_accounts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="Login username")

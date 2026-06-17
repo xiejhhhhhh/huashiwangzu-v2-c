@@ -1,7 +1,7 @@
 import { getAppRegistry } from '@/desktop/app-registry/desktop-app-state'
 import { getAllowedApps } from './app-registry'
 
-interface FileAssociationResult {
+export interface FileAssociationResult {
   appKey: string
   editable: boolean
   category: string
@@ -21,26 +21,75 @@ const legacyCategoryLabelMap: Record<string, string> = {
 
 const legacyReadonlyExtensions = ['doc', 'xls', 'ppt', 'vsd', 'vsdx', 'mpp', 'zip', 'rar']
 
-export function getAppByFileFormat(format: string, role?: string): FileAssociationResult {
+/**
+ * Find the best app for a given file format.
+ *
+ * Matching rules:
+ * 1. Exclude apps that declare supported_formats: ["*"] (system file entry only, currently just "desktop")
+ * 2. Exclude apps with no supportedFormats or empty array
+ * 3. Separate matches into editable and supported groups
+ * 4. Within each group, sort by sort_order ascending
+ * 5. Editable group has priority over supported group
+ * 6. If multiple apps match, pick the first by sort_order (current behavior; future: "Open With" menu)
+ *
+ * @returns FileAssociationResult or null if no app can open this format
+ */
+export function getAppByFileFormat(format: string, role?: string): FileAssociationResult | null {
   const ext = (format || '').toLowerCase().replace(/^\./, '')
-  if (!ext) return { appKey: 'filePreview', editable: false, category: 'unknown', categoryLabel: 'Unknown type' }
+  if (!ext) return null
 
   if (legacyReadonlyExtensions.includes(ext)) {
     return { appKey: 'filePreview', editable: false, category: 'legacy', categoryLabel: legacyCategoryLabelMap[ext] || 'Legacy format' }
   }
 
-  const appList = role ? getAllowedApps(role) : Object.values(getAppRegistry())
-  for (const app of appList) {
-    const formatList = app.supportedFileFormats
-    if (!formatList) continue
-    if (formatList.includes(ext)) {
-      const isEditable = app.appKey !== 'filePreview'
-      const category = inferFormatCategory(ext, app.appKey)
-      return { appKey: app.appKey, editable: isEditable, category, categoryLabel: categoryLabelMap[category] || ext.toUpperCase() }
+  const allApps = role ? getAllowedApps(role) : Object.values(getAppRegistry())
+
+  // Filter to matchable apps: must have non-empty supportedFormats, must not include "*"
+  const matchableApps = allApps.filter(app => {
+    const formats = app.supportedFormats
+    if (!formats || formats.length === 0) return false
+    if (formats.includes('*')) return false
+    return true
+  })
+
+  // Separate into editable and supported matches
+  interface MatchCandidate {
+    app: typeof allApps[number]
+    isEditable: boolean
+  }
+
+  const editableMatches: MatchCandidate[] = []
+  const supportedMatches: MatchCandidate[] = []
+
+  for (const app of matchableApps) {
+    const editableFormats = app.editableFormats ?? []
+    if (editableFormats.includes(ext)) {
+      editableMatches.push({ app, isEditable: true })
+    } else if (app.supportedFormats?.includes(ext)) {
+      supportedMatches.push({ app, isEditable: false })
     }
   }
 
-  return { appKey: 'filePreview', editable: false, category: 'unknown', categoryLabel: 'Unknown type' }
+  // Sort by sort_order within each group
+  const sortFn = (a: MatchCandidate, b: MatchCandidate) =>
+    (a.app.sortOrder ?? 0) - (b.app.sortOrder ?? 0)
+
+  editableMatches.sort(sortFn)
+  supportedMatches.sort(sortFn)
+
+  // Pick best: editable first, then supported
+  const bestMatch = editableMatches[0] ?? supportedMatches[0]
+  if (!bestMatch) {
+    return null
+  }
+
+  const category = inferFormatCategory(ext, bestMatch.app.appKey)
+  return {
+    appKey: bestMatch.app.appKey,
+    editable: bestMatch.isEditable,
+    category,
+    categoryLabel: categoryLabelMap[category] || ext.toUpperCase(),
+  }
 }
 
 function inferFormatCategory(ext: string, appKey: string): string {
@@ -58,14 +107,15 @@ function inferFormatCategory(ext: string, appKey: string): string {
   return 'document'
 }
 
-export function getFileAppKey(format: string, role?: string): string {
-  return getAppByFileFormat(format, role).appKey
+export function getFileAppKey(format: string, role?: string): string | null {
+  const result = getAppByFileFormat(format, role)
+  return result?.appKey ?? null
 }
 
 export function getFileCategoryLabel(format: string, role?: string): string {
-  return getAppByFileFormat(format, role).categoryLabel
+  return getAppByFileFormat(format, role)?.categoryLabel ?? 'Unknown type'
 }
 
 export function isFormatEditable(format: string, role?: string): boolean {
-  return getAppByFileFormat(format, role).editable
+  return getAppByFileFormat(format, role)?.editable ?? false
 }

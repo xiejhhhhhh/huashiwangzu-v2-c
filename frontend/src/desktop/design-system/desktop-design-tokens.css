@@ -4,132 +4,132 @@
 
 :root {
   /* ===== 桌面背景系统 ===== */
-  --桌面-背景-渐变开始: #0f172a;
-  --桌面-背景-渐变中间: #1d4ed8;
-  --桌面-背景-渐变结束: #7c3aed;
-  --桌面-背景-遮罩: rgba(0, 0, 0, 0.08);
-  --桌面-图标-文字: #f1f5f9;
-  --桌面-图标-选中背景: rgba(99, 102, 241, 0.16);
-  --桌面-图标-选中边框: rgba(99, 102, 241, 0.35);
+  --desktop-bg-gradient-start: #0f172a;
+  --desktop-bg-gradient-middle: #1d4ed8;
+  --desktop-bg-gradient-end: #7c3aed;
+  --desktop-bg-overlay: rgba(0, 0, 0, 0.08);
+  --desktop-icon-text: #f1f5f9;
+  --desktop-icon-selected-bg: rgba(99, 102, 241, 0.16);
+  --desktop-icon-selected-border: rgba(99, 102, 241, 0.35);
 
   /* ===== 任务栏 ===== */
-  --任务栏-高度: 40px;
-  --任务栏-背景: rgba(0, 0, 0, 0.35);
-  --任务栏-模糊: 14px;
-  --任务栏-文字: #eff6ff;
-  --任务栏-文字次要: #94a3b8;
-  --任务栏-上边框: rgba(255, 255, 255, 0.06);
-  --任务栏-激活背景: rgba(99, 102, 241, 0.15);
-  --任务栏-激活边框: rgba(99, 102, 241, 0.2);
-  --任务栏-Z索引: 10000;
+  --taskbar-height: 40px;
+  --taskbar-bg: rgba(0, 0, 0, 0.35);
+  --taskbar-blur: 14px;
+  --taskbar-text: #eff6ff;
+  --taskbar-text-secondary: #94a3b8;
+  --taskbar-top-border: rgba(255, 255, 255, 0.06);
+  --taskbar-active-bg: rgba(99, 102, 241, 0.15);
+  --taskbar-active-border: rgba(99, 102, 241, 0.2);
+  --taskbar-z-index: 10000;
 
   /* ===== 启动器 ===== */
-  --启动器-背景: rgba(32, 32, 36, 0.96);
-  --启动器-模糊: 24px;
-  --启动器-边框: rgba(255, 255, 255, 0.08);
-  --启动器-圆角: 8px;
-  --启动器-阴影: 0 18px 48px rgba(0, 0, 0, 0.35);
-  --启动器-宽度: 304px;
-  --启动器-最大高度: 540px;
-  --启动器-Z索引: 9000;
-  --启动器-文字: #e2e8f0;
-  --启动器-搜索背景: rgba(255, 255, 255, 0.06);
+  --launcher-bg: rgba(32, 32, 36, 0.96);
+  --launcher-blur: 24px;
+  --launcher-border: rgba(255, 255, 255, 0.08);
+  --launcher-radius: 8px;
+  --launcher-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  --launcher-width: 304px;
+  --launcher-max-height: 540px;
+  --launcher-z-index: 9000;
+  --launcher-text: #e2e8f0;
+  --launcher-search-bg: rgba(255, 255, 255, 0.06);
 
   /* ===== 窗口系统 ===== */
-  --窗口-背景: rgba(250, 250, 252, 0.98);
-  --窗口-圆角: 14px;
-  --窗口-边框: rgba(225, 229, 235, 0.96);
-  --窗口-阴影: 0 20px 56px rgba(15, 23, 42, 0.18);
-  --窗口-阴影激活: 0 24px 64px rgba(15, 23, 42, 0.20);
-  --窗口-最小宽: 400px;
-  --窗口-最小高: 260px;
-  --窗口-标题栏高: 32px;
-  --窗口-标题栏背景: linear-gradient(180deg, rgba(248, 248, 249, 0.98), rgba(240, 240, 242, 0.96));
-  --窗口-标题栏激活背景: linear-gradient(180deg, rgba(251, 251, 252, 1), rgba(242, 242, 244, 0.98));
-  --窗口-标题栏边框: rgba(228, 228, 230, 0.96);
-  --窗口-标题文字: #374151;
-  --窗口-内容背景: linear-gradient(180deg, #fcfcfd 0%, #ffffff 100%);
-  --窗口-Z索引: 5000;
-  --窗口-最大化圆角: 10px 10px 0 0;
+  --window-bg: rgba(250, 250, 252, 0.98);
+  --window-radius: 14px;
+  --window-border: rgba(225, 229, 235, 0.96);
+  --window-shadow: 0 20px 56px rgba(15, 23, 42, 0.18);
+  --window-shadow-active: 0 24px 64px rgba(15, 23, 42, 0.20);
+  --window-min-width: 400px;
+  --window-min-height: 260px;
+  --window-titlebar-height: 32px;
+  --window-titlebar-bg: linear-gradient(180deg, rgba(248, 248, 249, 0.98), rgba(240, 240, 242, 0.96));
+  --window-titlebar-active-bg: linear-gradient(180deg, rgba(251, 251, 252, 1), rgba(242, 242, 244, 0.98));
+  --window-titlebar-border: rgba(228, 228, 230, 0.96);
+  --window-title-text: #374151;
+  --window-content-bg: linear-gradient(180deg, #fcfcfd 0%, #ffffff 100%);
+  --window-z-index: 5000;
+  --window-maximized-radius: 10px 10px 0 0;
 
   /* ===== 交通灯按钮 ===== */
-  --窗口-关闭颜色: #ff5f57;
-  --窗口-关闭边框: #e0443e;
-  --窗口-最小化颜色: #febc2e;
-  --窗口-最小化边框: #d5a028;
-  --窗口-最大化颜色: #28c840;
-  --窗口-最大化边框: #20a934;
-  --窗口-按钮尺寸: 12px;
+  --window-close-color: #ff5f57;
+  --window-close-border: #e0443e;
+  --window-minimize-color: #febc2e;
+  --window-minimize-border: #d5a028;
+  --window-maximize-color: #28c840;
+  --window-maximize-border: #20a934;
+  --window-button-size: 12px;
 
   /* ===== 右键菜单（深色主题） ===== */
-  --菜单-背景: rgba(30, 30, 36, 0.96);
-  --菜单-模糊: 18px;
-  --菜单-边框: rgba(55, 58, 64, 0.92);
-  --菜单-圆角: 11px;
-  --菜单-阴影: 0 14px 38px rgba(15, 23, 42, 0.16);
-  --菜单-Z索引: 99999;
-  --菜单-最小宽: 196px;
-  --菜单-文字: #e2e8f0;
-  --菜单-hover背景: rgba(59, 130, 246, 0.16);
-  --菜单-危险文字: #f87171;
-  --菜单-禁用文字: #6b7280;
-  --菜单-分割线: rgba(75, 78, 85, 0.9);
+  --context-menu-bg: rgba(30, 30, 36, 0.96);
+  --context-menu-blur: 18px;
+  --context-menu-border: rgba(55, 58, 64, 0.92);
+  --context-menu-radius: 11px;
+  --context-menu-shadow: 0 14px 38px rgba(15, 23, 42, 0.16);
+  --context-menu-z-index: 99999;
+  --context-menu-min-width: 196px;
+  --context-menu-text: #e2e8f0;
+  --context-menu-hover-bg: rgba(59, 130, 246, 0.16);
+  --context-menu-danger-text: #f87171;
+  --context-menu-disabled-text: #6b7280;
+  --context-menu-divider: rgba(75, 78, 85, 0.9);
 
   /* ===== 托盘 ===== */
-  --托盘-按钮尺寸: 24px;
-  --托盘-图标颜色: #dbeafe;
-  --托盘-图标不透明度: 0.82;
-  --托盘-hover背景: rgba(255, 255, 255, 0.08);
-  --托盘-圆角: 4px;
+  --tray-button-size: 24px;
+  --tray-icon-color: #dbeafe;
+  --tray-icon-opacity: 0.82;
+  --tray-hover-bg: rgba(255, 255, 255, 0.08);
+  --tray-radius: 4px;
 
   /* ===== 右侧功能栏 ===== */
-  --功能栏-背景: #0f172a;
-  --功能栏-宽度: min(520px, 48vw);
-  --功能栏-Z索引: 10001;
-  --功能栏-遮罩: rgba(15, 23, 42, 0.12);
+  --sidebar-bg: #0f172a;
+  --sidebar-width: min(520px, 48vw);
+  --sidebar-z-index: 10001;
+  --sidebar-overlay: rgba(15, 23, 42, 0.12);
 
   /* ===== 文件管理 ===== */
-  --文件管理-工具栏背景: #f8fafc;
-  --文件管理-侧栏背景: #f1f5f9;
-  --文件管理-选中色: #2563eb;
+  --file-manager-toolbar-bg: #f8fafc;
+  --file-manager-sidebar-bg: #f1f5f9;
+  --file-manager-selected-color: #2563eb;
 
   /* ===== 字号/类型比例 ===== */
-  --字号-图标标签: 10px;
-  --字号-小: 11px;
-  --字号-基础: 12px;
-  --字号-大: 13px;
-  --字号-标题: 14px;
-  --字号-大标题: 18px;
+  --font-size-icon-label: 10px;
+  --font-size-sm: 11px;
+  --font-size-base: 12px;
+  --font-size-lg: 13px;
+  --font-size-title: 14px;
+  --font-size-display: 18px;
 
   /* ===== 间距 ===== */
-  --间距-内边距-窗口: 14px;
-  --间距-内边距-标题栏: 0 14px;
-  --间距-内边距-内容: 16px;
-  --间距-间隙-小: 4px;
-  --间距-间隙-中: 8px;
-  --间距-间隙-大: 12px;
-  --间距-网格间隙: 6px;
+  --space-window-padding: 14px;
+  --space-titlebar-padding: 0 14px;
+  --space-content-padding: 16px;
+  --space-gap-sm: 4px;
+  --space-gap-md: 8px;
+  --space-gap-lg: 12px;
+  --space-grid-gap: 6px;
 
   /* ===== 过渡/动画 ===== */
-  --过渡-快: 0.12s;
-  --过渡-中: 0.2s;
-  --过渡-慢: 0.3s;
-  --过渡-缓动默认: ease;
+  --transition-fast: 0.12s;
+  --transition-medium: 0.2s;
+  --transition-slow: 0.3s;
+  --transition-ease-default: ease;
 
   /* ===== Z-索引层级 ===== */
-  --z-桌面图标: 100;
-  --z-启动器: 9000;
-  --z-任务栏: 10000;
-  --z-功能栏: 10001;
-  --z-窗口默认: 2000;
-  --z-右键菜单: 20000;
-  --z-系统对话框: 30000;
+  --z-desktop-icon: 100;
+  --z-launcher: 9000;
+  --z-taskbar: 10000;
+  --z-sidebar: 10001;
+  --z-window-default: 2000;
+  --z-context-menu: 20000;
+  --z-system-dialog: 30000;
 
   /* ===== 边框 & 不透明度 ===== */
-  --边框-默认: 1px;
-  --边框-粗: 2px;
-  --不透明度-禁用: 0.72;
-  --不透明度-遮罩-轻: 0.08;
-  --不透明度-遮罩-中: 0.12;
-  --不透明度-遮罩-重: 0.35;
+  --border-width-default: 1px;
+  --border-width-thick: 2px;
+  --opacity-disabled: 0.72;
+  --opacity-overlay-light: 0.08;
+  --opacity-overlay-medium: 0.12;
+  --opacity-overlay-heavy: 0.35;
 }

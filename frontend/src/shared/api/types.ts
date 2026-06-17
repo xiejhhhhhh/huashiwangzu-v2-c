@@ -47,48 +47,7 @@ export interface SystemStatus {
 
 export type {
   FolderEntry, FileEntry, RecycleBinEntry, FileDetail,
-  DashboardOverview, LogEntry, TaskItem,
-  SystemConfig, RoleMatrixItem,
-  AgentSessionEntry, ChatMessageEntry,
-  KnowledgeEntry, CatalogEntry, KnowledgeTaskEntry, KnowledgeProgress, FileParseResult,
+  LogEntry, TaskItem,
+  SystemConfig, RoleMatrixItem, FileParseResult,
   NotificationItem, SystemLogEntry,
 } from './common-data-types'
-
-export interface WeakTypeItem {
-  type: string
-  count: number
-  avg_recall: number
-}
-
-export interface EvalRecord {
-  record_id: number
-  total_questions: number
-  answered_count: number
-  unanswered_count: number
-  recall_rate: number
-  MRR: number
-  NDCG: number
-  evidence_hit_rate: number
-  refusal_accuracy: number
-  weak_types: WeakTypeItem[]
-  detail_items?: EvalQuestionDetail[]
-  duration_ms: number
-  created_at: string
-}
-
-export interface EvalQuestionDetail {
-  /** 查询或提问内容：用于构建提示词 */
-  question: string
-  /** 标准答案文本：LLM 回答质量的参照 */
-  expected_answer: string
-  /** 实际回答文本：LLM 的原始输出 */
-  llm_answer?: string
-  /** 回答是否相关 / 得分 */
-  is_relevant?: boolean
-  /** 关联到知识库的文档 ID */
-  document_id?: number
-  /** 创建时间 */
-  created_at?: string
-}
-
-export type EvalRecordBrief = Omit<EvalRecord, 'detail_items'>

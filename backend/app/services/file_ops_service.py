@@ -1,12 +1,14 @@
 import shutil
 from pathlib import Path
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.exceptions import AppException, NotFound
 from app.models.file import File, Folder
 from app.services.file_service import get_file_record
+from app.services.file_share_service import check_file_access
 
-UPLOAD_ROOT = Path(get_settings().UPLOAD_DIR)
+UPLOAD_ROOT = Path(get_settings().UPLOAD_DIR).resolve()
 
 
 async def copy_item(
@@ -25,10 +27,31 @@ async def copy_item(
         target = await db.get(Folder, target_folder_id)
         if not target or target.deleted:
             raise NotFound("Target folder not found")
+        if target.owner_id != owner_id:
+            raise AppException("Access denied: target folder does not belong to current user", status_code=403)
+    # Resolve unique name for copy in destination
+    dest_folder_id = target_folder_id
+    base_name = f"{source.name} copy"
+    copied_name = base_name
+    copy_idx = 1
+    while True:
+        existing = await db.execute(
+            select(File).where(
+                File.name == copied_name,
+                File.extension == source.extension,
+                File.folder_id == dest_folder_id,
+                File.owner_id == owner_id,
+                File.deleted == False,
+            )
+        )
+        if not existing.scalar_one_or_none():
+            break
+        copy_idx += 1
+        copied_name = f"{base_name} {copy_idx}"
     copied = File(
-        name=f"{source.name} copy", extension=source.extension, size=source.size,
-        folder_id=target_folder_id, owner_id=owner_id, storage_path="",
-        mime_type=source.mime_type, md5=source.md5, deleted=False,
+        name=copied_name, extension=source.extension, size=source.size,
+        folder_id=dest_folder_id, owner_id=owner_id, storage_path="",
+        mime_type=source.mime_type, md5_hash=source.md5_hash, deleted=False,
     )
     db.add(copied)
     await db.flush()
@@ -52,9 +75,12 @@ def _copy_storage_file(source: File, copied: File) -> str:
     return target_rel
 
 
-async def get_file_detail(db: AsyncSession, file_id: int, owner_id: int) -> dict:
+async def get_file_detail(db: AsyncSession, file_id: int, user_id: int) -> dict:
     file = await get_file_record(db, file_id)
-    if not file or file.owner_id != owner_id:
+    if not file:
+        raise NotFound("File not found")
+    access = await check_file_access(db, file_id, user_id)
+    if not access["accessible"]:
         raise NotFound("File not found")
     folder_name = ""
     if file.folder_id:
@@ -67,4 +93,5 @@ async def get_file_detail(db: AsyncSession, file_id: int, owner_id: int) -> dict
         "created_at": file.created_at, "updated_at": file.updated_at,
         "storage_path": file.storage_path, "deleted": file.deleted,
         "mime_type": file.mime_type,
+        "access_permission": access["permission"],
     }

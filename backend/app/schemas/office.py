@@ -8,7 +8,7 @@ class PackageStatusResponse(BaseModel):
     has_package: bool
     package_id: int | None = None
     current_version_id: int | None = None
-    package_status: str = "未生成"
+    package_status: str = "not_generated"
     summary: str | None = None
     last_updated: str | None = None
 

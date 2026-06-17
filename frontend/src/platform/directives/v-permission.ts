@@ -4,7 +4,7 @@ import { checkPermissionAction } from '@/shared/composables/use-permission-actio
 export const vPermission: Directive = {
   async mounted(el, binding) {
     if (typeof binding.value !== 'string') {
-      console.warn('[v-权限] 指令值必须为 action 字符串')
+      console.warn('[v-permission] directive value must be an action string')
       return
     }
     const hasPermission = await checkPermissionAction(binding.value)

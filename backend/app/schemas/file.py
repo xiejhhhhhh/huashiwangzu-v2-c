@@ -56,6 +56,7 @@ class UploadResponse(BaseModel):
     size: Optional[int] = None
     mime_type: Optional[str] = None
     exists: bool = False
+    deduplicated: bool = False
 
 
 class PreviewResponse(BaseModel):

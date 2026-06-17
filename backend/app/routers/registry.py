@@ -18,6 +18,8 @@ PLATFORM_ROUTER_MODULES: tuple[str, ...] = (
     "app.routers.desktop",
     "app.routers.files",
     "app.routers.file_transfer",
+    "app.routers.file_shares",
+    "app.routers.file_create",
     "app.routers.recycle",
     "app.routers.users",
     "app.routers.roles",

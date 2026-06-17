@@ -1,18 +1,18 @@
 <template>
   <div class="system-status-panel">
-    <div v-if="加载中" class="status-loading">加载系统状态中...</div>
-    <div v-else-if="错误" class="status-error">{{ 错误 }}</div>
+    <div v-if="loading" class="status-loading">加载系统状态中...</div>
+    <div v-else-if="errorMessage" class="status-error">{{ errorMessage }}</div>
     <template v-else>
-      <div v-if="!显示详情 && !全部正常" class="status-warning-bar">
+      <div v-if="!props.showDetails && !allHealthy" class="status-warning-bar">
         ⚠️ 系统部分服务异常，请联系管理员
       </div>
-      <div v-if="显示详情" class="status-detail">
+      <div v-if="props.showDetails" class="status-detail">
         <el-descriptions :column="1" border size="small">
-          <el-descriptions-item v-for="(值, 键) in 系统状态" :key="键" :label="键">
-            <el-tag :type="值.status ? 'success' : 'danger'" size="small">
-              {{ 值.status ? '正常' : '异常' }}
+          <el-descriptions-item v-for="(value, key) in systemStatus" :key="key" :label="key">
+            <el-tag :type="value.status ? 'success' : 'danger'" size="small">
+              {{ value.status ? '正常' : '异常' }}
             </el-tag>
-            <span class="status-message">{{ 值.message }}</span>
+            <span class="status-message">{{ value.message }}</span>
           </el-descriptions-item>
         </el-descriptions>
       </div>
@@ -23,45 +23,44 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import api from '@/shared/api'
-import type { SystemStatus, SystemStatusEntry } from '@/shared/api/types'
+import type { ApiResponse, SystemStatus, SystemStatusEntry } from '@/shared/api/types'
 
-const props = withDefaults(defineProps<{ 显示详情?: boolean }>(), { 显示详情: false })
+const props = withDefaults(defineProps<{ showDetails?: boolean }>(), { showDetails: false })
 
-const 系统状态 = ref<SystemStatus | null>(null)
-const 加载中 = ref(false)
-const 错误 = ref('')
+const systemStatus = ref<SystemStatus | null>(null)
+const loading = ref(false)
+const errorMessage = ref('')
 
-const 全部正常 = computed(() => {
-  if (!系统状态.value) return true
-  return Object.values(系统状态.value).every((v: SystemStatusEntry) => v.status)
+const allHealthy = computed(() => {
+  if (!systemStatus.value) return true
+  return Object.values(systemStatus.value).every((value: SystemStatusEntry) => value.status)
 })
 
-async function 加载状态() {
-  加载中.value = true
-  错误.value = ''
+async function loadStatus() {
+  loading.value = true
+  errorMessage.value = ''
   try {
-    const res = await api.get('/system/status')
-    const r = res.data
-    if (r.success) {
-      系统状态.value = r.data
+    const response = await api.get<unknown, ApiResponse<SystemStatus>>('/system/status')
+    if (response.success) {
+      systemStatus.value = response.data || null
     } else {
-      错误.value = r.error || '加载失败'
+      errorMessage.value = response.error || '加载失败'
     }
-  } catch (e: unknown) {
-    错误.value = (e as {error?: string})?.error || '系统状态加载失败'
+  } catch (error: unknown) {
+    errorMessage.value = (error as { error?: string })?.error || '系统状态加载失败'
   } finally {
-    加载中.value = false
+    loading.value = false
   }
 }
 
-defineExpose({ 加载状态 })
-onMounted(() => { 加载状态() })
+defineExpose({ loadStatus })
+onMounted(() => { loadStatus() })
 </script>
 
 <style scoped>
 .system-status-panel { margin-bottom: 12px; }
-.status-loading { color: var(--文字信息); padding: 8px 0; font-size: 14px; }
+.status-loading { color: var(--text-muted); padding: 8px 0; font-size: 14px; }
 .status-error { color: var(--el-color-danger); padding: 8px 0; }
 .status-warning-bar { background: var(--el-color-warning-light-9); color: var(--el-color-warning); padding: 8px 16px; border-radius: 4px; font-size: 14px; margin-bottom: 8px; }
-.status-message { margin-left: 8px; font-size: 13px; color: var(--文字次要); }
+.status-message { margin-left: 8px; font-size: 13px; color: var(--text-secondary); }
 </style>

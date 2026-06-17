@@ -8,9 +8,9 @@ from .opencode_provider import OpenCodeProvider
 from .openai_provider import OpenAIProvider
 from .local import LocalProvider
 from .adapters import get_adapter
-from app.core.defaults import DEFAULT_AGENT_MODEL
+from app.gateway.config import DEFAULT_MODEL
 
-logger = logging.getLogger("v2.agent.gateway")
+logger = logging.getLogger("v2.gateway.router")
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
 RETRYABLE_STATUSES = {429, 502, 503, 504}
@@ -110,7 +110,7 @@ class ModelGatewayRouter:
                 self._providers[name] = LocalProvider()
 
     def get_profile(self, profile_key: str) -> dict:
-        return MODEL_PROFILES.get(profile_key, MODEL_PROFILES[DEFAULT_AGENT_MODEL])
+        return MODEL_PROFILES.get(profile_key, MODEL_PROFILES[DEFAULT_MODEL])
 
     def list_profiles(self) -> list[dict]:
         return [
@@ -127,7 +127,7 @@ class ModelGatewayRouter:
     async def chat(
         self,
         messages: list[dict],
-        profile_key: str = DEFAULT_AGENT_MODEL,
+        profile_key: str = DEFAULT_MODEL,
         tools: list[dict] | None = None,
     ) -> dict:
         profile = self.get_profile(profile_key)
@@ -156,7 +156,7 @@ class ModelGatewayRouter:
     async def chat_stream(
         self,
         messages: list[dict],
-        profile_key: str = DEFAULT_AGENT_MODEL,
+        profile_key: str = DEFAULT_MODEL,
         tools: list[dict] | None = None,
     ) -> AsyncGenerator[dict, None]:
         profile = self.get_profile(profile_key)
@@ -199,7 +199,7 @@ async def route_and_send(
     response_format: type | None = None,
     temperature: float = 0.7,
 ) -> dict | object:
-    profile = MODEL_PROFILES.get(model_id, MODEL_PROFILES[DEFAULT_AGENT_MODEL]).copy()
+    profile = MODEL_PROFILES.get(model_id, MODEL_PROFILES[DEFAULT_MODEL]).copy()
     profile["temperature"] = temperature
     if profile["provider"] == "llama":
         await _ensure_local_text_model(profile)

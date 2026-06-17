@@ -8,7 +8,7 @@
   min-width: 240px;
   background: #fff;
   border-right: 1px solid var(--border-color);
-  color: var(--文字主色);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -19,7 +19,7 @@
   font-size: 18px;
   font-weight: 600;
   text-align: center;
-  color: var(--主色);
+  color: var(--primary-color);
   border-bottom: 1px solid var(--border-color);
   letter-spacing: 2px;
 }
@@ -42,10 +42,10 @@
 }
 
 .layout-sidebar-menu .el-menu-item.is-active {
-  background: var(--主色浅);
-  color: var(--主色);
+  background: var(--primary-color-light);
+  color: var(--primary-color);
   font-weight: 600;
-  border-right: 3px solid var(--主色);
+  border-right: 3px solid var(--primary-color);
 }
 
 .main-content {
@@ -57,7 +57,7 @@
 
 .topbar {
   height: 60px;
-  background: var(--卡片背景);
+  background: var(--card-bg);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
@@ -81,6 +81,6 @@
   flex: 1;
   padding: 24px;
   overflow-y: auto;
-  background: var(--背景色);
+  background: var(--page-bg);
   position: relative;
 }

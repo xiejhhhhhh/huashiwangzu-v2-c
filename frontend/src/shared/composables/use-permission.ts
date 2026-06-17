@@ -9,9 +9,9 @@ const roleLevels: Record<string, number> = {
 }
 
 const roleMenuMap: Record<string, string[]> = {
-  viewer: ['desktop', 'knowledge', 'agent', 'tasks'],
-  editor: ['desktop', 'knowledge', 'agent', 'tasks'],
-  admin: ['dashboard', 'agent', 'desktop', 'knowledge', 'settings', 'tasks'],
+  viewer: ['desktop', 'tasks'],
+  editor: ['desktop', 'tasks'],
+  admin: ['dashboard', 'desktop', 'settings', 'tasks'],
 }
 
 export function usePermission() {
@@ -40,8 +40,6 @@ export function usePermission() {
   const writeActions = new Set([
     'desktop:create-folder', 'desktop:upload', 'desktop:rename', 'desktop:delete',
     'desktop:restore-recycle-bin', 'desktop:delete-permanently', 'desktop:empty-recycle-bin',
-    'knowledge:edit-catalog', 'knowledge:run-analysis',
-    'agent:delete-session',
     'task:retry', 'task:cancel',
   ])
   const adminActions = new Set([

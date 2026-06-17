@@ -15,10 +15,6 @@ const backendKeywordMap: [RegExp, string][] = [
 ]
 
 const toolFriendlyNameMap: Record<string, string> = {
-  knowledge: '资料',
-  knowledge_search: '资料',
-  knowledge_evidence: '证据',
-  dictionary: '词典',
   file: '文件',
   file_preview: '文件',
   get_weather: '天气',

@@ -21,14 +21,17 @@ export interface DesktopAppItem {
   show_in_tray?: boolean
   show_in_launcher?: boolean
   show_in_sidebar?: boolean
-  supported_file_formats?: string[]
+  supported_formats?: string[]
+  editable_formats?: string[]
+  creatable_formats?: Array<{ extension: string; label: string; mime_type?: string }>
+  sort_order?: number
   capabilities?: {
     canReceiveFile: boolean
     canSendNotification: boolean
     canRunBackground: boolean
     canBeCalledByOther: boolean
   }
-  publicActions?: Array<{
+  public_actions?: Array<{
     action: string
     description: string
     paramSchema: Record<string, unknown>

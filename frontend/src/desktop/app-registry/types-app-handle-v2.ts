@@ -99,18 +99,6 @@ export const standardActionDef = {
     defaultTimeout: 15000,
     auditLevel: 'low' as AuditLevel,
   },
-  'knowledge:node:open': {
-    name: 'openKnowledgeNode',
-    paramSchema: { catalogId: 'number', anchor: 'string?' },
-    defaultTimeout: 10000,
-    auditLevel: 'none' as AuditLevel,
-  },
-  'agent:send': {
-    name: 'sendToAgent',
-    paramSchema: { content: 'string', context: 'object?' },
-    defaultTimeout: 30000,
-    auditLevel: 'medium' as AuditLevel,
-  },
   'settings:open': {
     name: 'openSettings',
     paramSchema: { page: 'string?', highlightedField: 'string?' },

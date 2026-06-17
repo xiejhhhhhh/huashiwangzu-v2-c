@@ -1,11 +1,11 @@
 <template>
-  <div class="error-state" :class="[类型]">
-    <el-icon :size="图标大小" color="#f56c6c"><WarningFilled /></el-icon>
-    <p class="error-message">{{ 消息 || '系统开小差了' }}</p>
-    <p v-if="说明" class="error-description">{{ 说明 }}</p>
-    <div v-if="可重试" class="error-actions">
-      <el-button type="primary" size="small" @click="$emit('重试')">重新加载</el-button>
-      <el-button size="small" @click="$emit('返回')">返回首页</el-button>
+  <div class="error-state" :class="[props.variant]">
+    <el-icon :size="props.iconSize" color="#f56c6c"><WarningFilled /></el-icon>
+    <p class="error-message">{{ props.message || '系统开小差了' }}</p>
+    <p v-if="props.description" class="error-description">{{ props.description }}</p>
+    <div v-if="props.retryable" class="error-actions">
+      <el-button type="primary" size="small" @click="$emit('retry')">重新加载</el-button>
+      <el-button size="small" @click="$emit('back')">返回首页</el-button>
     </div>
   </div>
 </template>
@@ -13,21 +13,21 @@
 <script setup lang="ts">
 import { WarningFilled } from '@element-plus/icons-vue'
 
-withDefaults(defineProps<{
-  类型?: 'full' | 'card' | 'inline'
-  消息?: string
-  说明?: string
-  图标大小?: number
-  可重试?: boolean
+const props = withDefaults(defineProps<{
+  variant?: 'full' | 'card' | 'inline'
+  message?: string
+  description?: string
+  iconSize?: number
+  retryable?: boolean
 }>(), {
-  类型: 'full',
-  图标大小: 48,
-  可重试: true,
+  variant: 'full',
+  iconSize: 48,
+  retryable: true,
 })
 
 defineEmits<{
-  重试: []
-  返回: []
+  retry: []
+  back: []
 }>()
 </script>
 

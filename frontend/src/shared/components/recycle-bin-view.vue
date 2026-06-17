@@ -1,32 +1,32 @@
 <template>
   <div class="recycle-bin-container">
     <div class="recycle-bin-toolbar">
-      <el-button size="small" @click="关闭回收站"><el-icon><ArrowLeft /></el-icon> 返回</el-button>
+      <el-button size="small" @click="handleClose"><el-icon><ArrowLeft /></el-icon> 返回</el-button>
       <span class="recycle-bin-title">回收站</span>
       <span style="flex:1" />
-      <el-button v-if="可业务写" size="small" type="danger" plain @click="emit('清空')" :disabled="回收站列表.length === 0">
+      <el-button v-if="canWrite" size="small" type="danger" plain @click="emit('clear')" :disabled="items.length === 0">
         <el-icon><Delete /></el-icon> 清空回收站
       </el-button>
     </div>
-    <div class="recycle-bin-list" v-loading="回收站加载中" @contextmenu.prevent>
-      <el-table :data="回收站列表" stripe size="small" style="width:100%" empty-text="回收站是空的" @row-contextmenu="行右键">
+    <div class="recycle-bin-list" v-loading="loading" @contextmenu.prevent>
+      <el-table :data="items" stripe size="small" style="width:100%" empty-text="回收站是空的" @row-contextmenu="handleRowContextMenu">
         <el-table-column label="名称" min-width="200">
           <template #default="{ row }">
             <div class="filename-cell">
-              <el-icon><Document v-if="row.类型 === '文件'" /><Folder v-else /></el-icon>
-              {{ row.名称 }}<span v-if="row.format">.{{ row.format }}</span>
+              <el-icon><Document v-if="row.item_type === 'file'" /><Folder v-else /></el-icon>
+              {{ row.name }}<span v-if="row.format">.{{ row.format }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="类型" label="类型" width="80" />
+        <el-table-column prop="item_type" label="类型" width="80" />
         <el-table-column label="大小" width="100">
-          <template #default="{ row }">{{ row.类型 === '文件' ? 格式化大小(row.大小) : '-' }}</template>
+          <template #default="{ row }">{{ row.item_type === 'file' ? formatSize(row.size) : '-' }}</template>
         </el-table-column>
-        <el-table-column prop="回收时间" label="删除时间" width="180" />
+        <el-table-column prop="deleted_at" label="删除时间" width="180" />
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="可业务写" link type="primary" size="small" @click="emit('还原', row.类型, row.id)">还原</el-button>
-            <el-button v-if="可业务写" link type="danger" size="small" @click="emit('彻底删除', row.类型, row.id)">彻底删除</el-button>
+            <el-button v-if="canWrite" link type="primary" size="small" @click="emit('restore', row.item_type, row.id)">还原</el-button>
+            <el-button v-if="canWrite" link type="danger" size="small" @click="emit('delete-permanently', row.item_type, row.id)">彻底删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -40,31 +40,38 @@ import { usePermission } from '@/shared/composables/use-permission'
 import type { RecycleBinEntry } from '@/shared/api/types'
 
 defineProps<{
-  回收站列表: RecycleBinEntry[]
-  回收站加载中: boolean
+  items: RecycleBinEntry[]
+  loading: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: '关闭'): void
-  (e: '还原', 类型: '文件' | '文件夹', id: number): void
-  (e: '彻底删除', 类型: '文件' | '文件夹', id: number): void
-  (e: '清空'): void
-  (e: '行右键', row: RecycleBinEntry, column: unknown, event: MouseEvent): void
+  (e: 'close'): void
+  (e: 'restore', itemType: 'file' | 'folder', id: number): void
+  (e: 'delete-permanently', itemType: 'file' | 'folder', id: number): void
+  (e: 'clear'): void
+  (e: 'row-contextmenu', row: RecycleBinEntry, column: unknown, event: MouseEvent): void
 }>()
 
-function 行右键(row: RecycleBinEntry, column: unknown, event: MouseEvent) {
-  emit('行右键', row, column, event)
+function handleRowContextMenu(row: RecycleBinEntry, column: unknown, event: MouseEvent) {
+  emit('row-contextmenu', row, column, event)
 }
 
-const { isEditorOrAbove: 可业务写 } = usePermission()
+const { isEditorOrAbove: canWrite } = usePermission()
 
-function 关闭回收站() { emit('关闭') }
-function 格式化大小(字节: number): string {
-  if (!字节 || 字节 === 0) return '-'
-  const 单位 = ['B', 'KB', 'MB', 'GB']
-  let 大小 = 字节, 单位索引 = 0
-  while (大小 >= 1024 && 单位索引 < 单位.length - 1) { 大小 /= 1024; 单位索引++ }
-  return 大小.toFixed(1) + ' ' + 单位[单位索引]
+function handleClose() {
+  emit('close')
+}
+
+function formatSize(bytes?: number | null): string {
+  if (!bytes || bytes === 0) return '-'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = bytes
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex++
+  }
+  return `${size.toFixed(1)} ${units[unitIndex]}`
 }
 </script>
 

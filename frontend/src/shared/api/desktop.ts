@@ -36,6 +36,7 @@ interface BackendDesktopStateResponse {
 
 interface UploadFileResponse {
   exists: boolean
+  deduplicated?: boolean
   id: number
   name: string
   extension: string
@@ -136,6 +137,21 @@ export function moveToRecycleBinRequest(itemType: FileItemType, id: number) {
 
 export function downloadFileRequest(fileId: number) {
   window.open(`${API_BASE_URL}/files/download/${fileId}`, '_blank')
+}
+
+interface CreateFileResponse {
+  id: number
+  name: string
+  extension: string
+  size: number
+  mime_type: string
+  deduplicated: boolean
+}
+
+export function createFileRequest(name: string, extension: string, folderId?: number | null) {
+  return api.post<unknown, ApiResponse<CreateFileResponse>>('/files/create-file', {
+    name, extension, folder_id: folderId || null,
+  })
 }
 
 export function uploadFileRequest(file: File, folderId?: number, onProgress?: (pct: number) => void) {

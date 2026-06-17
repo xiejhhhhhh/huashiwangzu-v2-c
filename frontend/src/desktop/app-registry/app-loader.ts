@@ -42,11 +42,14 @@ function transformApiToEntry(app: DesktopAppItem): AppRegistryEntry {
     showInSidebar: app.show_in_sidebar ?? false,
     category: app.category || '',
     allowedRoles: app.permissions || [],
-    supportedFileFormats: app.supported_file_formats || undefined,
+    supportedFormats: app.supported_formats || undefined,
+    editableFormats: app.editable_formats || undefined,
+    creatableFormats: app.creatable_formats || undefined,
+    sortOrder: app.sort_order ?? 0,
     windowType: app.window_type || 'normal',
     allowMultiple: app.allow_multiple ?? false,
     capabilities: app.capabilities,
-    publicActions: app.publicActions,
+    publicActions: app.public_actions,
     enabled: app.enabled ?? true,
   }
 }

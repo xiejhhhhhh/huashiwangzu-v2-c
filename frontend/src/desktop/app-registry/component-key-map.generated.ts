@@ -4,5 +4,4 @@
 import type { Component } from 'vue'
 
 export const componentKeyMap: Record<string, () => Promise<{ default: Component }>> = {
-  'ai-assistant/index.vue': () => import('@modules/ai-assistant/frontend/index.vue'),
 }

@@ -7,15 +7,15 @@
 html, body, #app {
   height: 100%;
   width: 100%;
-  font-family: var(--字体栈);
-  background-color: var(--背景色);
-  color: var(--文字主色);
+  font-family: var(--font-stack);
+  background-color: var(--page-bg);
+  color: var(--text-primary);
 }
 
-.全局加载 {
+.global-loading {
   display: flex;
   justify-content: center;
   align-items: center;
   height: 100vh;
-  background: var(--背景色);
+  background: var(--page-bg);
 }

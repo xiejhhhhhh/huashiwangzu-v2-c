@@ -86,7 +86,7 @@ class JsonPatchService:
             after_content=patch["after_content"],
             risk_level=patch["risk_level"],
             reason=patch.get("reason", ""),
-            patch_status="已应用",
+            patch_status="applied",
             creator_id=user_id,
         )
         db.add(patch_record)

@@ -57,7 +57,13 @@ export interface AppRegistryEntry {
   /** List of roles allowed to access this app, defaults to all roles */
   allowedRoles?: string[]
   /** List of file extensions this app supports opening */
-  supportedFileFormats?: string[]
+  supportedFormats?: string[]
+  /** List of file extensions this app can edit or create */
+  editableFormats?: string[]
+  /** Creatable file type declarations */
+  creatableFormats?: Array<{ extension: string; label: string; mime_type?: string }>
+  /** Display order, ascending */
+  sortOrder?: number
   /** Protocol name for open parameters, defines what type of payload this app accepts */
   openParamProtocol?: string
   windowType?: string

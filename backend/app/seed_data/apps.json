@@ -15,7 +15,7 @@
     "default_width": 800,
     "default_height": 600,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -34,7 +34,7 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -56,7 +56,8 @@
     "show_in_sidebar": true,
     "window_type": "panel",
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": false
   },
   {
     "key": "desktop",
@@ -112,7 +113,7 @@
     "icon": "Edit",
     "category": "文件管理",
     "component_key": "apps/textEditor/index.vue",
-    "route_prefix": "/api/text-editor",
+    "route_prefix": "/api/editors",
     "permissions": [
       "viewer",
       "editor",
@@ -138,8 +139,21 @@
       "txt",
       "md"
     ],
+    "creatable_formats": [
+      {
+        "extension": "txt",
+        "label": "文本文档",
+        "mime_type": "text/plain"
+      },
+      {
+        "extension": "md",
+        "label": "Markdown",
+        "mime_type": "text/markdown"
+      }
+    ],
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": true
   },
   {
     "key": "filePreview",
@@ -171,7 +185,8 @@
       "mov"
     ],
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": true
   },
   {
     "key": "file-toolbox",
@@ -179,7 +194,7 @@
     "icon": "FolderOpened",
     "category": "文件管理",
     "component_key": "apps/file-toolbox/index.vue",
-    "route_prefix": "/api/file-toolbox",
+    "route_prefix": "",
     "permissions": [
       "editor",
       "admin"
@@ -188,7 +203,7 @@
     "default_width": 900,
     "default_height": 600,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -199,7 +214,7 @@
     "icon": "DocumentCopy",
     "category": "文件管理",
     "component_key": "apps/docxEditor/index.vue",
-    "route_prefix": "/api/word-editor",
+    "route_prefix": "",
     "permissions": [
       "viewer",
       "editor",
@@ -217,11 +232,17 @@
       "docx",
       "doc"
     ],
-    "editable_formats": [
-      "docx"
+    "editable_formats": [],
+    "creatable_formats": [
+      {
+        "extension": "docx",
+        "label": "Word 文档",
+        "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      }
     ],
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": false
   },
   {
     "key": "office-workbench",
@@ -229,7 +250,7 @@
     "icon": "Notebook",
     "category": "文件管理",
     "component_key": "apps/office-workbench/index.vue",
-    "route_prefix": "/api/office-workbench",
+    "route_prefix": "",
     "permissions": [
       "viewer",
       "editor",
@@ -239,13 +260,13 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0",
     "dependency_declaration": {
       "modules": [
-        "文件与Office"
+        "file-and-office"
       ]
     }
   },
@@ -255,7 +276,7 @@
     "icon": "DataBoard",
     "category": "文件管理",
     "component_key": "apps/pptxEditor/index.vue",
-    "route_prefix": "/api/ppt-editor",
+    "route_prefix": "",
     "permissions": [
       "viewer",
       "editor",
@@ -276,8 +297,16 @@
     "editable_formats": [
       "pptx"
     ],
+    "creatable_formats": [
+      {
+        "extension": "pptx",
+        "label": "PPT 演示",
+        "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      }
+    ],
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": false
   },
   {
     "key": "excelEditor",
@@ -285,7 +314,7 @@
     "icon": "Grid",
     "category": "文件管理",
     "component_key": "apps/excelEditor/index.vue",
-    "route_prefix": "/api/excel-editor",
+    "route_prefix": "",
     "permissions": [
       "viewer",
       "editor",
@@ -307,8 +336,16 @@
     "editable_formats": [
       "xlsx"
     ],
+    "creatable_formats": [
+      {
+        "extension": "xlsx",
+        "label": "Excel 工作簿",
+        "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      }
+    ],
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": false
   },
   {
     "key": "csvEditor",
@@ -316,7 +353,7 @@
     "icon": "Document",
     "category": "文件管理",
     "component_key": "apps/csvEditor/index.vue",
-    "route_prefix": "/api/csv-editor",
+    "route_prefix": "/api/editors",
     "permissions": [
       "viewer",
       "editor",
@@ -337,8 +374,16 @@
     "editable_formats": [
       "csv"
     ],
+    "creatable_formats": [
+      {
+        "extension": "csv",
+        "label": "CSV 表格",
+        "mime_type": "text/csv"
+      }
+    ],
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": false
   },
   {
     "key": "user-admin",
@@ -346,7 +391,7 @@
     "icon": "User",
     "category": "系统管理",
     "component_key": "apps/user-admin/index.vue",
-    "route_prefix": "/api/user-management",
+    "route_prefix": "/api/users",
     "permissions": [
       "admin"
     ],
@@ -354,7 +399,7 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -365,7 +410,7 @@
     "icon": "Key",
     "category": "系统管理",
     "component_key": "apps/role-matrix/index.vue",
-    "route_prefix": "/api/role-permissions",
+    "route_prefix": "/api/roles",
     "permissions": [
       "admin"
     ],
@@ -373,7 +418,7 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -384,7 +429,7 @@
     "icon": "Operation",
     "category": "系统管理",
     "component_key": "apps/system-config/index.vue",
-    "route_prefix": "/api/system-config",
+    "route_prefix": "/api/settings",
     "permissions": [
       "admin"
     ],
@@ -392,7 +437,7 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -403,7 +448,7 @@
     "icon": "Document",
     "category": "系统管理",
     "component_key": "apps/system-logs/index.vue",
-    "route_prefix": "/api/system-logs",
+    "route_prefix": "/api/logs",
     "permissions": [
       "admin"
     ],
@@ -411,7 +456,7 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -430,7 +475,7 @@
     "default_width": 900,
     "default_height": 600,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -441,7 +486,7 @@
     "icon": "Monitor",
     "category": "系统管理",
     "component_key": "apps/system-status/index.vue",
-    "route_prefix": "/api/system-status",
+    "route_prefix": "/api/system",
     "permissions": [
       "viewer",
       "editor",
@@ -451,7 +496,7 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -470,7 +515,7 @@
     "default_width": 900,
     "default_height": 600,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -481,7 +526,7 @@
     "icon": "Tools",
     "category": "系统管理",
     "component_key": "apps/maintenance-center/index.vue",
-    "route_prefix": "/api/ops-diagnostics",
+    "route_prefix": "",
     "permissions": [
       "admin"
     ],
@@ -489,7 +534,7 @@
     "default_width": 1000,
     "default_height": 700,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -515,7 +560,8 @@
     "min_width": 600,
     "min_height": 400,
     "module_version": "1.0.0",
-    "contract_version": "2.0"
+    "contract_version": "2.0",
+    "show_in_launcher": true
   },
   {
     "key": "notification-center",
@@ -533,7 +579,7 @@
     "default_width": 800,
     "default_height": 600,
     "singleton": true,
-    "show_in_launcher": true,
+    "show_in_launcher": false,
     "window_type": "normal",
     "module_version": "1.0.0",
     "contract_version": "2.0"
@@ -544,7 +590,7 @@
     "icon": "List",
     "category": "系统工具",
     "component_key": "apps/tasks/index.vue",
-    "route_prefix": "/api/my-tasks",
+    "route_prefix": "/api/tasks",
     "permissions": [
       "viewer",
       "editor",
@@ -558,153 +604,8 @@
     "show_in_sidebar": true,
     "window_type": "tool",
     "module_version": "1.0.0",
-    "contract_version": "2.0"
-  },
-  {
-    "key": "agent",
-    "name": "AI助手",
-    "icon": "ChatDotRound",
-    "category": "AI",
-    "component_key": "ai-assistant/index.vue",
-    "route_prefix": "/api/agent",
-    "permissions": [
-      "viewer",
-      "editor",
-      "admin"
-    ],
-    "sort_order": 40,
-    "default_width": 900,
-    "default_height": 700,
-    "singleton": true,
-    "show_on_desktop": true,
-    "show_in_tray": true,
-    "show_in_sidebar": true,
-    "window_type": "tool",
-    "module_version": "1.0.0",
-    "contract_version": "2.0"
-  },
-  {
-    "key": "ai-toolbox",
-    "name": "AI工具箱",
-    "icon": "MagicStick",
-    "category": "AI",
-    "component_key": "apps/ai-toolbox/index.vue",
-    "route_prefix": "/api/agent-toolbox",
-    "permissions": [
-      "editor",
-      "admin"
-    ],
-    "sort_order": 41,
-    "default_width": 900,
-    "default_height": 600,
-    "singleton": true,
-    "show_in_launcher": true,
-    "window_type": "normal",
-    "module_version": "1.0.0",
     "contract_version": "2.0",
-    "dependency_declaration": {
-      "modules": [
-        "agent"
-      ]
-    }
-  },
-  {
-    "key": "prompt-manager",
-    "name": "提示词管理",
-    "icon": "ChatLineSquare",
-    "category": "AI",
-    "component_key": "apps/prompt-manager/index.vue",
-    "route_prefix": "/api/prompt-management",
-    "permissions": [
-      "editor",
-      "admin"
-    ],
-    "sort_order": 42,
-    "default_width": 900,
-    "default_height": 600,
-    "singleton": true,
-    "show_in_launcher": true,
-    "window_type": "normal",
-    "module_version": "1.0.0",
-    "contract_version": "2.0"
-  },
-  {
-    "key": "knowledge",
-    "name": "知识库",
-    "icon": "Collection",
-    "category": "知识库",
-    "component_key": "apps/knowledge/index.vue",
-    "route_prefix": "/api/knowledge",
-    "permissions": [
-      "viewer",
-      "editor",
-      "admin"
-    ],
-    "sort_order": 50,
-    "default_width": 1100,
-    "default_height": 750,
-    "singleton": true,
-    "show_on_desktop": true,
-    "show_in_tray": true,
-    "show_in_sidebar": true,
-    "window_type": "tool",
-    "module_version": "1.0.0",
-    "contract_version": "2.0",
-    "dependency_declaration": {
-      "modules": [
-        "文件与Office"
-      ]
-    },
-    "event_handler_declaration": {
-      "events": [
-        "file.uploaded"
-      ]
-    }
-  },
-  {
-    "key": "knowledge-toolbox",
-    "name": "知识库工具箱",
-    "icon": "Tools",
-    "category": "知识库",
-    "component_key": "apps/knowledge-toolbox/index.vue",
-    "route_prefix": "/api/knowledge-toolbox",
-    "permissions": [
-      "editor",
-      "admin"
-    ],
-    "sort_order": 51,
-    "default_width": 900,
-    "default_height": 600,
-    "singleton": true,
-    "show_in_launcher": true,
-    "window_type": "normal",
-    "module_version": "1.0.0",
-    "contract_version": "2.0"
-  },
-  {
-    "key": "visual-extraction-console",
-    "name": "图片视觉抽取控制台",
-    "icon": "Picture",
-    "category": "知识库",
-    "component_key": "apps/visual-extraction-console/index.vue",
-    "route_prefix": "/api/image-vision",
-    "permissions": [
-      "editor",
-      "admin"
-    ],
-    "sort_order": 52,
-    "default_width": 1000,
-    "default_height": 700,
-    "singleton": true,
-    "show_in_launcher": true,
-    "window_type": "normal",
-    "module_version": "1.0.0",
-    "contract_version": "2.0",
-    "dependency_declaration": {
-      "modules": [
-        "knowledge"
-      ]
-    }
+    "show_in_launcher": false
   },
   {
     "key": "file-and-office",
@@ -712,7 +613,7 @@
     "icon": "Folder",
     "category": "系统工具",
     "component_key": "",
-    "route_prefix": "/api/office",
+    "route_prefix": "",
     "permissions": [
       "admin"
     ],
