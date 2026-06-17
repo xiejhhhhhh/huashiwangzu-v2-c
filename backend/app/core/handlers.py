@@ -1,7 +1,7 @@
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import FileResponse
@@ -12,7 +12,7 @@ from app.core.exceptions import AppException
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppException)
     async def app_exception_handler(request: Request, exc: AppException):
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=exc.status_code,
             content={
                 "success": False,
@@ -29,7 +29,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         # API 路径统一返回 JSON 契约
         if request.url.path.startswith("/api"):
-            return ORJSONResponse(
+            return JSONResponse(
                 status_code=exc.status_code,
                 content={
                     "success": False,
@@ -45,7 +45,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             if index.exists():
                 return FileResponse(str(index))
         # 其余情况返回统一 JSON 契约
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=exc.status_code,
             content={
                 "success": False,
@@ -62,7 +62,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         for err in exc.errors():
             field = ".".join(str(loc) for loc in err["loc"][1:]) if len(err["loc"]) > 1 else str(err["loc"][0])
             errors[field] = err["msg"]
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=422,
             content={
                 "success": False,
@@ -76,7 +76,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def unhandled_exception_handler(request: Request, exc: Exception):
         settings = get_settings()
         error_message = f"Internal server error: {str(exc)}" if settings.APP_DEBUG else "Internal server error"
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=500,
             content={
                 "success": False,

@@ -2,7 +2,6 @@ import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.responses import ORJSONResponse
 from sqlalchemy import text
 
 logging.basicConfig(
@@ -33,7 +32,6 @@ app = FastAPI(
     title="Huashi Wangzu V2 API",
     version="2.0.0",
     lifespan=lifespan,
-    default_response_class=ORJSONResponse,
 )
 
 # 暴露前端 dist 路径给异常处理器，用于 SPA 404 兜底
