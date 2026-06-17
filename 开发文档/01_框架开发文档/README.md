@@ -62,7 +62,7 @@ modules/    被框架加载的业务模块
 - 当前后端健康检查已对数据库做实际连通性探测，`/api/health` 会返回 `database: ok/unreachable`。
 - 当前 AI 网关对临时性 429/502/503/504 与连接超时错误使用指数退避重试，最终失败仍会明确返回错误，不会伪成功。
 - 当前 `modules/_template/` 已创建，含标准化 sandbox 模板和 runtime 中间层，新模块复制即用。`scripts/scan-modules.js` 跳过 `_` 和 `.` 开头目录。
-- 当前后端平台层已清理模块业务代码：`services/agent/` 和 `services/knowledge/` 已删除，对应 18 个 router 已移除。模型网关保留为框架能力，迁至 `backend/app/gateway/`。
+- 当前后端平台层已清理模块业务代码：`services/agent/`、`services/knowledge/`、`models/knowledge/`（16 个模型）、`schemas/knowledge.py` 及对应 18 个 router 已删除。模型网关保留为框架能力，迁至 `backend/app/gateway/`。`system.py` 中知识库端点已移除，`system_status_service` 和 `log_service` 中的模块引用已清理。
 - 当前 `registry.py` 中 `PLATFORM_ROUTER_MODULES` 精简为 21 个纯框架 router，不再包含 AI 助手、知识库、图片视觉等模块业务路由。
 
 ## 已修复的 TypeScript 文件
