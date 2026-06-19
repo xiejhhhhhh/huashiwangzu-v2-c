@@ -35,3 +35,6 @@ backend/db/*.sqlite3
 backend/_废弃/
 backend/脚本/
 backend/data/uploads/
+
+# Terminal tools workspace
+backend/data/workspaces/

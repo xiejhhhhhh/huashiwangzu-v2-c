@@ -115,6 +115,7 @@ Runtime SDK 的 `platform` 对象含 9 个 namespace：`auth`、`files`、`offic
 | C19 | 模块公开接口：HTTP API + runtime SDK（9 namespace）+ manifest |
 | C20 | 框架 = 公共能力层（商场模型）：框架只提供横向公共能力，数量固定稳定，**不随模块数量膨胀**；模块的业务表与业务接口全在模块自己里，加模块不改框架。这是兼容性的根（类比 Windows：系统接口几十年不变，软件自带业务） |
 | C21 | 跨模块调用必须 100% 经框架统一通路，禁止互相 import / 直接读对方表。前端：runtime SDK 已暴露 `platform.modules.call/capabilities`（底层经 `desktop-app-handle-v2` 的 `sendCommand`/`requestData` + `registerActionHandler` + 权限/审计/超时）；后端：模块能力注册表 `module_registry.py` + `/api/modules/call` + `/api/modules/capabilities`，运行时以 `register_capability` 注册为准，manifest `public_actions` 当前作为声明元数据同步 |
+| C22 | **Agent 终端工具安全边界（已决策，新会话勿再提"要不要 Docker 强隔离"——这是权衡后的明确选择）**：① **本地执行，不用 Docker**（Docker 重复装环境、占资源、拉起慢，不划算）；② **行为边界**=命令子进程 cwd 锁死用户工作区 `data/workspaces/{user_id}/` + 文件路径约束在工作区内（越界绝对路径/`../`/`~` 拒绝）+ 危险命令拦截（`sudo`/`rm -rf /`/访问工作区外）+ 执行超时 + 输出大小上限；③ **联网允许**（局域网内部场景，不限死）；④ **两套世界分离**=桌面/文件感知走 `desktop-tools`（框架文件系统，**非宿主机桌面**）、命令执行走 `terminal-tools`（工作区，**非宿主机其他路径**），CLI 绝不指向宿主机真实桌面/文件；⑤ **产物**=工作区是草稿（不上桌面），成果由 Agent 显式 `publish` 进框架文件系统才上桌面，未交付的临时文件按会话结束/超时/超大小自动清。隔离强度 = 应用层约束 + 局域网信任同事（够用），**非 Docker 级强隔离系明确取舍，不是遗漏** |
 
 ## 验证命令
 

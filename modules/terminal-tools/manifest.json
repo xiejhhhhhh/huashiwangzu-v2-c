@@ -1,0 +1,80 @@
+{
+  "key": "terminal-tools",
+  "name": "终端工具",
+  "icon": "Monitor",
+  "icon_asset": "",
+  "category": "tools",
+  "component_key": "index.vue",
+  "route_prefix": "/api/terminal-tools",
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 600,
+  "default_width": 900,
+  "default_height": 700,
+  "min_width": 640,
+  "min_height": 480,
+  "singleton": true,
+  "show_in_launcher": false,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "background-service",
+  "allow_multiple": false,
+  "supported_formats": [],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  },
+  "public_actions": [
+    {
+      "action": "exec",
+      "description": "在用户工作区执行 shell 命令，返回 stdout/stderr/退出码。受路径约束、危险命令拦截、超时和输出限制。",
+      "parameters": {
+        "command": "要执行的 shell 命令",
+        "timeout": "超时秒数（默认 60s）"
+      }
+    },
+    {
+      "action": "write_file",
+      "description": "写文件到用户工作区，路径自动约束在工作区内。",
+      "parameters": {
+        "path": "工作区内的相对路径",
+        "content": "文件内容字符串"
+      }
+    },
+    {
+      "action": "read_file",
+      "description": "读用户工作区内的文件内容。",
+      "parameters": {
+        "path": "工作区内的相对路径"
+      }
+    },
+    {
+      "action": "list_workspace",
+      "description": "列出用户工作区内的文件和目录。",
+      "parameters": {
+        "path": "工作区内的相对路径（可选，默认根目录）"
+      }
+    },
+    {
+      "action": "publish",
+      "description": "将工作区文件显式交付到框架文件系统（桌面可见），享受框架内容去重。",
+      "parameters": {
+        "path": "工作区内的相对路径",
+        "filename": "交付后的显示名称（可选）",
+        "folder_id": "目标文件夹 ID（可选，默认桌面根目录）"
+      }
+    },
+    {
+      "action": "import",
+      "description": "将框架文件系统的文件拷入工作区供 CLI 处理，owner 校验。",
+      "parameters": {
+        "file_id": "框架文件 ID",
+        "target_path": "工作区内的目标相对路径（可选，默认用原文件名）"
+      }
+    }
+  ]
+}
