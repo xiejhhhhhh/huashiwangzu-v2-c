@@ -56,6 +56,9 @@ backend/    Desktop shell backend / platform service layer
 19. **模块开发任务禁止修改框架（调用可以、修改不行）。** 做某模块任务时，所有改动只许落在 `modules/{该模块}/` 内。可**调用**框架公开能力（数据库连接、统一响应、模型网关、runtime SDK、跨模块注册表），但禁止**修改** `backend/app/`、`frontend/src/` 或其他模块。模块需要框架新增公共能力时，必须作为独立「框架任务」单独提出。**验收硬守卫**：每个模块任务必跑 `git diff --name-only`，凡改动落在 `modules/{当前模块}/` 之外，直接判不通过。
 20. **后端模块"独立开发"= 独立运行 + 只碰自己的表 + 不碰其他模块，不是"代码零依赖框架"。** 后端模块用框架的数据库连接、统一响应、模型网关是正常且必须的（公共能力），**直接调真的即可**，不得另造一套。数据与外部依赖：全新项目可直接连生产库、调真网关（省事，边界由"只碰 `{key}_*` 表"限制死）；如需隔离测试，也可用独立库/ mock，但不强制。
 21. **Agent 终端/CLI 工具的安全边界已定，勿再质疑"要不要 Docker 强隔离"（这是权衡后的明确取舍，不是遗漏）。** 终端工具**本地执行（不用 Docker）**；行为边界：命令 cwd 锁死用户工作区 `data/workspaces/{user_id}/`、文件路径约束工作区内、危险命令（`sudo`/`rm -rf /`/越界）拦截、执行超时 + 输出上限、联网允许（局域网）。**两套世界分离**：桌面/文件感知走 `desktop-tools`（框架文件系统，**非宿主机桌面**）、命令执行走 `terminal-tools`（工作区，**非宿主机其他路径**），CLI 绝不指向宿主机真实桌面/文件。产物：工作区是草稿，成果显式 `publish` 才上桌面，临时文件自动清。隔离强度 = 应用层约束 + 局域网信任同事（够用）。详见 `开发文档/01_框架开发文档/README.md` C22。
+22. **多 worker 下共享状态必须持久化，纯内存不跨 worker。** 后端跑 `--workers 3`，进程内内存（锁、缓存、计数器、限流、去重表）**各 worker 各一份、互不可见**。任何需要跨请求/跨 worker 一致的状态，必须落地到文件（原子写：temp+rename）或数据库；后台任务要防多 worker 重复消费。codemap 文件锁存 `locks.json` 即此故。
+23. **模块读框架文件必须走 `check_file_access`，禁止裸 `db.get(File)` 后直接读盘。** 任何按 `file_id` 取文件内容的端点（parser/解析/预览/发布），都要先用框架 `check_file_access(db, file_id, user_id)` 校验 owner/share，再读盘——否则任何登录用户凭 id 越权读他人文件（曾是 P0）。owner 从 caller（`user:{id}`）解析，不得写死。
+24. **改/查代码前先用 codemap 查影响面，别埋头逐文件翻——省 token、更准。** 后端起着时：`PORT=$(cat backend/logs/.backend.port 2>/dev/null||echo 33000)`；`POST /api/codemap/impact {"path":"<要改的文件>"}` 拿"波及哪些文件/模块/能力"，`POST /api/codemap/get-file {"path":...}` 拿直接依赖。**看返回的 `confidence`(0-100，解析覆盖率) 和 `stale`(索引是否最新) 判断可信度**：confidence 低或 `stale:true` 时以实读为准。**命中关联文件后，改之前必实读该文件做验证，不盲信 codemap 结论**。codemap 不可用（health 非 200）才回退逐文件查，别卡住。这是默认工作流，能用就用。
 
 ## TypeScript Rules
 
