@@ -67,10 +67,13 @@ async def compute_file_relations(
     # 获取新文件的实体集合
     new_entities = await _get_document_entity_ids(db, document_id)
 
-    # 获取已有关联边（幂等：跳过已存在的边）
+    # 获取已有关联边（幂等：正反两向都加载，跳过已存在的对）
     r = await db.execute(
         select(KbFileRelation.source_document_id, KbFileRelation.target_document_id)
-        .where(KbFileRelation.source_document_id == document_id)
+        .where(
+            (KbFileRelation.source_document_id == document_id)
+            | (KbFileRelation.target_document_id == document_id)
+        )
     )
     existing_edges = {(row[0], row[1]) for row in r.all()}
 
@@ -88,10 +91,10 @@ async def compute_file_relations(
         if not existing.profile_embedding:
             continue
 
-        # 幂等：跳过已有边
+        # 幂等：双向边成对创建,正向已存在即跳过整对
         fwd_edge = (document_id, existing.document_id)
         rev_edge = (existing.document_id, document_id)
-        if fwd_edge in existing_edges and rev_edge in existing_edges:
+        if fwd_edge in existing_edges or rev_edge in existing_edges:
             continue
 
         # 向量相似度

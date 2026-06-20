@@ -34,6 +34,7 @@ from .fusion_service import (
 from .init_db import _run_startup_init
 from .profile_service import get_document_profile
 from .relation_service import get_file_relations, get_relation_graph
+from .progress_service import get_document_progress, list_documents_progress
 from . import pipeline_service  # noqa: F401 注册 kb_pipeline handler
 
 logger = logging.getLogger("v2.knowledge")
@@ -85,6 +86,10 @@ class ProfileRequest(BaseModel):
 
 class RelationComputeRequest(BaseModel):
     document_id: int
+
+
+class ProgressBatchRequest(BaseModel):
+    document_ids: list[int] = Field(default_factory=list)
 
 
 @router.get("/health")
@@ -245,6 +250,34 @@ async def api_page_fusion_detail(
     return ApiResponse(data=result)
 
 
+@router.get("/documents/{document_id}/fusions")
+async def api_list_fusions(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    """列出文档所有页的融合内容(第4层,阅读视图用)。"""
+    from .models import KbPageFusion
+    await get_document(db, document_id, user.id)
+    r = await db.execute(
+        select(KbPageFusion)
+        .where(KbPageFusion.document_id == document_id)
+        .order_by(KbPageFusion.page)
+    )
+    items = [
+        {
+            "page": pf.page,
+            "page_title": pf.page_title,
+            "fused_text": pf.fused_text,
+            "page_summary": pf.page_summary,
+            "confidence": pf.confidence,
+            "conflicts": pf.conflicts_json or [],
+        }
+        for pf in r.scalars().all()
+    ]
+    return ApiResponse(data={"items": items})
+
+
 @router.post("/documents/profile")
 async def api_generate_profile(
     payload: ProfileRequest,
@@ -349,6 +382,28 @@ async def api_full_pipeline(
     db.add(task)
     await db.commit()
     return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
+
+
+@router.get("/documents/{document_id}/progress")
+async def api_document_progress(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    """单文档细颗粒分析进度(前端轮询/重开握手用)。"""
+    result = await get_document_progress(db, document_id, user.id)
+    return ApiResponse(data=result)
+
+
+@router.post("/documents/progress-batch")
+async def api_progress_batch(
+    payload: ProgressBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    """批量查进度。前端打开/重开时一次握手所有处理中文档,实时同步后端真实进度。"""
+    result = await list_documents_progress(db, user.id, payload.document_ids)
+    return ApiResponse(data=result)
 
 
 @router.post("/search")

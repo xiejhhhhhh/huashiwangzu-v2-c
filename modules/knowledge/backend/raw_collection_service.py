@@ -175,15 +175,33 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
     doc.total_pages = total_pages
     await db.commit()
 
-    # 清空旧原始数据（重新采集）
-    from sqlalchemy import delete as sa_delete
-    await db.execute(sa_delete(KbRawData).where(KbRawData.document_id == doc_id))
-    await db.flush()
+    # 已完成页(三轮齐全)跳过 → 幂等可重入,中断重跑不重采
+    dr = await db.execute(
+        select(KbRawData.page).where(KbRawData.document_id == doc_id)
+    )
+    page_round_count: dict[int, int] = {}
+    for (pg,) in dr.all():
+        page_round_count[pg] = page_round_count.get(pg, 0) + 1
+    expected_rounds = 3 if is_pdf else 2
+    done_pages = {pg for pg, cnt in page_round_count.items() if cnt >= expected_rounds}
 
     all_results = []
 
-    # 逐页并行三轮
+    # 逐页并行三轮(逐页 commit:进度可实时查 + 中断只丢当前页)
     for page in range(1, total_pages + 1):
+        if page in done_pages:
+            logger.info("Raw collection page=%d already done, skip", page)
+            continue
+
+        # 重采该页前先清掉它的残缺旧记录
+        from sqlalchemy import delete as sa_delete
+        await db.execute(
+            sa_delete(KbRawData).where(
+                KbRawData.document_id == doc_id, KbRawData.page == page
+            )
+        )
+        await db.flush()
+
         tasks = []
 
         # 第1轮：文本提取（PDF 走 parser，图片/其他走 describe）
@@ -217,11 +235,13 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
             else:
                 all_results.append(r)
 
+        # 逐页 commit:该页三轮落库,进度立即可查
+        await db.commit()
+        logger.info("Raw collection page=%d/%d committed", page, total_pages)
+
         # 每页间短暂休息，避免打爆 API
         if page < total_pages:
             await asyncio.sleep(0.3)
-
-    await db.commit()
 
     # 更新状态
     await db.refresh(doc)

@@ -10,6 +10,7 @@ export const componentKeyMap: Record<string, () => Promise<{ default: Component 
   'excel-engine/index.vue': () => import('@modules/excel-engine/frontend/index.vue'),
   'hello-world/index.vue': () => import('@modules/hello-world/frontend/index.vue'),
   'image-vision/index.vue': () => import('@modules/image-vision/frontend/index.vue'),
+  'knowledge/index.vue': () => import('@modules/knowledge/frontend/index.vue'),
   'pdf-parser/index.vue': () => import('@modules/pdf-parser/frontend/index.vue'),
   'pptx-parser/index.vue': () => import('@modules/pptx-parser/frontend/index.vue'),
   'terminal-tools/index.vue': () => import('@modules/terminal-tools/frontend/index.vue'),
