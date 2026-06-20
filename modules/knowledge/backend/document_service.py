@@ -1,4 +1,5 @@
 """知识库文档管理服务：资料登记、解析入库、页级融合、索引状态。"""
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -75,6 +76,26 @@ async def register_document(
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
+
+    # ── 自动入队 kb_pipeline 后台任务（上传即开始分析） ──
+    from app.models.system import SystemTaskQueue
+    task = SystemTaskQueue(
+        task_type="kb_pipeline",
+        module="knowledge",
+        parameters=json.dumps({
+            "document_id": doc.id,
+            "user_id": owner_id,
+            "force_raw": False,
+            "force_fusion": False,
+        }, ensure_ascii=False),
+        priority=5,
+        status="pending",
+        creator_id=owner_id,
+    )
+    db.add(task)
+    await db.commit()
+    logger.info("Auto-enqueued kb_pipeline for document_id=%d (file_id=%d)", doc.id, file_id)
+
     return document_payload(doc)
 
 

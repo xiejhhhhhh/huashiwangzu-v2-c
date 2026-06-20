@@ -380,7 +380,70 @@ async function loadFileTree() {
       if (rootFiles.length) fileTree.value = [...tree, ...rootFiles]
     } catch { /* ignore */ }
     await handshakeAll()
+
+    // ── 自动登记未入库的已支持格式文件（上传即分析零点击） ──
+    await autoRegisterUnregistered()
   } catch (e) { console.error('[kb] loadFileTree:', e) }
+}
+
+/** 知识库支持的格式集合 */
+const KB_SUPPORTED_EXTS = new Set([
+  'pdf', 'docx', 'pptx', 'xlsx', 'csv', 'txt', 'md',
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg',
+])
+
+/**
+ * 遍历文件树,自动登记支持格式但尚未入库的文件。
+ * 分批串行(Promise.allSettled),每批最多3个,避免塞爆任务队列。
+ */
+async function autoRegisterUnregistered() {
+  const toRegister: FileTreeNode[] = []
+  function collect(nodes: FileTreeNode[]) {
+    for (const n of nodes) {
+      if (!n.is_folder) {
+        const ext = ((n._ext || n.name.split('.').pop() || '')).toLowerCase()
+        if (KB_SUPPORTED_EXTS.has(ext) && !kbDocMap.value[n.id]) {
+          toRegister.push(n)
+        }
+      }
+      if (n.children.length) collect(n.children)
+    }
+  }
+  collect(fileTree.value)
+
+  if (!toRegister.length) return
+  console.log(`[kb] Auto-registering ${toRegister.length} supported files...`)
+
+  // 分批,每批最多3个
+  const BATCH_SIZE = 3
+  for (let i = 0; i < toRegister.length; i += BATCH_SIZE) {
+    const batch = toRegister.slice(i, i + BATCH_SIZE)
+    const results = await Promise.allSettled(
+      batch.map(n =>
+        apiPost<KnowledgeDocument>('/knowledge/documents', { file_id: n.id })
+          .then(doc => ({ node: n, doc }))
+      )
+    )
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        const { node, doc } = r.value
+        node.kb_doc_id = doc.id
+        node.kb_status = 'pending'
+        kbDocMap.value[node.id] = doc
+        documents.value.push(doc)
+        console.log(`[kb] Registered: ${node.name} → doc_id=${doc.id}`)
+      } else {
+        console.warn('[kb] Register failed:', r.reason)
+      }
+    }
+    // 每批之间等一小会儿,别打太快
+    if (i + BATCH_SIZE < toRegister.length) {
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
+
+  // 登记完握手一次进度
+  await handshakeAll()
 }
 
 async function openDocByNode(node: FileTreeNode) {
