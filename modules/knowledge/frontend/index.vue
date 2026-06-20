@@ -529,8 +529,22 @@ async function loadResult(docId: number) {
 
 async function startAnalyze() {
   if (!active.value) return
+  const isRedo = progress.value?.overall_status === 'done'
+  let forceRaw = false, forceFusion = false
+  if (isRedo) {
+    const choice = window.confirm(
+      '重新分析将重跑 LLM 分析层（画像/图谱/关联）。\n\n' +
+      '是否同时重跑固化数据层（原始采集 + 融合）？\n\n' +
+      '点击「确定」全部重跑，「取消」仅重跑 LLM 分析层。'
+    )
+    forceRaw = choice; forceFusion = choice
+  }
   try {
-    await startPipeline(active.value.id)
+    await apiPost('/knowledge/documents/full-pipeline', {
+      document_id: active.value.id,
+      force_raw: forceRaw,
+      force_fusion: forceFusion,
+    })
     progress.value = await getProgress(active.value.id)
     ensurePolling()
   } catch (error) { window.alert((error as Error).message) }

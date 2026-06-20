@@ -82,6 +82,8 @@ class FuseRequest(BaseModel):
 
 class ProfileRequest(BaseModel):
     document_id: int
+    force_raw: bool = False
+    force_fusion: bool = False
 
 
 class RelationComputeRequest(BaseModel):
@@ -409,7 +411,12 @@ async def api_full_pipeline(
     task = SystemTaskQueue(
         task_type="kb_pipeline",
         module="knowledge",
-        parameters=_json.dumps({"document_id": payload.document_id, "user_id": user.id}, ensure_ascii=False),
+        parameters=_json.dumps({
+            "document_id": payload.document_id,
+            "user_id": user.id,
+            "force_raw": payload.force_raw,
+            "force_fusion": payload.force_fusion,
+        }, ensure_ascii=False),
         priority=5,
         status="pending",
         creator_id=user.id,

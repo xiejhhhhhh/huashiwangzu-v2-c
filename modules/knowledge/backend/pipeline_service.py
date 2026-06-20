@@ -26,6 +26,8 @@ async def _run_pipeline(
     owner_id: int,
     file_id: int,
     user_id: int,
+    force_raw: bool = False,
+    force_fusion: bool = False,
 ) -> dict:
     """按顺序执行全链路，每步完成后 commit 状态。
 
@@ -36,7 +38,7 @@ async def _run_pipeline(
     # 第1步：原始采集
     logger.info("Pipeline step 1/5: raw collection doc_id=%d", document_id)
     if doc := (await db.execute(select(KbDocument).where(KbDocument.id == document_id))).scalar_one_or_none():
-        if doc.raw_status != "done":
+        if doc.raw_status != "done" or force_raw:
             try:
                 steps["raw"] = await collect_raw_data(db, document_id, owner_id, file_id, user_id)
                 await db.commit()
@@ -51,7 +53,7 @@ async def _run_pipeline(
 
     # 第2步：融合（固化数据，done 则跳过）
     logger.info("Pipeline step 2/5: fusion doc_id=%d", document_id)
-    if doc.fusion_status != "done":
+    if doc.fusion_status != "done" or force_fusion:
         try:
             steps["fusion"] = await fuse_all_pages(db, document_id, owner_id)
             await db.commit()
@@ -111,7 +113,11 @@ async def _pipeline_handler(params: dict) -> dict:
             return {"error": f"Document {document_id} not found", "status": "failed"}
 
         try:
-            result = await _run_pipeline(db, document_id, doc.owner_id, doc.file_id, user_id)
+            result = await _run_pipeline(
+                db, document_id, doc.owner_id, doc.file_id, user_id,
+                force_raw=params.get("force_raw", False),
+                force_fusion=params.get("force_fusion", False),
+            )
             return {"status": "done", **result}
         except Exception as e:
             logger.error("Pipeline handler failed for document_id=%d: %s", document_id, e)
