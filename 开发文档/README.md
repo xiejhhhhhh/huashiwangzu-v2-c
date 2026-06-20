@@ -18,7 +18,7 @@ modules/    业务模块（sandbox 独立开发 → manifest 接入）
 | 后端 | FastAPI + SQLAlchemy async + Alembic，22 个平台 router，42+16 个测试通过 |
 | 数据库 | 21 张 `framework_*` 表，干净基线，历史污染已清除 |
 | 文件系统 | **底座已夯实**：CRUD、上传下载、去重、分享、回收站、批量、面包屑、审计日志 |
-| 模块 | 已接入 11 个：agent、codemap、desktop-tools、terminal-tools、excel-engine、6 个格式解析（pdf/docx/pptx/xlsx/text/image-vision）、hello-world（另含模板 1 个 `_template`）；知识库待迁 |
+| 模块 | 已接入 12 个：agent、codemap、desktop-tools、terminal-tools、excel-engine、6 个格式解析（pdf/docx/pptx/xlsx/text/image-vision）、hello-world（另含模板 1 个 `_template`）；知识库待迁 |
 | 文档 | `01_框架开发文档/` `02_底层开发文档/` `03_模块开发文档/`；历史里程碑见 `变更历史.md` |
 
 ## 阅读顺序

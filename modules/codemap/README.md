@@ -27,7 +27,7 @@ modules/codemap/
     file_lock.py         # 跨 worker 文件持久化锁
   data/                  # 持久化数据目录（已 .gitignore）
   tests/
-    test_codemap.py      # 24 个单元测试
+    test_codemap.py      # 41 个单元测试
 ```
 
 ## API 端点

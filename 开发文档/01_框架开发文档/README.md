@@ -20,7 +20,7 @@ modules/    被框架加载的业务模块（物理隔离、sandbox 独立开发
 | 数据库 | 21 张 `framework_*` 表，干净基线迁移 `v2_clean_framework_baseline` |
 | 模型网关 | `backend/app/gateway/`，DeepSeek/OpenCode/OpenAI 兼容，指数退避重试 |
 | 模块模板 | `modules/_template/`，含 sandbox 开发环境 + runtime SDK 壳 |
-| 业务模块 | 已接入 11 个：agent（AI助手，含三层提示词/桌面感知/终端工具）、codemap（代码地图）、desktop-tools、terminal-tools、excel-engine、6 个格式解析（pdf/docx/pptx/xlsx/text/image-vision）、hello-world 样板（另含模板 1 个 `_template`）。知识库待迁 |
+| 业务模块 | 已接入 12 个：agent（AI助手，含三层提示词/桌面感知/终端工具）、codemap（代码地图）、desktop-tools、terminal-tools、excel-engine、6 个格式解析（pdf/docx/pptx/xlsx/text/image-vision）、hello-world 样板（另含模板 1 个 `_template`）。知识库待迁 |
 | 前端构建 | `vue-tsc -b` 0 错误，Element Plus 最大 chunk ~475 kB |
 | 后端测试 | pytest 72 通过（G9–G12 修复后）|
 

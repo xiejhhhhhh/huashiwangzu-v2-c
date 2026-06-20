@@ -55,16 +55,16 @@ The Agent's `tool_discovery.build_tools(role)` calls `list_capabilities(role)` w
 cd modules/desktop-tools && python3 sandbox/test_module.py
 
 # Check capabilities are registered (requires running backend)
-curl http://localhost:30004/api/modules/capabilities | jq
+curl http://127.0.0.1:33000/api/modules/capabilities | jq
 
 # Call a capability directly
-curl -X POST http://localhost:30004/api/modules/call \
+curl -X POST http://127.0.0.1:33000/api/modules/call \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"target_module":"desktop-tools","action":"list_files","parameters":{"folder_id":0}}'
 
 # Read a PDF file via Agent chain
-curl -X POST http://localhost:30004/api/modules/call \
+curl -X POST http://127.0.0.1:33000/api/modules/call \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"target_module":"desktop-tools","action":"read_file","parameters":{"file_id":42}}'
