@@ -335,28 +335,46 @@ function renderGraph() {
   for (const e of edges) {
     const s = nmap.get(e.source), t = nmap.get(e.target)
     if (!s || !t) continue
-    const alpha = 0.12 + (e.similarity_score / maxSim) * 0.3
+    const sim = e.similarity_score / maxSim
+    const alpha = 0.08 + sim * 0.3
+    const lw = 1 + sim * 4
+    // 主线
     ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y)
     ctx.strokeStyle = `rgba(35,149,188,${alpha})`
-    ctx.lineWidth = 1 + (e.similarity_score / maxSim) * 3
-    ctx.stroke()
+    ctx.lineWidth = lw; ctx.stroke()
+    // 相关度标签（中点）
+    if (sim > 0.5) {
+      const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2
+      ctx.fillStyle = '#2395bc'; ctx.font = '10px 苹方,"微软雅黑",sans-serif'
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+      ctx.fillText(Math.round(sim * 100) + '%', mx, my - 4)
+    }
   }
 
-  // 节点
+  // 节点 — 星球风格
   for (const n of layout) {
     if (!isFinite(n.x) || !isFinite(n.y)) continue
-    // 阴影
-    ctx.beginPath(); ctx.arc(n.x + 1, n.y + 2, 18, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(0,0,0,0.08)'; ctx.fill()
-    // 主体
-    ctx.beginPath(); ctx.arc(n.x, n.y, 18, 0, Math.PI * 2)
-    ctx.fillStyle = '#2395bc'; ctx.fill()
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke()
+    const R = 20
+    // 光晕
+    const glow = ctx.createRadialGradient(n.x, n.y, R * 0.4, n.x, n.y, R * 1.6)
+    glow.addColorStop(0, 'rgba(35,149,188,0.25)')
+    glow.addColorStop(1, 'rgba(35,149,188,0)')
+    ctx.beginPath(); ctx.arc(n.x, n.y, R * 1.6, 0, Math.PI * 2)
+    ctx.fillStyle = glow; ctx.fill()
+    // 球体
+    const sphere = ctx.createRadialGradient(n.x - R * 0.3, n.y - R * 0.35, R * 0.05, n.x, n.y, R)
+    sphere.addColorStop(0, '#ffffff')
+    sphere.addColorStop(0.25, '#a3dfef')
+    sphere.addColorStop(0.55, '#2395bc')
+    sphere.addColorStop(1, '#155d75')
+    ctx.beginPath(); ctx.arc(n.x, n.y, R, 0, Math.PI * 2)
+    ctx.fillStyle = sphere; ctx.fill()
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5; ctx.stroke()
     // 标签
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px 苹方,"微软雅黑",sans-serif'
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-    const txt = n.label.length > 10 ? n.label.slice(0, 10) + '…' : n.label
-    ctx.fillText(txt, n.x, n.y)
+    ctx.fillStyle = '#1f2a37'; ctx.font = '12px 苹方,"微软雅黑",sans-serif'
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+    const txt = n.label.length > 12 ? n.label.slice(0, 12) + '…' : n.label
+    ctx.fillText(txt, n.x, n.y + R + 6)
   }
 }
 
