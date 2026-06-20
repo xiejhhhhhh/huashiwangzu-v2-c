@@ -204,15 +204,13 @@ function expandTimeline(msgs: MsgItem[]): MsgItem[] {
       const e = entry as Record<string, unknown>
       const entryType = e.type as string
       if (entryType === 'thinking') {
-        const c = (e.content as string) || ''
-        if (!c.trim()) continue
-        out.push({ id: 0, role: '', content: c, eventType: 'thinking', collapsed: true, running: false } as MsgItem)
+        applyThinkingEvent((e.content as string) || '', out, { isRestore: true })
         hasExpanded = true
       } else if (entryType === 'tool_call') {
-        out.push({ id: 0, role: '', content: '', eventType: 'tool_call', toolName: (e.name as string) || 'unknown' } as MsgItem)
+        applyToolCallEvent((e.name as string) || 'unknown', out)
         hasExpanded = true
       } else if (entryType === 'tool_result') {
-        out.push({ id: 0, role: '', content: '', eventType: 'tool_result', toolName: (e.name as string) || 'unknown', toolResult: e.result } as MsgItem)
+        applyToolResultEvent((e.name as string) || 'unknown', e.result, out)
       } else if (entryType === 'text') {
         textBuf += (e.content as string) || ''
       }
@@ -244,6 +242,61 @@ function normalizeThinking(text: string): string {
   // (critical for Chinese where tokens can be single characters), then
   // collapse accidental multi-space runs.
   return text.replace(/[\n\r]+/g, '').replace(/[ \t]{2,}/g, ' ').trim()
+}
+
+// ── 共享事件处理器（流式 + 恢复 共用，防两条路径逻辑漂移） ──
+
+/** 处理 thinking 事件：合并到上一张卡，或新建。isRestore 控制初始折叠。 */
+function applyThinkingEvent(content: string, messages: MsgItem[], opts?: { isRestore?: boolean }) {
+  const c = normalizeThinking(content)
+  if (!c) return
+  const last = messages[messages.length - 1]
+  if (last && last.eventType === 'thinking') {
+    last.content += c
+  } else {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].eventType === 'thinking') {
+        messages[i] = { ...messages[i], collapsed: true, running: false }
+        break
+      }
+    }
+    const isRestore = opts?.isRestore ?? false
+    messages.push({
+      id: 0, role: '', content: c,
+      eventType: 'thinking',
+      collapsed: isRestore,
+      running: !isRestore,
+    } as MsgItem)
+  }
+}
+
+/** 处理 tool_call 事件：新建工具调用卡片 */
+function applyToolCallEvent(name: string, messages: MsgItem[]) {
+  messages.push({
+    id: 0, role: '', content: '',
+    eventType: 'tool_call',
+    toolName: name || 'unknown',
+  } as MsgItem)
+}
+
+/** 处理 tool_result 事件：合并到同名 tool_call 卡片，找不到则独立 */
+function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]) {
+  let merged = false
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].eventType === 'tool_call' && messages[i].toolName === name) {
+      messages[i] = { ...messages[i], eventType: 'tool_result', toolResult: result }
+      merged = true
+      break
+    }
+  }
+  if (!merged) {
+    messages.push({
+      id: 0, role: '', content: '',
+      eventType: 'tool_result',
+      toolName: name || 'unknown',
+      toolResult: result,
+    } as MsgItem)
+  }
 }
 
 	let abortController: AbortController | null = null
@@ -352,37 +405,15 @@ function normalizeThinking(text: string): string {
 	          reader.cancel().catch(() => {})
 	          break
 	        }
-	        else if (evt.type === 'thinking') {
-	          const chunk: string = normalizeThinking(evt.content || '')
-	          if (!chunk) continue
-	          const last = messages.value[messages.value.length - 1]
-	          if (last && last.eventType === 'thinking') {
-	            last.content += chunk
-	          } else {
-	            for (let i = messages.value.length - 1; i >= 0; i--) {
-	              if (messages.value[i].eventType === 'thinking') {
-	                messages.value[i] = { ...messages.value[i], collapsed: true, running: false }
-	                break
-	              }
-	            }
-	            messages.value.push({ id: 0, role: '', content: chunk, eventType: 'thinking', collapsed: false, running: true })
-	          }
-	        }
-	        else if (evt.type === 'tool_call') { messages.value.push({ id: 0, role: '', content: '', eventType: 'tool_call', toolName: evt.name }) }
-	        else if (evt.type === 'tool_result') {
-	          const msgs = messages.value
-	          let merged = false
-	          for (let i = msgs.length - 1; i >= 0; i--) {
-	            if (msgs[i].eventType === 'tool_call' && msgs[i].toolName === evt.name) {
-	              msgs[i] = { ...msgs[i], eventType: 'tool_result', toolResult: evt.result }
-	              merged = true
-	              break
-	            }
-	          }
-	          if (!merged) {
-	            msgs.push({ id: 0, role: '', content: '', eventType: 'tool_result', toolName: evt.name, toolResult: evt.result })
-	          }
-	        }
+		        else if (evt.type === 'thinking') {
+		          applyThinkingEvent(evt.content || '', messages.value, { isRestore: false })
+		        }
+		        else if (evt.type === 'tool_call') {
+		          applyToolCallEvent(evt.name || 'unknown', messages.value)
+		        }
+		        else if (evt.type === 'tool_result') {
+		          applyToolResultEvent(evt.name || 'unknown', evt.result, messages.value)
+		        }
 	        else if (evt.type === 'token') { streamingText.value += evt.content || '' }
 	        else if (evt.type === 'error') { streaming.value = false; sending.value = false; error.value = evt.content || '流式错误'; finished = true; reader.cancel().catch(() => {}); break }
 	        scrollToBottom()
