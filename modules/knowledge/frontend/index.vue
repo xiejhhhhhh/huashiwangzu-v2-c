@@ -8,6 +8,10 @@
 
       <input v-model="keyword" class="search-mini" placeholder="筛选文件…" />
 
+      <div v-if="runningCount > 0" class="running-hint" @click="jumpToFirstRunning">
+        ⚙ {{ runningCount }} 个文件分析中…
+      </div>
+
       <div class="tree-wrap">
         <div v-if="!fileTree.length" class="empty-tip">加载中…</div>
         <button
@@ -182,6 +186,33 @@ const folderFiles = ref<Record<number, FileTreeNode[]>>({})  // folder_id → �
 const kbDocMap = ref<Record<number, KnowledgeDocument>>({})
 const liveProgressMap = ref<Record<number, DocumentProgress>>({})
 
+// ── 树节点状态/百分比实时派生（从 liveProgressMap 现查，不存静态快照） ──
+function getNodeLiveStatus(node: FileTreeNode): string | undefined {
+  if (node.is_folder || !node.kb_doc_id) return undefined
+  const lp = liveProgressMap.value[node.kb_doc_id]
+  if (lp) {
+    if (lp.overall_status === 'running') return 'running'
+    if (lp.overall_status === 'done') return 'done'
+    if (lp.overall_status === 'failed') return 'failed'
+    return 'pending'
+  }
+  // 兜底：liveProgressMap 无记录时用 doc 粗状态字段
+  const doc = kbDocMap.value[node.id]
+  if (!doc) return undefined
+  const statuses = [doc.fusion_status, doc.raw_status, doc.parse_status].filter(Boolean) as string[]
+  if (statuses.includes('failed')) return 'failed'
+  if (statuses.every(s => s === 'done')) return 'done'
+  if (statuses.some(s => s === 'running' || s === 'collecting' || s === 'parsing' || s === 'fusing')) return 'running'
+  return 'pending'
+}
+
+function getNodeLivePct(node: FileTreeNode): number | null {
+  if (node.is_folder || !node.kb_doc_id) return null
+  const lp = liveProgressMap.value[node.kb_doc_id]
+  if (lp && lp.overall_status === 'running') return lp.overall_percent
+  return null
+}
+
 async function toggleFolder(node: FileTreeNode) {
   const key = node.id
   const wasOpen = folderOpenState.value[key]
@@ -199,13 +230,7 @@ async function toggleFolder(node: FileTreeNode) {
         }
         if (doc) {
           node.kb_doc_id = doc.id
-          const statuses = [doc.fusion_status, doc.raw_status, doc.parse_status].filter(Boolean) as string[]
-          if (statuses.includes('failed')) node.kb_status = 'failed'
-          else if (statuses.every(s => s === 'done')) node.kb_status = 'done'
-          else if (statuses.some(s => s === 'running' || s === 'collecting' || s === 'parsing' || s === 'fusing')) node.kb_status = 'running'
-          else node.kb_status = 'pending'
-          const p = liveProgressMap.value[doc.id]
-          if (p && p.overall_status === 'running') node._pct = p.overall_percent
+          // kb_status / _pct 由 visibleTree 透过 liveProgressMap 实时派生
         }
         return node
       })
@@ -231,7 +256,10 @@ const visibleTree = computed(() => {
       const childMatch = childFlat.length > 0
       if (nameMatch || childMatch) {
         const open = kw ? true : !!folderOpenState.value[n.id]
-        out.push({ ...n, _depth: depth, _open: open })
+        out.push({ ...n, _depth: depth, _open: open,
+          kb_status: getNodeLiveStatus(n),
+          _pct: getNodeLivePct(n),
+        })
         if (open || kw) out.push(...childFlat)
       }
     }
@@ -277,6 +305,14 @@ function openWorkspace() {
   if (graphData.value.nodes.length) {
     // 等 flex 布局完成再渲染
     requestAnimationFrame(() => requestAnimationFrame(() => renderGraph()))
+  }
+}
+
+function jumpToFirstRunning() {
+  const runningId = Object.keys(liveProgressMap.value).find(k => liveProgressMap.value[Number(k)]?.overall_status === 'running')
+  if (runningId) {
+    const doc = documents.value.find(d => d.id === Number(runningId))
+    if (doc) openDocument(doc)
   }
 }
 
@@ -415,6 +451,7 @@ const searchResults = ref<SearchResult[]>([])
 let pollTimer: number | null = null
 
 const analyzing = computed(() => progress.value?.overall_status === 'running')
+const runningCount = computed(() => Object.values(liveProgressMap.value).filter(p => p.overall_status === 'running').length)
 const hasResult = computed(() => progress.value?.overall_status === 'done' || fusions.value.length > 0)
 const showProgress = computed(() => !!progress.value && progress.value.overall_status !== 'done')
 const headStatusText = computed(() => { const p = progress.value; if (!p) return '尚未分析'; if (p.overall_status === 'done') return '分析完成'; if (p.overall_status === 'failed') return '分析出错'; if (p.overall_status === 'running') return p.current_stage + '…'; return '待分析' })
@@ -448,13 +485,7 @@ async function loadFileTree() {
         const doc = docByFileId[n.id]
         if (doc) {
           n.kb_doc_id = doc.id
-          const statuses = [doc.fusion_status, doc.raw_status, doc.parse_status]
-          if (statuses.includes('failed')) n.kb_status = 'failed'
-          else if (statuses.every(s => s === 'done')) n.kb_status = 'done'
-          else if (statuses.some(s => s === 'running' || s === 'collecting' || s === 'parsing' || s === 'fusing')) n.kb_status = 'running'
-          else n.kb_status = 'pending'
-          const p = liveProgressMap.value[doc.id]
-          if (p && p.overall_status === 'running') n._pct = p.overall_percent
+          // kb_status / _pct 由 visibleTree 透过 liveProgressMap 实时派生
         }
         n._ext = (doc?.extension) || ''
         if (n.children.length) attachDocs(n.children)
@@ -482,13 +513,7 @@ async function loadFileTree() {
         }
         if (doc) {
           fn.kb_doc_id = doc.id
-          const statuses = [doc.fusion_status, doc.raw_status, doc.parse_status].filter(Boolean) as string[]
-          if (statuses.includes('failed')) fn.kb_status = 'failed'
-          else if (statuses.every(s => s === 'done')) fn.kb_status = 'done'
-          else if (statuses.some(s => s === 'running' || s === 'collecting' || s === 'parsing' || s === 'fusing')) fn.kb_status = 'running'
-          else fn.kb_status = 'pending'
-          const p = liveProgressMap.value[doc.id]
-          if (p && p.overall_status === 'running') fn._pct = p.overall_percent
+          // kb_status / _pct 由 visibleTree 透过 liveProgressMap 实时派生
         }
         rootFiles.push(fn)
       }
@@ -592,7 +617,20 @@ async function removeDocument() {
 function ensurePolling() { if (pollTimer !== null) return; pollTimer = window.setInterval(pollTick, 1500) }
 function stopPolling() { if (pollTimer !== null) { window.clearInterval(pollTimer); pollTimer = null } }
 async function pollTick() {
-  const ids = documents.value.filter(d => liveProgressMap.value[d.id]?.overall_status === 'running' || d.id === active.value?.id).map(d => d.id)
+  // 轮询所有非终态文档（pending / running / 缺记录的），不只已知 running 的
+  const seen = new Set<number>()
+  const ids: number[] = []
+  for (const d of documents.value) {
+    const lp = liveProgressMap.value[d.id]
+    if (!lp || lp.overall_status === 'running' || lp.overall_status === 'pending') {
+      ids.push(d.id)
+      seen.add(d.id)
+    }
+  }
+  // 确保当前打开的文件也在轮询中
+  if (active.value && !seen.has(active.value.id)) {
+    ids.push(active.value.id)
+  }
   if (!ids.length) { stopPolling(); return }
   try {
     const map = await getProgressBatch(ids)
@@ -649,6 +687,9 @@ onUnmounted(stopPolling)
 
 .search-mini { height: 34px; padding: 0 12px; border: 1px solid #d5dfeb; border-radius: 8px; background: #fff; color: #1f2a37; outline: none; }
 .search-mini:focus { border-color: #2395bc; }
+
+.running-hint { padding: 8px 10px; margin: 0; border-radius: 8px; background: #fef7e0; border: 1px solid #f0d78c; color: #8b6914; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; user-select: none; }
+.running-hint:hover { background: #fdf0c8; border-color: #e0b84c; }
 
 .tree-wrap { flex: 1; min-height: 0; overflow: auto; }
 .tree-node { display: flex; align-items: center; gap: 4px; width: 100%; padding: 5px 6px; text-align: left; cursor: pointer; border: none; background: transparent; font-size: 12px; color: #46586b; border-radius: 6px; }
