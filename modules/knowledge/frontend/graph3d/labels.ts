@@ -90,6 +90,9 @@ export function buildLabels(
     // Offset label slightly above the node
     const radius = importance > 5 ? 22 : 14
     label.position.set(pos.x, pos.y + radius + 4, pos.z)
+    // Default: only show top-N important labels to avoid clutter
+    const rank = importanceOrder.indexOf(node.id)
+    label.element.style.opacity = rank < 30 ? '1' : '0'
     labels.set(node.id, label)
   }
 

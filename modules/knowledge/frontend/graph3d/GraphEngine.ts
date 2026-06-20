@@ -98,10 +98,8 @@ export class GraphEngine {
 
   /** Focus camera on a node (smooth fly-to) */
   focus(nodeId: number): void {
-    const pos = this.positions.get(nodeId)
-    if (pos && this.interactionCtx) {
-      this.interactionCtx.controls.target.set(pos.x, pos.y, pos.z)
-      this.interactionCtx.controls.update()
+    if (this.interactionCtx) {
+      this.interactionCtx.flyTo(nodeId)
     }
   }
 

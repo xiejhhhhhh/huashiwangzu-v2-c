@@ -30,6 +30,7 @@ export interface InteractionContext {
   controls: OrbitControls
   highlightNode: (nodeId: number | null) => void
   getHoveredEdge: () => { edge: GraphEdge; nodeA: GraphNode; nodeB: GraphNode } | null
+  flyTo: (nodeId: number) => void
   dispose: () => void
 }
 
@@ -290,6 +291,9 @@ export function setupInteraction(
     },
     getHoveredEdge() {
       return hoveredEdgeInfo
+    },
+    flyTo(nodeId: number) {
+      flyTo(nodeId)
     },
     dispose() {
       canvas.removeEventListener('pointermove', onPointerMove)
