@@ -1,0 +1,53 @@
+{
+  "key": "knowledge",
+  "name": "知识库",
+  "icon": "Collection",
+  "icon_asset": "",
+  "category": "AI",
+  "component_key": "index.vue",
+  "route_prefix": "/api/knowledge",
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 200,
+  "default_width": 1100,
+  "default_height": 700,
+  "singleton": true,
+  "show_in_launcher": true,
+  "show_on_desktop": true,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": false,
+  "supported_formats": ["pdf", "docx", "pptx", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg", "gif", "svg", "bmp", "webp", "mp4", "avi", "mov"],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "permission_declaration": {
+    "default": "viewer",
+    "actions": [
+      {"action": "knowledge_view", "name": "查看知识库", "min_role": "viewer"},
+      {"action": "knowledge_upload", "name": "上传资料", "min_role": "editor"},
+      {"action": "knowledge_delete", "name": "删除资料", "min_role": "editor"},
+      {"action": "knowledge_manage", "name": "管理知识库", "min_role": "admin"}
+    ]
+  },
+  "public_actions": [
+    {"action": "search", "description": "按关键词搜索知识库，返回相关块", "parameters": {"query": {"type": "string", "description": "搜索关键词"}, "top_k": {"type": "integer", "description": "返回结果数（默认5）"}}, "min_role": "viewer"},
+    {"action": "get_block", "description": "按 block_id 获取内容块详情", "parameters": {"block_id": {"type": "integer", "description": "内容块ID"}}, "min_role": "viewer"},
+    {"action": "get_page_fusion", "description": "获取页级融合内容", "parameters": {"document_id": {"type": "integer", "description": "文档ID"}, "page": {"type": "integer", "description": "页号"}}, "min_role": "viewer"},
+    {"action": "get_entity_dictionary", "description": "查询实体词典", "parameters": {"keyword": {"type": "string", "description": "搜索关键词（可选）"}}, "min_role": "viewer"},
+    {"action": "get_graph_context", "description": "查询图谱上下文", "parameters": {"entity_id": {"type": "integer", "description": "实体ID"}}, "min_role": "viewer"},
+    {"action": "get_pending_count", "description": "获取待确认数量（治理用）", "parameters": {}, "min_role": "viewer"}
+  ],
+  "dependency_declaration": [
+    {"module": "pdf-parser", "optional": false},
+    {"module": "docx-parser", "optional": false},
+    {"module": "pptx-parser", "optional": false},
+    {"module": "xlsx-parser", "optional": false},
+    {"module": "text-parser", "optional": false},
+    {"module": "image-vision", "optional": true}
+  ],
+  "event_handler_declaration": [],
+  "db_migration_declaration": [],
+  "backend": {"enabled": true, "router": "backend/router.py"}
+}

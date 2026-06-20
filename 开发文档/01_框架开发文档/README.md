@@ -109,7 +109,8 @@ Runtime SDK 的 `platform` 对象含 9 个 namespace：`auth`、`files`、`offic
 | 统一响应与异常 | `app.schemas.common.ApiResponse`、`app.core.exceptions.AppException`/`NotFound`/`ValidationError`/`ConflictError`/`PermissionDenied` | API 必须保持 `{success,data,error}`；业务错误抛异常，不返回假成功 |
 | 模块能力注册/调用 | `app.services.module_registry.register_capability`、`call_capability`、`list_capabilities` | 跨模块调用唯一后端通路；禁止 import 其他模块代码 |
 | 任务队列 | `app.services.task_worker.register_task_handler`、`app.models.system.SystemTaskQueue` | 模块注册 handler 或投递框架任务；任务 payload 只存逻辑 ID |
-| 模型网关 | `app.gateway.router.gateway_router` | 作为统一模型入口；模块不得绕过网关散落 provider/key |
+| 模型网关 | `app.gateway.router.gateway_router` | 作为统一模型入口（chat）；模块不得绕过网关散落 provider/key |
+| 嵌入/重排 | `app.services.model_services.get_embedding`、`rerank` | 向量化（bge-m3，1024 维）与重排的统一入口；知识库等检索模块用此，不得自带 provider |
 | 框架文件/应用桥接 | `app.models.file.File/Folder`、`app.models.app.App`、`app.services.file_service`（推荐入口：`check_file_access(db, file_id, user_id)`）、`file_upload_service`、`file_preview_service`、`app.services.app_service.can_user_access_app`、`app.config.get_settings` | 仅限桥接型模块或文件解析/发布场景；读盘前必须先经 `check_file_access` 校验 owner/share；禁止直接 `db.get(File, file_id)` 后读文件内容；其他文件操作必须经框架服务函数保持 owner 隔离、去重、审计等底座规则 |
 | SQLAlchemy 基类 | `app.models.base.Base`、`TimestampMixin` | 模块 ORM 可复用基类；模块表仍不得加到框架迁移或加跨表外键 |
 | 前端 runtime SDK | `modules/{module}/runtime/index.ts` 注入的 `platform` 对象 | 模块前端优先通过 runtime 调 `auth/files/office/gateway/tasks/notifications/logs/settings/modules` |

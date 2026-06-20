@@ -37,7 +37,9 @@ WHERE NOT EXISTS (SELECT 1 FROM codemap_metrics WHERE id = 1);
 
 async def ensure_codemap_tables(db: AsyncSession) -> None:
     """Ensure codemap_feedback and codemap_metrics tables exist, one SQL at a time.
-    asyncpg does not support multiple statements in a single execute()."""
+    asyncpg does not support multiple statements in a single execute().
+    Raises on failure — the caller (_ensure_tables_once) depends on the exception
+    to skip setting _tables_ensured, so the next request retries the table creation."""
     try:
         await db.execute(text(_CREATE_TABLE_SQL))
         await db.execute(text("CREATE INDEX IF NOT EXISTS idx_codemap_feedback_path ON codemap_feedback(path)"))
@@ -48,3 +50,4 @@ async def ensure_codemap_tables(db: AsyncSession) -> None:
     except Exception as exc:
         await db.rollback()
         logger.warning("Failed to ensure codemap tables: %s", exc)
+        raise

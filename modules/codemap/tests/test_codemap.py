@@ -49,6 +49,7 @@ def _load_backend_module(name: str) -> types.ModuleType:
 graph_module = _load_backend_module("graph")
 indexer_module = _load_backend_module("indexer")
 boundary_module = _load_backend_module("boundary_engine")
+init_db_module = _load_backend_module("init_db")
 
 CodeGraph = graph_module.CodeGraph
 ImportEdge = graph_module.ImportEdge
@@ -398,6 +399,26 @@ class TestCodeGraphIsolated:
             "increment_query was removed — use router._increment_query_count(db)"
         assert not hasattr(graph, "query_count"), \
             "query_count property was removed — use router._get_query_count(db)"
+
+    def test_ensure_codemap_tables_re_raises_on_failure(self):
+        """ensure_codemap_tables must re-raise on failure, not swallow the exception.
+        The caller (_ensure_tables_once) depends on this to skip setting
+        _tables_ensured = True, which would lock out retry for the process lifetime."""
+        import asyncio
+        ensure_fn = init_db_module.ensure_codemap_tables
+
+        class FailingDb:
+            async def execute(self, *args, **kwargs):
+                raise RuntimeError("Simulated DB failure")
+
+            async def rollback(self):
+                pass
+
+            async def commit(self):
+                pass
+
+        with pytest.raises(RuntimeError, match="Simulated DB failure"):
+            asyncio.run(ensure_fn(FailingDb()))
 
     def test_get_file_failure(self):
         graph = CodeGraph()
