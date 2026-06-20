@@ -5,7 +5,7 @@
     class="desktop-window"
     :class="{ 'desktop-window-active': isActive, 'desktop-window-maximized': maximized, 'desktop-window-fullscreen': windowType === 'fullscreen' }"
     :style="windowStyle"
-    @mousedown.self.prevent="$emit('activate', id)"
+    @mousedown.prevent="$emit('activate', id)"
   >
     <div
       class="window-titlebar"
