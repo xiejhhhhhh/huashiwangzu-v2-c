@@ -12,7 +12,7 @@
 
 import { THREE, OrbitControls } from './three-addons'
 
-import { getNodeColor, getNodeRadius } from './theme'
+import { getNodeColor, getNodeRadius, resolveNodeColor } from './theme'
 import type { GraphNode, GraphEdge } from './types'
 import type { LayoutPosition } from './layout3d'
 import type { SceneContext } from './scene'
@@ -28,6 +28,8 @@ export interface InteractionCallbacks {
 /** Interaction context */
 export interface InteractionContext {
   controls: OrbitControls
+  highlightNode: (nodeId: number | null) => void
+  getHoveredEdge: () => { edge: GraphEdge; nodeA: GraphNode; nodeB: GraphNode } | null
   dispose: () => void
 }
 
@@ -71,12 +73,23 @@ export function setupInteraction(
     adjacency.get(e.target)?.add(e.source)
   }
 
+  // Edge index: for any pair (source,target), find the edge
+  const edgeIndex = new Map<string, GraphEdge>()
+  for (const e of edges) {
+    // Store both directions
+    edgeIndex.set(`${e.source}-${e.target}`, e)
+    edgeIndex.set(`${e.target}-${e.source}`, e)
+  }
+
   // Track highlight state
   let highlightedId: number | null = null
   let hoveredId: number | null = null
 
-  // Store original opacity for dim/restore
-  let dimActive = false
+  // Store original sprite opacities
+  const spriteOpacity = new Map<number, number>()
+
+  // Hovered edge info
+  let hoveredEdgeInfo: { edge: GraphEdge; nodeA: GraphNode; nodeB: GraphNode } | null = null
 
   /** Helper: get mouse position in normalized device coordinates */
   function getPointer(event: MouseEvent): THREE.Vector2 {
@@ -90,7 +103,7 @@ export function setupInteraction(
   function raycastNodes(event: MouseEvent): number | null {
     raycaster.setFromCamera(getPointer(event), scene.camera)
 
-    // We need to test against sphere meshes — collect all instanced meshes
+    // Collect all instanced meshes
     const meshes: THREE.InstancedMesh[] = []
     scene.scene.children.forEach((child: THREE.Object3D) => {
       if (child instanceof THREE.InstancedMesh) {
@@ -102,51 +115,15 @@ export function setupInteraction(
     if (intersects.length > 0) {
       const hit = intersects[0]
       if (hit.instanceId !== undefined) {
-        // Map instance back to node. Since we iterate nodes in order per type,
-        // we need to traverse the scene's children → find instanced meshes
-        // and figure out which node each instance maps to.
-        // For simplicity, we use a 1:1 mapping approach: track node indices
-        let instanceIndex = 0
-        const typeOrder: string[] = []
-        const typeMap = new Map<string, number[]>()
-        nodes.forEach((n, i) => {
-          if (!typeMap.has(n.type)) {
-            typeMap.set(n.type, [])
-            typeOrder.push(n.type)
-          }
-          typeMap.get(n.type)!.push(i)
-        })
-
-        // Find the accumulated instance index across all instanced meshes
-        let accumulatedIndex = 0
-        for (const type of typeOrder) {
-          const indices = typeMap.get(type)!
-          if (hit.object instanceof THREE.InstancedMesh) {
-            const meshColor = new THREE.Color()
-            hit.object.getColorAt(0, meshColor)
-            const meshTypeColor = getNodeColor(type).hex
-            // Simple check: compare color hex
-            if (hit.instanceId < indices.length) {
-              accumulatedIndex = indices[hit.instanceId]
-              break
-            }
-          }
-          accumulatedIndex += indices.length
-        }
-
-        // Fallback: iterate all nodes and check position proximity
-        const hitPos = new THREE.Vector3()
-        hit.object.getWorldPosition(_dummyVec)
-        // Try to get the actual hit position
-        const point = hit.point
-
+        // Find closest node by position distance
+        const hitPos = hit.point
         let closestNode: number | null = null
-        let closestDist = 30 // within 30 units
+        let closestDist = 30
         for (const n of nodes) {
           const pos = positions.get(n.id)
           if (!pos) continue
           const dist = Math.sqrt(
-            (pos.x - point.x) ** 2 + (pos.y - point.y) ** 2 + (pos.z - point.z) ** 2,
+            (pos.x - hitPos.x) ** 2 + (pos.y - hitPos.y) ** 2 + (pos.z - hitPos.z) ** 2,
           )
           if (dist < closestDist) {
             closestDist = dist
@@ -159,18 +136,35 @@ export function setupInteraction(
     return null
   }
 
+  /** Dim/restore all sprites */
+  function dimAllSprites(dim: boolean) {
+    for (const [id, entry] of nodeCtx.nodeMap) {
+      if (!spriteOpacity.has(id)) {
+        spriteOpacity.set(id, entry.sprite.material.opacity)
+      }
+      entry.sprite.material.opacity = dim ? 0.08 : (spriteOpacity.get(id) ?? 0.5)
+    }
+  }
+
   /** Highlight a node and its neighbors; dim the rest */
   function highlightNode(nodeId: number | null) {
     if (nodeId === highlightedId) return
     highlightedId = nodeId
 
-    const neighborIds = nodeId ? adjacency.get(nodeId) ?? new Set() : new Set()
+    const neighborIds: Set<number> = nodeId ? (adjacency.get(nodeId) ?? new Set()) : new Set()
 
-    // Toggle label opacity
-    for (const n of nodes) {
-      const isHighlighted = n.id === nodeId || neighborIds.has(n.id)
-      // Sprite opacity
-      // We can't easily access individual sprites from here, so we work at the mesh level
+    // Dim all sprites first
+    dimAllSprites(true)
+
+    if (nodeId) {
+      // Restore the highlighted node and its neighbors
+      const brightSet = new Set([nodeId, ...neighborIds])
+      for (const id of brightSet) {
+        const entry = nodeCtx.nodeMap.get(id)
+        if (entry) {
+          entry.sprite.material.opacity = spriteOpacity.get(id) ?? 0.5
+        }
+      }
     }
   }
 
@@ -186,23 +180,60 @@ export function setupInteraction(
 
     function animateFly(time: number) {
       const t = Math.min((time - startTime) / duration, 1)
-      // Ease-in-out cubic
       const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 
       scene.camera.position.lerpVectors(startPos, targetPos.clone().add(new THREE.Vector3(0, 30, 120)), ease)
       controls.target.lerp(targetPos, ease)
       controls.update()
 
-      if (t < 1) {
-        requestAnimationFrame(animateFly)
-      }
+      if (t < 1) requestAnimationFrame(animateFly)
     }
     requestAnimationFrame(animateFly)
   }
 
+  /** Find edge near pointer for hover (proximity to edge midpoint) */
+  function findHoveredEdge(event: MouseEvent): { edge: GraphEdge; nodeA: GraphNode; nodeB: GraphNode } | null {
+    raycaster.setFromCamera(getPointer(event), scene.camera)
+    // Check each edge's midpoint distance
+    let closest: { edge: GraphEdge; nodeA: GraphNode; nodeB: GraphNode; dist: number } | null = null
+    for (const e of edges) {
+      const sp = positions.get(e.source)
+      const tp = positions.get(e.target)
+      if (!sp || !tp) continue
+      // Midpoint
+      const mx = (sp.x + tp.x) / 2
+      const my = (sp.y + tp.y) / 2
+      const mz = (sp.z + tp.z) / 2
+      // Project ray to find closest point on ray to midpoint
+      const rayOrigin = raycaster.ray.origin
+      const rayDir = raycaster.ray.direction
+      const toMid = new THREE.Vector3(mx - rayOrigin.x, my - rayOrigin.y, mz - rayOrigin.z)
+      const t = rayDir.dot(toMid)
+      const closestOnRay = new THREE.Vector3(
+        rayOrigin.x + rayDir.x * t,
+        rayOrigin.y + rayDir.y * t,
+        rayOrigin.z + rayDir.z * t,
+      )
+      const dist = Math.sqrt(
+        (closestOnRay.x - mx) ** 2 + (closestOnRay.y - my) ** 2 + (closestOnRay.z - mz) ** 2,
+      )
+      if (dist < 15 && (closest === null || dist < closest.dist)) {
+        closest = { edge: e, nodeA: nodeMap.get(e.source)!, nodeB: nodeMap.get(e.target)!, dist }
+      }
+    }
+    return closest ? { edge: closest.edge, nodeA: closest.nodeA, nodeB: closest.nodeB } : null
+  }
+
   // ── Event handlers ──
 
+  let lastPointerMove = 0
+
   function onPointerMove(event: MouseEvent) {
+    // Throttle raycaster to every 50ms
+    const now = Date.now()
+    if (now - lastPointerMove < 50) return
+    lastPointerMove = now
+
     const id = raycastNodes(event)
     const rect = canvas.getBoundingClientRect()
     const pos = { x: event.clientX - rect.left, y: event.clientY - rect.top }
@@ -211,6 +242,13 @@ export function setupInteraction(
       hoveredId = id
       callbacks.onHover(id !== null ? nodeMap.get(id) ?? null : null, pos)
       highlightNode(id)
+    }
+
+    // Also check for edge hover
+    if (id === null) {
+      hoveredEdgeInfo = findHoveredEdge(event)
+    } else {
+      hoveredEdgeInfo = null
     }
   }
 
@@ -228,6 +266,7 @@ export function setupInteraction(
     } else {
       // Click empty space → clear highlight
       highlightNode(null)
+      dimAllSprites(false)
       callbacks.onHover(null, { x: 0, y: 0 })
     }
   }
@@ -245,6 +284,13 @@ export function setupInteraction(
 
   return {
     controls,
+    highlightNode(nodeId: number | null) {
+      highlightedId = null // force re-highlight
+      highlightNode(nodeId)
+    },
+    getHoveredEdge() {
+      return hoveredEdgeInfo
+    },
     dispose() {
       canvas.removeEventListener('pointermove', onPointerMove)
       canvas.removeEventListener('click', onClick)

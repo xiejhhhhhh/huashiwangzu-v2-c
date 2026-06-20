@@ -22,18 +22,18 @@ import { setupInteraction, type InteractionContext } from './interaction'
 type EventCallback = (event: any) => void
 
 export class GraphEngine {
-  private canvas: HTMLCanvasElement
-  private options: Required<GraphEngineOptions>
+  readonly canvas: HTMLCanvasElement
+  readonly options: Required<GraphEngineOptions>
 
   private sceneCtx: SceneContext | null = null
   private nodeCtx: NodeRenderContext | null = null
   private edgeCtx: EdgeRenderContext | null = null
-  private labelCtx: LabelRenderContext | null = null
-  private interactionCtx: InteractionContext | null = null
+  labelCtx: LabelRenderContext | null = null
+  interactionCtx: InteractionContext | null = null
 
-  private nodes: GraphNode[] = []
-  private edges: GraphEdge[] = []
-  private positions: Map<number, LayoutPosition> = new Map()
+  nodes: GraphNode[] = []
+  edges: GraphEdge[] = []
+  positions: Map<number, LayoutPosition> = new Map()
 
   private listeners = new Map<GraphEngineEvent, EventCallback[]>()
 
@@ -98,13 +98,43 @@ export class GraphEngine {
 
   /** Focus camera on a node (smooth fly-to) */
   focus(nodeId: number): void {
-    // The interaction system handles fly-to on dblclick.
-    // For programmatic focus, we just set the orbit target.
     const pos = this.positions.get(nodeId)
     if (pos && this.interactionCtx) {
       this.interactionCtx.controls.target.set(pos.x, pos.y, pos.z)
       this.interactionCtx.controls.update()
     }
+  }
+
+  /** Get position for a node */
+  getNodePosition(nodeId: number): LayoutPosition | undefined {
+    return this.positions.get(nodeId)
+  }
+
+  /** Reset camera to default position */
+  resetCamera(): void {
+    if (!this.sceneCtx || !this.interactionCtx) return
+    const controls = this.interactionCtx.controls
+    const camera = this.sceneCtx.camera
+    // Animate reset
+    const startPos = camera.position.clone()
+    const startTarget = controls.target.clone()
+    const endPos = { x: 0, y: 200, z: 500 }
+    const endTarget = { x: 0, y: 0, z: 0 }
+    const duration = 600
+    const startTime = performance.now()
+
+    function animate(t: number) {
+      const elapsed = t - startTime
+      const progress = Math.min(elapsed / duration, 1)
+      const ease = progress < 0.5 ? 4 * progress * progress * progress : 1 - Math.pow(-2 * progress + 2, 3) / 2
+
+      camera.position.lerpVectors(startPos, new THREE.Vector3(endPos.x, endPos.y, endPos.z), ease)
+      controls.target.lerp(new THREE.Vector3(endTarget.x, endTarget.y, endTarget.z), ease)
+      controls.update()
+
+      if (progress < 1) requestAnimationFrame(animate)
+    }
+    requestAnimationFrame(animate)
   }
 
   /** Resize (call when container dimensions change) */
@@ -185,12 +215,12 @@ export class GraphEngine {
     this.labelCtx?.dispose()
 
     // Build new
-    this.nodeCtx = buildNodes(this.nodes, this.positions, scene)
+    this.nodeCtx = buildNodes(this.nodes, this.positions, scene, this.edges)
     this.edgeCtx = buildEdges(this.nodes, this.edges, this.positions, scene)
 
     // Labels (CSS2D) — need a container
     const labelContainer = this.canvas.parentElement!
-    this.labelCtx = buildLabels(this.nodes, this.positions, labelContainer)
+    this.labelCtx = buildLabels(this.nodes, this.positions, labelContainer, this.edges)
 
     // Interaction
     this.interactionCtx?.dispose()
@@ -210,6 +240,7 @@ export class GraphEngine {
 
     // Update label visibility
     this.labelCtx.showLabels(this.options.labelDistanceThreshold)
+    this.labelCtx.showLabels(this.options.labelDistanceThreshold)
   }
 
   private startRenderLoop(): void {
@@ -224,3 +255,6 @@ export class GraphEngine {
     this.animFrameId = requestAnimationFrame(loop)
   }
 }
+
+// Needed for resetCamera animation
+import { THREE } from './three-addons'

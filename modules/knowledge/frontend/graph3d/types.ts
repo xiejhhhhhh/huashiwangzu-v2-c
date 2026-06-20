@@ -12,6 +12,9 @@ export const NodeType = {
   Tag: 'tag',
   Brand: 'brand',
   Document: 'document',
+  Person: 'person',
+  Location: 'location',
+  Event: 'event',
   Unknown: 'unknown',
 } as const
 
