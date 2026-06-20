@@ -85,6 +85,11 @@ interface RefItem { type: string; title: string; source: string; excerpt: string
 interface ApiBody<T> { success: boolean; data: T; error?: string | null }
 interface MsgItem { id: number; role: string; content: string; created_at?: string | null; eventType?: string; toolName?: string; toolResult?: unknown; thinking?: string; references?: RefItem[]; tool_events?: unknown[]; timeline?: unknown[]; collapsed?: boolean; running?: boolean }
 
+// ── Props（外部模块传入的预填上下文） ──
+const props = defineProps<{
+  prefill?: { documentId?: number; documentName?: string; question?: string }
+}>()
+
 // ── 状态 ──
 const conversations = ref<ConvItem[]>([])
 const profiles = ref<ModelProfile[]>([])
@@ -432,7 +437,27 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 
 async function reloadMessages(convId: number) { try { const raw = await apiFetch<MsgItem[]>(`/agent/conversations/${convId}/messages`); messages.value = expandTimeline(raw) } catch { /* ignore */ } }
 
-onMounted(async () => { await initRuntime('agent'); await Promise.all([loadMetadata(), loadConversations()]); if (conversations.value.length === 0) await newConversation(); else await selectConversation(conversations.value[0].id) })
+onMounted(async () => {
+  await initRuntime('agent')
+  await Promise.all([loadMetadata(), loadConversations()])
+  if (conversations.value.length === 0) await newConversation()
+  else await selectConversation(conversations.value[0].id)
+
+  // 预填上下文（来自其他模块如知识库的"问 AI"调用）
+  if (props.prefill) {
+    const parts: string[] = []
+    if (props.prefill.documentName) {
+      parts.push(`关于「${props.prefill.documentName}」`)
+    }
+    if (props.prefill.question) {
+      parts.push(props.prefill.question)
+    }
+    if (parts.length) {
+      inputText.value = parts.join('，')
+      nextTick(() => inputAreaRef.value?.focus())
+    }
+  }
+})
 </script>
 
 <style scoped>

@@ -15,6 +15,40 @@ export interface KnowledgeDocument {
   parse_error: string | null
 }
 
+export interface FrameworkFolder {
+  id: number
+  name: string
+  parent_id: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface FrameworkFile {
+  id: number
+  name: string
+  extension?: string | null
+  size: number
+  parent_id?: number | null
+  is_folder: boolean
+}
+
+export interface FileTreeNode {
+  id: number
+  name: string
+  parent_id: number | null
+  is_folder: boolean
+  children: FileTreeNode[]
+  // 知识库状态
+  kb_doc_id?: number
+  kb_status?: string
+  // 运行时辅助（渲染用）
+  _depth?: number
+  _open?: boolean
+  _ext?: string
+  _pct?: number | null
+  _created_at?: string
+}
+
 export interface ProgressStage {
   key: string
   label: string
@@ -168,4 +202,57 @@ export function parseJsonField<T>(value: unknown, fallback: T): T {
     try { return JSON.parse(value) as T } catch { return fallback }
   }
   return value as T
+}
+
+// ── 框架文件树（桌面路径镜像） ──────────────────────────
+
+export function getFileTree(): Promise<FrameworkFolder[]> {
+  return apiGet<FrameworkFolder[]>('/files/tree')
+}
+
+export function getFileList(folderId: number): Promise<{ items: FrameworkFile[]; total: number }> {
+  return apiGet<{ items: FrameworkFile[]; total: number }>(`/files/list?folder_id=${folderId}&page_size=200`)
+}
+
+/** 将框架文件夹平铺列表递归构建为树 */
+export function buildFolderTree(folders: FrameworkFolder[]): FileTreeNode[] {
+  const map = new Map<number, FileTreeNode>()
+  const roots: FileTreeNode[] = []
+  for (const f of folders) {
+    map.set(f.id, { id: f.id, name: f.name, parent_id: f.parent_id, is_folder: true, children: [] })
+  }
+  for (const f of folders) {
+    const node = map.get(f.id)!
+    if (f.parent_id && map.has(f.parent_id)) {
+      map.get(f.parent_id)!.children.push(node)
+    } else {
+      roots.push(node)
+    }
+  }
+  return roots
+}
+
+// ── 全局知识网络 ──────────────────────────────────────
+
+export interface RelationGraphNode {
+  id: number
+  label: string
+  type: string
+}
+
+export interface RelationGraphEdge {
+  source: number
+  target: number
+  relation_type: string
+  similarity_score: number
+  shared_entities?: string[]
+}
+
+export interface RelationGraph {
+  nodes: RelationGraphNode[]
+  edges: RelationGraphEdge[]
+}
+
+export function getRelationGraph(): Promise<RelationGraph> {
+  return apiGet<RelationGraph>('/knowledge/relation-graph')
 }
