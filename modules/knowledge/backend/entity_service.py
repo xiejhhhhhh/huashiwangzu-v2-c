@@ -251,15 +251,15 @@ async def process_document_entities(
         if not s_node or not t_node:
             continue
 
-        # 查重（按 node_id 查，entity_id ≠ node_id）
+        # 查重（按 node_id 查，entity_id ≠ node_id；用 .first() 防历史重复抛 MultipleResultsFound）
         existing_r = await db.execute(
             select(KbGraphEdge).where(
                 KbGraphEdge.source_node_id == s_node.id,
                 KbGraphEdge.target_node_id == t_node.id,
                 KbGraphEdge.relation == relation,
-            )
+            ).order_by(KbGraphEdge.id).limit(1)
         )
-        if existing_r.scalar_one_or_none():
+        if existing_r.scalars().first():
             continue
 
         edge = KbGraphEdge(

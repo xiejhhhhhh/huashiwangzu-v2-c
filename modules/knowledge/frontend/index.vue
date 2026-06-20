@@ -394,6 +394,7 @@ const KB_SUPPORTED_EXTS = new Set([
 
 /**
  * 遍历文件树,自动登记支持格式但尚未入库的文件。
+ * 同时补齐已登记但未完成（raw_status≠done 或 fusion_status≠done）的文档。
  * 分批串行(Promise.allSettled),每批最多3个,避免塞爆任务队列。
  */
 async function autoRegisterUnregistered() {
@@ -443,6 +444,46 @@ async function autoRegisterUnregistered() {
   }
 
   // 登记完握手一次进度
+  await handshakeAll()
+
+  // ── 补齐已登记但未完成的文档（已登记但 raw_status/fusion_status 仍非终态，且未在运行中） ──
+  // 用 liveProgressMap 判定状态，避免重复入队正在跑的
+  await retryPendingDocuments()
+}
+
+/**
+ * 补齐已登记但未完成分析（非终态、且未在运行中）的文档。
+ * 幂等：正在跑的文档不重复入队。
+ */
+async function retryPendingDocuments() {
+  const toRetry: number[] = []
+  for (const d of documents.value) {
+    const lp = liveProgressMap.value[d.id]
+    const isRunning = lp?.overall_status === 'running'
+    // 非终态：不是 done/failed，也不是正在跑
+    const isPending = !lp || (lp.overall_status !== 'done' && lp.overall_status !== 'failed' && !isRunning)
+    if (isPending) {
+      toRetry.push(d.id)
+    }
+  }
+  if (!toRetry.length) return
+  console.log(`[kb] Retrying ${toRetry.length} pending/incomplete documents...`)
+
+  const BATCH_SIZE = 3
+  for (let i = 0; i < toRetry.length; i += BATCH_SIZE) {
+    const batch = toRetry.slice(i, i + BATCH_SIZE)
+    await Promise.allSettled(
+      batch.map(docId =>
+        apiPost('/knowledge/documents/full-pipeline', { document_id: docId })
+          .catch(e => console.warn(`[kb] Retry failed for doc_id=${docId}:`, e))
+      )
+    )
+    if (i + BATCH_SIZE < toRetry.length) {
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
+
+  // 重新握手一次
   await handshakeAll()
 }
 
