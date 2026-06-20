@@ -218,7 +218,7 @@ export class GraphEngine {
 
     // Labels (CSS2D) — need a container
     const labelContainer = this.canvas.parentElement!
-    this.labelCtx = buildLabels(this.nodes, this.positions, labelContainer, this.edges)
+    this.labelCtx = buildLabels(this.nodes, this.positions, labelContainer, scene, this.edges)
 
     // Interaction
     this.interactionCtx?.dispose()

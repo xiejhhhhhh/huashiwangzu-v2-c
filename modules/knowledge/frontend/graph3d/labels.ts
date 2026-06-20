@@ -35,6 +35,7 @@ export function buildLabels(
   nodes: GraphNode[],
   positions: Map<number, LayoutPosition>,
   container: HTMLElement,
+  scene: THREE.Scene,
   edges: { source: number; target: number }[] = [],
 ): LabelRenderContext {
   // ── CSS2DRenderer ──
@@ -93,6 +94,7 @@ export function buildLabels(
     // Default: only show top-N important labels to avoid clutter
     const rank = importanceOrder.indexOf(node.id)
     label.element.style.opacity = rank < 30 ? '1' : '0'
+    scene.add(label)  // ★ 必须加进场景,否则 CSS2DRenderer 渲染不出来(标签层为空)
     labels.set(node.id, label)
   }
 
