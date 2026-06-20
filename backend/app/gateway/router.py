@@ -42,6 +42,24 @@ _config = _load_models_config()
 # Build MODEL_PROFILES from config (keep interface for existing consumers)
 MODEL_PROFILES: dict[str, dict] = _config["model_types"]["llm"]["profiles"]
 
+# ── Vision profile loading ─────────────────────────────────────────────
+_vision_cfg = _config.get("model_types", {}).get("vision", {})
+_VISION_PRIMARY: str = _vision_cfg.get("primary", "mimo")
+_VISION_FALLBACK: list[str] = _vision_cfg.get("fallback_chain", ["qwen3-vl"])
+_VISION_PROFILES: dict[str, dict] = _vision_cfg.get("profiles", {})
+
+
+def _resolve_api_key(provider_cfg: dict) -> str:
+    """Read api_key from settings using provider config's api_key_env field."""
+    env_name = provider_cfg.get("api_key_env", "")
+    if not env_name:
+        return ""
+    from app.config import get_settings
+    key = getattr(get_settings(), env_name, "")
+    if not key:
+        logger.warning("Provider config references %s but it is empty in settings", env_name)
+    return key
+
 
 def _status_code_from_exception(exc: Exception) -> int | None:
     response = getattr(exc, "response", None)
@@ -104,6 +122,7 @@ class ModelGatewayRouter:
             elif ptype == "openai_compat":
                 self._providers[name] = OpenAIProvider(
                     api_url=cfg.get("api_url", ""),
+                    api_key=_resolve_api_key(cfg),
                     provider_name=cfg.get("provider_name", name),
                 )
             elif ptype == "local":
@@ -187,6 +206,74 @@ class ModelGatewayRouter:
         ):
             yield event
 
+    def _resolve_vision_profile(self, profile_key: str | None = None) -> dict:
+        """Resolve vision profile key → profile dict, with fallback chain."""
+        if profile_key and profile_key in _VISION_PROFILES:
+            return _VISION_PROFILES[profile_key]
+        if _VISION_PRIMARY and _VISION_PRIMARY in _VISION_PROFILES:
+            return _VISION_PROFILES[_VISION_PRIMARY]
+        for fb in _VISION_FALLBACK:
+            if fb in _VISION_PROFILES:
+                return _VISION_PROFILES[fb]
+        raise RuntimeError("No vision model profiles configured in models.json")
+
+    async def describe_image(
+        self,
+        image_bytes: bytes,
+        prompt: str = "请详细描述这张图片",
+        profile_key: str | None = None,
+        mime_type: str = "image/jpeg",
+    ) -> str:
+        """Describe an image using the configured vision model, with fallback chain.
+
+        Returns the text description from the vision model.
+        Falls back through _VISION_FALLBACK if the primary model fails.
+        """
+        import base64
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        img_data_url = f"data:{mime_type};base64,{b64}"
+        messages = [
+            {"role": "system", "content": "You are an image description assistant. Describe the image in Chinese in 1-3 sentences, focusing on visual content."},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": img_data_url, "detail": "high"}},
+                {"type": "text", "text": prompt},
+            ]},
+        ]
+
+        # Try primary → fallback chain
+        candidate_keys = [profile_key] if profile_key else [_VISION_PRIMARY] + _VISION_FALLBACK
+        last_error = None
+        for idx, key in enumerate(candidate_keys):
+            profile = _VISION_PROFILES.get(key)
+            if not profile:
+                continue
+            try:
+                if profile.get("provider") == "llama":
+                    await _ensure_local_vision_model(profile)
+                provider = self.get_provider(profile["provider"])
+                raw = await _call_with_retry(
+                    provider=provider,
+                    messages=messages,
+                    model=profile.get("model", key),
+                    temperature=profile.get("temperature", 0.7),
+                    max_tokens=profile.get("max_tokens", 4096),
+                    tools=None,
+                )
+                if "error" in raw:
+                    raise RuntimeError(raw.get("content") or raw.get("error"))
+                if profile.get("provider") in ("local",):
+                    return raw.get("content", "")
+                adapter = get_adapter(profile.get("model", key))
+                result = adapter.adapt_response(raw, provider=profile.get("provider", ""))
+                content = (result.get("content") or "").strip()
+                if content:
+                    return content
+            except Exception as exc:
+                logger.warning("Vision model %s failed (attempt %d/%d): %s", key, idx + 1, len(candidate_keys), exc)
+                last_error = exc
+                continue
+        raise RuntimeError(f"All vision models failed. Last error: {last_error}")
+
     async def check_all_health(self) -> dict[str, bool]:
         result = {}
         for name, provider in self._providers.items():
@@ -205,6 +292,14 @@ async def _ensure_local_text_model(profile: dict | None = None) -> None:
     from asyncio import to_thread
     from app.services.model_watchdog.watchdog import ensure_model
     watchdog_name = (profile or {}).get("watchdog", "gemma-4")
+    await to_thread(ensure_model, watchdog_name)
+
+
+async def _ensure_local_vision_model(profile: dict) -> None:
+    """Ensure a local vision model (e.g. qwen3-vl) is running via watchdog."""
+    from asyncio import to_thread
+    from app.services.model_watchdog.watchdog import ensure_model
+    watchdog_name = profile.get("watchdog", "qwen3-vl")
     await to_thread(ensure_model, watchdog_name)
 
 

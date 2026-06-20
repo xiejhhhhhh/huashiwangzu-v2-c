@@ -11,7 +11,7 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.gateway.config import DEFAULT_MODEL
 from app.gateway.router import gateway_router
-from app.services.model_services import get_embedding, rerank as rerank_service
+from app.services.model_services import get_embedding, rerank as rerank_service, describe_image as describe_image_service
 
 logger = logging.getLogger("v2.gateway.api")
 router = APIRouter(prefix="/api/gateway", tags=["gateway"])
@@ -36,6 +36,13 @@ class RerankRequest(BaseModel):
     query: str
     documents: list[str]
     top_k: int | None = None
+
+
+class DescribeImageRequest(BaseModel):
+    image_base64: str  # base64-encoded image bytes (without data: prefix)
+    prompt: str = "请详细描述这张图片"
+    profile_key: str | None = None
+    mime_type: str = "image/jpeg"
 
 
 @router.get("/models")
@@ -93,3 +100,16 @@ async def rerank(payload: RerankRequest, user: User = Depends(require_permission
         for r in results
     ]
     return ApiResponse(data={"results": normalized})
+
+
+@router.post("/describe-image")
+async def describe_image(payload: DescribeImageRequest, user: User = Depends(require_permission("viewer"))):
+    import base64
+    image_bytes = base64.b64decode(payload.image_base64)
+    description = await describe_image_service(
+        image_bytes=image_bytes,
+        prompt=payload.prompt,
+        profile_key=payload.profile_key,
+        mime_type=payload.mime_type,
+    )
+    return ApiResponse(data={"description": description})

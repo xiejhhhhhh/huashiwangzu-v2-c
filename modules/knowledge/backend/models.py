@@ -32,6 +32,10 @@ class KbDocument(Base, TimestampMixin):
     parse_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 向量化状态：pending/indexing/done/error
     vector_status: Mapped[str] = mapped_column(String(32), default="pending")
+    # 原始采集状态：pending/collecting/done/failed
+    raw_status: Mapped[str] = mapped_column(String(32), default="pending")
+    # 页级融合状态：pending/running/done/failed
+    fusion_status: Mapped[str] = mapped_column(String(32), default="pending")
     # 解析计数
     total_chunks: Mapped[int] = mapped_column(Integer, default=0)
     total_pages: Mapped[int] = mapped_column(Integer, default=0)
@@ -63,15 +67,50 @@ class KbChunk(Base, TimestampMixin):
 
 
 class KbPageFusion(Base, TimestampMixin):
-    """页级融合：同一页的多个块合并为一段连贯文本。"""
+    """页级融合：三轮交叉印证后的单页权威描述（第4层）。"""
     __tablename__ = "kb_page_fusions"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     page: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 融合正文（三轮交叉印证后的权威描述）
     fused_text: Mapped[str] = mapped_column(Text, default="")
-    # 知识图谱增强后的融合文本
+    # 页面摘要
+    page_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 结构化提炼（JSON）
+    body_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    attributes_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tags_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 冲突记录（三轮矛盾细节）
+    conflicts_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 证据引用（指向 kb_raw_data 的记录 ID）
+    evidence_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 版本控制（支持重建上层不改原始数据）
+    source_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fusion_version: Mapped[int] = mapped_column(Integer, default=1)
+    fusion_status: Mapped[str] = mapped_column(String(32), default="pending")
+    # 融合置信度（0-1）
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 知识图谱增强后的融合文本（原有字段保留向下兼容）
     enhanced_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class KbRawData(Base, TimestampMixin):
+    """原始层：多轮独立采集结果，落盘后只读不可变。"""
+    __tablename__ = "kb_raw_data"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    file_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    page: Mapped[int] = mapped_column(Integer, nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)   # 1=文本 2=OCR 3=视觉构成
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)  # text/ocr/vision
+    content: Mapped[str] = mapped_column(Text, default="")
+    model_used: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class KbEntityDictionary(Base, TimestampMixin):
@@ -193,3 +232,54 @@ class KbGovernanceCandidate(Base, TimestampMixin):
     audit_status: Mapped[str] = mapped_column(String(32), default="pending")  # pending/approved/rejected/merged
     reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KbDocumentProfile(Base, TimestampMixin):
+    """第5层文件画像：文件级主旨/摘要/结构（参考V1 知识_文档画像）。"""
+    __tablename__ = "kb_document_profiles"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 文件主题
+    subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 资料类型（产品说明/品牌介绍/培训手册/数据报表 等）
+    doc_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 章节结构 JSON
+    chapter_structure: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 核心结论
+    core_conclusions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 关键实体 JSON
+    key_entities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 文档级摘要
+    doc_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 可检索短语 JSON
+    searchable_phrases: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 适用场景
+    applicable_scenarios: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 过期风险
+    expiry_risk: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 画像置信度
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 画像版本
+    profile_version: Mapped[int] = mapped_column(Integer, default=1)
+    # 嵌入向量（用于跨文件相似度计算）
+    profile_embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class KbFileRelation(Base, TimestampMixin):
+    """第7层跨文件动态关联（★华哥最看重）。"""
+    __tablename__ = "kb_file_relations"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # 关系类型
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False)  # semantic_similar/entity_overlap/hierarchy/reference
+    # 相似度分数
+    similarity_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # 共同实体 JSON
+    shared_entities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 关联证据（具体描述为什么关联）
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 双向边权重
+    weight: Mapped[float] = mapped_column(Float, default=1.0)

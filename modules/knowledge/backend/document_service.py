@@ -69,6 +69,8 @@ async def register_document(
         mime_type=file.mime_type or "",
         parse_status="pending",
         vector_status="pending",
+        raw_status="pending",
+        fusion_status="pending",
     )
     db.add(doc)
     await db.commit()
@@ -90,6 +92,8 @@ def document_payload(doc) -> dict:
         "parse_status": doc.parse_status,
         "parse_error": doc.parse_error,
         "vector_status": doc.vector_status,
+        "raw_status": getattr(doc, "raw_status", "pending"),
+        "fusion_status": getattr(doc, "fusion_status", "pending"),
         "total_chunks": doc.total_chunks,
         "total_pages": doc.total_pages,
         "summary": doc.summary,

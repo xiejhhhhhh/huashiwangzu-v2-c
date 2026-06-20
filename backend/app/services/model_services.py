@@ -120,3 +120,23 @@ async def rerank(
     results = data.get("results", [])
     results.sort(key=lambda r: r.get("relevance_score", 0), reverse=True)
     return results
+
+
+async def describe_image(
+    image_bytes: bytes,
+    prompt: str = "请详细描述这张图片",
+    profile_key: str | None = None,
+    mime_type: str = "image/jpeg",
+) -> str:
+    """Describe an image using the configured vision model (models.json).
+
+    Delegates to the gateway router's describe_image, which handles
+    vision profile resolution, fallback chain, and retry.
+    """
+    from app.gateway.router import gateway_router
+    return await gateway_router.describe_image(
+        image_bytes=image_bytes,
+        prompt=prompt,
+        profile_key=profile_key,
+        mime_type=mime_type,
+    )

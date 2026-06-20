@@ -67,22 +67,12 @@ async def _describe(params: dict, caller: str) -> dict:
 
         # Try gateway vision model; fallback to metadata only
         try:
-            from app.gateway.router import gateway_router
-            b64 = base64.b64encode(raw).decode("ascii")
-            img_data_url = f"data:image/{mime_fmt};base64,{b64}"
-            vision_result = await gateway_router.chat(
-                messages=[
-                    {"role": "system", "content": "You are an image description assistant. Describe the image in Chinese in 1-3 sentences, focusing on visual content."},
-                    {"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": img_data_url, "detail": "high"}},
-                        {"type": "text", "text": "请详细描述这张图片中的内容，包括文字、物体、布局等。"},
-                    ]},
-                ],
-                profile_key=None,
+            from app.services.model_services import describe_image
+            description = await describe_image(
+                raw,
+                prompt="请详细描述这张图片中的内容，包括文字、物体、布局等。",
+                mime_type=f"image/{mime_fmt}",
             )
-            description = (vision_result.get("content") or "").strip()
-            if not description:
-                description = "[Vision gateway returned empty result]"
         except Exception as exc:
             try:
                 from PIL import Image

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.gateway.router import gateway_router
 from app.database import AsyncSessionLocal
+from app.services.task_worker import register_task_handler
 
 logger = logging.getLogger("v2.knowledge.entity")
 
@@ -296,6 +297,132 @@ async def process_document_entities(
     return stats
 
 
+async def process_document_entities_from_fusions(
+    db: AsyncSession,
+    document_id: int,
+    owner_id: int,
+) -> dict:
+    """基于融合层重建实体/图谱（第6层）。
+
+    从 kb_page_fusions 读取各页融合正文 → LLM 抽取 → 去重 → 写入图谱表。
+    """
+    from .models import (
+        KbEntityDictionary, KbEntityAlias, KbGraphNode, KbGraphEdge,
+        KbChunkEntity, KbEvidence, KbGovernanceCandidate,
+        KbPageFusion,
+    )
+
+    stats = {"entities_found": 0, "relationships_found": 0, "errors": []}
+
+    # 读取所有页融合正文
+    r = await db.execute(
+        select(KbPageFusion)
+        .where(KbPageFusion.document_id == document_id, KbPageFusion.fused_text != "")
+        .order_by(KbPageFusion.page)
+    )
+    fusions = r.scalars().all()
+
+    if not fusions:
+        stats["errors"].append("No fused pages found")
+        return stats
+
+    all_entities: list[dict] = []
+    all_relationships: list[dict] = []
+    processed_pages = 0
+
+    for pf in fusions:
+        text = pf.fused_text
+        if len(text) < 20:
+            continue
+
+        result = await extract_entities_from_text(text)
+        all_entities.extend(result.get("entities", []))
+        all_relationships.extend(result.get("relationships", []))
+        processed_pages += 1
+
+        if processed_pages % 3 == 0 and len(fusions) > 3:
+            import asyncio
+            await asyncio.sleep(0.5)
+
+    # 去重 + 写入（复用同逻辑）
+    seen_entities: dict[str, dict] = {}
+    for ent in all_entities:
+        name = (ent.get("name") or "").strip()
+        category = ent.get("category", "通用")
+        key = f"{name}|{category}"
+        if key not in seen_entities:
+            seen_entities[key] = ent
+
+    for key, ent in seen_entities.items():
+        name = ent.get("name", key.split("|")[0])
+        category = ent.get("category", "通用")
+        description = ent.get("description", "")
+
+        entity_record = KbEntityDictionary(
+            owner_id=owner_id, name=name, category=category,
+            description=description, status="candidate", source="fusion_extraction",
+        )
+        db.add(entity_record)
+        await db.flush()
+
+        node = KbGraphNode(
+            owner_id=owner_id, entity_id=entity_record.id,
+            label=name, category=category, description=description,
+        )
+        db.add(node)
+        await db.flush()
+
+        candidate = KbGovernanceCandidate(
+            owner_id=owner_id, document_id=document_id,
+            entity_name=name, category=category, excerpt=description[:500],
+            confidence=0.7, audit_status="pending",
+        )
+        db.add(candidate)
+
+        evidence = KbEvidence(
+            owner_id=owner_id, entity_id=entity_record.id,
+            document_id=document_id, chunk_id=0, page=0,
+            excerpt=description[:500], confidence=0.7, status="pending",
+        )
+        db.add(evidence)
+
+    stats["entities_found"] = len(seen_entities)
+
+    # 关系写入
+    seen_relations: set = set()
+    for rel in all_relationships:
+        source_name = rel.get("source", "")
+        target_name = rel.get("target", "")
+        rel_type = rel.get("relation", "相关")
+        rel_key = f"{source_name}|{target_name}|{rel_type}"
+        if rel_key in seen_relations:
+            continue
+        seen_relations.add(rel_key)
+
+        # 查找源/目标 node
+        src_node_r = await db.execute(
+            select(KbGraphNode).where(KbGraphNode.label == source_name, KbGraphNode.owner_id == owner_id)
+        )
+        src_node = src_node_r.scalar_one_or_none()
+        tgt_node_r = await db.execute(
+            select(KbGraphNode).where(KbGraphNode.label == target_name, KbGraphNode.owner_id == owner_id)
+        )
+        tgt_node = tgt_node_r.scalar_one_or_none()
+
+        if src_node and tgt_node:
+            edge = KbGraphEdge(
+                owner_id=owner_id, source_node_id=src_node.id,
+                target_node_id=tgt_node.id, relation=rel_type,
+                weight=1.0, description=rel.get("description", ""),
+            )
+            db.add(edge)
+
+    stats["relationships_found"] = len(seen_relations)
+    await db.commit()
+    logger.info("Fusion-entity extraction doc_id=%d: %d entities, %d relationships", document_id, stats["entities_found"], stats["relationships_found"])
+    return stats
+
+
 async def get_entity_dictionary(db: AsyncSession, owner_id: int, keyword: str = "") -> list[dict]:
     """查询实体词典。"""
     from .models import KbEntityDictionary
@@ -385,3 +512,29 @@ async def get_page_fusion(db: AsyncSession, document_id: int, page: int) -> dict
         "fused_text": pf.fused_text,
         "enhanced_text": pf.enhanced_text,
     }
+
+
+# ── 框架任务 handler:第6层图谱重建(后台,防同步超时) ────────────────
+async def _graph_handler(params: dict) -> dict:
+    """框架后台任务 handler:处理 kb_graph 任务(从融合层重建实体/图谱)。"""
+    from .models import KbDocument
+
+    document_id = int(params.get("document_id", 0))
+    if document_id <= 0:
+        return {"error": "document_id required", "status": "failed"}
+
+    async with AsyncSessionLocal() as db:
+        df = await db.execute(select(KbDocument).where(KbDocument.id == document_id))
+        doc = df.scalar_one_or_none()
+        if not doc:
+            return {"error": f"Document {document_id} not found", "status": "failed"}
+        try:
+            result = await process_document_entities_from_fusions(db, document_id, doc.owner_id)
+            await db.commit()
+            return {"status": "done", **result}
+        except Exception as e:
+            logger.error("Graph rebuild failed for document_id=%d: %s", document_id, e)
+            return {"error": str(e), "status": "failed"}
+
+
+register_task_handler("kb_graph", _graph_handler)

@@ -18,7 +18,7 @@ modules/    被框架加载的业务模块（物理隔离、sandbox 独立开发
 | 桌面壳 | 窗口系统、任务栏、启动器、托盘、右键菜单、应用注册表、文件关联调度器 |
 | 后端入口 | `backend/app/main.py`，22 个平台 router，统一响应 `{success, data, error}` |
 | 数据库 | 21 张 `framework_*` 表，干净基线迁移 `v2_clean_framework_baseline` |
-| 模型网关 | `backend/app/gateway/`，DeepSeek/OpenCode/OpenAI 兼容，指数退避重试 |
+| 模型网关 | `backend/app/gateway/`，DeepSeek/OpenCode/OpenAI 兼容（含 MiMo VLM 云视觉），指数退避重试 |
 | 模块模板 | `modules/_template/`，含 sandbox 开发环境 + runtime SDK 壳 |
 | 业务模块 | 已接入 12 个：agent（AI助手，含三层提示词/桌面感知/终端工具）、codemap（代码地图）、desktop-tools、terminal-tools、excel-engine、6 个格式解析（pdf/docx/pptx/xlsx/text/image-vision）、hello-world 样板（另含模板 1 个 `_template`）。知识库待迁 |
 | 前端构建 | `vue-tsc -b` 0 错误，Element Plus 最大 chunk ~475 kB |
@@ -109,8 +109,8 @@ Runtime SDK 的 `platform` 对象含 9 个 namespace：`auth`、`files`、`offic
 | 统一响应与异常 | `app.schemas.common.ApiResponse`、`app.core.exceptions.AppException`/`NotFound`/`ValidationError`/`ConflictError`/`PermissionDenied` | API 必须保持 `{success,data,error}`；业务错误抛异常，不返回假成功 |
 | 模块能力注册/调用 | `app.services.module_registry.register_capability`、`call_capability`、`list_capabilities` | 跨模块调用唯一后端通路；禁止 import 其他模块代码 |
 | 任务队列 | `app.services.task_worker.register_task_handler`、`app.models.system.SystemTaskQueue` | 模块注册 handler 或投递框架任务；任务 payload 只存逻辑 ID |
-| 模型网关 | `app.gateway.router.gateway_router` | 作为统一模型入口（chat）；模块不得绕过网关散落 provider/key |
-| 嵌入/重排 | `app.services.model_services.get_embedding`、`rerank` | 向量化（bge-m3，1024 维）与重排的统一入口；知识库等检索模块用此，不得自带 provider |
+| 模型网关 | `app.gateway.router.gateway_router` | 作为统一模型入口（chat/describe_image）；模块不得绕过网关散落 provider/key |
+| 嵌入/重排/视觉描述 | `app.services.model_services.get_embedding`、`rerank`、`describe_image` | 向量化（bge-m3，1024 维）、重排、视觉描述的统一入口；知识库等检索模块用此，不得自带 provider |
 | 框架文件/应用桥接 | `app.models.file.File/Folder`、`app.models.app.App`、`app.services.file_service`（推荐入口：`check_file_access(db, file_id, user_id)`）、`file_upload_service`、`file_preview_service`、`app.services.app_service.can_user_access_app`、`app.config.get_settings` | 仅限桥接型模块或文件解析/发布场景；读盘前必须先经 `check_file_access` 校验 owner/share；禁止直接 `db.get(File, file_id)` 后读文件内容；其他文件操作必须经框架服务函数保持 owner 隔离、去重、审计等底座规则 |
 | SQLAlchemy 基类 | `app.models.base.Base`、`TimestampMixin` | 模块 ORM 可复用基类；模块表仍不得加到框架迁移或加跨表外键 |
 | 前端 runtime SDK | `modules/{module}/runtime/index.ts` 注入的 `platform` 对象 | 模块前端优先通过 runtime 调 `auth/files/office/gateway/tasks/notifications/logs/settings/modules` |

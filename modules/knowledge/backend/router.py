@@ -5,6 +5,7 @@
 import logging
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal, get_db
@@ -19,14 +20,27 @@ from .document_service import (
 )
 from .embedding_service import get_chunk_by_id
 from .search_service import hybrid_search, get_document_chunks
-from .entity_service import get_entity_dictionary, get_graph_context, get_page_fusion
+from .entity_service import get_entity_dictionary, get_graph_context, get_page_fusion, process_document_entities_from_fusions
 from .governance_service import (
     list_governance_candidates, approve_candidate, reject_candidate,
     merge_entities, get_pending_count, get_evidence_detail, calibrate_extraction,
 )
+from .raw_collection_service import (
+    get_raw_data,
+)
+from .fusion_service import (
+    get_page_fusion_detail,
+)
+from .init_db import _run_startup_init
+from .profile_service import get_document_profile
+from .relation_service import get_file_relations, get_relation_graph
+from . import pipeline_service  # noqa: F401 注册 kb_pipeline handler
 
 logger = logging.getLogger("v2.knowledge")
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+# ── 模块加载时初始化：建表 + 索引 + 列迁移（一次性，幂等） ──
+_run_startup_init()
 
 
 class RegisterDocumentRequest(BaseModel):
@@ -55,6 +69,22 @@ class CalibrateRequest(BaseModel):
     candidate_id: int
     new_name: str | None = None
     new_category: str | None = None
+
+
+class CollectRawRequest(BaseModel):
+    document_id: int
+
+
+class FuseRequest(BaseModel):
+    document_id: int
+
+
+class ProfileRequest(BaseModel):
+    document_id: int
+
+
+class RelationComputeRequest(BaseModel):
+    document_id: int
 
 
 @router.get("/health")
@@ -119,6 +149,206 @@ async def api_parse_document(
         extract_graph=payload.extract_graph,
     )
     return ApiResponse(data=result)
+
+
+@router.post("/documents/collect-raw")
+async def api_collect_raw(
+    payload: CollectRawRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("editor")),
+):
+    """触发原始层多轮采集（后台任务）。"""
+    from app.models.system import SystemTaskQueue
+    from .models import KbDocument
+    import json as _json
+
+    r = await db.execute(
+        select(KbDocument).where(
+            KbDocument.id == payload.document_id,
+            KbDocument.owner_id == user.id,
+            KbDocument.deleted == False,
+        )
+    )
+    doc = r.scalar_one_or_none()
+    if not doc:
+        from app.core.exceptions import NotFound
+        raise NotFound("Document not found")
+
+    task = SystemTaskQueue(
+        task_type="kb_collect_raw",
+        module="knowledge",
+        parameters=_json.dumps({"document_id": payload.document_id}, ensure_ascii=False),
+        priority=5,
+        status="pending",
+        creator_id=user.id,
+    )
+    db.add(task)
+    await db.commit()
+    return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
+
+
+@router.get("/documents/{document_id}/raw-status")
+async def api_raw_status(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    doc = await get_document(db, document_id, user.id)
+    return ApiResponse(data={"document_id": document_id, "raw_status": doc.get("raw_status", doc.get("parse_status"))})
+
+
+@router.get("/documents/{document_id}/raw-data")
+async def api_raw_data(
+    document_id: int,
+    page: int | None = Query(default=None),
+    round_num: int | None = Query(default=None, alias="round"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await get_document(db, document_id, user.id)
+    data = await get_raw_data(db, document_id, page, round_num)
+    return ApiResponse(data={"raw_data": data})
+
+
+@router.post("/documents/fuse")
+async def api_fuse(
+    payload: FuseRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("editor")),
+):
+    """触发页级融合（第4层，后台任务 kb_fuse）。"""
+    return await _enqueue_task(db, "kb_fuse", payload.document_id, user.id)
+
+
+@router.get("/documents/{document_id}/fusion-status")
+async def api_fusion_status(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    doc = await get_document(db, document_id, user.id)
+    return ApiResponse(data={"document_id": document_id, "fusion_status": doc.get("fusion_status", "pending")})
+
+
+@router.get("/documents/{document_id}/page-fusion/{page}")
+async def api_page_fusion_detail(
+    document_id: int,
+    page: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await get_document(db, document_id, user.id)
+    result = await get_page_fusion_detail(db, document_id, page)
+    if not result:
+        from app.core.exceptions import NotFound
+        raise NotFound("Page fusion not found")
+    return ApiResponse(data=result)
+
+
+@router.post("/documents/profile")
+async def api_generate_profile(
+    payload: ProfileRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("editor")),
+):
+    """生成第5层文件画像（后台任务 kb_profile）。"""
+    return await _enqueue_task(db, "kb_profile", payload.document_id, user.id)
+
+
+@router.get("/documents/{document_id}/profile")
+async def api_get_profile(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await get_document(db, document_id, user.id)
+    result = await get_document_profile(db, document_id)
+    if not result:
+        from app.core.exceptions import NotFound
+        raise NotFound("Document profile not found")
+    return ApiResponse(data=result)
+
+
+@router.post("/documents/compute-relations")
+async def api_compute_relations(
+    payload: RelationComputeRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("editor")),
+):
+    """为文件计算跨文件关联边（第7层，后台任务 kb_relation）。"""
+    return await _enqueue_task(db, "kb_relation", payload.document_id, user.id)
+
+
+@router.get("/documents/{document_id}/relations")
+async def api_get_relations(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await get_document(db, document_id, user.id)
+    result = await get_file_relations(db, document_id)
+    return ApiResponse(data={"relations": result})
+
+
+@router.get("/relation-graph")
+async def api_relation_graph(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    """获取知识网络全景图。"""
+    result = await get_relation_graph(db, user.id)
+    return ApiResponse(data=result)
+
+
+@router.post("/documents/rebuild-graph")
+async def api_rebuild_graph(
+    payload: ProfileRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("editor")),
+):
+    """从融合层重建实体/图谱（第6层，后台任务 kb_graph，防同步超时）。"""
+    import json as _json
+    from app.models.system import SystemTaskQueue
+
+    await get_document(db, payload.document_id, user.id)
+
+    task = SystemTaskQueue(
+        task_type="kb_graph",
+        module="knowledge",
+        parameters=_json.dumps({"document_id": payload.document_id}, ensure_ascii=False),
+        priority=5,
+        status="pending",
+        creator_id=user.id,
+    )
+    db.add(task)
+    await db.commit()
+    return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
+
+
+@router.post("/documents/full-pipeline")
+async def api_full_pipeline(
+    payload: ProfileRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("editor")),
+):
+    """一键全链路：采集→融合→画像→图谱→关联（后台任务 kb_pipeline）。"""
+    import json as _json
+    from app.models.system import SystemTaskQueue
+
+    # 验证文档存在
+    await get_document(db, payload.document_id, user.id)
+
+    task = SystemTaskQueue(
+        task_type="kb_pipeline",
+        module="knowledge",
+        parameters=_json.dumps({"document_id": payload.document_id, "user_id": user.id}, ensure_ascii=False),
+        priority=5,
+        status="pending",
+        creator_id=user.id,
+    )
+    db.add(task)
+    await db.commit()
+    return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
 
 
 @router.post("/search")
@@ -265,6 +495,39 @@ async def api_pending_count(
 # ── Cross-module capabilities ───────────────────────────────
 
 
+async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> ApiResponse:
+    """将派生层任务入队并立即返回。"""
+    import json as _json
+    from app.models.system import SystemTaskQueue
+    from .models import KbDocument
+
+    r = await db.execute(
+        select(KbDocument).where(
+            KbDocument.id == document_id,
+            KbDocument.owner_id == user_id,
+            KbDocument.deleted == False,
+        )
+    )
+    if not r.scalar_one_or_none():
+        from app.core.exceptions import NotFound
+        raise NotFound("Document not found")
+
+    task = SystemTaskQueue(
+        task_type=task_type,
+        module="knowledge",
+        parameters=_json.dumps({"document_id": document_id}, ensure_ascii=False),
+        priority=5,
+        status="pending",
+        creator_id=user_id,
+    )
+    db.add(task)
+    await db.commit()
+    return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
+
+
+# ── Cross-module capabilities ───────────────────────────────
+
+
 async def _cap_search(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     query = str(params.get("query", "")).strip()
@@ -273,7 +536,17 @@ async def _cap_search(params: dict, caller: str) -> dict:
         raise ValueError("query is required")
     async with AsyncSessionLocal() as db:
         results = await hybrid_search(db, query, owner_id, top_k=top_k, use_rerank=False)
-        return {"query": query, "results": results}
+        # 为每个结果补充页级融合内容
+        from .entity_service import get_page_fusion as _get_page_fusion
+        enriched = []
+        for r in results:
+            doc_id = r.get("document_id")
+            page = r.get("page")
+            if doc_id and page:
+                fusion = await _get_page_fusion(db, doc_id, page)
+                r["page_fusion"] = fusion
+            enriched.append(r)
+        return {"query": query, "results": enriched}
 
 
 async def _cap_get_block(params: dict, caller: str) -> dict:

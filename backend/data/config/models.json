@@ -25,6 +25,13 @@
     "local": {
       "type": "local",
       "provider_name": "local"
+    },
+    "mimo": {
+      "type": "openai_compat",
+      "api_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+      "api_key_env": "MIMO_GATE1_KEY",
+      "provider_name": "mimo",
+      "description": "Xiaomi MiMo cloud vision-language model"
     }
   },
 
