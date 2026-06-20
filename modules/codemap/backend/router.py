@@ -22,9 +22,12 @@ from __future__ import annotations
 import logging
 import threading
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import select, func, desc, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_db, AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
@@ -34,6 +37,8 @@ from . import file_lock
 from .graph import get_graph
 from .indexer import get_indexer
 from .watcher import get_watcher
+from .models import CodemapFeedback
+from .init_db import ensure_codemap_tables
 
 logger = logging.getLogger("v2.codemap.router")
 
@@ -62,10 +67,28 @@ def _ensure_initialized() -> None:
         except Exception as exc:
             logger.warning("File watcher failed to start: %s", exc)
 
+        # Ensure database table exists (best-effort, non-blocking)
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_async_ensure_tables())
+        except Exception as exc:
+            logger.warning("Failed to ensure codemap tables: %s", exc)
+
         # Wire up reindex callback for /rebuild endpoint
         get_graph().set_reindex_callback(get_indexer().build_full)
 
         _initialized = True
+
+
+async def _async_ensure_tables() -> None:
+    """Create the codemap_feedback table if it doesn't exist."""
+    try:
+        async with AsyncSessionLocal() as db:
+            await ensure_codemap_tables(db)
+    except Exception as exc:
+        logger.warning("async table ensure failed: %s", exc)
 
 
 _ensure_initialized()
@@ -96,13 +119,100 @@ class SearchRequest(BaseModel):
     keyword: str
 
 
-# ── Helper ───────────────────────────────────────────────────────────────────
+class ReportInaccuracyRequest(BaseModel):
+    path: str
+    query_type: str  # "impact" | "get_file"
+    codemap_said: str = ""
+    actual: str = ""
+    reason: str = ""
+    agent_id: str = ""
+
+
+class ListFeedbackRequest(BaseModel):
+    path: str | None = None
+    page: int = 1
+    page_size: int = 50
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _check_ready() -> dict | None:
     graph = get_graph()
     if not graph.ready:
         return {"success": False, "error": "索引构建中，请稍后重试", "data": {"status": "indexing"}}
     return None
+
+
+async def _load_path_feedback(db: AsyncSession, path: str) -> tuple[int, str]:
+    """Load feedback count and latest reason for a given path."""
+    result = await db.execute(
+        select(func.count(CodemapFeedback.id)).where(CodemapFeedback.path == path)
+    )
+    count = result.scalar() or 0
+    latest_reason = ""
+    if count > 0:
+        result = await db.execute(
+            select(CodemapFeedback.reason)
+            .where(CodemapFeedback.path == path)
+            .order_by(CodemapFeedback.created_at.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            latest_reason = row
+    return count, latest_reason
+
+
+async def _add_reliability_note(result: dict | None, path: str, db: AsyncSession) -> dict | None:
+    """Add reliability_note to a get_file/impact result if the file has issues."""
+    if result is None or isinstance(result, dict) and result.get("error"):
+        return result
+    graph = get_graph()
+    feedback_count, latest_reason = await _load_path_feedback(db, path)
+    note = graph.build_reliability_note(path, feedback_count, latest_reason)
+    if note:
+        result["reliability_note"] = note
+    return result
+
+
+# ── Query count helpers (DB-persisted, cross-worker consistent) ───────────────
+
+_tables_ensured = False
+_tables_ensured_lock = threading.Lock()
+
+
+async def _ensure_tables_once(db: AsyncSession) -> None:
+    """Idempotent: ensure codemap_metrics table exists on first call.
+    Handles the case where _async_ensure_tables() couldn't run at import time
+    (no running event loop in the import thread)."""
+    global _tables_ensured
+    if _tables_ensured:
+        return
+    with _tables_ensured_lock:
+        if _tables_ensured:
+            return
+        await ensure_codemap_tables(db)
+        _tables_ensured = True
+
+
+async def _increment_query_count(db: AsyncSession) -> None:
+    """Atomically increment the global query counter in DB."""
+    await _ensure_tables_once(db)
+    await db.execute(
+        text("UPDATE codemap_metrics SET query_count = query_count + 1 WHERE id = 1")
+    )
+    await db.commit()
+
+
+async def _get_query_count(db: AsyncSession) -> int:
+    """Read the persisted query counter from DB."""
+    await _ensure_tables_once(db)
+    result = await db.execute(
+        text("SELECT query_count FROM codemap_metrics WHERE id = 1")
+    )
+    row = result.scalar_one_or_none()
+    return row if row is not None else 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,23 +231,49 @@ async def health():
 
 
 @router.get("/stats")
-async def http_stats(user: User = Depends(require_permission("viewer"))):
+async def http_stats(user: User = Depends(require_permission("viewer")), db: AsyncSession = Depends(get_db)):
     graph = get_graph()
-    return ApiResponse(data=graph.stats())
+    stats = graph.stats()
+    # Enrich with DB feedback data and persisted query count
+    qc = await _get_query_count(db)
+    stats["query_count"] = qc
+    result = await db.execute(select(func.count(CodemapFeedback.id)))
+    feedback_count = result.scalar() or 0
+    stats["feedback_count"] = feedback_count
+    stats["empirical_accuracy"] = max(0, 100 - int(feedback_count * 100 / max(qc, 1))) if qc > 0 else 100
+    if feedback_count > 0:
+        result = await db.execute(
+            select(CodemapFeedback)
+            .order_by(CodemapFeedback.created_at.desc())
+            .limit(5)
+        )
+        stats["recent_complaints"] = [
+            {
+                "path": r.path,
+                "query_type": r.query_type,
+                "reason": r.reason[:100],
+                "created_at": str(r.created_at),
+            }
+            for r in result.scalars().all()
+        ]
+    return ApiResponse(data=stats)
 
 
 @router.post("/get-file")
 async def http_get_file(
     body: GetFileRequest,
     user: User = Depends(require_permission("viewer")),
+    db: AsyncSession = Depends(get_db),
 ):
     not_ready = _check_ready()
     if not_ready:
         return ApiResponse(**not_ready)
     graph = get_graph()
+    await _increment_query_count(db)
     result = graph.get_file(body.path)
     if result is None:
         return ApiResponse(success=False, error=f"File not found: {body.path}", data=None)
+    result = await _add_reliability_note(result, body.path, db)
     return ApiResponse(data=result)
 
 
@@ -145,12 +281,15 @@ async def http_get_file(
 async def http_impact(
     body: ImpactRequest,
     user: User = Depends(require_permission("viewer")),
+    db: AsyncSession = Depends(get_db),
 ):
     not_ready = _check_ready()
     if not_ready:
         return ApiResponse(**not_ready)
     graph = get_graph()
+    await _increment_query_count(db)
     result = graph.impact(body.path, body.symbol)
+    result = await _add_reliability_note(result, body.path, db)
     return ApiResponse(data=result)
 
 
@@ -244,6 +383,102 @@ async def http_list_locks(user: User = Depends(require_permission("viewer"))):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Feedback & Maintenance Endpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/report-inaccuracy")
+async def http_report_inaccuracy(
+    body: ReportInaccuracyRequest,
+    user: User = Depends(require_permission("viewer")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Agent 实读验证后发现 codemap 不准时，调用此接口记录一条反馈。"""
+    feedback = CodemapFeedback(
+        path=body.path,
+        query_type=body.query_type,
+        codemap_said=body.codemap_said,
+        actual=body.actual,
+        reason=body.reason,
+        agent_id=body.agent_id or f"user:{user.id}",
+    )
+    db.add(feedback)
+    await db.commit()
+    logger.info("Feedback recorded: path=%s type=%s reason=%s", body.path, body.query_type, body.reason[:80])
+    return ApiResponse(data={"id": feedback.id, "message": "反馈已记录"})
+
+
+@router.get("/list-feedback")
+async def http_list_feedback(
+    path: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    user: User = Depends(require_permission("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出 codemap 反馈记录。仅 admin。可按 path 过滤、按频次排序。"""
+    if path:
+        # Filter by path, ordered by recency
+        result = await db.execute(
+            select(CodemapFeedback)
+            .where(CodemapFeedback.path == path)
+            .order_by(CodemapFeedback.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = result.scalars().all()
+    else:
+        # Aggregate by path, sorted by complaint count desc
+        result = await db.execute(
+            select(
+                CodemapFeedback.path,
+                func.count(CodemapFeedback.id).label("count"),
+            )
+            .group_by(CodemapFeedback.path)
+            .order_by(desc("count"))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = result.all()
+        aggregated = [{"path": r[0], "complaint_count": r[1]} for r in rows]
+        # For each path, get the latest reason
+        for entry in aggregated:
+            r = await db.execute(
+                select(CodemapFeedback.reason)
+                .where(CodemapFeedback.path == entry["path"])
+                .order_by(CodemapFeedback.created_at.desc())
+                .limit(1)
+            )
+            row = r.scalar_one_or_none()
+            if row:
+                entry["latest_reason"] = row
+        return ApiResponse(data={
+            "items": aggregated,
+            "aggregated_by_path": True,
+            "page": page,
+            "page_size": page_size,
+        })
+
+    return ApiResponse(data={
+        "items": [
+            {
+                "id": f.id,
+                "path": f.path,
+                "query_type": f.query_type,
+                "codemap_said": f.codemap_said[:200],
+                "actual": f.actual[:200],
+                "reason": f.reason,
+                "agent_id": f.agent_id,
+                "created_at": str(f.created_at),
+            }
+            for f in items
+        ],
+        "total": len(items),
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Cross-module capabilities (registered with framework registry)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -255,6 +490,16 @@ async def _cap_get_file(params: dict, caller: str) -> dict:
     result = graph.get_file(path)
     if result is None:
         return {"success": False, "error": f"File not found: {path}"}
+    # Add reliability note + persistent query count increment
+    try:
+        async with AsyncSessionLocal() as db:
+            feedback_count, latest_reason = await _load_path_feedback(db, path)
+            note = graph.build_reliability_note(path, feedback_count, latest_reason)
+            if note:
+                result["reliability_note"] = note
+            await _increment_query_count(db)
+    except Exception:
+        pass
     return {"success": True, "data": result}
 
 
@@ -264,7 +509,18 @@ async def _cap_impact(params: dict, caller: str) -> dict:
         return {"success": False, "error": "索引构建中"}
     path = params.get("path", "")
     symbol = params.get("symbol")
-    return {"success": True, "data": graph.impact(path, symbol)}
+    result = graph.impact(path, symbol)
+    # Add reliability note + persistent query count increment
+    try:
+        async with AsyncSessionLocal() as db:
+            feedback_count, latest_reason = await _load_path_feedback(db, path)
+            note = graph.build_reliability_note(path, feedback_count, latest_reason)
+            if note:
+                result["reliability_note"] = note
+            await _increment_query_count(db)
+    except Exception:
+        pass
+    return {"success": True, "data": result}
 
 
 async def _cap_check_boundary(params: dict, caller: str) -> dict:
@@ -294,7 +550,28 @@ async def _cap_search(params: dict, caller: str) -> dict:
 
 async def _cap_stats(params: dict, caller: str) -> dict:
     graph = get_graph()
-    return {"success": True, "data": graph.stats()}
+    stats = graph.stats()
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(func.count(CodemapFeedback.id)))
+            feedback_count = result.scalar() or 0
+            qc = await _get_query_count(db)
+            stats["query_count"] = qc
+            stats["feedback_count"] = feedback_count
+            stats["empirical_accuracy"] = max(0, 100 - int(feedback_count * 100 / max(qc, 1))) if qc > 0 else 100
+            if feedback_count > 0:
+                result = await db.execute(
+                    select(CodemapFeedback)
+                    .order_by(CodemapFeedback.created_at.desc())
+                    .limit(5)
+                )
+                stats["recent_complaints"] = [
+                    {"path": r.path, "query_type": r.query_type, "reason": r.reason[:100], "created_at": str(r.created_at)}
+                    for r in result.scalars().all()
+                ]
+    except Exception:
+        pass
+    return {"success": True, "data": stats}
 
 
 async def _cap_rebuild(params: dict, caller: str) -> dict:
@@ -320,6 +597,75 @@ async def _cap_release_lock(params: dict, caller: str) -> dict:
 
 async def _cap_list_locks(params: dict, caller: str) -> dict:
     return file_lock.list_locks()
+
+
+# ── Feedback capability handlers ─────────────────────────────────────────────
+
+async def _cap_report_inaccuracy(params: dict, caller: str) -> dict:
+    """Report codemap inaccuracy feedback."""
+    path = params.get("path", "")
+    query_type = params.get("query_type", "")
+    codemap_said = params.get("codemap_said", "")
+    actual = params.get("actual", "")
+    reason = params.get("reason", "")
+    agent_id = params.get("agent_id", caller)
+    try:
+        async with AsyncSessionLocal() as db:
+            feedback = CodemapFeedback(
+                path=path, query_type=query_type, codemap_said=codemap_said,
+                actual=actual, reason=reason, agent_id=agent_id,
+            )
+            db.add(feedback)
+            await db.commit()
+            return {"success": True, "data": {"id": feedback.id, "message": "反馈已记录"}}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def _cap_list_feedback(params: dict, caller: str) -> dict:
+    """List feedback (admin only, enforced by capability min_role)."""
+    path = params.get("path")
+    page = params.get("page", 1)
+    page_size = params.get("page_size", 50)
+    try:
+        async with AsyncSessionLocal() as db:
+            if path:
+                result = await db.execute(
+                    select(CodemapFeedback)
+                    .where(CodemapFeedback.path == path)
+                    .order_by(CodemapFeedback.created_at.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+                items = [
+                    {"id": f.id, "path": f.path, "query_type": f.query_type,
+                     "reason": f.reason, "agent_id": f.agent_id, "created_at": str(f.created_at)}
+                    for f in result.scalars().all()
+                ]
+                return {"success": True, "data": {"items": items}}
+            else:
+                result = await db.execute(
+                    select(CodemapFeedback.path, func.count(CodemapFeedback.id).label("count"))
+                    .group_by(CodemapFeedback.path)
+                    .order_by(desc("count"))
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+                rows = result.all()
+                aggregated = [{"path": r[0], "complaint_count": r[1]} for r in rows]
+                for entry in aggregated:
+                    r = await db.execute(
+                        select(CodemapFeedback.reason)
+                        .where(CodemapFeedback.path == entry["path"])
+                        .order_by(CodemapFeedback.created_at.desc())
+                        .limit(1)
+                    )
+                    row = r.scalar_one_or_none()
+                    if row:
+                        entry["latest_reason"] = row
+                return {"success": True, "data": {"items": aggregated, "aggregated_by_path": True}}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 # Register all capabilities
@@ -439,4 +785,35 @@ register_capability(
     description="列出所有活跃文件锁",
     parameters={"type": "object", "properties": {}},
     min_role="viewer",
+)
+
+register_capability(
+    "codemap", "report_inaccuracy", _cap_report_inaccuracy,
+    description="报告 codemap 查询结果与实际不符：提交文件路径、codemap 说的、实际情况、原因。Agent 实读验证后发现不准时调用",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "有问题的文件路径"},
+            "query_type": {"type": "string", "description": "查询类型: impact / get_file"},
+            "codemap_said": {"type": "string", "description": "codemap 返回的内容摘要"},
+            "actual": {"type": "string", "description": "实际内容或影响"},
+            "reason": {"type": "string", "description": "为什么不准"},
+        },
+        "required": ["path", "query_type"],
+    },
+    min_role="viewer",
+)
+
+register_capability(
+    "codemap", "list_feedback", _cap_list_feedback,
+    description="列出 codemap 的反馈记录。可按 path 过滤，按投诉频次排序。仅管理员。维修 codemap 前先查此接口定解析缺陷",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "按路径过滤（可选）"},
+            "page": {"type": "integer", "description": "页码", "default": 1},
+            "page_size": {"type": "integer", "description": "每页条数", "default": 50},
+        },
+    },
+    min_role="admin",
 )

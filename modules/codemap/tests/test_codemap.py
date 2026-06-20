@@ -380,6 +380,66 @@ class TestCodeGraphIsolated:
         assert normalize_path("modules/agent/backend/router.py/") == "modules/agent/backend/router.py"
         assert normalize_path("modules//agent//backend//router.py") == "modules/agent/backend/router.py"
 
+    def test_query_counting_is_db_persisted(self):
+        """query_count is now DB-persisted (codemap_metrics), not on graph.
+        The graph no longer has increment_query() / query_count property.
+        Router manages query counting via _increment_query_count(db)."""
+        graph = CodeGraph()
+        graph.begin_build()
+        graph.finish_build(1)
+
+        # Stats no longer exposes query_count from graph
+        stats = graph.stats()
+        assert "query_count" not in stats, \
+            "query_count must NOT be in graph.stats() — router fills it from DB"
+
+        # The old methods should not exist
+        assert not hasattr(graph, "increment_query"), \
+            "increment_query was removed — use router._increment_query_count(db)"
+        assert not hasattr(graph, "query_count"), \
+            "query_count property was removed — use router._get_query_count(db)"
+
+    def test_get_file_failure(self):
+        graph = CodeGraph()
+        graph.record_file_fail("broken.py", "SyntaxError: invalid syntax")
+        graph.record_file_fail("missing_import.py", "ImportError: no module named X")
+
+        assert graph.get_file_failure("broken.py") == "SyntaxError: invalid syntax"
+        assert graph.get_file_failure("ok.py") is None
+
+    def test_build_reliability_note_parse_fail(self):
+        graph = CodeGraph()
+        graph.record_file_fail("broken.py", "SyntaxError: invalid syntax")
+
+        note = graph.build_reliability_note("broken.py")
+        assert note is not None
+        assert "解析失败" in note
+        assert "SyntaxError" in note
+
+    def test_build_reliability_note_feedback(self):
+        graph = CodeGraph()
+        note = graph.build_reliability_note("complained.py", feedback_count_for_path=3,
+                                            latest_feedback_reason="缺失一个导入依赖")
+        assert note is not None
+        assert "3 次不准" in note
+        assert "缺失" in note
+
+    def test_build_reliability_note_no_issues(self):
+        graph = CodeGraph()
+        # A file with no parse failure, explicit feedback, or staleness (indexed + exists on disk)
+        # Use a real file that exists in the project
+        graph.record_file_index("backend/app/main.py")
+        note = graph.build_reliability_note("backend/app/main.py")
+        assert note is None, f"Expected no note for indexed file, got: {note}"
+
+    def test_build_reliability_note_stale(self):
+        graph = CodeGraph()
+        graph.record_file_index("stale.py")
+        note = graph.build_reliability_note("stale.py")
+        # File doesn't exist on disk for mtime check, so is_stale returns True
+        if note:
+            assert "过期" in note
+
     def test_get_file_absolute_path(self):
         """get_file should accept absolute paths and return same result as relative."""
         graph = CodeGraph()

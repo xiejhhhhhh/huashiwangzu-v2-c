@@ -35,9 +35,9 @@ modules/codemap/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/codemap/health` | 健康检查 |
-| GET | `/api/codemap/stats` | 索引统计（含 confidence/解析失败/新鲜度） |
-| POST | `/api/codemap/get-file` | 文件级代码地图（含 stale 标记） |
-| POST | `/api/codemap/impact` | 影响面分析（传递闭包，含 stale 标记） |
+| GET | `/api/codemap/stats` | 索引统计（含 confidence/解析失败/新鲜度/实战信任分） |
+| POST | `/api/codemap/get-file` | 文件级代码地图（含 stale 标记 + reliability_note） |
+| POST | `/api/codemap/impact` | 影响面分析（传递闭包，含 stale 标记 + reliability_note） |
 | POST | `/api/codemap/check-boundary` | 边界合规检查 |
 | POST | `/api/codemap/module-map` | 模块总览 |
 | POST | `/api/codemap/search` | 关键词搜索 |
@@ -46,22 +46,26 @@ modules/codemap/
 | POST | `/api/codemap/check-lock` | 检查文件锁 |
 | POST | `/api/codemap/release-lock` | 释放文件锁 |
 | GET | `/api/codemap/list-locks` | 列出所有活跃锁 |
+| **POST** | **`/api/codemap/report-inaccuracy`** | **反馈 codemap 查询不准（Agent 实读验证后调用）** |
+| **GET** | **`/api/codemap/list-feedback`** | **查看反馈记录（仅 admin，按投诉频次排序）** |
 
 ## 跨模块能力（供 Agent 技能发现器使用）
 
 | 能力 key | 入参 | 返回 |
 |----------|------|------|
-| `codemap:get_file` | `{path}` | 文件节点、依赖、被依赖、能力、表、stale |
-| `codemap:impact` | `{path, symbol?}` | 正向+反向传递闭包、风险等级、stale |
+| `codemap:get_file` | `{path}` | 文件节点、依赖、被依赖、能力、表、stale、**reliability_note** |
+| `codemap:impact` | `{path, symbol?}` | 正向+反向传递闭包、风险等级、stale、**reliability_note** |
 | `codemap:check_boundary` | `{path? , module_key?}` | 违规清单或"合规" |
 | `codemap:module_map` | `{module_key}` | 暴露/消费的能力、边界健康 |
 | `codemap:search` | `{keyword}` | 匹配的文件和符号 |
-| `codemap:stats` | `{}` | 索引规模、耗时、就绪状态、confidence |
+| `codemap:stats` | `{}` | 索引规模、耗时、就绪状态、confidence、**empirical_accuracy/feedback_count/recent_complaints** |
 | `codemap:rebuild` | `{}` | 全量重建索引（admin） |
 | `codemap:acquire_lock` | `{path, agent_id, ttl?}` | 获取文件锁 |
 | `codemap:check_lock` | `{path}` | 检查文件锁 |
 | `codemap:release_lock` | `{path}` | 释放文件锁 |
 | `codemap:list_locks` | `{}` | 列出所有活跃锁 |
+| **`codemap:report_inaccuracy`** | `{path, query_type, codemap_said, actual, reason}` | **记录反馈（Agent 发现不准时调用）** |
+| **`codemap:list_feedback`** | `{path?, page?, page_size?}` | **查看反馈（仅 admin，按投诉频次排序）** |
 
 ## 查询示例
 
@@ -82,7 +86,19 @@ curl -X POST http://127.0.0.1:33000/api/codemap/check-boundary \
   -d '{"module_key": "agent"}'
 ```
 
-## 文件锁协作约定
+### 维修 codemap 前先查反馈
+
+不要空想哪里不准。先查 `GET /api/codemap/list-feedback`（仅 admin），按投诉频次排序，定位高频投诉的路径和解析缺陷，然后针对性修。
+
+反馈落库在 PostgreSQL `codemap_feedback` 表（`codemap_` 前缀，跨 worker 一致），每个反馈记录文件路径、查询类型、codemap 说的、实际情况、原因。Agent 实读验证后调 `POST /api/codemap/report-inaccuracy` 记录。
+
+## 经验信任分
+
+stats 返回两个分：
+- `confidence`：静态解析覆盖率（基于就绪+解析成功率+新鲜度）
+- `empirical_accuracy`：实战命中率（基于 `1 - 投诉/窗口内查询次数`），0-100。区分自评分和实战分。
+
+`get_file` 和 `impact` 返回 `reliability_note`：若该文件解析失败/索引过期/被投诉过，附加人话说明原因。没有问题不加 note。
 
 并行任务（多 Agent 改文件）应遵循：
 1. 改文件前先 `check_lock` 检查目标文件是否被锁

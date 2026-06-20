@@ -307,6 +307,36 @@ class CodeGraph:
         """Set a callback to trigger a full rebuild from outside."""
         self._reindex_callback = cb
 
+    def get_file_failure(self, file_path: str) -> str | None:
+        """Return the parse error message for a file if it failed to parse, else None."""
+        for entry in self._failed_files:
+            if entry["path"] == file_path:
+                return entry["error"]
+        return None
+
+    # ── Reliability note ──────────────────────────────────────────────
+
+    def build_reliability_note(
+        self,
+        path: str,
+        feedback_count_for_path: int = 0,
+        latest_feedback_reason: str = "",
+    ) -> str | None:
+        """Build a human-readable note about why this file's data may be unreliable."""
+        notes: list[str] = []
+
+        fail_reason = self.get_file_failure(path)
+        if fail_reason:
+            notes.append(f"该文件解析失败: {fail_reason}，依赖可能不全")
+
+        if self.is_file_stale(path):
+            notes.append("索引可能过期，建议实读或 rebuild")
+
+        if feedback_count_for_path > 0:
+            notes.append(f"该文件曾被反馈 {feedback_count_for_path} 次不准，最近原因: {latest_feedback_reason}")
+
+        return "；".join(notes) if notes else None
+
     def reindex_now(self) -> None:
         """Trigger a full rebuild via the registered callback."""
         if self._reindex_callback:
@@ -658,6 +688,9 @@ class CodeGraph:
                 "failed_files": self._failed_files[:50],
                 "freshness_hours": round(freshness_hours, 1) if freshness_hours >= 0 else None,
                 "confidence": confidence,
+                "empirical_accuracy": None,     # filled by router from DB feedback
+                "feedback_count": None,          # filled by router from DB feedback
+                "recent_complaints": [],          # filled by router from DB feedback
             }
 
 
