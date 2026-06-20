@@ -2,7 +2,7 @@
   <div class="kb-app">
     <!-- 左侧：工作台入口 + 文件树 -->
     <aside class="kb-side">
-      <button class="ws-btn" @click="showWorkspace = true; active = null">
+      <button class="ws-btn" @click="openWorkspace">
         🏠 工作台
       </button>
 
@@ -238,9 +238,15 @@ async function loadGlobalGraph() {
     const g = await getRelationGraph()
     graphData.value = g
     relationCount.value = g.edges.length
-    await nextTick()
-    if (g.nodes.length) renderGraph()
+    // 如果工作台已打开，立即渲染；否则等 openWorkspace 触发
+    if (showWorkspace.value && g.nodes.length) { await nextTick(); renderGraph() }
   } catch { /* ignore */ }
+}
+
+function openWorkspace() {
+  showWorkspace.value = true
+  active.value = null
+  if (graphData.value.nodes.length) nextTick(() => renderGraph())
 }
 
 function renderGraph() {
@@ -268,6 +274,8 @@ function renderGraph() {
   layoutNodes.forEach(n => nodeMap.set(n.id, n))
   const maxScore = Math.max(1, ...edges.map(e => e.similarity_score))
 
+  // 预热：先跑 80 帧让节点散开，再开始渲染
+  let warmup = 80
   function tick() {
     const kRepel = 800, kAttract = 0.003, kCenter = 0.001, damp = 0.85
     for (const a of layoutNodes) {
@@ -293,27 +301,40 @@ function renderGraph() {
       n.x = Math.max(40, Math.min(W - 40, n.x)); n.y = Math.max(20, Math.min(H - 20, n.y))
     }
 
+    // 预热阶段不画
+    if (warmup > 0) { warmup--; graphAnimationId = requestAnimationFrame(tick); return }
+
     const posMap = new Map<number, { x: number; y: number }>()
     for (const n of layoutNodes) posMap.set(n.id, { x: n.x, y: n.y })
     layoutPositions.value = posMap
 
     ctx.clearRect(0, 0, W, H)
+    // 画边
     for (const e of edges) {
       const s = nodeMap.get(e.source), t = nodeMap.get(e.target)
       if (!s || !t) continue
-      const alpha = 0.15 + (e.similarity_score / maxScore) * 0.5
-      const width = 1 + (e.similarity_score / maxScore) * 3
+      const alpha = 0.12 + (e.similarity_score / maxScore) * 0.45
+      const width = 1 + (e.similarity_score / maxScore) * 4
       ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y)
       ctx.strokeStyle = `rgba(35,149,188,${alpha})`; ctx.lineWidth = width; ctx.stroke()
     }
+    // 画节点
     for (const n of layoutNodes) {
-      ctx.beginPath(); ctx.arc(n.x, n.y, 18, 0, Math.PI * 2)
+      // 光晕
+      const grad = ctx.createRadialGradient(n.x, n.y, 6, n.x, n.y, 22)
+      grad.addColorStop(0, 'rgba(35,149,188,0.3)')
+      grad.addColorStop(1, 'rgba(35,149,188,0)')
+      ctx.beginPath(); ctx.arc(n.x, n.y, 22, 0, Math.PI * 2)
+      ctx.fillStyle = grad; ctx.fill()
+      // 节点圆
+      ctx.beginPath(); ctx.arc(n.x, n.y, 14, 0, Math.PI * 2)
       ctx.fillStyle = '#2395bc'; ctx.fill()
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke()
-      ctx.fillStyle = '#fff'; ctx.font = '11px 苹方,"微软雅黑",sans-serif'
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke()
+      // 标签
+      ctx.fillStyle = '#46586b'; ctx.font = '11px 苹方,"微软雅黑",sans-serif'
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-      const label = n.label.length > 8 ? n.label.slice(0, 8) + '…' : n.label
-      ctx.fillText(label, n.x, n.y + 28)
+      const label = n.label.length > 10 ? n.label.slice(0, 10) + '…' : n.label
+      ctx.fillText(label, n.x, n.y + 26)
     }
     graphAnimationId = requestAnimationFrame(tick)
   }
@@ -569,12 +590,12 @@ onUnmounted(() => { stopPolling(); if (graphAnimationId) cancelAnimationFrame(gr
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* 主区 */
-.kb-main { display: flex; flex-direction: column; min-width: 0; padding: 18px 20px; gap: 14px; overflow: hidden; }
+.kb-main { display: flex; flex-direction: column; min-width: 0; padding: 18px 20px; gap: 14px; overflow: hidden; height: 100%; }
 
-.ws-header { display: flex; align-items: baseline; gap: 12px; }
+.ws-header { display: flex; align-items: baseline; gap: 12px; flex: none; }
 .ws-header h2 { margin: 0; font-size: 18px; color: #1c3a4a; }
 .ws-sub { font-size: 12px; color: #8aa0b5; }
-.graph-container { flex: 1; min-height: 0; border: 1px solid #e3e9f2; border-radius: 12px; background: #fff; overflow: hidden; position: relative; }
+.graph-container { flex: 1; min-height: 200px; border: 1px solid #e3e9f2; border-radius: 12px; background: #fff; overflow: hidden; position: relative; }
 .graph-container canvas { display: block; }
 
 .main-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #e3e9f2; }
