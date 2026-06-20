@@ -266,20 +266,9 @@ function renderGraph() {
   canvas.style.height = H + 'px'
 
   const ctx = canvas.getContext('2d')!
-  // 直接用 CSS 坐标画，不缩放——简单可靠
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-  // 背景网格
-  ctx.fillStyle = '#fafcfd'
-  ctx.fillRect(0, 0, W, H)
-  ctx.strokeStyle = '#e8eef4'
-  ctx.lineWidth = 0.5
-  const gridSize = 40
-  for (let x = gridSize; x < W; x += gridSize) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke() }
-  for (let y = gridSize; y < H; y += gridSize) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke() }
-
   const { nodes, edges } = graphData.value
-
   if (!nodes.length) {
     ctx.fillStyle = '#9aabbd'; ctx.font = '14px 苹方,"微软雅黑",sans-serif'
     ctx.textAlign = 'center'; ctx.fillText('暂无数据', W/2, H/2)
@@ -287,17 +276,29 @@ function renderGraph() {
   }
 
   const cx = W / 2, cy = H / 2
+
+  // ═══ 背景：深色星空 ═══
+  ctx.fillStyle = '#0a1628'
+  ctx.fillRect(0, 0, W, H)
+  const starCount = Math.floor(W * H / 180)
+  for (let i = 0; i < starCount; i++) {
+    const sx = Math.random() * W, sy = Math.random() * H
+    const r = Math.random() * 1.2
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255,255,255,${0.15 + Math.random() * 0.4})`; ctx.fill()
+  }
+
+  // ═══ 力导向布局 ═══
   const layout: Array<{ id: number; label: string; x: number; y: number; vx: number; vy: number }> = nodes.map((n, i) => {
     const angle = (i / nodes.length) * Math.PI * 2 - Math.PI / 2
-    const r = Math.min(W, H) * 0.3
+    const r = Math.min(W, H) * 0.25
     return { id: n.id, label: n.label, x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r, vx: 0, vy: 0 }
   })
   const nmap = new Map<number, typeof layout[0]>()
   layout.forEach(n => nmap.set(n.id, n))
   const maxSim = Math.max(1, ...edges.map(e => e.similarity_score))
 
-  // 物理迭代
-  for (let iter = 0; iter < 120; iter++) {
+  for (let iter = 0; iter < 150; iter++) {
     for (let a = 0; a < layout.length; a++) {
       for (let b = a + 1; b < layout.length; b++) {
         const dx = layout[b].x - layout[a].x, dy = layout[b].y - layout[a].y
@@ -330,51 +331,47 @@ function renderGraph() {
   layout.forEach(n => posMap.set(n.id, { x: n.x, y: n.y }))
   layoutPositions.value = posMap
 
-  // ── 绘制 ──
-  // 边
+  // ═══ 绘制：边（发光层 + 主线） ═══
   for (const e of edges) {
     const s = nmap.get(e.source), t = nmap.get(e.target)
     if (!s || !t) continue
     const sim = e.similarity_score / maxSim
-    const alpha = 0.08 + sim * 0.3
-    const lw = 1 + sim * 4
+    // 发光层
+    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y)
+    ctx.strokeStyle = `rgba(35,149,188,${0.04 + sim * 0.12})`
+    ctx.lineWidth = 3 + sim * 8; ctx.stroke()
     // 主线
     ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y)
-    ctx.strokeStyle = `rgba(35,149,188,${alpha})`
-    ctx.lineWidth = lw; ctx.stroke()
-    // 相关度标签（中点）
-    if (sim > 0.5) {
-      const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2
-      ctx.fillStyle = '#2395bc'; ctx.font = '10px 苹方,"微软雅黑",sans-serif'
-      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-      ctx.fillText(Math.round(sim * 100) + '%', mx, my - 4)
-    }
+    ctx.strokeStyle = `rgba(49,161,198,${0.2 + sim * 0.5})`
+    ctx.lineWidth = 0.8 + sim * 2.5; ctx.stroke()
   }
 
-  // 节点 — 星球风格
+  // ═══ 绘制：节点球体 ═══
+  const R = 16
   for (const n of layout) {
     if (!isFinite(n.x) || !isFinite(n.y)) continue
-    const R = 20
     // 光晕
-    const glow = ctx.createRadialGradient(n.x, n.y, R * 0.4, n.x, n.y, R * 1.6)
-    glow.addColorStop(0, 'rgba(35,149,188,0.25)')
+    const glow = ctx.createRadialGradient(n.x, n.y, R * 0.2, n.x, n.y, R * 2.2)
+    glow.addColorStop(0, 'rgba(35,149,188,0.35)')
+    glow.addColorStop(0.5, 'rgba(35,149,188,0.06)')
     glow.addColorStop(1, 'rgba(35,149,188,0)')
-    ctx.beginPath(); ctx.arc(n.x, n.y, R * 1.6, 0, Math.PI * 2)
+    ctx.beginPath(); ctx.arc(n.x, n.y, R * 2.2, 0, Math.PI * 2)
     ctx.fillStyle = glow; ctx.fill()
     // 球体
-    const sphere = ctx.createRadialGradient(n.x - R * 0.3, n.y - R * 0.35, R * 0.05, n.x, n.y, R)
-    sphere.addColorStop(0, '#ffffff')
-    sphere.addColorStop(0.25, '#a3dfef')
-    sphere.addColorStop(0.55, '#2395bc')
-    sphere.addColorStop(1, '#155d75')
+    const ball = ctx.createRadialGradient(n.x - R * 0.25, n.y - R * 0.3, R * 0.05, n.x, n.y, R)
+    ball.addColorStop(0, '#ffffff')
+    ball.addColorStop(0.15, '#c2ecf7')
+    ball.addColorStop(0.45, '#2395bc')
+    ball.addColorStop(0.75, '#126885')
+    ball.addColorStop(1, '#0a3545')
     ctx.beginPath(); ctx.arc(n.x, n.y, R, 0, Math.PI * 2)
-    ctx.fillStyle = sphere; ctx.fill()
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5; ctx.stroke()
+    ctx.fillStyle = ball; ctx.fill()
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1; ctx.stroke()
     // 标签
-    ctx.fillStyle = '#1f2a37'; ctx.font = '12px 苹方,"微软雅黑",sans-serif'
+    ctx.fillStyle = '#c8d6e5'; ctx.font = '11px 苹方,"微软雅黑",sans-serif'
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'
     const txt = n.label.length > 12 ? n.label.slice(0, 12) + '…' : n.label
-    ctx.fillText(txt, n.x, n.y + R + 6)
+    ctx.fillText(txt, n.x, n.y + R + 8)
   }
 }
 
@@ -631,7 +628,7 @@ onUnmounted(stopPolling)
 .ws-header { display: flex; align-items: baseline; gap: 12px; flex: none; }
 .ws-header h2 { margin: 0; font-size: 18px; color: #1c3a4a; }
 .ws-sub { font-size: 12px; color: #8aa0b5; }
-.graph-container { flex: 1; min-height: 200px; border: 1px solid #e3e9f2; border-radius: 12px; background: #fff; overflow: hidden; position: relative; }
+.graph-container { flex: 1; min-height: 200px; border: 1px solid #1a2d42; border-radius: 12px; background: #0a1628; overflow: hidden; position: relative; }
 .graph-container canvas { display: block; }
 
 .main-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #e3e9f2; }
