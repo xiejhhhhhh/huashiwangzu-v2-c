@@ -73,6 +73,13 @@ export function buildEdges(
   }
 }
 
+/** Strip alpha from an rgba() string, returning the rgb() part */
+function rgbaToRgb(color: string): string {
+  const m = color.match(/^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*[\d.]+\s*\)$/)
+  if (m) return `rgb(${m[1]},${m[2]},${m[3]})`
+  return color
+}
+
 /** Build a single LineSegments from a set of edges */
 function buildLineSegments(
   edgeList: GraphEdge[],
@@ -92,7 +99,7 @@ function buildLineSegments(
   geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
 
   const mat = new THREE.LineBasicMaterial({
-    color,
+    color: rgbaToRgb(color),
     transparent: true,
     opacity: 1,
     linewidth: lineWidth,
