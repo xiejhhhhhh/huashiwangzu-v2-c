@@ -1,3 +1,4 @@
+import logging
 import io
 import zipfile
 from fastapi import APIRouter, Depends, UploadFile, File as FastAPIFile, Form
@@ -11,6 +12,8 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.services import file_upload_service, file_preview_service, file_service
 from app.services import file_share_service
+
+logger = logging.getLogger("v2.file_transfer")
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200MB 上传上限，防 OOM
 
@@ -37,6 +40,17 @@ async def upload(file: UploadFile = FastAPIFile(...), folder_id: int = Form(0), 
     rp = relative_path.strip() if relative_path else None
     target_folder = folder_id if folder_id > 0 else None
     result = await file_upload_service.upload_file(db, io.BytesIO(content), file.filename, user.id, target_folder, rp)
+    # ── 上传完成，尽力而为通知知识库登记分析（不阻塞上传） ──
+    try:
+        from app.services.module_registry import call_capability
+        await call_capability(
+            "knowledge", "ingest",
+            {"file_id": result["id"]},
+            caller=f"user:{user.id}",
+            caller_role=user.role,
+        )
+    except Exception as exc:
+        logger.warning("Knowledge ingest skipped for file_id=%d: %s", result["id"], exc)
     return ApiResponse(data=UploadResponse(**result))
 
 

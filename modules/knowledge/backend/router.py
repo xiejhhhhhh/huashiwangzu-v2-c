@@ -880,3 +880,57 @@ register_capability(
     parameters={"entity_id": {"type": "integer", "description": "Entity ID"}},
     min_role="viewer",
 )
+
+# ── 入库能力（供上传桥接用，对外暴露，编辑以上角色可调） ──
+
+INGEST_EXTENSIONS = {
+    "pdf", "docx", "pptx", "xlsx", "csv", "txt", "md",
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg",
+}
+
+
+async def _cap_ingest(params: dict, caller: str) -> dict:
+    """把已上传文件登记进知识库并触发后台分析（幂等、类型白名单）。"""
+    from .document_service import register_document
+    from .models import KbDocument
+    from app.models.file import File
+
+    owner_id = resolve_user_id(caller)
+    file_id = int(params.get("file_id", 0) or 0)
+    if file_id <= 0:
+        return {"skipped": True, "reason": "invalid file_id"}
+
+    async with AsyncSessionLocal() as db:
+        # 类型白名单判断：先查文件扩展名
+        fr = await db.execute(select(File).where(File.id == file_id))
+        file = fr.scalar_one_or_none()
+        if not file:
+            return {"skipped": True, "reason": "file not found"}
+        ext = (file.extension or "").lower().strip(".")
+        if ext not in INGEST_EXTENSIONS:
+            logger.info("ingest skipped: unsupported extension '%s' for file_id=%d", ext, file_id)
+            return {"skipped": True, "reason": f"unsupported extension '{ext}'"}
+
+        # 已存在则返回现有记录
+        existing_r = await db.execute(
+            select(KbDocument).where(
+                KbDocument.file_id == file_id,
+                KbDocument.owner_id == owner_id,
+                KbDocument.deleted == False,
+            )
+        )
+        existing = existing_r.scalar_one_or_none()
+        if existing:
+            return {"document_id": existing.id, "enqueued": False, "reason": "already registered"}
+
+        # register_document 幂等且自动入队 kb_pipeline
+        result = await register_document(db, file_id, owner_id, catalog_id=None)
+        return {"document_id": result["id"], "enqueued": True}
+
+
+register_capability(
+    "knowledge", "ingest", _cap_ingest,
+    description="把已上传文件登记进知识库并触发后台分析（幂等、类型白名单）",
+    parameters={"file_id": {"type": "integer", "description": "Uploaded file ID"}},
+    min_role="editor",
+)

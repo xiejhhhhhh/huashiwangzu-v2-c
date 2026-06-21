@@ -12,6 +12,7 @@
       @go-root="state.goRoot"
       @navigate="state.navigateToCrumb"
       @update:search-keyword="state.searchKeyword.value = $event"
+      @drop-on-target="handleNavDrop"
     />
 
     <div class="fm-body">
@@ -123,6 +124,19 @@ async function handleDragMove(source: FileEntry, targetFolder: FileEntry) {
   if (source.id === targetFolder.id) return
   try {
     await moveEntryRequest(source.is_folder ? 'folder' : 'file', source.id, targetFolder.id)
+    await state.loadFiles()
+  } catch {
+    // 移动失败静默忽略
+  }
+}
+
+async function handleNavDrop(payload: { sourceType: string; sourceId: number; targetFolderId: number | undefined }) {
+  // 移到当前位置则忽略
+  const currentId = state.currentFolderId.value
+  const targetId = payload.targetFolderId ?? 0
+  if (targetId === currentId) return
+  try {
+    await moveEntryRequest(payload.sourceType as 'file' | 'folder', payload.sourceId, payload.targetFolderId)
     await state.loadFiles()
   } catch {
     // 移动失败静默忽略

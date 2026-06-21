@@ -105,6 +105,10 @@ function onDragStart(item: FileEntry, e: DragEvent) {
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', String(item.id))
+    e.dataTransfer.setData('application/x-fm-drag', JSON.stringify({
+      type: item.is_folder ? 'folder' : 'file',
+      id: item.id,
+    }))
   }
 }
 function onDragOver(item: FileEntry, e: DragEvent) {
