@@ -27,6 +27,7 @@ from .governance_service import (
 )
 from .raw_collection_service import (
     get_raw_data,
+    get_ocr_words,
 )
 from .fusion_service import (
     get_page_fusion_detail,
@@ -885,6 +886,29 @@ register_capability(
     description="Get evidence details for an entity",
     brief="查看治理证据",
     parameters={"entity_id": {"type": "integer", "description": "Entity ID"}},
+    min_role="viewer",
+)
+
+
+async def _cap_get_ocr_words(params: dict, caller: str) -> dict:
+    """返回 PDF 某页 OCR 词坐标（供 pdf-viewer 叠文字层）。"""
+    owner_id = resolve_user_id(caller)
+    file_id = int(params.get("file_id", 0) or 0)
+    page = int(params.get("page", 1) or 1)
+    if file_id <= 0:
+        return {"words": [], "img_w": 0, "img_h": 0}
+    async with AsyncSessionLocal() as db:
+        result = await get_ocr_words(db, file_id, page, owner_id)
+        return result
+
+register_capability(
+    "knowledge", "get_ocr_words", _cap_get_ocr_words,
+    description="Get OCR word coordinates for a PDF page (for text layer overlay)",
+    brief="获取PDF页OCR词坐标",
+    parameters={
+        "file_id": {"type": "integer", "description": "File ID"},
+        "page": {"type": "integer", "description": "Page number (1-based)"},
+    },
     min_role="viewer",
 )
 

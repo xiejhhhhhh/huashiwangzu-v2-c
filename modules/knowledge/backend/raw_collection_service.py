@@ -6,9 +6,13 @@
 并发策略：5 门池摊平任务。将所有 (page, round) 摊平成独立任务，
 固定 5 并发门池跑，每任务独立 DB 会话 + 独立 commit，
 进度三行各自按真实速度前进。
+
+Round-2 OCR 增强：在 VLM OCR 之外，若 tesseract 可用则额外提取词级
+坐标落盘到 metadata_json.words，供 pdf-viewer 叠扫描件文字层。
 """
 import asyncio
 import hashlib
+import io
 import logging
 
 from sqlalchemy import select, delete as sa_delete
@@ -22,6 +26,48 @@ from .parsing_service import parse_document
 from .pdf_render_service import render_page_to_image, get_pdf_page_count
 
 logger = logging.getLogger("v2.knowledge.raw_collection")
+
+# tesseract 可用性检测
+TESSERACT_AVAILABLE = False
+try:
+    import pytesseract
+    from PIL import Image
+    TESSERACT_AVAILABLE = True
+except ImportError:
+    logger.info("pytesseract not installed; round-2 word coordinates disabled")
+
+def _tesseract_has_binary() -> bool:
+    import shutil
+    return shutil.which("tesseract") is not None
+
+def _ocr_words_tesseract(img_bytes: bytes) -> dict | None:
+    """用 tesseract 提取词级坐标。返回 {"img_w","img_h","words"} 或 None。"""
+    if not TESSERACT_AVAILABLE:
+        return None
+    if not _tesseract_has_binary():
+        logger.info("tesseract binary not found; skip word coordinates")
+        return None
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang="chi_sim+eng")
+        img_w, img_h = img.size
+        words = []
+        for i in range(len(data["text"])):
+            t = (data["text"][i] or "").strip()
+            if not t:
+                continue
+            words.append({
+                "t": t,
+                "x": int(data["left"][i]),
+                "y": int(data["top"][i]),
+                "w": int(data["width"][i]),
+                "h": int(data["height"][i]),
+            })
+        logger.info("tesseract extracted %d words for image (%dx%d)", len(words), img_w, img_h)
+        return {"img_w": img_w, "img_h": img_h, "words": words}
+    except Exception as e:
+        logger.warning("tesseract OCR failed: %s", e)
+        return None
 
 # 并发上限对齐 gate_pool.PER_GATE_MAX_CONCURRENT=5
 RAW_COLLECT_CONCURRENCY = 5
@@ -76,22 +122,45 @@ async def _exec_round_2_ocr(
     page: int, user_id: int,
     img_bytes: bytes | None = None,
 ) -> dict:
-    """第2轮：截图 OCR。独立 DB 会话，单独 commit。"""
+    """第2轮：截图 OCR。独立 DB 会话，单独 commit。
+
+    优先用 tesseract 出文本+词坐标（方案①：一趟出）。
+    若 tesseract 不可用则回退到 VLM OCR（仅文本）。
+    """
     from app.services.model_services import describe_image
 
     async with AsyncSessionLocal() as task_db:
         try:
             if img_bytes is None:
                 img_bytes = await render_page_to_image(file_id, page, user_id)
-            content = await describe_image(
-                img_bytes,
-                prompt=ROUND_2_OCR_PROMPT,
-                mime_type="image/png",
-                profile_key="mimo",
-            )
+            content = ""
+            metadata: dict = {"method": "vlm_ocr", "provider": "mimo"}
+
+            # 方案①：优先 tesseract——一趟出文本+词坐标
+            tesseract_result = _ocr_words_tesseract(img_bytes)
+            if tesseract_result is not None:
+                # 从词坐标组装纯文本
+                words = tesseract_result.get("words", [])
+                content = " ".join(w["t"] for w in words)
+                metadata = {
+                    "method": "tesseract_boxes",
+                    "provider": "tesseract",
+                    "img_w": tesseract_result["img_w"],
+                    "img_h": tesseract_result["img_h"],
+                    "words": words,
+                }
+            else:
+                # 回退：纯 VLM OCR（不产生词坐标）
+                content = await describe_image(
+                    img_bytes,
+                    prompt=ROUND_2_OCR_PROMPT,
+                    mime_type="image/png",
+                    profile_key="mimo",
+                )
         except Exception as e:
             logger.warning("Round 2 OCR failed for doc_id=%d page=%d: %s", doc_id, page, e)
             content = ""
+            metadata = {"method": "vlm_ocr", "provider": "mimo"}
 
         record = KbRawData(
             document_id=doc_id,
@@ -101,14 +170,16 @@ async def _exec_round_2_ocr(
             round=2,
             source_type="ocr",
             content=content,
-            model_used="mimo-v2.5",
+            model_used="mimo-v2.5" if "provider" not in metadata else "tesseract",
             confidence=0.85 if content else 0.0,
             content_hash=_hash_content(content),
-            metadata_json={"method": "vlm_ocr", "provider": "mimo"},
+            metadata_json=metadata,
         )
         task_db.add(record)
         await task_db.commit()
-        logger.info("Raw collection round=2 page=%d done (%d chars)", page, len(content))
+        logger.info("Raw collection round=2 page=%d done (%d chars, %d words)",
+                     page, len(content),
+                     len(metadata.get("words", [])))
         return {"round": 2, "page": page, "chars": len(content)}
 
 
@@ -311,6 +382,46 @@ async def get_raw_data(
         }
         for rec in records
     ]
+
+
+async def get_ocr_words(
+    db: AsyncSession, file_id: int, page: int, owner_id: int,
+) -> dict:
+    """获取指定文件某页的 OCR 词坐标（供 pdf-viewer 跨模块调用）。
+
+    从 round-2 原始采集记录的 metadata_json 读 words + img_w/img_h。
+    若该文件尚未被知识库采集 / 该页不是 tesseract OCR → 返回空。
+    """
+    # 先查文档
+    dr = await db.execute(
+        select(KbDocument).where(
+            KbDocument.file_id == file_id,
+            KbDocument.owner_id == owner_id,
+            KbDocument.deleted == False,
+        )
+    )
+    doc = dr.scalar_one_or_none()
+    if not doc:
+        return {"words": [], "img_w": 0, "img_h": 0}
+
+    rr = await db.execute(
+        select(KbRawData).where(
+            KbRawData.document_id == doc.id,
+            KbRawData.page == page,
+            KbRawData.round == 2,
+        ).order_by(KbRawData.id.desc()).limit(1)
+    )
+    rec = rr.scalar_one_or_none()
+    if not rec or not rec.metadata_json:
+        return {"words": [], "img_w": 0, "img_h": 0}
+
+    meta = rec.metadata_json
+    words = meta.get("words", [])
+    return {
+        "words": words,
+        "img_w": meta.get("img_w", 0),
+        "img_h": meta.get("img_h", 0),
+    }
 
 
 # ── 框架任务 handler ────────────────────────────────
