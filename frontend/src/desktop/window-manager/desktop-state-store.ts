@@ -1,7 +1,7 @@
 import { reactive, ref } from 'vue'
 import { API_BASE_URL } from '@/shared/api'
 import { readDesktopStateRequest, saveDesktopStateRequest } from '@/shared/api/desktop'
-import type { DesktopWindowSnapshot } from './desktop-session-storage'
+import { deduplicateSnapshots, type DesktopWindowSnapshot } from './desktop-session-storage'
 
 export interface DesktopPersistentState {
   version: number
@@ -26,7 +26,7 @@ export async function loadDesktopState() {
 }
 
 export function updateWindowSnapshot(windows: DesktopWindowSnapshot[]) {
-  state.windows = windows
+  state.windows = deduplicateSnapshots(windows)
   scheduleDesktopStateSave()
 }
 

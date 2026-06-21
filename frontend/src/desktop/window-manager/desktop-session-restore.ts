@@ -1,6 +1,7 @@
 import { getApp } from '@/desktop/app-registry/app-registry'
 import type { WindowState } from './window-types'
 import type { DesktopWindowSnapshot } from './desktop-session-storage'
+import { deduplicateSnapshots } from './desktop-session-storage'
 
 type RestoreOptions = {
   snapshots: DesktopWindowSnapshot[]
@@ -12,8 +13,9 @@ type RestoreOptions = {
 }
 
 export function buildRestoreWindowList(opts: RestoreOptions): WindowState[] {
+  const deduped = deduplicateSnapshots(opts.snapshots)
   const result: WindowState[] = []
-  for (const snap of [...opts.snapshots].sort((a, b) => a.zIndex - b.zIndex)) {
+  for (const snap of [...deduped].sort((a, b) => a.zIndex - b.zIndex)) {
     const reg = getApp(snap.appKey)
     if (!reg || reg.windowType === 'background-service') continue
     if (reg.allowedRoles && opts.currentRole && !reg.allowedRoles.includes(opts.currentRole)) continue

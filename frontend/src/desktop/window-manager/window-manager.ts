@@ -2,7 +2,7 @@ import { reactive, computed, ref, watch } from 'vue'
 import type { WindowState, TaskbarItem } from '@/desktop/window-manager/window-types'
 import { getApp } from '@/desktop/app-registry/app-registry'
 import { useUserStore } from '@/platform/stores/user'
-import type { DesktopWindowSnapshot } from './desktop-session-storage'
+import { MAX_WINDOWS, type DesktopWindowSnapshot } from './desktop-session-storage'
 import { buildRestoreWindowList } from './desktop-session-restore'
 
 const WINDOW_TYPE_BACKGROUND_SERVICE = 'background-service'
@@ -48,6 +48,25 @@ function openWindow(appKey: string, payload?: unknown): string | null {
       existingWindow.minimized = false
       return existingWindow.id
     }
+  }
+
+  if (appKey === 'desktop') {
+    const normPayload = normalizeWindowPayload(payload)
+    const targetFolderId = normPayload?.folderId ?? null
+    const existingDesktop = windows.find(w =>
+      w.appKey === 'desktop' && (w.payload?.folderId ?? null) === targetFolderId
+    )
+    if (existingDesktop) {
+      updateWindowPayload(existingDesktop.id, payload)
+      activateWindow(existingDesktop.id)
+      existingDesktop.minimized = false
+      return existingDesktop.id
+    }
+  }
+
+  if (windows.length >= MAX_WINDOWS) {
+    console.warn(`Window limit (${MAX_WINDOWS}) reached, cannot open more windows`)
+    return null
   }
 
   const offset = (windows.length % 10) * 30
@@ -156,6 +175,7 @@ function updateWindowPayload(id: string, payload?: unknown) {
 }
 
 function restoreWindows(snapshot: DesktopWindowSnapshot[], currentRole?: string) {
+  windows.splice(0, windows.length)
   const restoredWindows = buildRestoreWindowList({
     snapshots: snapshot,
     currentRole,
