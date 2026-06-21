@@ -45,3 +45,14 @@ modules/codemap/backend/data/
 # Module-specific logs
 backend/logs/modules/
 backend/logs/modules.log
+
+# 后端运行态日志/端口（不入库）
+backend/logs/
+
+# 本地工具产物（不入库）
+.codegraph/
+.playwright-cli/
+take_screenshot.mjs
+
+# 邮箱工作流目录（本该是仓库的兄弟目录，误建在仓库内的也不入库）
+华世王镞_v2邮箱/
