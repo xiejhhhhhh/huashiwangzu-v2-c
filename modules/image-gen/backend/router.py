@@ -63,7 +63,7 @@ async def _call_image_model(
     except (ValueError, AttributeError):
         pass
 
-    max_retries = 5
+    max_retries = 8
     last_error = ""
 
     for attempt in range(max_retries):
@@ -109,6 +109,8 @@ async def _call_image_model(
                 "not enabled for this group",
                 "no available compatible accounts",
                 "upstream access",
+                "403", "forbidden",          # 中转站轮到没图权限的号,换一发可能就中
+                "429", "rate limit",         # 限流
                 "500", "502", "503",
                 "timeout",
                 "connection error",
