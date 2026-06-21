@@ -2,13 +2,16 @@
 
 对文档每页执行三轮独立采集（文本提取 / 截图OCR / 视觉构成），
 每轮结果各自落盘到 kb_raw_data，落盘后只读不可变。
+
+并发策略：5 门池摊平任务。将所有 (page, round) 摊平成独立任务，
+固定 5 并发门池跑，每任务独立 DB 会话 + 独立 commit，
+进度三行各自按真实速度前进。
 """
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
@@ -20,7 +23,9 @@ from .pdf_render_service import render_page_to_image, get_pdf_page_count
 
 logger = logging.getLogger("v2.knowledge.raw_collection")
 
-ROUND_1_TEXT_PROMPT = "提取所有文字"
+# 并发上限对齐 gate_pool.PER_GATE_MAX_CONCURRENT=5
+RAW_COLLECT_CONCURRENCY = 5
+
 ROUND_2_OCR_PROMPT = "请识别并提取图片中所有可见的文字内容，包括标题、正文、表格中的文字等。按原顺序输出。"
 ROUND_3_VISION_PROMPT = "请详细描述这张页面的版面和视觉构成，包括：1)整体布局结构 2)图表/图片的位置和内容 3)色彩和视觉层次 4)任何特殊视觉元素。"
 
@@ -29,128 +34,145 @@ def _hash_content(content: str) -> str:
     return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
 
 
-async def _collect_round_1_text(
-    db: AsyncSession, doc_id: int, file_id: int, owner_id: int,
+async def _exec_round_1_text(
+    doc_id: int, file_id: int, owner_id: int,
     page: int, caller: str,
 ) -> dict:
-    """第1轮：文本提取。从 parser blocks 聚合该页文本。"""
-    from .models import KbRawData
+    """第1轮：文本提取。独立 DB 会话，单独 commit。"""
+    async with AsyncSessionLocal() as task_db:
+        try:
+            parsed = await parse_document(file_id, "pdf", caller)
+            blocks = parsed.get("blocks", [])
+            page_texts = [
+                (b.get("text") or "").strip()
+                for b in blocks
+                if b.get("page") == page and (b.get("text") or "").strip()
+            ]
+            content = "\n\n".join(page_texts)
+        except Exception as e:
+            logger.warning("Round 1 text extraction failed for doc_id=%d page=%d: %s", doc_id, page, e)
+            content = ""
 
-    try:
-        parsed = await parse_document(file_id, "pdf", caller)
-        blocks = parsed.get("blocks", [])
-        page_texts = [
-            (b.get("text") or "").strip()
-            for b in blocks
-            if b.get("page") == page and (b.get("text") or "").strip()
-        ]
-        content = "\n\n".join(page_texts)
-    except Exception as e:
-        logger.warning("Round 1 text extraction failed for doc_id=%d page=%d: %s", doc_id, page, e)
-        content = ""
-
-    record = KbRawData(
-        document_id=doc_id,
-        file_id=file_id,
-        owner_id=owner_id,
-        page=page,
-        round=1,
-        source_type="text",
-        content=content,
-        model_used="deepseek-v4-flash" if "pdf" in str(caller).lower() else "parser",
-        confidence=0.95 if content else 0.0,
-        content_hash=_hash_content(content),
-    )
-    db.add(record)
-    await db.flush()
-    return {"round": 1, "page": page, "chars": len(content)}
+        record = KbRawData(
+            document_id=doc_id,
+            file_id=file_id,
+            owner_id=owner_id,
+            page=page,
+            round=1,
+            source_type="text",
+            content=content,
+            model_used="deepseek-v4-flash" if "pdf" in str(caller).lower() else "parser",
+            confidence=0.95 if content else 0.0,
+            content_hash=_hash_content(content),
+        )
+        task_db.add(record)
+        await task_db.commit()
+        logger.info("Raw collection round=1 page=%d done (%d chars)", page, len(content))
+        return {"round": 1, "page": page, "chars": len(content)}
 
 
-async def _collect_round_2_ocr(
-    db: AsyncSession, doc_id: int, file_id: int, owner_id: int,
+async def _exec_round_2_ocr(
+    doc_id: int, file_id: int, owner_id: int,
     page: int, user_id: int,
     img_bytes: bytes | None = None,
 ) -> dict:
-    """第2轮：截图 OCR。渲染页面 → VLM 识别文字。"""
+    """第2轮：截图 OCR。独立 DB 会话，单独 commit。"""
     from app.services.model_services import describe_image
 
-    try:
-        if img_bytes is None:
-            img_bytes = await render_page_to_image(file_id, page, user_id)
-        content = await describe_image(
-            img_bytes,
-            prompt=ROUND_2_OCR_PROMPT,
-            mime_type="image/png",
-            profile_key="mimo",
+    async with AsyncSessionLocal() as task_db:
+        try:
+            if img_bytes is None:
+                img_bytes = await render_page_to_image(file_id, page, user_id)
+            content = await describe_image(
+                img_bytes,
+                prompt=ROUND_2_OCR_PROMPT,
+                mime_type="image/png",
+                profile_key="mimo",
+            )
+        except Exception as e:
+            logger.warning("Round 2 OCR failed for doc_id=%d page=%d: %s", doc_id, page, e)
+            content = ""
+
+        record = KbRawData(
+            document_id=doc_id,
+            file_id=file_id,
+            owner_id=owner_id,
+            page=page,
+            round=2,
+            source_type="ocr",
+            content=content,
+            model_used="mimo-v2.5",
+            confidence=0.85 if content else 0.0,
+            content_hash=_hash_content(content),
+            metadata_json={"method": "vlm_ocr", "provider": "mimo"},
         )
-    except Exception as e:
-        logger.warning("Round 2 OCR failed for doc_id=%d page=%d: %s", doc_id, page, e)
-        content = ""
-
-    record = KbRawData(
-        document_id=doc_id,
-        file_id=file_id,
-        owner_id=owner_id,
-        page=page,
-        round=2,
-        source_type="ocr",
-        content=content,
-        model_used="mimo-v2.5",
-        confidence=0.85 if content else 0.0,
-        content_hash=_hash_content(content),
-        metadata_json={"method": "vlm_ocr", "provider": "mimo"},
-    )
-    db.add(record)
-    await db.flush()
-    return {"round": 2, "page": page, "chars": len(content)}
+        task_db.add(record)
+        await task_db.commit()
+        logger.info("Raw collection round=2 page=%d done (%d chars)", page, len(content))
+        return {"round": 2, "page": page, "chars": len(content)}
 
 
-async def _collect_round_3_vision(
-    db: AsyncSession, doc_id: int, file_id: int, owner_id: int,
+async def _exec_round_3_vision(
+    doc_id: int, file_id: int, owner_id: int,
     page: int, user_id: int,
     img_bytes: bytes | None = None,
 ) -> dict:
-    """第3轮：视觉构成。渲染页面 → VLM 描述版面/图表/视觉元素。"""
+    """第3轮：视觉构成。独立 DB 会话，单独 commit。"""
     from app.services.model_services import describe_image
 
-    try:
-        if img_bytes is None:
-            img_bytes = await render_page_to_image(file_id, page, user_id)
-        content = await describe_image(
-            img_bytes,
-            prompt=ROUND_3_VISION_PROMPT,
-            mime_type="image/png",
-            profile_key="mimo",
-        )
-    except Exception as e:
-        logger.warning("Round 3 vision failed for doc_id=%d page=%d: %s", doc_id, page, e)
-        content = ""
+    async with AsyncSessionLocal() as task_db:
+        try:
+            if img_bytes is None:
+                img_bytes = await render_page_to_image(file_id, page, user_id)
+            content = await describe_image(
+                img_bytes,
+                prompt=ROUND_3_VISION_PROMPT,
+                mime_type="image/png",
+                profile_key="mimo",
+            )
+        except Exception as e:
+            logger.warning("Round 3 vision failed for doc_id=%d page=%d: %s", doc_id, page, e)
+            content = ""
 
-    record = KbRawData(
-        document_id=doc_id,
-        file_id=file_id,
-        owner_id=owner_id,
-        page=page,
-        round=3,
-        source_type="vision",
-        content=content,
-        model_used="mimo-v2.5",
-        confidence=0.80 if content else 0.0,
-        content_hash=_hash_content(content),
-        metadata_json={"method": "vlm_vision", "provider": "mimo"},
-    )
-    db.add(record)
-    await db.flush()
-    return {"round": 3, "page": page, "chars": len(content)}
+        record = KbRawData(
+            document_id=doc_id,
+            file_id=file_id,
+            owner_id=owner_id,
+            page=page,
+            round=3,
+            source_type="vision",
+            content=content,
+            model_used="mimo-v2.5",
+            confidence=0.80 if content else 0.0,
+            content_hash=_hash_content(content),
+            metadata_json={"method": "vlm_vision", "provider": "mimo"},
+        )
+        task_db.add(record)
+        await task_db.commit()
+        logger.info("Raw collection round=3 page=%d done (%d chars)", page, len(content))
+        return {"round": 3, "page": page, "chars": len(content)}
+
+
+async def _pre_render_pages(file_id: int, user_id: int, total_pages: int) -> dict[int, bytes]:
+    """预渲染所有 PDF 页面为图片字节（仅一次，round2/round3 共享）。"""
+    images: dict[int, bytes] = {}
+    for page in range(1, total_pages + 1):
+        try:
+            images[page] = await render_page_to_image(file_id, page, user_id)
+        except Exception as e:
+            logger.warning("Pre-render page=%d failed: %s", page, e)
+    return images
 
 
 async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id: int, user_id: int) -> dict:
     """对文档所有页执行三轮并行采集，落盘 kb_raw_data。
 
-    返回: {"document_id": int, "total_pages": int, "rounds": [...每个页每轮的结果...], "status": "done"}
-    """
-    from .document_service import resolve_user_id
+    使用 5 并发门池摊平所有 (page, round) 任务，
+    每任务独立 DB 会话 + 独立 commit，
+    进度三行各自按真实速度前进。
 
+    返回: {"document_id": int, "total_pages": int, "rounds": [...每个任务的结果...], "status": "done"}
+    """
     caller = f"user:{user_id}"
 
     # 确定页数
@@ -175,7 +197,7 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
     doc.total_pages = total_pages
     await db.commit()
 
-    # 已完成页(三轮齐全)跳过 → 幂等可重入,中断重跑不重采
+    # 已完成页跳过 → 幂等可重入
     dr = await db.execute(
         select(KbRawData.page).where(KbRawData.document_id == doc_id)
     )
@@ -185,65 +207,67 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
     expected_rounds = 3 if is_pdf else 2
     done_pages = {pg for pg, cnt in page_round_count.items() if cnt >= expected_rounds}
 
-    all_results = []
+    # 清除未完成页的残缺旧记录
+    for page in range(1, total_pages + 1):
+        if page not in done_pages:
+            async with AsyncSessionLocal() as clean_db:
+                await clean_db.execute(
+                    sa_delete(KbRawData).where(
+                        KbRawData.document_id == doc_id, KbRawData.page == page
+                    )
+                )
+                await clean_db.commit()
 
-    # 逐页并行三轮(逐页 commit:进度可实时查 + 中断只丢当前页)
+    # 预渲染页面图片（只一次，OCR 与视觉共用）
+    page_images: dict[int, bytes] = {}
+    if is_pdf:
+        page_images = await _pre_render_pages(file_id, user_id, total_pages)
+    else:
+        # 图片文件：读原始字节一次
+        from pathlib import Path
+        from app.config import get_settings
+        from app.services.file_service import check_file_access as _check_fa
+        try:
+            async with AsyncSessionLocal() as fdb:
+                f_rec = await _check_fa(fdb, file_id, user_id)
+            img_path = Path(get_settings().UPLOAD_DIR).resolve() / f_rec.storage_path
+            img_bytes = img_path.read_bytes()
+            for page in range(1, total_pages + 1):
+                page_images[page] = img_bytes
+        except Exception as e:
+            logger.warning("Cannot read image bytes for file_id=%d: %s", file_id, e)
+
+    # 5 并发门池 + 摊平任务列表
+    sem = asyncio.Semaphore(RAW_COLLECT_CONCURRENCY)
+    all_results: list[dict] = []
+
+    async def _task_wrapper(round_num: int, page: int) -> dict:
+        async with sem:
+            if round_num == 1:
+                return await _exec_round_1_text(doc_id, file_id, owner_id, page, caller)
+            elif round_num == 2:
+                return await _exec_round_2_ocr(doc_id, file_id, owner_id, page, user_id, img_bytes=page_images.get(page))
+            elif round_num == 3:
+                return await _exec_round_3_vision(doc_id, file_id, owner_id, page, user_id, img_bytes=page_images.get(page))
+            return {"round": round_num, "page": page, "error": "unknown round"}
+
+    tasks = []
     for page in range(1, total_pages + 1):
         if page in done_pages:
             logger.info("Raw collection page=%d already done, skip", page)
             continue
+        tasks.append(_task_wrapper(1, page))
+        tasks.append(_task_wrapper(2, page))
+        tasks.append(_task_wrapper(3, page))
 
-        # 重采该页前先清掉它的残缺旧记录
-        from sqlalchemy import delete as sa_delete
-        await db.execute(
-            sa_delete(KbRawData).where(
-                KbRawData.document_id == doc_id, KbRawData.page == page
-            )
-        )
-        await db.flush()
-
-        tasks = []
-
-        # 第1轮：文本提取（PDF 走 parser，图片/其他走 describe）
-        if is_pdf:
-            tasks.append(_collect_round_1_text(db, doc_id, file_id, owner_id, page, caller))
-        else:
-            # 非 PDF：第1轮取 parser 全局文本，第2/3轮对图跑
-            tasks.append(_collect_round_1_text(db, doc_id, file_id, owner_id, page, caller))
-
-        if is_pdf:
-            tasks.append(_collect_round_2_ocr(db, doc_id, file_id, owner_id, page, user_id))
-            tasks.append(_collect_round_3_vision(db, doc_id, file_id, owner_id, page, user_id))
-        else:
-            # 图片文件：读取原始字节直接跑 VLM（不渲染）
-            from pathlib import Path
-            from app.config import get_settings
-            from app.services.file_service import check_file_access as _check_fa
-            try:
-                f_rec = await _check_fa(db, file_id, user_id)
-                img_path = Path(get_settings().UPLOAD_DIR).resolve() / f_rec.storage_path
-                img_bytes = img_path.read_bytes()
-                tasks.append(_collect_round_2_ocr(db, doc_id, file_id, owner_id, page, user_id, img_bytes=img_bytes))
-                tasks.append(_collect_round_3_vision(db, doc_id, file_id, owner_id, page, user_id, img_bytes=img_bytes))
-            except Exception as e:
-                logger.warning("Cannot read image bytes for file_id=%d: %s", file_id, e)
-
-        round_results = await asyncio.gather(*tasks, return_exceptions=True)
-        for r in round_results:
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
             if isinstance(r, Exception):
-                logger.warning("Round failed for doc_id=%d page=%d: %s", doc_id, page, r)
+                logger.warning("Round task failed: %s", r)
             else:
                 all_results.append(r)
 
-        # 逐页 commit:该页三轮落库,进度立即可查
-        await db.commit()
-        logger.info("Raw collection page=%d/%d committed", page, total_pages)
-
-        # 每页间短暂休息，避免打爆 API
-        if page < total_pages:
-            await asyncio.sleep(0.3)
-
-    # 更新状态
     await db.refresh(doc)
     doc.raw_status = "done"
     await db.commit()
