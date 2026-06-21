@@ -5,7 +5,6 @@ import type { Component } from 'vue'
 
 export const componentKeyMap: Record<string, () => Promise<{ default: Component }>> = {
   'agent/index.vue': () => import('@modules/agent/frontend/index.vue'),
-  'data-analysis/index.vue': () => import('@modules/data-analysis/frontend/index.vue'),
   'desktop-tools/index.vue': () => import('@modules/desktop-tools/frontend/index.vue'),
   'docx-parser/index.vue': () => import('@modules/docx-parser/frontend/index.vue'),
   'excel-engine/index.vue': () => import('@modules/excel-engine/frontend/index.vue'),
