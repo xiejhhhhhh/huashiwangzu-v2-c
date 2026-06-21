@@ -208,8 +208,8 @@ async function handleRecycleAction(key: string) {
 }
 
 async function handleContextMenuSelect(key: string) {
-  contextMenu.close()
   const ctxType = contextMenu.context.value?.type
+  contextMenu.close()
   if (ctxType === 'recycle-bin' || ctxType === 'recycle-bin-item') {
     await handleRecycleAction(key)
     return

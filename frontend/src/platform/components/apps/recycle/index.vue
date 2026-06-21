@@ -143,8 +143,8 @@ function handleItemContextMenu(item: FileEntry, e: MouseEvent) {
 }
 
 async function handleContextMenuSelect(key: string) {
-  contextMenu.close()
   const ctxType = contextMenu.context.value?.type
+  contextMenu.close()
   if (ctxType === 'recycle-bin' || ctxType === 'recycle-bin-item') {
     const item = ctxtFile
     if (key === 'restore' && item) {

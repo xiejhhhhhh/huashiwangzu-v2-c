@@ -256,8 +256,8 @@ async function onUploadSelected(e: Event) {
 
 // ── Menu Action Handlers ──────────────────────────────────────────────
 async function handleContextMenuSelect(menuKey: string) {
-  contextMenu.close()
   const menuContext = contextMenu.context.value
+  contextMenu.close()
   const appKey = (menuContext?.target?.appKey as string) || ''
   const file = menuContext?.target as FileEntry | undefined
 
