@@ -162,6 +162,8 @@ async function renderPage(pageNum: number, scale: number) {
   textLayerDiv.innerHTML = ''
   textLayerDiv.style.width = viewport.width + 'px'
   textLayerDiv.style.height = viewport.height + 'px'
+  // pdf.js v4 TextLayer 必须设 --scale-factor,否则每个 span 字号错位、选区不对齐(行高错觉)
+  textLayerDiv.style.setProperty('--scale-factor', String(viewport.scale))
 
   const tc = await page.getTextContent()
   const totalChars = tc.items.reduce((sum: number, item: any) => sum + item.str.length, 0)
@@ -465,6 +467,9 @@ onMounted(() => {
   color: transparent !important;
   cursor: text;
   pointer-events: auto;
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0 0;
 }
 
 :deep(.pv-ocr-word) {
