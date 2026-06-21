@@ -23,9 +23,7 @@
       />
 
       <div class="fm-main" :data-folder="String(state.currentFolderId.value || 0)" :class="{ 'fm-main-drag-over': dragState.dragOverId === String(state.currentFolderId.value) && dragState.isDragging }">
-        <FmRecycleView v-if="state.isRecycleBin.value" @context-menu-blank="handleRecycleBlankMenu" @context-menu-item="handleRecycleItemMenu" />
         <FmFileList
-          v-else
           :items="state.sortedItems.value"
           :selected-id="state.selectedId.value"
           :view-mode="state.viewMode.value"
@@ -35,7 +33,7 @@
           :sort-column="state.sortColumn.value"
           :sort-direction="state.sortDirection.value"
           @select="state.selectItem"
-          @open="state.openItem"
+          @open="handleItemOpen"
           @context-menu="handleItemContextMenu"
           @sort="handleSort"
         />
@@ -92,12 +90,11 @@ import { hasContent } from '@/desktop/clipboard/clipboard-state'
 import { restoreRecycleBinEntry, permanentlyDeleteEntry, emptyRecycleBinRequest } from '@/shared/api/desktop'
 import FmNavigationBar from './file-manager/fm-navigation-bar.vue'
 import FmNavPane from './file-manager/fm-nav-pane.vue'
-import FmRecycleView from './file-manager/fm-recycle-view.vue'
 import FmFileList from './file-manager/fm-file-list.vue'
 import FmStatusBar from './file-manager/fm-status-bar.vue'
 import FmPropertiesDialog from './file-manager/fm-properties-dialog.vue'
 import { useFileManagerState } from './file-manager/use-file-manager-state'
-import type { FileEntry, RecycleBinEntry } from '@/shared/api/types'
+import type { FileEntry } from '@/shared/api/types'
 import type { MenuItemConfig } from '@/desktop/context-menu/use-context-menu'
 import emitter from '@/desktop/events'
 
@@ -129,6 +126,18 @@ function handleBlankContextMenu(e: MouseEvent) {
   ctxtFile = null
   const el = e.target as HTMLElement
   if (el.closest('.fm-entry') || el.closest('.fm-nav-pane')) return
+
+  if (state.isRecycleBin.value) {
+    const items: MenuItemConfig[] = [
+      { key: 'refresh', label: '刷新', icon: '↻' },
+    ]
+    if (state.canWrite.value) {
+      items.unshift({ key: 'empty-recycle-bin', label: '清空回收站', icon: '🧹', danger: true })
+    }
+    contextMenu.open(e, items, { type: 'recycle-bin' })
+    return
+  }
+
   const items: MenuItemConfig[] = [
     { key: 'upload-file', label: '上传文件', icon: '⬆', disabled: !state.canWrite.value },
     { key: 'create-folder', label: '新建文件夹', icon: '📁', disabled: !state.canWrite.value },
@@ -143,8 +152,28 @@ function handleBlankContextMenu(e: MouseEvent) {
   contextMenu.open(e, items, { type: 'desktop-blank' })
 }
 
+function handleItemOpen(item: FileEntry) {
+  if (state.isRecycleBin.value) {
+    ElMessage.info('请先还原再打开文件')
+    return
+  }
+  state.openItem(item)
+}
+
 function handleItemContextMenu(item: FileEntry, e: MouseEvent) {
   ctxtFile = item
+  if (state.isRecycleBin.value) {
+    const items: MenuItemConfig[] = []
+    if (state.canWrite.value) {
+      items.push(
+        { key: 'restore', label: '还原', icon: '↩' },
+        { key: 'delete-permanently', label: '彻底删除', icon: '🗑', danger: true },
+      )
+    }
+    contextMenu.open(e, items, { type: 'recycle-bin-item' })
+    return
+  }
+
   let items: MenuItemConfig[]
   if (item.is_folder) {
     items = buildFolderMenu(state.canWrite.value, () => [])
@@ -158,18 +187,22 @@ function handleItemContextMenu(item: FileEntry, e: MouseEvent) {
 }
 
 async function handleRecycleAction(key: string) {
-  const item = ctxtFile as RecycleBinEntry | null
+  const item = ctxtFile
   if (key === 'restore' && item) {
-    try { await restoreRecycleBinEntry(item.item_type as 'file' | 'folder', item.id); ElMessage.success('已还原') }
+    const itemType = item.is_folder ? 'folder' : 'file'
+    try { await restoreRecycleBinEntry(itemType, item.id); ElMessage.success('已还原') }
     catch { ElMessage.warning('还原失败') }
   } else if (key === 'delete-permanently' && item) {
+    const itemType = item.is_folder ? 'folder' : 'file'
     try { await ElMessageBox.confirm('确定彻底删除？', '确认', { type: 'warning' }) } catch { return }
-    try { await permanentlyDeleteEntry(item.item_type as 'file' | 'folder', item.id); ElMessage.success('已删除') }
+    try { await permanentlyDeleteEntry(itemType, item.id); ElMessage.success('已删除') }
     catch { ElMessage.warning('删除失败') }
   } else if (key === 'empty-recycle-bin') {
     try { await ElMessageBox.confirm('确定清空回收站？', '确认', { type: 'warning' }) } catch { return }
     try { await emptyRecycleBinRequest(); ElMessage.success('已清空') }
     catch { ElMessage.warning('清空失败') }
+  } else if (key === 'refresh') {
+    void state.loadFiles()
   }
   emitter.emit('refresh:file-list', { folderId: 0 } as never)
 }
@@ -182,16 +215,6 @@ async function handleContextMenuSelect(key: string) {
     return
   }
   await state.handleAction(key, ctxtFile)
-}
-
-function handleRecycleBlankMenu(e: MouseEvent, options: { key: string; label: string; icon?: string; danger?: boolean }[]) {
-  ctxtFile = null
-  contextMenu.open(e, options, { type: 'recycle-bin' })
-}
-
-function handleRecycleItemMenu(e: MouseEvent, item: RecycleBinEntry, options: { key: string; label: string; icon?: string; danger?: boolean }[]) {
-  ctxtFile = item as unknown as FileEntry
-  contextMenu.open(e, options, { type: 'recycle-bin-item' })
 }
 
 onMounted(() => {

@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
-import { fetchFileList } from '@/shared/api/desktop'
+import { fetchFileList, fetchRecycleBinList } from '@/shared/api/desktop'
+import type { RecycleBinEntry } from '@/shared/api/types'
 import { openFileByRecord } from '@/desktop/app-registry/app-opener'
 import { useDesktopEventBus } from '@/desktop/events/use-desktop-event-bus'
 import type { FileEntry } from '@/shared/api/types'
@@ -102,11 +103,34 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     historyIndex.value = navigationHistory.value.length - 1
   }
 
+  function inferFormat(name: string, itemFormat: string | null | undefined): string {
+    if (itemFormat) return itemFormat
+    const idx = name.lastIndexOf('.')
+    return idx > 0 ? name.slice(idx + 1) : ''
+  }
+
+  function mapRecycleToFileEntry(item: RecycleBinEntry): FileEntry {
+    return {
+      id: item.id,
+      file_name: item.name,
+      is_folder: item.item_type === 'folder',
+      format: inferFormat(item.name, item.format),
+      created_at: item.deleted_at,
+      file_size: item.size ?? 0,
+      storage_path: null,
+    }
+  }
+
   async function loadFiles() {
     loading.value = true
     try {
-      const res = await fetchFileList(currentFolderId.value)
-      if (res.success) items.value = res.data?.items || []
+      if (isRecycleBin.value) {
+        const res = await fetchRecycleBinList()
+        if (res.success) items.value = (res.data || []).map(mapRecycleToFileEntry)
+      } else {
+        const res = await fetchFileList(currentFolderId.value)
+        if (res.success) items.value = res.data?.items || []
+      }
     } finally {
       loading.value = false
     }
@@ -194,6 +218,9 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
   function openRecycle() {
     isRecycleBin.value = true
     breadcrumb.value = [{ id: null, name: '回收站' }]
+    selectedId.value = null
+    searchKeyword.value = ''
+    void loadFiles()
   }
 
   function formatSize(bytes: number): string {
