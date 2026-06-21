@@ -12,7 +12,6 @@
       @go-root="state.goRoot"
       @navigate="state.navigateToCrumb"
       @update:search-keyword="state.searchKeyword.value = $event"
-      @drop-on-target="handleNavDrop"
     />
 
     <div class="fm-body">
@@ -40,6 +39,7 @@
           @context-menu="state.handleItemMenu"
           @sort="handleSort"
           @drag-move="handleDragMove"
+          @drag-move-to="handleDragMoveTo"
         />
       </div>
     </div>
@@ -130,13 +130,13 @@ async function handleDragMove(source: FileEntry, targetFolder: FileEntry) {
   }
 }
 
-async function handleNavDrop(payload: { sourceType: string; sourceId: number; targetFolderId: number | undefined }) {
+async function handleDragMoveTo(source: FileEntry, targetFolderId: number | null) {
   // 移到当前位置则忽略
   const currentId = state.currentFolderId.value
-  const targetId = payload.targetFolderId ?? 0
-  if (targetId === currentId) return
+  const tId = targetFolderId ?? 0
+  if (tId === currentId) return
   try {
-    await moveEntryRequest(payload.sourceType as 'file' | 'folder', payload.sourceId, payload.targetFolderId)
+    await moveEntryRequest(source.is_folder ? 'folder' : 'file', source.id, targetFolderId ?? undefined)
     await state.loadFiles()
   } catch {
     // 移动失败静默忽略
@@ -149,6 +149,15 @@ onMounted(() => {
   void state.loadFiles()
 })
 </script>
+
+<style>
+.nav-drop-over,
+.nav-drop-over:hover {
+  background: #dbeafe !important;
+  border-color: #2395bc !important;
+  box-shadow: 0 0 0 2px rgba(35, 149, 188, 0.2) !important;
+}
+</style>
 
 <style scoped>
 .desktop-file-manager {

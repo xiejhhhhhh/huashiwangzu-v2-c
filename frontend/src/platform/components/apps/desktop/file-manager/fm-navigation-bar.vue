@@ -8,16 +8,14 @@
         →
       </button>
       <button
-        class="fm-icon-button drop-target"
-        :class="{ 'drop-over': upDropOver }"
+        v-if="canGoUp"
+        class="fm-icon-button"
         type="button"
-        :disabled="!canGoUp"
         title="上级"
         aria-label="上级"
+        :data-fm-navdrop="'folder'"
+        :data-fm-folder-id="parentFolderId"
         @click="$emit('go-up')"
-        @dragover.prevent="onUpDragOver"
-        @dragleave="upDropOver = false"
-        @drop.prevent="onUpDrop"
       >
         ↑
       </button>
@@ -25,27 +23,23 @@
 
     <div class="fm-nav-address">
       <button
-        class="fm-root-btn drop-target"
-        :class="{ 'drop-over': rootDropOver }"
+        class="fm-root-btn"
         type="button"
         title="桌面"
+        data-fm-navdrop="root"
         @click="$emit('go-root')"
-        @dragover.prevent="rootDropOver = true"
-        @dragleave="rootDropOver = false"
-        @drop.prevent="onRootDrop"
       >
         🏠
       </button>
       <span v-for="(crumb, index) in breadcrumb" :key="`crumb-${index}`" class="fm-crumb-segment">
         <span class="fm-crumb-sep">&gt;</span>
         <button
-          class="fm-crumb-btn drop-target"
-          :class="{ 'fm-crumb-active': index === breadcrumb.length - 1, 'drop-over': crumbDropIndex === index }"
+          class="fm-crumb-btn"
+          :class="{ 'fm-crumb-active': index === breadcrumb.length - 1 }"
           type="button"
+          :data-fm-navdrop="index === 0 ? 'root' : 'folder'"
+          :data-fm-folder-id="index === 0 ? '' : (crumb.id ?? '')"
           @click="$emit('navigate', index)"
-          @dragover.prevent="crumbDropIndex = index"
-          @dragleave="crumbDropIndex = -1"
-          @drop.prevent="onCrumbDrop($event, index, crumb.id ?? undefined)"
         >
           {{ crumb.name }}
         </button>
@@ -65,7 +59,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed } from 'vue'
 import type { DesktopFileManagerBreadcrumbItem } from './types'
 
 const props = defineProps<{
@@ -76,64 +70,19 @@ const props = defineProps<{
   searchKeyword: string
 }>()
 
-const emit = defineEmits<{
+defineEmits<{
   (e: 'go-back'): void
   (e: 'go-forward'): void
   (e: 'go-up'): void
   (e: 'go-root'): void
   (e: 'navigate', index: number): void
   (e: 'update:searchKeyword', value: string): void
-  (e: 'drop-on-target', payload: { sourceType: string; sourceId: number; targetFolderId: number | undefined }): void
 }>()
 
-// ── Drag-drop state ──
-const rootDropOver = ref(false)
-const upDropOver = ref(false)
-const crumbDropIndex = ref(-1)
-
-function readDragData(e: DragEvent): { sourceType: string; sourceId: number } | null {
-  try {
-    const raw = e.dataTransfer?.getData('application/x-fm-drag')
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
-  // fallback: text/plain has id, but we don't know type — assume 'file'
-  const textId = e.dataTransfer?.getData('text/plain')
-  if (textId) {
-    const id = Number(textId)
-    if (Number.isFinite(id)) return { sourceType: 'file', sourceId: id }
-  }
-  return null
-}
-
-function onRootDrop(e: DragEvent) {
-  rootDropOver.value = false
-  const data = readDragData(e)
-  if (!data) return
-  emit('drop-on-target', { sourceType: data.sourceType, sourceId: data.sourceId, targetFolderId: undefined })
-}
-
-function onUpDragOver(e: DragEvent) {
-  if (!props.canGoUp) return
-  upDropOver.value = true
-}
-
-function onUpDrop(e: DragEvent) {
-  upDropOver.value = false
-  if (!props.canGoUp) return
-  const data = readDragData(e)
-  if (!data) return
-  // parent folder = second-to-last breadcrumb
-  const parentCrumb = props.breadcrumb[props.breadcrumb.length - 2]
-  const parentId = parentCrumb?.id ?? undefined
-  emit('drop-on-target', { sourceType: data.sourceType, sourceId: data.sourceId, targetFolderId: parentId })
-}
-
-function onCrumbDrop(e: DragEvent, index: number, targetFolderId: number | undefined) {
-  crumbDropIndex.value = -1
-  const data = readDragData(e)
-  if (!data) return
-  emit('drop-on-target', { sourceType: data.sourceType, sourceId: data.sourceId, targetFolderId })
-}
+const parentFolderId = computed(() => {
+  if (props.breadcrumb.length < 2) return ''
+  return String(props.breadcrumb[props.breadcrumb.length - 2]?.id ?? '')
+})
 </script>
 
 <style scoped>
@@ -263,12 +212,5 @@ function onCrumbDrop(e: DragEvent, index: number, targetFolderId: number | undef
 .fm-search-input:focus {
   border-color: #60a5fa;
   box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.15);
-}
-
-.drop-target.drop-over,
-.drop-target.drop-over:hover {
-  background: #dbeafe !important;
-  border-color: #2395bc !important;
-  box-shadow: 0 0 0 2px rgba(35, 149, 188, 0.2);
 }
 </style>

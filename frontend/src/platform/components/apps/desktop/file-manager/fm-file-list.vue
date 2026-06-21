@@ -40,11 +40,6 @@
           @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
           @pointerdown="onPointerDown(item, $event)"
           @mousedown="onMouseDown(item, $event)"
-          @dragstart="onDragStart(item, $event)"
-          @dragover="onDragOver(item, $event)"
-          @dragleave="onDragLeave"
-          @drop="onDrop(item, $event)"
-          @dragend="onDragEnd"
         >
           <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="42" />
           <span class="fm-entry-name">{{ displayName(item) }}</span>
@@ -66,11 +61,6 @@
           @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
           @pointerdown="onPointerDown(item, $event)"
           @mousedown="onMouseDown(item, $event)"
-          @dragstart="onDragStart(item, $event)"
-          @dragover="onDragOver(item, $event)"
-          @dragleave="onDragLeave"
-          @drop="onDrop(item, $event)"
-          @dragend="onDragEnd"
         >
           <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="22" />
           <span class="fm-entry-name">{{ displayName(item) }}</span>
@@ -90,6 +80,7 @@ import type { FileEntry } from '@/shared/api/types'
 
 const dragSource = ref<FileEntry | null>(null)
 const dragOverId = ref<number | null>(null)
+const dragNavOverEl = ref<Element | null>(null)
 const pointerSource = ref<FileEntry | null>(null)
 const pointerStart = ref<{ x: number; y: number } | null>(null)
 const pointerDragging = ref(false)
@@ -100,36 +91,197 @@ let suppressNextClick = false
 let lastDropKey = ''
 let lastDropAt = 0
 
-function onDragStart(item: FileEntry, e: DragEvent) {
-  dragSource.value = item
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', String(item.id))
-    e.dataTransfer.setData('application/x-fm-drag', JSON.stringify({
-      type: item.is_folder ? 'folder' : 'file',
-      id: item.id,
-    }))
+// ── Pointer-based drag (primary, works on :draggable="false" entries) ──
+
+function onMouseDown(item: FileEntry, e: MouseEvent) {
+  if (e.button !== 0) return
+  mouseSource.value = item
+  mouseStart.value = { x: e.clientX, y: e.clientY }
+  mouseDragging.value = false
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
+}
+
+function onPointerDown(item: FileEntry, e: PointerEvent) {
+  if (e.button !== 0) return
+  pointerSource.value = item
+  pointerStart.value = { x: e.clientX, y: e.clientY }
+  pointerDragging.value = false
+  window.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('pointerup', onPointerUp)
+}
+
+function onPointerMove(e: PointerEvent) {
+  const source = pointerSource.value
+  const start = pointerStart.value
+  if (!source || !start) return
+
+  const dx = e.clientX - start.x
+  const dy = e.clientY - start.y
+  if (!pointerDragging.value && Math.hypot(dx, dy) < 6) return
+
+  pointerDragging.value = true
+  e.preventDefault()
+  const target = findDropTarget(e.clientX, e.clientY)
+  // 文件夹落点
+  if (target?.kind === 'folder') {
+    dragOverId.value = target.folder.id !== source.id ? target.folder.id : null
+  } else {
+    dragOverId.value = null
+  }
+  // 导航落点高亮
+  if (target?.kind === 'nav' && target.el) {
+    if (dragNavOverEl.value !== target.el) {
+      clearNavOver()
+      target.el.classList.add('nav-drop-over')
+      dragNavOverEl.value = target.el
+    }
+  } else {
+    clearNavOver()
   }
 }
-function onDragOver(item: FileEntry, e: DragEvent) {
-  if (!item.is_folder) return
-  if (dragSource.value?.id === item.id) return
+
+function onPointerUp(e: PointerEvent) {
+  const source = pointerSource.value
+  const target = pointerDragging.value ? findDropTarget(e.clientX, e.clientY) : null
+  const didDrag = pointerDragging.value
+  resetPointerDrag()
+
+  if (!didDrag) return
+  suppressNextClick = true
+  window.setTimeout(() => { suppressNextClick = false }, 0)
+  if (!source) return
+  if (target?.kind === 'folder') {
+    if (target.folder.id === source.id) return
+    emitDragOnce(source, target.folder, 'drag-move')
+  } else if (target?.kind === 'nav') {
+    emitDragOnce(source, { targetFolderId: target.folderId }, 'drag-move-to')
+  }
+}
+
+function onMouseMove(e: MouseEvent) {
+  const source = mouseSource.value
+  const start = mouseStart.value
+  if (!source || !start) return
+
+  const dx = e.clientX - start.x
+  const dy = e.clientY - start.y
+  if (!mouseDragging.value && Math.hypot(dx, dy) < 6) return
+
+  mouseDragging.value = true
   e.preventDefault()
-  dragOverId.value = item.id
+  const target = findDropTarget(e.clientX, e.clientY)
+  if (target?.kind === 'folder') {
+    dragOverId.value = target.folder.id !== source.id ? target.folder.id : null
+  } else {
+    dragOverId.value = null
+  }
+  if (target?.kind === 'nav' && target.el) {
+    if (dragNavOverEl.value !== target.el) {
+      clearNavOver()
+      target.el.classList.add('nav-drop-over')
+      dragNavOverEl.value = target.el
+    }
+  } else {
+    clearNavOver()
+  }
 }
-function onDragLeave() {
-  dragOverId.value = null
+
+function onMouseUp(e: MouseEvent) {
+  const source = mouseSource.value
+  const target = mouseDragging.value ? findDropTarget(e.clientX, e.clientY) : null
+  const didDrag = mouseDragging.value
+  resetMouseDrag()
+
+  if (!didDrag) return
+  suppressNextClick = true
+  window.setTimeout(() => { suppressNextClick = false }, 0)
+  if (!source) return
+  if (target?.kind === 'folder') {
+    if (target.folder.id === source.id) return
+    emitDragOnce(source, target.folder, 'drag-move')
+  } else if (target?.kind === 'nav') {
+    emitDragOnce(source, { targetFolderId: target.folderId }, 'drag-move-to')
+  }
 }
-function onDrop(item: FileEntry, e: DragEvent) {
-  e.preventDefault()
-  dragOverId.value = null
-  if (!item.is_folder || !dragSource.value || dragSource.value.id === item.id) return
-  emit('drag-move', dragSource.value, item)
-  dragSource.value = null
+
+type DragTarget =
+  | { kind: 'folder'; folder: FileEntry }
+  | { kind: 'nav'; folderId: number | null; el: Element }
+  | null
+
+function findDropTarget(x: number, y: number): DragTarget {
+  const element = document.elementFromPoint(x, y)
+  if (!element) return null
+  // 先看是否为导航落点
+  const navEl = element.closest('[data-fm-navdrop]')
+  if (navEl instanceof Element) {
+    const kind = navEl.getAttribute('data-fm-navdrop')
+    if (kind === 'root') return { kind: 'nav', folderId: null, el: navEl }
+    if (kind === 'folder') {
+      const raw = navEl.getAttribute('data-fm-folder-id') || ''
+      const folderId = raw ? Number(raw) : null
+      if (folderId === null || (folderId !== null && Number.isFinite(folderId))) {
+        return { kind: 'nav', folderId: folderId, el: navEl }
+      }
+    }
+    return null
+  }
+  // 再走原来的文件夹条目识别
+  const entry = element.closest('[data-fm-entry-id]')
+  if (!entry) return null
+  if (entry.getAttribute('data-fm-entry-kind') !== 'folder') return null
+  const rawId = entry.getAttribute('data-fm-entry-id')
+  if (!rawId) return null
+  const id = Number(rawId)
+  if (!Number.isFinite(id)) return null
+  const folder = props.items.find(item => item.id === id && item.is_folder)
+  return folder ? { kind: 'folder', folder } : null
 }
-function onDragEnd() {
-  dragSource.value = null
+
+function clearNavOver() {
+  if (dragNavOverEl.value) {
+    dragNavOverEl.value.classList.remove('nav-drop-over')
+    dragNavOverEl.value = null
+  }
+}
+
+function emitDragOnce(
+  source: FileEntry,
+  target: FileEntry | { targetFolderId: number | null },
+  eventType: 'drag-move' | 'drag-move-to',
+) {
+  const targetId = target instanceof Object && 'targetFolderId' in target ? target.targetFolderId : (target as FileEntry).id
+  const key = `${source.is_folder ? 'folder' : 'file'}:${source.id}->${String(targetId)}`
+  const now = Date.now()
+  if (key === lastDropKey && now - lastDropAt < 800) return
+  lastDropKey = key
+  lastDropAt = now
+  if (eventType === 'drag-move' && 'id' in target) {
+    emit('drag-move', source, target as FileEntry)
+  } else if (eventType === 'drag-move-to') {
+    emit('drag-move-to', source, (target as { targetFolderId: number | null }).targetFolderId)
+  }
+}
+
+function resetPointerDrag() {
+  pointerSource.value = null
+  pointerStart.value = null
+  pointerDragging.value = false
   dragOverId.value = null
+  clearNavOver()
+  window.removeEventListener('pointermove', onPointerMove)
+  window.removeEventListener('pointerup', onPointerUp)
+}
+
+function resetMouseDrag() {
+  mouseSource.value = null
+  mouseStart.value = null
+  mouseDragging.value = false
+  dragOverId.value = null
+  clearNavOver()
+  window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('mouseup', onMouseUp)
 }
 
 const props = defineProps<{
@@ -163,116 +315,6 @@ function handleDoubleClick(item: FileEntry, e: MouseEvent) {
   emit('open', item)
 }
 
-function onMouseDown(item: FileEntry, e: MouseEvent) {
-  if (e.button !== 0) return
-  mouseSource.value = item
-  mouseStart.value = { x: e.clientX, y: e.clientY }
-  mouseDragging.value = false
-  window.addEventListener('mousemove', onMouseMove)
-  window.addEventListener('mouseup', onMouseUp)
-}
-
-function onPointerDown(item: FileEntry, e: PointerEvent) {
-  if (e.button !== 0) return
-  pointerSource.value = item
-  pointerStart.value = { x: e.clientX, y: e.clientY }
-  pointerDragging.value = false
-  window.addEventListener('pointermove', onPointerMove)
-  window.addEventListener('pointerup', onPointerUp)
-}
-
-function onPointerMove(e: PointerEvent) {
-  const source = pointerSource.value
-  const start = pointerStart.value
-  if (!source || !start) return
-
-  const dx = e.clientX - start.x
-  const dy = e.clientY - start.y
-  if (!pointerDragging.value && Math.hypot(dx, dy) < 6) return
-
-  pointerDragging.value = true
-  e.preventDefault()
-  const folder = findDropFolder(e.clientX, e.clientY)
-  dragOverId.value = folder && folder.id !== source.id ? folder.id : null
-}
-
-function onPointerUp(e: PointerEvent) {
-  const source = pointerSource.value
-  const folder = pointerDragging.value ? findDropFolder(e.clientX, e.clientY) : null
-  const didDrag = pointerDragging.value
-  resetPointerDrag()
-
-  if (!didDrag) return
-  suppressNextClick = true
-  window.setTimeout(() => { suppressNextClick = false }, 0)
-  if (!folder || !source || folder.id === source.id) return
-  emitDropOnce(source, folder)
-}
-
-function onMouseMove(e: MouseEvent) {
-  const source = mouseSource.value
-  const start = mouseStart.value
-  if (!source || !start) return
-
-  const dx = e.clientX - start.x
-  const dy = e.clientY - start.y
-  if (!mouseDragging.value && Math.hypot(dx, dy) < 6) return
-
-  mouseDragging.value = true
-  e.preventDefault()
-  const folder = findDropFolder(e.clientX, e.clientY)
-  dragOverId.value = folder && folder.id !== source.id ? folder.id : null
-}
-
-function onMouseUp(e: MouseEvent) {
-  const source = mouseSource.value
-  const folder = mouseDragging.value ? findDropFolder(e.clientX, e.clientY) : null
-  const didDrag = mouseDragging.value
-  resetMouseDrag()
-
-  if (!didDrag) return
-  suppressNextClick = true
-  window.setTimeout(() => { suppressNextClick = false }, 0)
-  if (!folder || !source || folder.id === source.id) return
-  emitDropOnce(source, folder)
-}
-
-function emitDropOnce(source: FileEntry, folder: FileEntry) {
-  const key = `${source.is_folder ? 'folder' : 'file'}:${source.id}->${folder.id}`
-  const now = Date.now()
-  if (key === lastDropKey && now - lastDropAt < 800) return
-  lastDropKey = key
-  lastDropAt = now
-  emit('drag-move', source, folder)
-}
-
-function resetPointerDrag() {
-  pointerSource.value = null
-  pointerStart.value = null
-  pointerDragging.value = false
-  dragOverId.value = null
-  window.removeEventListener('pointermove', onPointerMove)
-  window.removeEventListener('pointerup', onPointerUp)
-}
-
-function resetMouseDrag() {
-  mouseSource.value = null
-  mouseStart.value = null
-  mouseDragging.value = false
-  dragOverId.value = null
-  window.removeEventListener('mousemove', onMouseMove)
-  window.removeEventListener('mouseup', onMouseUp)
-}
-
-function findDropFolder(x: number, y: number): FileEntry | null {
-  const element = document.elementFromPoint(x, y)
-  const entry = element instanceof Element ? element.closest<HTMLElement>('[data-fm-entry-id]') : null
-  if (!entry || entry.dataset.fmEntryKind !== 'folder') return null
-  const id = Number(entry.dataset.fmEntryId)
-  if (!Number.isFinite(id)) return null
-  return props.items.find(item => item.id === id && item.is_folder) || null
-}
-
 onBeforeUnmount(() => {
   resetPointerDrag()
   resetMouseDrag()
@@ -284,6 +326,7 @@ const emit = defineEmits<{
   (e: 'context-menu', item: FileEntry, event: MouseEvent): void
   (e: 'sort', column: string): void
   (e: 'drag-move', source: FileEntry, targetFolder: FileEntry): void
+  (e: 'drag-move-to', source: FileEntry, targetFolderId: number | null): void
 }>()
 </script>
 
@@ -298,7 +341,6 @@ const emit = defineEmits<{
   background-size: 92px 92px;
 }
 
-/* List view column headers */
 .fm-view-list {
   display: flex;
   flex-direction: column;
@@ -340,7 +382,6 @@ const emit = defineEmits<{
   pointer-events: none;
 }
 
-/* Grid view */
 .fm-content-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
@@ -349,7 +390,6 @@ const emit = defineEmits<{
   padding: 16px;
 }
 
-/* List view */
 .fm-content-list {
   display: grid;
   align-content: start;
@@ -365,7 +405,6 @@ const emit = defineEmits<{
   padding: 4px 10px;
 }
 
-/* Entry base styles */
 .fm-entry {
   min-width: 0;
   border: 1px solid transparent;
