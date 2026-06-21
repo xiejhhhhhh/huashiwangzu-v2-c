@@ -5,7 +5,7 @@
 import logging
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal, get_db
@@ -455,24 +455,23 @@ async def api_dashboard_stats(
 ):
     from .models import (
         KbDocument, KbEntityDictionary, KbGraphNode, KbGraphEdge,
-        KbFileRelation, KbGovernanceCandidate,
+        KbFileRelation, KbGovernanceCandidate, KbDocumentProfile,
     )
 
     total = (await db.execute(
         select(func.count(KbDocument.id)).where(KbDocument.deleted == False, KbDocument.owner_id == user.id)
     )).scalar() or 0
 
+    # 完成=权威口径: fusion done + 画像存在 (与 progress_service.get_document_progress 一致)
     completed = (await db.execute(
         select(func.count(KbDocument.id)).where(
             KbDocument.deleted == False, KbDocument.owner_id == user.id,
-            KbDocument.raw_status == "done", KbDocument.fusion_status == "done",
-        )
-    )).scalar() or 0
-
-    running = (await db.execute(
-        select(func.count(KbDocument.id)).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
-            KbDocument.raw_status == "running",
+            KbDocument.fusion_status == "done",
+            exists(
+                select(KbDocumentProfile.id).where(
+                    KbDocumentProfile.document_id == KbDocument.id
+                )
+            ),
         )
     )).scalar() or 0
 
@@ -482,6 +481,15 @@ async def api_dashboard_stats(
             or_(KbDocument.raw_status == "failed", KbDocument.fusion_status == "failed"),
         )
     )).scalar() or 0
+
+    pending = (await db.execute(
+        select(func.count(KbDocument.id)).where(
+            KbDocument.deleted == False, KbDocument.owner_id == user.id,
+            KbDocument.raw_status == "pending", KbDocument.fusion_status == "pending",
+        )
+    )).scalar() or 0
+
+    running = total - completed - failed - pending
 
     entity_count = (await db.execute(
         select(func.count(KbEntityDictionary.id)).where(KbEntityDictionary.owner_id == user.id)
@@ -529,10 +537,16 @@ async def api_dashboard_stats(
         if d.raw_status == "failed" or d.fusion_status == "failed":
             stuck_docs.append(entry)
 
+    # 最近完成也用权威口径: fusion done + 画像存在
     recent = (await db.execute(
         select(KbDocument).where(
             KbDocument.deleted == False, KbDocument.owner_id == user.id,
-            KbDocument.raw_status == "done", KbDocument.fusion_status == "done",
+            KbDocument.fusion_status == "done",
+            exists(
+                select(KbDocumentProfile.id).where(
+                    KbDocumentProfile.document_id == KbDocument.id
+                )
+            ),
         )
         .order_by(KbDocument.updated_at.desc().nullslast())
         .limit(10)

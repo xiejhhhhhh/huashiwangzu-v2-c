@@ -70,6 +70,10 @@
             <button class="primary-btn" :disabled="analyzing" @click="startAnalyze">{{ analyzing ? '分析中…' : (progress?.overall_status === 'done' ? '重新分析' : '开始分析') }}</button>
             <button class="ghost-btn danger" @click="removeDocument">删除</button>
           </div>
+          <div v-if="analyzing" class="head-progress">
+            <span class="hp-text">{{ progress?.current_stage || '分析中' }} · {{ overallPercent }}%</span>
+            <span class="hp-bar"><span class="hp-fill" :style="{ width: overallPercent + '%' }"></span></span>
+          </div>
         </header>
 
         <section v-if="showProgress" class="progress-panel">
@@ -346,6 +350,7 @@ const showProgress = computed(() => !!progress.value && progress.value.overall_s
 const headStatusText = computed(() => { const p = progress.value; if (!p) return '尚未分析'; if (p.overall_status === 'done') return '分析完成'; if (p.overall_status === 'failed') return '分析出错'; if (p.overall_status === 'running') return p.current_stage + '…'; return '待分析' })
 const progressHeadline = computed(() => { const p = progress.value; if (!p) return ''; if (p.overall_status === 'done') return '全部完成'; if (p.overall_status === 'failed') return '分析出错,可重新分析'; return '正在「' + p.current_stage + '」' })
 const ringStyle = computed(() => { const pct = progress.value?.overall_percent ?? 0; return { background: `conic-gradient(#2395bc ${pct * 3.6}deg, #e6eef5 0deg)` } })
+const overallPercent = computed(() => Math.max(0, Math.min(100, progress.value?.overall_percent ?? 0)))
 const profileEntities = computed(() => parseJsonField<Array<{ name: string }>>(profile.value?.key_entities, []).slice(0, 12))
 const profileChapters = computed(() => parseJsonField<Array<{ title?: string; page?: number }>>(profile.value?.chapter_structure, []))
 
@@ -737,12 +742,17 @@ onUnmounted(stopPolling)
 /* 主区 */
 .kb-main { display: flex; flex-direction: column; min-width: 0; padding: 18px 20px; gap: 14px; overflow: hidden; height: 100%; }
 
-.main-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #e3e9f2; }
+.main-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 16px; padding-bottom: 12px; border-bottom: 1px solid #e3e9f2; position: relative; }
 .head-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .head-ico { font-size: 30px; }
 .main-head h2 { margin: 0; font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .head-meta { font-size: 12px; color: #7c8da0; }
 .head-actions { display: flex; gap: 8px; flex: none; }
+
+.head-progress { width: 100%; display: flex; align-items: center; gap: 10px; padding: 4px 0 0; }
+.hp-text { font-size: 11px; color: #2395bc; font-weight: 600; white-space: nowrap; flex: none; }
+.hp-bar { flex: 1; height: 4px; border-radius: 2px; background: #e6eef5; overflow: hidden; }
+.hp-fill { display: block; height: 100%; background: linear-gradient(90deg, #2395bc, #31a1c6); border-radius: 2px; transition: width .4s ease; }
 
 .primary-btn { height: 36px; padding: 0 18px; border: none; border-radius: 8px; cursor: pointer; background: #2395bc; color: #fff; font-weight: 600; font-size: 13px; }
 .primary-btn:hover { background: #1f86a9; }

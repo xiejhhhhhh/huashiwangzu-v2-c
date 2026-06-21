@@ -16,7 +16,7 @@
       <h3>各文件分析进度</h3>
       <div class="db-table-wrap">
         <table class="db-table">
-          <thead><tr><th>文件名</th><th>原始采集</th><th>页级融合</th><th>解析</th><th>页数</th><th>创建时间</th></tr></thead>
+          <thead><tr><th>文件名</th><th>原始采集</th><th>页级融合</th><th>解析</th><th>页数</th><th>创建时间</th><th></th></tr></thead>
           <tbody>
             <tr v-for="d in s.document_progresses" :key="d.id" :class="rowClass(d)">
               <td class="cell-name">{{ d.filename }}</td>
@@ -25,6 +25,10 @@
               <td><span class="tag" :class="statusClass(d.parse_status)">{{ statusText(d.parse_status) }}</span></td>
               <td>{{ d.total_pages || '-' }}</td>
               <td class="cell-date">{{ fmtDate(d.created_at) }}</td>
+              <td v-if="isFailed(d)">
+                <button class="retrigger-btn" :disabled="isTriggered(d.id)" @click="handleRetrigger(d.id)">{{ triggeredSet.has(d.id) ? '已触发' : '🔄 重新触发' }}</button>
+              </td>
+              <td v-else></td>
             </tr>
           </tbody>
         </table>
@@ -34,12 +38,13 @@
     <div class="db-cols">
       <section class="db-section">
         <h3>卡住的文件 <span v-if="s.stuck_documents.length" class="badge">{{ s.stuck_documents.length }}</span></h3>
-        <div v-if="s.stuck_documents.length" class="stuck-list">
-          <div v-for="d in s.stuck_documents" :key="d.id" class="stuck-item">
-            <span class="stuck-name">{{ d.filename }}</span>
-            <span class="tag err">失败</span>
+          <div v-if="s.stuck_documents.length" class="stuck-list">
+            <div v-for="d in s.stuck_documents" :key="d.id" class="stuck-item">
+              <span class="stuck-name">{{ d.filename }}</span>
+              <span class="tag err">失败</span>
+              <button class="retrigger-btn" :disabled="isTriggered(d.id)" @click="handleRetrigger(d.id)">{{ triggeredSet.has(d.id) ? '已触发' : '🔄 重新触发' }}</button>
+            </div>
           </div>
-        </div>
         <div v-else class="db-empty">暂无卡住文件</div>
       </section>
 
@@ -80,7 +85,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { getDashboardStats, type DashboardStats } from './api'
+import { getDashboardStats, startPipeline, type DashboardStats } from './api'
 
 const s = ref<DashboardStats>({
   total_documents: 0, completed_documents: 0, running_documents: 0, failed_documents: 0,
@@ -90,6 +95,8 @@ const s = ref<DashboardStats>({
   recent_completions: [],
 })
 const loading = ref(true)
+const triggeredSet = ref(new Set<number>())
+const triggeringSet = ref(new Set<number>())
 
 const hasCategories = computed(() => Object.keys(s.value.entity_category_distribution).length > 0)
 
@@ -110,6 +117,9 @@ function rowClass(d: { raw_status: string; fusion_status: string }): string {
   if (d.raw_status === 'done' && d.fusion_status === 'done') return 'row-ok'
   return ''
 }
+function isFailed(d: { raw_status: string; fusion_status: string }): boolean {
+  return d.raw_status === 'failed' || d.fusion_status === 'failed'
+}
 function barPct(cnt: number): number {
   const values = Object.values(s.value.entity_category_distribution) as number[]
   const max = Math.max(...values, 1)
@@ -118,6 +128,36 @@ function barPct(cnt: number): number {
 function fmtDate(iso: string): string {
   if (!iso) return '-'
   try { return new Date(iso).toLocaleDateString('zh-CN') } catch { return iso.slice(0, 10) }
+}
+
+async function refreshStats() {
+  try { s.value = await getDashboardStats() } catch { /* ignore */ }
+}
+
+async function handleRetrigger(docId: number) {
+  if (triggeredSet.value.has(docId) || triggeringSet.value.has(docId)) return
+  triggeringSet.value = new Set(triggeringSet.value).add(docId)
+  try {
+    await startPipeline(docId)
+    triggeredSet.value = new Set(triggeredSet.value).add(docId)
+    setTimeout(() => {
+      triggeredSet.value = new Set(triggeredSet.value)
+      triggeredSet.value.delete(docId)
+      triggeredSet.value = new Set(triggeredSet.value)
+    }, 5000)
+    await refreshStats()
+  } catch (e) {
+    console.error('[kb-dashboard] retrigger failed:', e)
+    window.alert('重新触发失败: ' + String((e as Error).message || e))
+  } finally {
+    triggeringSet.value = new Set(triggeringSet.value)
+    triggeringSet.value.delete(docId)
+    triggeringSet.value = new Set(triggeringSet.value)
+  }
+}
+
+function isTriggered(docId: number): boolean {
+  return triggeredSet.value.has(docId) || triggeringSet.value.has(docId)
 }
 
 onMounted(async () => {
@@ -165,6 +205,9 @@ onMounted(async () => {
 .stuck-item .tag { flex: none; }
 .dup-cnt { font-size: 12px; color: #8aa0b5; flex: none; }
 .recent-date { font-size: 12px; color: #8aa0b5; flex: none; }
+.retrigger-btn { height: 28px; padding: 0 10px; border: 1px solid #2395bc; border-radius: 6px; background: #fff; color: #2395bc; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex: none; transition: all .2s; }
+.retrigger-btn:hover { background: #eaf6fb; }
+.retrigger-btn:disabled { border-color: #c2cdda; color: #aab8c6; background: #f5f7fa; cursor: not-allowed; }
 .db-empty { color: #9aabbd; font-size: 13px; padding: 20px; text-align: center; border: 1px dashed #e3e9f2; border-radius: 10px; }
 .cat-list { border: 1px solid #e3e9f2; border-radius: 10px; background: #fff; padding: 8px 14px; }
 .cat-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
