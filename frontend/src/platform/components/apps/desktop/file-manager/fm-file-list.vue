@@ -31,15 +31,14 @@
           :key="`${item.is_folder ? 'folder' : 'file'}-${item.id}`"
           :draggable="false"
           class="fm-entry"
-          :data-fm-entry-id="item.id"
-          :data-fm-entry-kind="item.is_folder ? 'folder' : 'file'"
-          :class="{ 'fm-entry-selected': selectedId === item.id, 'fm-entry-drag-over': item.is_folder && dragOverId === item.id }"
+          :data-selection-key="(item.is_folder ? 'folder' : 'file') + ':' + item.id"
+          :data-folder="item.is_folder ? String(item.id) : undefined"
+          :class="{ 'fm-entry-selected': selectedId === item.id }"
           type="button"
           @click="handleClick(item, $event)"
           @dblclick="handleDoubleClick(item, $event)"
           @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
-          @pointerdown="onPointerDown(item, $event)"
-          @mousedown="onMouseDown(item, $event)"
+          @mousedown.stop="handleEntryMouseDown(item, $event)"
         >
           <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="42" />
           <span class="fm-entry-name">{{ displayName(item) }}</span>
@@ -52,15 +51,14 @@
           :key="`${item.is_folder ? 'folder' : 'file'}-${item.id}`"
           :draggable="false"
           class="fm-entry"
-          :data-fm-entry-id="item.id"
-          :data-fm-entry-kind="item.is_folder ? 'folder' : 'file'"
-          :class="{ 'fm-entry-selected': selectedId === item.id, 'fm-entry-drag-over': item.is_folder && dragOverId === item.id }"
+          :data-selection-key="(item.is_folder ? 'folder' : 'file') + ':' + item.id"
+          :data-folder="item.is_folder ? String(item.id) : undefined"
+          :class="{ 'fm-entry-selected': selectedId === item.id }"
           type="button"
           @click="handleClick(item, $event)"
           @dblclick="handleDoubleClick(item, $event)"
           @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
-          @pointerdown="onPointerDown(item, $event)"
-          @mousedown="onMouseDown(item, $event)"
+          @mousedown.stop="handleEntryMouseDown(item, $event)"
         >
           <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="22" />
           <span class="fm-entry-name">{{ displayName(item) }}</span>
@@ -74,215 +72,12 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
 import FileVisualIcon from '@/shared/components/file-visual-icon.vue'
 import type { FileEntry } from '@/shared/api/types'
+import { startDrag } from '@/desktop/drag-drop/drag-state'
 
-const dragSource = ref<FileEntry | null>(null)
-const dragOverId = ref<number | null>(null)
-const dragNavOverEl = ref<Element | null>(null)
-const pointerSource = ref<FileEntry | null>(null)
-const pointerStart = ref<{ x: number; y: number } | null>(null)
-const pointerDragging = ref(false)
-const mouseSource = ref<FileEntry | null>(null)
-const mouseStart = ref<{ x: number; y: number } | null>(null)
-const mouseDragging = ref(false)
 let suppressNextClick = false
-let lastDropKey = ''
-let lastDropAt = 0
-
-// ── Pointer-based drag (primary, works on :draggable="false" entries) ──
-
-function onMouseDown(item: FileEntry, e: MouseEvent) {
-  if (e.button !== 0) return
-  mouseSource.value = item
-  mouseStart.value = { x: e.clientX, y: e.clientY }
-  mouseDragging.value = false
-  window.addEventListener('mousemove', onMouseMove)
-  window.addEventListener('mouseup', onMouseUp)
-}
-
-function onPointerDown(item: FileEntry, e: PointerEvent) {
-  if (e.button !== 0) return
-  pointerSource.value = item
-  pointerStart.value = { x: e.clientX, y: e.clientY }
-  pointerDragging.value = false
-  window.addEventListener('pointermove', onPointerMove)
-  window.addEventListener('pointerup', onPointerUp)
-}
-
-function onPointerMove(e: PointerEvent) {
-  const source = pointerSource.value
-  const start = pointerStart.value
-  if (!source || !start) return
-
-  const dx = e.clientX - start.x
-  const dy = e.clientY - start.y
-  if (!pointerDragging.value && Math.hypot(dx, dy) < 6) return
-
-  pointerDragging.value = true
-  e.preventDefault()
-  const target = findDropTarget(e.clientX, e.clientY)
-  // 文件夹落点
-  if (target?.kind === 'folder') {
-    dragOverId.value = target.folder.id !== source.id ? target.folder.id : null
-  } else {
-    dragOverId.value = null
-  }
-  // 导航落点高亮
-  if (target?.kind === 'nav' && target.el) {
-    if (dragNavOverEl.value !== target.el) {
-      clearNavOver()
-      target.el.classList.add('nav-drop-over')
-      dragNavOverEl.value = target.el
-    }
-  } else {
-    clearNavOver()
-  }
-}
-
-function onPointerUp(e: PointerEvent) {
-  const source = pointerSource.value
-  const target = pointerDragging.value ? findDropTarget(e.clientX, e.clientY) : null
-  const didDrag = pointerDragging.value
-  resetPointerDrag()
-
-  if (!didDrag) return
-  suppressNextClick = true
-  window.setTimeout(() => { suppressNextClick = false }, 0)
-  if (!source) return
-  if (target?.kind === 'folder') {
-    if (target.folder.id === source.id) return
-    emitDragOnce(source, target.folder, 'drag-move')
-  } else if (target?.kind === 'nav') {
-    emitDragOnce(source, { targetFolderId: target.folderId }, 'drag-move-to')
-  }
-}
-
-function onMouseMove(e: MouseEvent) {
-  const source = mouseSource.value
-  const start = mouseStart.value
-  if (!source || !start) return
-
-  const dx = e.clientX - start.x
-  const dy = e.clientY - start.y
-  if (!mouseDragging.value && Math.hypot(dx, dy) < 6) return
-
-  mouseDragging.value = true
-  e.preventDefault()
-  const target = findDropTarget(e.clientX, e.clientY)
-  if (target?.kind === 'folder') {
-    dragOverId.value = target.folder.id !== source.id ? target.folder.id : null
-  } else {
-    dragOverId.value = null
-  }
-  if (target?.kind === 'nav' && target.el) {
-    if (dragNavOverEl.value !== target.el) {
-      clearNavOver()
-      target.el.classList.add('nav-drop-over')
-      dragNavOverEl.value = target.el
-    }
-  } else {
-    clearNavOver()
-  }
-}
-
-function onMouseUp(e: MouseEvent) {
-  const source = mouseSource.value
-  const target = mouseDragging.value ? findDropTarget(e.clientX, e.clientY) : null
-  const didDrag = mouseDragging.value
-  resetMouseDrag()
-
-  if (!didDrag) return
-  suppressNextClick = true
-  window.setTimeout(() => { suppressNextClick = false }, 0)
-  if (!source) return
-  if (target?.kind === 'folder') {
-    if (target.folder.id === source.id) return
-    emitDragOnce(source, target.folder, 'drag-move')
-  } else if (target?.kind === 'nav') {
-    emitDragOnce(source, { targetFolderId: target.folderId }, 'drag-move-to')
-  }
-}
-
-type DragTarget =
-  | { kind: 'folder'; folder: FileEntry }
-  | { kind: 'nav'; folderId: number | null; el: Element }
-  | null
-
-function findDropTarget(x: number, y: number): DragTarget {
-  const element = document.elementFromPoint(x, y)
-  if (!element) return null
-  // 先看是否为导航落点
-  const navEl = element.closest('[data-fm-navdrop]')
-  if (navEl instanceof Element) {
-    const kind = navEl.getAttribute('data-fm-navdrop')
-    if (kind === 'root') return { kind: 'nav', folderId: null, el: navEl }
-    if (kind === 'folder') {
-      const raw = navEl.getAttribute('data-fm-folder-id') || ''
-      const folderId = raw ? Number(raw) : null
-      if (folderId === null || (folderId !== null && Number.isFinite(folderId))) {
-        return { kind: 'nav', folderId: folderId, el: navEl }
-      }
-    }
-    return null
-  }
-  // 再走原来的文件夹条目识别
-  const entry = element.closest('[data-fm-entry-id]')
-  if (!entry) return null
-  if (entry.getAttribute('data-fm-entry-kind') !== 'folder') return null
-  const rawId = entry.getAttribute('data-fm-entry-id')
-  if (!rawId) return null
-  const id = Number(rawId)
-  if (!Number.isFinite(id)) return null
-  const folder = props.items.find(item => item.id === id && item.is_folder)
-  return folder ? { kind: 'folder', folder } : null
-}
-
-function clearNavOver() {
-  if (dragNavOverEl.value) {
-    dragNavOverEl.value.classList.remove('nav-drop-over')
-    dragNavOverEl.value = null
-  }
-}
-
-function emitDragOnce(
-  source: FileEntry,
-  target: FileEntry | { targetFolderId: number | null },
-  eventType: 'drag-move' | 'drag-move-to',
-) {
-  const targetId = target instanceof Object && 'targetFolderId' in target ? target.targetFolderId : (target as FileEntry).id
-  const key = `${source.is_folder ? 'folder' : 'file'}:${source.id}->${String(targetId)}`
-  const now = Date.now()
-  if (key === lastDropKey && now - lastDropAt < 800) return
-  lastDropKey = key
-  lastDropAt = now
-  if (eventType === 'drag-move' && 'id' in target) {
-    emit('drag-move', source, target as FileEntry)
-  } else if (eventType === 'drag-move-to') {
-    emit('drag-move-to', source, (target as { targetFolderId: number | null }).targetFolderId)
-  }
-}
-
-function resetPointerDrag() {
-  pointerSource.value = null
-  pointerStart.value = null
-  pointerDragging.value = false
-  dragOverId.value = null
-  clearNavOver()
-  window.removeEventListener('pointermove', onPointerMove)
-  window.removeEventListener('pointerup', onPointerUp)
-}
-
-function resetMouseDrag() {
-  mouseSource.value = null
-  mouseStart.value = null
-  mouseDragging.value = false
-  dragOverId.value = null
-  clearNavOver()
-  window.removeEventListener('mousemove', onMouseMove)
-  window.removeEventListener('mouseup', onMouseUp)
-}
+let pendingDrag: { key: string; startX: number; startY: number } | null = null
 
 const props = defineProps<{
   items: FileEntry[]
@@ -294,6 +89,33 @@ const props = defineProps<{
   sortColumn: 'name' | 'date' | 'type' | 'size'
   sortDirection: 'asc' | 'desc'
 }>()
+
+function handleEntryMouseDown(item: FileEntry, e: MouseEvent) {
+  if (e.button !== 0) return
+  pendingDrag = {
+    key: (item.is_folder ? 'folder' : 'file') + ':' + item.id,
+    startX: e.clientX,
+    startY: e.clientY,
+  }
+  document.addEventListener('mousemove', handlePendingDragMove)
+  document.addEventListener('mouseup', clearPendingDrag)
+}
+
+function handlePendingDragMove(e: MouseEvent) {
+  if (!pendingDrag) return
+  const dx = e.clientX - pendingDrag.startX
+  const dy = e.clientY - pendingDrag.startY
+  if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return
+  suppressNextClick = true
+  startDrag([pendingDrag.key], pendingDrag.startX, pendingDrag.startY)
+  clearPendingDrag()
+}
+
+function clearPendingDrag() {
+  document.removeEventListener('mousemove', handlePendingDragMove)
+  document.removeEventListener('mouseup', clearPendingDrag)
+  pendingDrag = null
+}
 
 function handleClick(item: FileEntry, e: MouseEvent) {
   if (suppressNextClick) {
@@ -315,18 +137,11 @@ function handleDoubleClick(item: FileEntry, e: MouseEvent) {
   emit('open', item)
 }
 
-onBeforeUnmount(() => {
-  resetPointerDrag()
-  resetMouseDrag()
-})
-
 const emit = defineEmits<{
   (e: 'select', item: FileEntry): void
   (e: 'open', item: FileEntry): void
   (e: 'context-menu', item: FileEntry, event: MouseEvent): void
   (e: 'sort', column: string): void
-  (e: 'drag-move', source: FileEntry, targetFolder: FileEntry): void
-  (e: 'drag-move-to', source: FileEntry, targetFolderId: number | null): void
 }>()
 </script>
 
@@ -470,11 +285,5 @@ const emit = defineEmits<{
   color: #64748b;
   font-size: 13px;
   padding: 40px;
-}
-
-.fm-entry-drag-over {
-  background: rgba(59, 130, 246, 0.18) !important;
-  border-color: rgba(59, 130, 246, 0.65) !important;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
 }
 </style>

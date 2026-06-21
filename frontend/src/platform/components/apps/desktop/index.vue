@@ -1,5 +1,5 @@
 <template>
-  <div class="desktop-file-manager" @contextmenu.prevent="state.handleBlankContextMenu" @click="state.closeContextMenu">
+  <div class="desktop-file-manager" :data-folder="String(state.currentFolderId.value || 0)" @contextmenu.prevent="state.handleBlankContextMenu" @click="state.closeContextMenu">
     <FmNavigationBar
       :can-go-back="state.canGoBack.value"
       :can-go-forward="state.canGoForward.value"
@@ -22,7 +22,7 @@
         @open-recycle="state.openRecycle"
       />
 
-      <div class="fm-main">
+      <div class="fm-main" :data-folder="String(state.currentFolderId.value || 0)" :class="{ 'fm-main-drag-over': dragState.dragOverId === String(state.currentFolderId.value) && dragState.isDragging }">
         <FmRecycleView v-if="state.isRecycleBin.value" />
         <FmFileList
           v-else
@@ -38,8 +38,6 @@
           @open="state.openItem"
           @context-menu="state.handleItemMenu"
           @sort="handleSort"
-          @drag-move="handleDragMove"
-          @drag-move-to="handleDragMoveTo"
         />
       </div>
     </div>
@@ -89,6 +87,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
+import { dragState } from '@/desktop/drag-drop/drag-state'
 import FmNavigationBar from './file-manager/fm-navigation-bar.vue'
 import FmNavPane from './file-manager/fm-nav-pane.vue'
 import FmRecycleView from './file-manager/fm-recycle-view.vue'
@@ -96,8 +95,6 @@ import FmFileList from './file-manager/fm-file-list.vue'
 import FmStatusBar from './file-manager/fm-status-bar.vue'
 import FmPropertiesDialog from './file-manager/fm-properties-dialog.vue'
 import { useFileManagerState } from './file-manager/use-file-manager-state'
-import { moveEntryRequest } from '@/shared/api/desktop'
-import type { FileEntry } from '@/shared/api/types'
 
 const props = defineProps<{
   folderId?: number
@@ -119,45 +116,12 @@ function handleSort(column: string) {
   }
 }
 
-async function handleDragMove(source: FileEntry, targetFolder: FileEntry) {
-  if (!targetFolder.is_folder) return
-  if (source.id === targetFolder.id) return
-  try {
-    await moveEntryRequest(source.is_folder ? 'folder' : 'file', source.id, targetFolder.id)
-    await state.loadFiles()
-  } catch {
-    // 移动失败静默忽略
-  }
-}
-
-async function handleDragMoveTo(source: FileEntry, targetFolderId: number | null) {
-  // 移到当前位置则忽略
-  const currentId = state.currentFolderId.value
-  const tId = targetFolderId ?? 0
-  if (tId === currentId) return
-  try {
-    await moveEntryRequest(source.is_folder ? 'folder' : 'file', source.id, targetFolderId ?? undefined)
-    await state.loadFiles()
-  } catch {
-    // 移动失败静默忽略
-  }
-}
-
 onMounted(() => {
   state.uploadInput.value = uploadInputRef.value
   state.applyInitialFolder()
   void state.loadFiles()
 })
 </script>
-
-<style>
-.nav-drop-over,
-.nav-drop-over:hover {
-  background: #dbeafe !important;
-  border-color: #2395bc !important;
-  box-shadow: 0 0 0 2px rgba(35, 149, 188, 0.2) !important;
-}
-</style>
 
 <style scoped>
 .desktop-file-manager {
@@ -183,6 +147,12 @@ onMounted(() => {
 
 .fm-hidden-input {
   display: none;
+}
+
+.fm-main-drag-over {
+  background: rgba(35, 149, 188, 0.05) !important;
+  box-shadow: inset 0 0 0 1.5px #2395bc;
+  border-radius: 4px;
 }
 
 .ctx-overlay {

@@ -81,7 +81,7 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
   })
 
   on('refresh:file-list', (data: { folderId?: number }) => {
-    if (data.folderId === currentFolderId.value) {
+    if (data.folderId === undefined || data.folderId === null || data.folderId === 0 || data.folderId === currentFolderId.value) {
       void loadFiles()
     }
   })

@@ -260,12 +260,17 @@ export function commitDropOverlayBatch(
 export function restorePersistedIconPositions(): void {
   const positions = readIconPositions()
   const metrics = getIconGridMetrics()
+
+  // First pass: set dropOverlay for all items with stored positions,
+  // and build a set of targeted absolute grid slots
+  const targetedSlots = new Set<string>()
+  const overlayUpdates: Record<string, { x: number; y: number }> = {}
+
   document.querySelectorAll('.desktop-icon-item').forEach(el => {
     const key = el.getAttribute('data-selection-key')
     if (!key) return
     const position = positions[key]
     if (!position) return
-    // 用存储的槽位坐标直接算出目标屏幕位置，不依赖当前 DOM 位置
     const targetX = snapToSlot(
       typeof position.col === 'number' ? metrics.originX + position.col * metrics.stepX : position.x,
       metrics.originX, metrics.stepX, metrics.maxX
@@ -274,14 +279,52 @@ export function restorePersistedIconPositions(): void {
       typeof position.row === 'number' ? metrics.originY + position.row * metrics.stepY : position.y,
       metrics.originY, metrics.stepY, metrics.maxY
     )
-    // baseLeft = flex 基准位置（图标无 transform 时应在哪里）
     const offset = getElementTranslateOffset(el)
     const rect = el.getBoundingClientRect()
     const baseLeft = rect.left - offset.x
     const baseTop = rect.top - offset.y
-    dropOverlay[key] = {
-      x: targetX - baseLeft,
-      y: targetY - baseTop,
+    const slot = slotKey(targetX, targetY)
+    targetedSlots.add(slot)
+    overlayUpdates[key] = { x: targetX - baseLeft, y: targetY - baseTop }
+  })
+
+  // Apply all overlays
+  Object.entries(overlayUpdates).forEach(([key, val]) => {
+    dropOverlay[key] = val
+  })
+
+  // Second pass: detect items without stored positions that conflict with targeted slots
+  document.querySelectorAll('.desktop-icon-item').forEach(el => {
+    const key = el.getAttribute('data-selection-key')
+    if (!key || positions[key]) return
+    const rect = el.getBoundingClientRect()
+    const flexSlot = slotKey(
+      snapToSlot(rect.left, metrics.originX, metrics.stepX, metrics.maxX),
+      snapToSlot(rect.top, metrics.originY, metrics.stepY, metrics.maxY)
+    )
+    if (targetedSlots.has(flexSlot)) {
+      // This item's flex slot is taken by a positioned item — move it to nearest free slot
+      const snapshot: Record<string, { x: number; y: number }> = {}
+      const currentOccupied = new Set(targetedSlots)
+      document.querySelectorAll('.desktop-icon-item').forEach(other => {
+        const otherKey = other.getAttribute('data-selection-key')
+        if (!otherKey || otherKey === key) return
+        const o = getElementTranslateOffset(other)
+        const r = other.getBoundingClientRect()
+        const s = slotKey(
+          snapToSlot(r.left - o.x + (dropOverlay[otherKey]?.x ?? 0), metrics.originX, metrics.stepX, metrics.maxX),
+          snapToSlot(r.top - o.y + (dropOverlay[otherKey]?.y ?? 0), metrics.originY, metrics.stepY, metrics.maxY)
+        )
+        currentOccupied.add(s)
+      })
+      const free = findAvailableSlot(
+        { x: rect.left, y: rect.top },
+        metrics, currentOccupied
+      )
+      const baseLeft = rect.left - getElementTranslateOffset(el).x
+      const baseTop = rect.top - getElementTranslateOffset(el).y
+      snapshot[key] = { x: free.x - baseLeft, y: free.y - baseTop }
+      Object.entries(snapshot).forEach(([k, v]) => { dropOverlay[k] = v })
     }
   })
 }

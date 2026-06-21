@@ -20,9 +20,11 @@ function detectHoveredFolder(e: MouseEvent) {
   const el = document.elementFromPoint(e.clientX, e.clientY)
   const folder = el?.closest?.('[data-folder]') as HTMLElement | null
   if (!folder) { leaveFolder(); return }
-  const id = folder.getAttribute('data-selection-key')?.replace('file:', '') || ''
-  if (id && !dragState.draggedIds.includes(`file:${id}`)) enterFolder(id)
-  else leaveFolder()
+  const id = folder.getAttribute('data-folder')
+  if (!id) { leaveFolder(); return }
+  // Don't highlight when hovering the item being dragged
+  if (dragState.draggedIds.some(did => did.endsWith(`:${id}`))) { leaveFolder(); return }
+  enterFolder(id)
 }
 
 function snapDraggedIcons(e: MouseEvent) {
@@ -38,6 +40,24 @@ function snapDraggedIcons(e: MouseEvent) {
     const offset = offsets[id]
     if (offset) el.style.transform = `translate(${offset.x}px, ${offset.y}px)`
   })
+}
+
+function isDesktopSource(): boolean {
+  return dragState.draggedIds.some(id => {
+    const el = document.querySelector(`[data-selection-key="${id}"]`)
+    return el?.closest('.desktop-icon-grid') !== null
+  })
+}
+
+function getSourceFolderId(key: string): number | null {
+  const el = document.querySelector(`[data-selection-key="${key}"]`)
+  if (!el) return null
+  const fm = el.closest('.desktop-file-manager') as HTMLElement | null
+  if (fm) {
+    const attr = fm.getAttribute('data-folder')
+    return attr !== null ? Number(attr) : 0
+  }
+  return 0
 }
 
 export function useDesktopPointer() {
@@ -63,10 +83,24 @@ export function useDesktopPointer() {
 
   function handleDesktopMouseUp(e: MouseEvent) {
     if (dragState.isDragging) {
-      const targetFolder = dragState.dragOverId
-      if (targetFolder) emit('desktop:move-to-folder', { ids: dragState.draggedIds, targetFolderId: targetFolder })
-      else snapDraggedIcons(e)
-      endDrag({ keepTransform: !targetFolder })
+      const el = document.elementFromPoint(e.clientX, e.clientY)
+      const folderEl = el?.closest?.('[data-folder]') as HTMLElement | null
+      if (folderEl) {
+        const targetId = folderEl.getAttribute('data-folder')
+        const srcFolderId = getSourceFolderId(dragState.draggedIds[0])
+        if (srcFolderId !== null && String(srcFolderId) === targetId) {
+          endDrag()
+        } else {
+          emit('desktop:move-to-folder', { ids: dragState.draggedIds, targetFolderId: targetId })
+          endDrag({ keepTransform: true })
+        }
+      } else if (isDesktopSource()) {
+        snapDraggedIcons(e)
+        endDrag()
+      } else {
+        emit('desktop:move-to-folder', { ids: dragState.draggedIds, targetFolderId: null })
+        endDrag()
+      }
       return
     }
     endBoxSelection()

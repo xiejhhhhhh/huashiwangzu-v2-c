@@ -13,8 +13,7 @@
         type="button"
         title="上级"
         aria-label="上级"
-        :data-fm-navdrop="'folder'"
-        :data-fm-folder-id="parentFolderId"
+        :data-folder="parentFolderId() || undefined"
         @click="$emit('go-up')"
       >
         ↑
@@ -26,7 +25,6 @@
         class="fm-root-btn"
         type="button"
         title="桌面"
-        data-fm-navdrop="root"
         @click="$emit('go-root')"
       >
         🏠
@@ -37,8 +35,7 @@
           class="fm-crumb-btn"
           :class="{ 'fm-crumb-active': index === breadcrumb.length - 1 }"
           type="button"
-          :data-fm-navdrop="index === 0 ? 'root' : 'folder'"
-          :data-fm-folder-id="index === 0 ? '' : (crumb.id ?? '')"
+          :data-folder="crumb.id ?? undefined"
           @click="$emit('navigate', index)"
         >
           {{ crumb.name }}
@@ -59,7 +56,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
 import type { DesktopFileManagerBreadcrumbItem } from './types'
 
 const props = defineProps<{
@@ -79,10 +75,10 @@ defineEmits<{
   (e: 'update:searchKeyword', value: string): void
 }>()
 
-const parentFolderId = computed(() => {
+const parentFolderId = () => {
   if (props.breadcrumb.length < 2) return ''
-  return String(props.breadcrumb[props.breadcrumb.length - 2]?.id ?? '')
-})
+  return props.breadcrumb[props.breadcrumb.length - 2]?.id ?? ''
+}
 </script>
 
 <style scoped>

@@ -105,23 +105,49 @@ const canWrite = computed(() => canBusinessWrite.value)
 
 const wallpaper = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0f172a"/><stop offset="50%" stop-color="#1d4ed8"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient><radialGradient id="r" cx="30%" cy="20%" r="60%"><stop offset="0%" stop-color="rgba(191,219,254,0.35)"/><stop offset="100%" stop-color="rgba(15,23,42,0)"/></radialGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><rect width="100%" height="100%" fill="url(#r)"/></svg>')
 
+function getSourceFolderId(key: string): number | null {
+  const el = document.querySelector(`[data-selection-key="${key}"]`)
+  if (!el) return null
+  const fm = el.closest('.desktop-file-manager') as HTMLElement | null
+  if (fm) {
+    const attr = fm.getAttribute('data-folder')
+    return attr !== null ? Number(attr) : 0
+  }
+  return 0
+}
+
 on('desktop:move-to-folder', async ({ ids, targetFolderId }) => {
-  const targetId = Number(targetFolderId)
-  if (!Number.isFinite(targetId)) return
+  const targetId = targetFolderId !== null && targetFolderId !== undefined
+    ? Number(targetFolderId)
+    : null
+  if (targetId !== null && !Number.isFinite(targetId)) return
+  const affectedFolders = new Set<number>()
+  affectedFolders.add(0)
   let movedCount = 0
   for (const id of ids) {
-    if (!id.startsWith('file:')) continue
-    const fileId = Number(id.slice('file:'.length))
-    const file = desktopFileList.value.find(item => item.id === fileId)
-    if (!file || file.id === targetId) continue
+    const colonIdx = id.indexOf(':')
+    if (colonIdx === -1) continue
+    const type = id.slice(0, colonIdx) as 'file' | 'folder'
+    const fileId = Number(id.slice(colonIdx + 1))
+    if (!Number.isFinite(fileId)) continue
+    if (fileId === targetId) continue
+    const srcFolderId = getSourceFolderId(id)
+    if (srcFolderId !== null && srcFolderId === targetId) continue
     try {
-      await moveEntryRequest(file.is_folder ? 'folder' : 'file', file.id, targetId)
+      await moveEntryRequest(type, fileId, targetId)
       movedCount += 1
-    } catch { /* skip failed drag item */ }
+      if (srcFolderId !== null) affectedFolders.add(srcFolderId)
+    } catch (e: any) {
+      if (e?.response?.status === 409) {
+        ElMessage.warning('目标已有同名文件')
+      }
+    }
   }
   if (movedCount > 0) {
-    ElMessage.success('已移动到文件夹')
-    refreshDesktop()
+    ElMessage.success(movedCount > 1 ? `已移动 ${movedCount} 个项目` : '已移动')
+    affectedFolders.forEach(folderId => {
+      emit('refresh:file-list', { folderId })
+    })
   }
 })
 
