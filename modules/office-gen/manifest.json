@@ -1,0 +1,71 @@
+{
+  "key": "office-gen",
+  "name": "Office Document Generator",
+  "icon": "DocumentCopy",
+  "icon_asset": "",
+  "category": "tools",
+  "component_key": "index.vue",
+  "route_prefix": "/api/office-gen",
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 350,
+  "default_width": 720,
+  "default_height": 560,
+  "singleton": true,
+  "show_in_launcher": true,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": false,
+  "supported_formats": ["docx", "xlsx", "pptx", "pdf"],
+  "editable_formats": [],
+  "creatable_formats": ["docx", "xlsx", "pptx", "pdf"],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  },
+  "public_actions": [
+    {
+      "action": "docx",
+      "description": "Generate a Word (.docx) document from structured JSON and save it to the file system",
+      "parameters": {
+        "filename": "Output file name (without extension)",
+        "content": "Array of content blocks: {type, level?, text?, bold?, align?, table_header?, table_rows?}"
+      }
+    },
+    {
+      "action": "xlsx",
+      "description": "Generate an Excel (.xlsx) spreadsheet from structured JSON and save it to the file system",
+      "parameters": {
+        "filename": "Output file name (without extension)",
+        "sheets": "Array of sheet objects with name, columns, rows"
+      }
+    },
+    {
+      "action": "pptx",
+      "description": "Generate a PowerPoint (.pptx) presentation from structured JSON and save it to the file system",
+      "parameters": {
+        "filename": "Output file name (without extension)",
+        "slides": "Array of slide objects with title, bullets, notes"
+      }
+    },
+    {
+      "action": "pdf",
+      "description": "Generate a PDF document from structured JSON (same schema as docx) and save it to the file system",
+      "parameters": {
+        "filename": "Output file name (without extension)",
+        "content": "Array of content blocks: {type, level?, text?, bold?, align?}"
+      }
+    },
+    {
+      "action": "convert",
+      "description": "Convert an existing office file from one format to another (e.g. pptx→pdf, docx→pdf) using LibreOffice headless",
+      "parameters": {
+        "file_id": "Source file ID in the file storage system",
+        "target_format": "Target format: pdf, docx, pptx, xlsx, png, etc."
+      }
+    }
+  ]
+}
