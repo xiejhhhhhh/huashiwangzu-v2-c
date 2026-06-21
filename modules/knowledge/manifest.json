@@ -17,7 +17,7 @@
   "show_in_sidebar": false,
   "window_type": "normal",
   "allow_multiple": false,
-  "supported_formats": ["pdf", "docx", "pptx", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg", "gif", "svg", "bmp", "webp", "mp4", "avi", "mov"],
+  "supported_formats": [],
   "editable_formats": [],
   "creatable_formats": [],
   "module_version": "1.0.0",

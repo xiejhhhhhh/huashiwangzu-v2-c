@@ -38,10 +38,6 @@ export function getAppByFileFormat(format: string, role?: string): FileAssociati
   const ext = (format || '').toLowerCase().replace(/^\./, '')
   if (!ext) return null
 
-  if (legacyReadonlyExtensions.includes(ext)) {
-    return { appKey: 'filePreview', editable: false, category: 'legacy', categoryLabel: legacyCategoryLabelMap[ext] || 'Legacy format' }
-  }
-
   const allApps = role ? getAllowedApps(role) : Object.values(getAppRegistry())
 
   // Filter to matchable apps: must have non-empty supportedFormats, must not include "*"
@@ -93,17 +89,16 @@ export function getAppByFileFormat(format: string, role?: string): FileAssociati
 }
 
 function inferFormatCategory(ext: string, appKey: string): string {
+  if (appKey === 'image-viewer') return 'image'
+  if (appKey === 'text-editor') return ['txt', 'md'].includes(ext) ? 'text' : 'code'
+  if (appKey === 'pdf-viewer') return 'document'
+  if (appKey === 'doc-viewer') return 'document'
+  if (appKey === 'ppt-viewer') return 'presentation'
+  if (appKey === 'excel-engine') return 'table'
   if (appKey === 'filePreview') {
-    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg'].includes(ext)) return 'image'
     if (['mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a'].includes(ext)) return 'audio'
     if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return 'video'
-    if (ext === 'pdf') return 'document'
   }
-  if (appKey === 'textEditor') return ['txt', 'md'].includes(ext) ? 'text' : 'code'
-  if (appKey === 'csvEditor') return 'table'
-  if (appKey === 'excelEditor') return 'table'
-  if (appKey === 'docxEditor') return 'document'
-  if (appKey === 'pptxEditor') return 'presentation'
   return 'document'
 }
 

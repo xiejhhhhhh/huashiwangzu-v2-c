@@ -1,0 +1,28 @@
+{
+  "key": "image-viewer",
+  "name": "图片查看器",
+  "icon": "View",
+  "icon_asset": "",
+  "category": "file-viewer",
+  "component_key": "index.vue",
+  "route_prefix": null,
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 10,
+  "default_width": 900,
+  "default_height": 650,
+  "singleton": false,
+  "show_in_launcher": true,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": true,
+  "supported_formats": ["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "backend": {
+    "enabled": false
+  }
+}

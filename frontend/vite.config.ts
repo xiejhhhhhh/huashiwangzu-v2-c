@@ -38,12 +38,18 @@ export default defineConfig({
       'marked': path.resolve(__dirname, 'node_modules/marked'),
       'dompurify': path.resolve(__dirname, 'node_modules/dompurify'),
       'highlight.js': path.resolve(__dirname, 'node_modules/highlight.js'),
+      'pdfjs-dist': path.resolve(__dirname, 'node_modules/pdfjs-dist'),
     },
   },
   server: {
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
+    fs: {
+      allow: [
+        path.resolve(__dirname, '..'),
+      ],
+    },
     proxy: {
       '/api': {
         target: getBackendTarget(),

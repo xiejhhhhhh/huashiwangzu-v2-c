@@ -1,0 +1,28 @@
+{
+  "key": "text-editor",
+  "name": "文本编辑器",
+  "icon": "Document",
+  "icon_asset": "",
+  "category": "file-editor",
+  "component_key": "index.vue",
+  "route_prefix": null,
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 20,
+  "default_width": 900,
+  "default_height": 650,
+  "singleton": false,
+  "show_in_launcher": true,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": true,
+  "supported_formats": ["txt", "md", "log", "json", "csv", "yaml", "yml", "xml", "ini", "cfg"],
+  "editable_formats": ["txt", "md", "log", "json", "yaml", "yml", "xml", "ini", "cfg"],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "backend": {
+    "enabled": false
+  }
+}

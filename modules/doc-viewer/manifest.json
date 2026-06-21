@@ -1,0 +1,28 @@
+{
+  "key": "doc-viewer",
+  "name": "文档查看器",
+  "icon": "Document",
+  "icon_asset": "",
+  "category": "file-viewer",
+  "component_key": "index.vue",
+  "route_prefix": null,
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 40,
+  "default_width": 950,
+  "default_height": 700,
+  "singleton": false,
+  "show_in_launcher": true,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": true,
+  "supported_formats": ["docx", "doc"],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "backend": {
+    "enabled": false
+  }
+}
