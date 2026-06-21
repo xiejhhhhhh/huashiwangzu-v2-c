@@ -34,3 +34,5 @@ rapidfuzz>=3.14.0
 
 # ── APScheduler ──
 apscheduler>=3.11.0
+
+ddgs>=9.14.0

@@ -1,0 +1,49 @@
+{
+  "key": "web-tools",
+  "name": "联网工具",
+  "icon": "Search",
+  "icon_asset": "",
+  "category": "tools",
+  "component_key": "index.vue",
+  "route_prefix": "/api/web-tools",
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 700,
+  "default_width": 800,
+  "default_height": 600,
+  "min_width": 480,
+  "min_height": 360,
+  "singleton": true,
+  "show_in_launcher": false,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "background-service",
+  "allow_multiple": false,
+  "supported_formats": [],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  },
+  "public_actions": [
+    {
+      "action": "search",
+      "description": "联网搜索网页,返回标题/链接/摘要(无需API key)。基于 DuckDuckGo HTML 端点。",
+      "parameters": {
+        "query": "搜索关键词",
+        "top_k": "返回结果数量（默认8，最大20）"
+      }
+    },
+    {
+      "action": "fetch",
+      "description": "抓取指定网址正文文本(无需API key)。自动过滤 script/style/nav/footer。含SSRF防护，拒绝内网地址。",
+      "parameters": {
+        "url": "目标网址",
+        "max_chars": "最大返回字符数（默认8000）"
+      }
+    }
+  ]
+}
