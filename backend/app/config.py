@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     MIMO_GATE1_KEY: str = ""
     DEEPSEEK_API_KEY: str = ""
 
+    # GPTStore 中转站（图片生成 / 可选文本模型）
+    GPTSTORE_API_KEY: str = ""
+    GPTSTORE_BASE_URL: str = "https://pool.gptstore.club/v1"
+    GPTSTORE_PROXY: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     @model_validator(mode="after")

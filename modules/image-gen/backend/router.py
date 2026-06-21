@@ -1,18 +1,22 @@
 """FastAPI router for image-gen module.
 
-Placeholder implementation: generates a PIL-made placeholder image with
-prompt text + watermark.  The real model adapter (_call_image_model) is
-separated for easy swap-in later.
+Real image generation via GPTStore /v1/responses (gpt-5.5 + image_generation).
+Falls back to PIL placeholder when GPTSTORE_API_KEY is not configured.
 """
+import asyncio
+import base64
 import io
 import logging
+import random
 import re
 import time
 
+import httpx
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.models.user import User
@@ -25,7 +29,7 @@ router = APIRouter(prefix="/api/image-gen", tags=["image-gen"])
 
 
 # ---------------------------------------------------------------------------
-# Real model adapter — THE ONLY function to change when hooking up real models
+# Real model adapter — GPTStore /v1/responses (gpt-5.5 + image_generation)
 # ---------------------------------------------------------------------------
 
 async def _call_image_model(
@@ -34,28 +38,98 @@ async def _call_image_model(
     style: str = "",
     count: int = 1,
 ) -> list[bytes]:
-    """Call the real image-generation model and return a list of PNG bytes.
+    """Call GPTStore Responses API to generate images.
 
-    HOW TO INTEGRATE A REAL MODEL
-    ------------------------------
-    1. Set your API key in ``.env`` (e.g. ``IMAGE_GEN_API_KEY=sk-...``).
-       NEVER hardcode a key here.
-    2. Read the key via ``from app.config import get_settings;
-       settings.IMAGE_GEN_API_KEY`` (add the field to your settings class first).
-    3. Call your provider's API:
-       - 即梦 (Jimeng)   – https://jimeng.jd.com
-       - 通义万相 (Tongyi) – https://tongyi.aliyun.com
-       - 豆包 (Doubao)   – https://www.doubao.com
-       - Local SD        – http://127.0.0.1:7860/sdapi/v1/txt2img
-    4. Return the raw image bytes (one per count).
-    5. Update this docstring to document the chosen provider + env key name.
+    Reads GPTSTORE_API_KEY / GPTSTORE_BASE_URL / GPTSTORE_PROXY from Settings.
+    Returns list of decoded PNG bytes.
 
-    Current placeholder behaviour
-    -----------------------------
-    Raises ``NotImplementedError`` so callers know no real model is wired yet.
-    The capability handler catches it and produces a PIL placeholder instead.
+    Raises:
+        NotImplementedError — GPTSTORE_API_KEY not set (caller falls back to placeholder).
+        RuntimeError — all retries exhausted on transient errors.
     """
-    raise NotImplementedError("Real image model not yet configured")
+    cfg = get_settings()
+    api_key = cfg.GPTSTORE_API_KEY
+    base_url = cfg.GPTSTORE_BASE_URL.rstrip("/")
+    proxy_url = cfg.GPTSTORE_PROXY
+
+    if not api_key:
+        raise NotImplementedError("GPTSTORE_API_KEY not configured")
+
+    tool_config: dict = {"type": "image_generation"}
+    try:
+        m = re.match(r"^(\d+)\s*[xX]\s*(\d+)$", size.strip())
+        if m:
+            tool_config["dimensions"] = f"{m.group(1)}x{m.group(2)}"
+    except (ValueError, AttributeError):
+        pass
+
+    max_retries = 5
+    last_error = ""
+
+    for attempt in range(max_retries):
+        try:
+            client_kw: dict = {
+                "timeout": httpx.Timeout(180.0),
+                "follow_redirects": True,
+            }
+            if proxy_url:
+                client_kw["proxy"] = httpx.Proxy(url=proxy_url)
+
+            async with httpx.AsyncClient(**client_kw) as client:
+                body = {
+                    "model": "gpt-5.5",
+                    "input": prompt,
+                    "tools": [tool_config],
+                    "store": False,
+                }
+                resp = await client.post(
+                    f"{base_url}/responses",
+                    json=body,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                images: list[bytes] = []
+                for item in data.get("output", []):
+                    if item.get("type") == "image_generation_call":
+                        raw = item.get("result") or item.get("b64_json")
+                        if raw:
+                            images.append(base64.b64decode(raw))
+
+                if not images:
+                    raise ValueError("No image_generation_call items in response")
+
+                return images
+
+        except Exception as e:
+            last_error = str(e)
+            el = last_error.lower()
+            retryable = any(kw in el for kw in [
+                "not enabled for this group",
+                "no available compatible accounts",
+                "upstream access",
+                "500", "502", "503",
+                "timeout",
+                "connection error",
+                "connection refused",
+            ])
+            if retryable and attempt < max_retries - 1:
+                wait = 1.0 + random.random()
+                logger.warning(
+                    "Image gen attempt %d/%d failed (retryable): %s, retry in %.1fs",
+                    attempt + 1, max_retries, last_error[:120], wait,
+                )
+                await asyncio.sleep(wait)
+            elif retryable:
+                logger.error(
+                    "Image gen all %d attempts exhausted: %s",
+                    max_retries, last_error[:200],
+                )
+                raise RuntimeError("中转站图号暂不可用,请稍后重试")
+            else:
+                logger.error("Image gen non-retryable error: %s", last_error[:200])
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +148,7 @@ def _resolve_user_id(caller: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# PIL placeholder image generation
+# PIL placeholder image generation (fallback when no API key)
 # ---------------------------------------------------------------------------
 
 def _make_placeholder(prompt: str, width: int, height: int) -> bytes:
@@ -144,11 +218,19 @@ async def _generate(params: dict, caller: str) -> dict:
 
     user_id = _resolve_user_id(caller)
 
+    is_placeholder = False
     try:
         image_bytes_list = await _call_image_model(prompt, size, style, count)
     except NotImplementedError:
         image_bytes_list = [_make_placeholder(prompt, width, height)]
-        logger.info("Using placeholder image for prompt=%r", prompt[:80])
+        is_placeholder = True
+        logger.info(
+            "Using placeholder for prompt=%r (GPTSTORE_API_KEY not set)",
+            prompt[:80],
+        )
+    except RuntimeError as e:
+        logger.error("Image generation failed: %s", str(e))
+        return {"images": [], "placeholder": False, "error": str(e)}
 
     from app.services.file_upload_service import upload_file
 
@@ -161,19 +243,17 @@ async def _generate(params: dict, caller: str) -> dict:
             upload_result = await upload_file(
                 db, file_obj, filename, user_id, folder_id=None,
             )
-            results.append({
+            entry: dict = {
                 "file_id": upload_result["id"],
                 "name": upload_result["name"],
                 "size": upload_result["size"],
-                "placeholder": True,
-                "explanation": "占位图，真实生成待接入",
-            })
+                "placeholder": is_placeholder,
+            }
+            if is_placeholder:
+                entry["explanation"] = "占位图，真实生成待接入"
+            results.append(entry)
 
-    return {
-        "images": results,
-        "placeholder": True,
-        "explanation": "占位图，真实生成待接入",
-    }
+    return {"images": results, "placeholder": is_placeholder}
 
 
 # ---------------------------------------------------------------------------
@@ -207,12 +287,12 @@ async def call_generate(
 
 register_capability(
     "image-gen", "generate", _generate,
-    description="生成图片：根据提示词生成图片（当前为占位，真实生成待接入）",
+    description="生成图片：根据提示词生成产品图、海报、配图等（通过 GPTStore gpt-5.5 真实生成，无 key 时降级占位图）",
     parameters={
         "prompt": {"type": "string", "description": "提示词，描述想要生成的图片内容"},
         "size": {"type": "string", "description": "尺寸，格式如 1024x1024", "default": "1024x1024"},
         "style": {"type": "string", "description": "风格提示词（可选）", "default": ""},
-        "count": {"type": "integer", "description": "生成数量", "default": 1},
+        "count": {"type": "integer", "description": "生成数量（底层 API 限制，可能仅返回一张）", "default": 1},
     },
     min_role="editor",
 )
