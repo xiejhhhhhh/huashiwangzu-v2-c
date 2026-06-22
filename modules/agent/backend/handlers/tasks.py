@@ -37,7 +37,7 @@ async def _handle_memory_dream(params: dict) -> dict:
     if not owner_id:
         return {"error": "Missing owner_id"}
     try:
-        from ..分层记忆 import 触发dream
+        from 分层记忆 import 触发dream
         await 触发dream(owner_id)
         return {"status": "ok", "owner_id": owner_id}
     except Exception as e:
