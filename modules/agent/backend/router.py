@@ -395,6 +395,9 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                     "content": content_source,
                     "tool_calls": _tool_calls_for_history(tool_calls),
                 })
+
+                # ── Phase 1: parse + detect slow tools + yield all tool_call events ──
+                parsed_tools: list[dict] = []
                 for tc in tool_calls:
                     fn = tc.get("function", tc)
                     name = fn.get("name", "")
@@ -405,80 +408,114 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                             args = json.loads(args)
                     except Exception:
                         args = {}
+                    resolved_slow = None
+                    if name == "skill_use":
+                        inner_name = args.get("name", "")
+                        if inner_name in SLOW_SKILL_NAMES:
+                            resolved_slow = inner_name
+                    elif name in SLOW_SKILL_NAMES:
+                        resolved_slow = name
+                    parsed_tools.append({
+                        "name": name,
+                        "tool_call_id": tool_call_id,
+                        "args": args,
+                        "slow_name": resolved_slow,
+                    })
                     call_event = {"type": "tool_call", "name": name, "arguments": args}
                     tool_events.append(call_event)
                     timeline.append(call_event)
                     yield f"data: {_j(call_event)}\n\n".encode("utf-8")
 
-                    # ── 检测慢工具 → 入队后台执行 ──────────────
-                    resolved_slow_name = None
-                    if name == "skill_use":
-                        inner_name = args.get("name", "")
-                        if inner_name in SLOW_SKILL_NAMES:
-                            resolved_slow_name = inner_name
-                    elif name in SLOW_SKILL_NAMES:
-                        resolved_slow_name = name
-
-                    if resolved_slow_name:
-                        # 慢工具：入队后台执行，不阻塞 SSE
-                        task_id = await _submit_slow_tool_task(
-                            conversation_id=payload.conversation_id,
-                            user_id=user.id,
-                            tool_name=resolved_slow_name,
-                            skill_args=args,
-                            caller=f"user:{user.id}",
-                            caller_role=user.role,
-                        )
-                        tool_result = {
-                            "background": True,
-                            "task_id": task_id,
-                            "message": f"🛠️ 后台任务 [{resolved_slow_name}] 已提交，完成后将通过站内信通知你。",
-                        }
-                        # 标记对话有后台任务（多 worker 守护）
-                        from models import AgentConversation
-                        try:
-                            from app.database import AsyncSessionLocal as _ASL
-                            async with _ASL() as _db:
-                                _conv = await _db.get(AgentConversation, payload.conversation_id)
-                                if _conv:
-                                    _conv.processing = True
-                                    await _db.commit()
-                        except Exception as _pe:
-                            logger.warning("Failed to mark processing flag: %s", _pe)
-                    else:
-                        try:
-                            if name == "skill_list":
-                                tool_result = await tool_discovery.handle_skill_list(args, user.role)
-                            elif name == "skill_describe":
-                                tool_result = await tool_discovery.handle_skill_describe(args, user.role)
-                            elif name == "skill_use":
-                                tool_result = await tool_discovery.handle_skill_use(
-                                    args, caller=f"user:{user.id}", caller_role=user.role,
-                                )
-                            else:
-                                module_key, action = tool_discovery.parse_tool_name(name)
-                                tool_result = await call_capability(
-                                    module_key,
-                                    action,
-                                    args,
-                                    caller=f"user:{user.id}",
-                                    caller_role=user.role,
-                                )
-                        except Exception as exc:
-                            tool_result = {"error": str(exc)}
-
-                    result_event = {"type": "tool_result", "name": name, "result": tool_result}
+                # ── Phase 2: slow tools → background queue ──────────────────
+                has_slow = False
+                for tool in parsed_tools:
+                    if not tool["slow_name"]:
+                        continue
+                    has_slow = True
+                    task_id = await _submit_slow_tool_task(
+                        conversation_id=payload.conversation_id,
+                        user_id=user.id,
+                        tool_name=tool["slow_name"],
+                        skill_args=tool["args"],
+                        caller=f"user:{user.id}",
+                        caller_role=user.role,
+                    )
+                    tool_result = {
+                        "background": True,
+                        "task_id": task_id,
+                        "message": f"🛠️ 后台任务 [{tool['slow_name']}] 已提交，完成后将通过站内信通知你。",
+                    }
+                    result_event = {"type": "tool_result", "name": tool["name"], "result": tool_result}
                     tool_events.append(result_event)
                     timeline.append(result_event)
                     yield f"data: {_j(result_event)}\n\n".encode("utf-8")
                     tool_message = {
                         "role": "tool",
-                        "name": name,
+                        "name": tool["name"],
                         "content": _j(tool_result),
                     }
-                    if tool_call_id:
-                        tool_message["tool_call_id"] = tool_call_id
+                    if tool["tool_call_id"]:
+                        tool_message["tool_call_id"] = tool["tool_call_id"]
                     messages.append(tool_message)
+                if has_slow:
+                    # 标记对话有后台任务（多 worker 守护）
+                    from models import AgentConversation
+                    try:
+                        from app.database import AsyncSessionLocal as _ASL
+                        async with _ASL() as _db:
+                            _conv = await _db.get(AgentConversation, payload.conversation_id)
+                            if _conv:
+                                _conv.processing = True
+                                await _db.commit()
+                    except Exception as _pe:
+                        logger.warning("Failed to mark processing flag: %s", _pe)
+
+                # ── Phase 3: fast tools → concurrent execution ──────────────
+                fast_tools = [t for t in parsed_tools if not t["slow_name"]]
+                if fast_tools:
+                    SEM_MAX = 5
+                    sem = asyncio.Semaphore(SEM_MAX)
+
+                    async def _exec_one(tool: dict) -> dict:
+                        async with sem:
+                            try:
+                                if tool["name"] == "skill_list":
+                                    result = await tool_discovery.handle_skill_list(tool["args"], user.role)
+                                elif tool["name"] == "skill_describe":
+                                    result = await tool_discovery.handle_skill_describe(tool["args"], user.role)
+                                elif tool["name"] == "skill_use":
+                                    result = await tool_discovery.handle_skill_use(
+                                        tool["args"], caller=f"user:{user.id}", caller_role=user.role,
+                                    )
+                                else:
+                                    module_key, action = tool_discovery.parse_tool_name(tool["name"])
+                                    result = await call_capability(
+                                        module_key, action, tool["args"],
+                                        caller=f"user:{user.id}", caller_role=user.role,
+                                    )
+                            except Exception as exc:
+                                result = {"error": str(exc)}
+                            return {
+                                "name": tool["name"],
+                                "tool_call_id": tool["tool_call_id"],
+                                "result": result,
+                            }
+
+                    tasks = [_exec_one(t) for t in fast_tools]
+                    for coro in asyncio.as_completed(tasks):
+                        outcome = await coro
+                        result_event = {"type": "tool_result", "name": outcome["name"], "result": outcome["result"]}
+                        tool_events.append(result_event)
+                        timeline.append(result_event)
+                        yield f"data: {_j(result_event)}\n\n".encode("utf-8")
+                        tool_message = {
+                            "role": "tool",
+                            "name": outcome["name"],
+                            "content": _j(outcome["result"]),
+                        }
+                        if outcome["tool_call_id"]:
+                            tool_message["tool_call_id"] = outcome["tool_call_id"]
+                        messages.append(tool_message)
         except Exception as exc:
             logger.info("[DIAG] event_stream EXCEPTION %s: %s", type(exc).__name__, str(exc)[:300])
             yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n".encode("utf-8")

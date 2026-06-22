@@ -72,6 +72,68 @@ class TestDeepSeekAdapter:
         event = self.adapter.adapt_stream_chunk(chunk, provider="ollama")
         assert event["type"] == "done"
 
+    def test_adapt_response_with_tool_calls(self):
+        raw = {
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city": "北京"}'},
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        }
+        result = self.adapter.adapt_response(raw, provider="opencode")
+        assert len(result["tool_calls"]) == 1
+        tc = result["tool_calls"][0]
+        assert tc["function"]["name"] == "get_weather"
+        assert tc["function"]["arguments"] == {"city": "北京"}
+        assert result["finish_reason"] == "tool_calls"
+
+    def test_adapt_response_with_parallel_tool_calls(self):
+        raw = {
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "我来同时查询",
+                    "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city": "北京"}'}},
+                        {"id": "c2", "type": "function", "function": {"name": "get_time", "arguments": '{"city": "东京"}'}},
+                        {"id": "c3", "type": "function", "function": {"name": "get_air_quality", "arguments": '{"city": "上海"}'}},
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        }
+        result = self.adapter.adapt_response(raw, provider="opencode")
+        assert len(result["tool_calls"]) == 3
+        assert result["content"] == "我来同时查询"
+
+    def test_adapt_stream_chunk_openai_tool_calls(self):
+        chunk = {
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": ""},
+                    }],
+                },
+            }],
+        }
+        event = self.adapter.adapt_stream_chunk(chunk, provider="opencode")
+        assert event is not None
+        assert event["type"] == "token"
+        assert len(event["tool_calls"]) == 1
+
 
 class TestGemmaAdapter:
     adapter = GemmaAdapter()
