@@ -113,9 +113,20 @@ async def handle_skill_describe(params: dict, role: str) -> dict:
 
 
 async def handle_skill_use(params: dict, caller: str, caller_role: str) -> dict:
-    """通用调度器：拆 name 为 module/action，走 call_capability。"""
+    """通用调度器：拆 name 为 module/action，走 call_capability。
+
+    容错：模型常把 args 传成 JSON 字符串，先处理再透传。
+    """
     name = params.get("name", "")
     args = params.get("args", {})
+    if isinstance(args, str):
+        import json
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except Exception:
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
     module, action = parse_tool_name(name)
     if not module or not action:
         return {"error": f"Invalid skill name: {name}"}

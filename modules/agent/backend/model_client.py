@@ -126,6 +126,29 @@ def _extract_raw_tool_calls(raw: dict) -> list[dict]:
     return result
 
 
+def final_clean_content(content: str) -> str:
+    """最终兜底清理：移除 content 中残留的 XML 式工具调用标记。
+
+    防止模型把 <invoke> / <antml:invoke> / <tool_call> 等 DSML 标记
+    泄漏到持久化的消息内容中。作为 parse_inline_tool_calls 的补充兜底。
+    """
+    if not content:
+        return content
+    # 移除带各种命名空间前缀的 invoke 块
+    cleaned = re.sub(
+        r'<\w*:?invoke\s+name=.*?</\w*:?invoke\s*>',
+        '', content, flags=re.IGNORECASE | re.DOTALL
+    )
+    # 移除 tool_call 容器
+    cleaned = re.sub(
+        r'<\w*:?tool_call\s*>.*?</\w*:?tool_call\s*>',
+        '', cleaned, flags=re.IGNORECASE | re.DOTALL
+    )
+    # 压缩多余空行
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+    return cleaned
+
+
 async def recover_tool_calls(messages: list[dict], profile_key: str, tools: list[dict]) -> dict:
     """当框架 adapter 漏抽 tool_calls 时，从 raw OpenAI-compatible 响应恢复。"""
     profile = gateway_router.get_profile(profile_key)

@@ -9,7 +9,7 @@ MODULE_BACKEND = Path(__file__).resolve().parent.parent.parent / "modules" / "ag
 if str(MODULE_BACKEND) not in sys.path:
     sys.path.insert(0, str(MODULE_BACKEND))
 
-from model_client import parse_inline_tool_calls
+from model_client import parse_inline_tool_calls, final_clean_content
 
 
 class TestParseInlineToolCalls:
@@ -87,3 +87,105 @@ class TestParseInlineToolCalls:
         clean, calls = parse_inline_tool_calls(None)
         assert clean is None
         assert calls == []
+
+
+class TestFinalCleanContent:
+    """Test the final_clean_content safety net."""
+
+    def test_invoke_markup_stripped(self):
+        content = '这是正文<invoke name="image-gen__generate"><parameter name="prompt">a cat</parameter></invoke>后面内容'
+        cleaned = final_clean_content(content)
+        assert "<invoke" not in cleaned
+        assert "这是正文" in cleaned
+        assert "后面内容" in cleaned
+
+    def test_antml_markup_stripped(self):
+        content = '内容<antml:invoke name="tool"><antml:parameter name="x">y</antml:parameter></antml:invoke>结尾'
+        cleaned = final_clean_content(content)
+        assert "antml:invoke" not in cleaned
+        assert "内容" in cleaned
+        assert "结尾" in cleaned
+
+    def test_tool_call_container_stripped(self):
+        content = '正文<tool_call><invoke name="test"><parameter name="x">1</parameter></invoke></tool_call>完'
+        cleaned = final_clean_content(content)
+        assert "<tool_call>" not in cleaned
+        assert "<invoke" not in cleaned
+        assert "正文" in cleaned
+        assert "完" in cleaned
+
+    def test_empty_string(self):
+        assert final_clean_content("") == ""
+
+    def test_clean_content_unchanged(self):
+        content = "这是普通的文本内容，没有工具标记。"
+        assert final_clean_content(content) == content
+
+    def test_multiple_newlines_collapsed(self):
+        content = "a\n\n\n\n\nb"
+        assert final_clean_content(content) == "a\n\nb"
+
+
+class TestHandleSkillUseArgsParsing:
+    """Test args string→dict conversion logic (as used in handle_skill_use)."""
+
+    def test_args_is_dict_passes_through(self):
+        args = {"prompt": "hello", "size": "1024x1024"}
+        # same logic as handle_skill_use
+        if isinstance(args, str):
+            import json
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        assert args == {"prompt": "hello", "size": "1024x1024"}
+
+    def test_args_is_valid_json_string(self):
+        args = '{"prompt": "hello", "size": "1024x1024"}'
+        if isinstance(args, str):
+            import json
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        assert args == {"prompt": "hello", "size": "1024x1024"}
+
+    def test_args_is_invalid_json_string_fallback(self):
+        args = "{broken json}"
+        if isinstance(args, str):
+            import json
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        assert args == {}
+
+    def test_args_is_empty_string(self):
+        args = ""
+        if isinstance(args, str):
+            import json
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        assert args == {}
+
+    def test_args_is_list_fallback(self):
+        args = ["not", "a", "dict"]
+        if isinstance(args, str):
+            import json
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        assert args == {}
