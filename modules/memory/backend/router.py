@@ -690,7 +690,12 @@ async def _save_experience(
     source_conversation_id: int | None = None,
 ) -> dict:
     """Save a success experience with dedup. If semantically similar exists, increment weight."""
-    if not trigger_condition.strip() or not steps.strip():
+    # 容错：steps/tools_used 常以结构化 list/dict 传入，统一序列化成 JSON 字符串再存 TEXT 列
+    if isinstance(steps, (list, dict)):
+        steps = json.dumps(steps, ensure_ascii=False)
+    if isinstance(tools_used, (list, dict)):
+        tools_used = json.dumps(tools_used, ensure_ascii=False)
+    if not (trigger_condition or "").strip() or not (steps or "").strip():
         return {"id": None, "deduplicated": False, "error": "trigger_condition and steps required"}
 
     trigger_vec = await _compute_embedding(trigger_condition)
