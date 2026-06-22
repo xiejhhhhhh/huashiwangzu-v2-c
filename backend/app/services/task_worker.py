@@ -42,14 +42,72 @@ async def _echo_handler(parameters: dict) -> dict:
 _HANDLERS["_echo"] = _echo_handler
 
 
+async def _reconcile_one_orphan(task: SystemTaskQueue, now: datetime) -> None:
+    """Increment retry_count on an orphan task and fail it if over limit."""
+    task.retry_count = (task.retry_count or 0) + 1
+    if task.retry_count >= (task.max_retries or 3):
+        task.status = "failed"
+        task.error_message = "Orphan task exceeded max retries on startup recovery"
+        task.completed_at = now
+    else:
+        task.status = "pending"
+        task.started_at = None
+
+
 async def _recover_stale_tasks(db) -> None:
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=RUNNING_TIMEOUT_SECONDS)
-    await db.execute(
-        update(SystemTaskQueue)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=RUNNING_TIMEOUT_SECONDS)
+
+    # Phase 1: timeout-reclaim — running tasks older than cutoff
+    result = await db.execute(
+        select(SystemTaskQueue)
         .where(SystemTaskQueue.status == "running", SystemTaskQueue.started_at < cutoff)
-        .values(status="pending", started_at=None)
+        .with_for_update(skip_locked=True)
     )
+    stale = list(result.scalars().all())
+    for task in stale:
+        task.retry_count = (task.retry_count or 0) + 1
+        if task.retry_count >= (task.max_retries or 3):
+            task.status = "failed"
+            task.error_message = "Task timed out and exceeded max retries"
+            task.completed_at = now
+        else:
+            task.status = "pending"
+            task.started_at = None
+    if stale:
+        logger.info("Timeout recovery: reclaimed %d stale tasks", len(stale))
     await db.commit()
+
+
+async def _recover_orphan_running_tasks() -> None:
+    """Startup recovery: reset all running tasks to pending+retry.
+
+    Called once when the worker starts.  Any task still marked 'running'
+    at this point is guaranteed to be an orphan from a dead process.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            now = datetime.now(timezone.utc)
+            result = await db.execute(
+                select(SystemTaskQueue)
+                .where(SystemTaskQueue.status == "running")
+                .with_for_update(skip_locked=True)
+            )
+            orphans = list(result.scalars().all())
+            for task in orphans:
+                await _reconcile_one_orphan(task, now)
+            await db.commit()
+            failed_count = sum(
+                1 for t in orphans
+                if t.retry_count >= (t.max_retries or 3) and t.status == "failed"
+            )
+            logger.info(
+                "Orphan recovery: reset %d running tasks (retry_count incremented, "
+                "%d marked failed)",
+                len(orphans), failed_count,
+            )
+    except Exception as exc:
+        logger.error("Orphan recovery failed: %s", exc)
 
 
 async def _claim_one_task(db) -> SystemTaskQueue | None:
@@ -156,6 +214,8 @@ async def _finish_task(db, task_id: int, ok: bool, result: dict | None, error: s
 async def _worker_loop() -> None:
     global _last_active
     logger.info("Task worker loop started")
+    # Startup: reclaim any orphan running tasks from a dead process
+    await _recover_orphan_running_tasks()
     while not _stop_flag:
         try:
             async with AsyncSessionLocal() as db:

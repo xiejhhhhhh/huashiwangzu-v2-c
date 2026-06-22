@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import conversation_service as conv_svc
 from 事件存储 import read_events, project_to_messages, record_event
@@ -24,7 +25,20 @@ async def 装配上下文(
     current_user_input: str,
     profile_key: str,
     owner_id: int,
+    agent_code: str = "erp_chat",
 ) -> tuple[list[dict], dict]:
+    # Read agent config for parameter overrides
+    agent_cfg = None
+    try:
+        agent_cfg = await read_agent_config(db, agent_code)
+    except Exception as e:
+        logger.warning("读取 agent config 失败: %s", e)
+
+    # Resolve effective profile_key: agent config model > caller profile_key > default
+    effective_profile_key = profile_key
+    if agent_cfg and agent_cfg.get("model"):
+        effective_profile_key = agent_cfg["model"]
+
     try:
         projected = await project_to_messages(db, conversation_id)
         all_events = await read_events(db, conversation_id) if projected else []
@@ -35,12 +49,12 @@ async def 装配上下文(
 
     # ── 批4：预算超限时调压缩器 ──────────────────────────────────────────
     try:
-        system_content = await _build_system_content(db, owner_id)
+        system_content = await _build_system_content(db, owner_id, agent_code)
     except Exception as e:
         logger.warning("构建系统提示词失败: %s", e)
         system_content = "You are a helpful AI assistant."
 
-    budget = get_context_budget(profile_key)
+    budget = get_context_budget(effective_profile_key)
     projected_tokens = sum(
         max(estimate_tokens([m]), 0) for m in projected[-100:]
     ) if projected else 0
@@ -51,7 +65,7 @@ async def 装配上下文(
     if budget is not None and estimated_total > budget + _COMPRESSION_TOKEN_HEADROOM and len(all_events) > 30:
         try:
             logger.info("预算超限(est=%d > budget=%d), 触发压缩", estimated_total, budget)
-            result = await _压缩中间(db, conversation_id, all_events, profile_key)
+            result = await _压缩中间(db, conversation_id, all_events, effective_profile_key)
             if result.get("status") == "compressed":
                 projected = await project_to_messages(db, conversation_id)
                 logger.info("压缩后投影完毕, 事件数=%d", len(projected))
@@ -64,12 +78,14 @@ async def 装配上下文(
                 logger.warning("硬截断也失败: %s", e2)
 
     try:
-        messages, diagnosis = assemble_context(projected, system_content, current_user_input, profile_key)
+        messages, diagnosis = assemble_context(projected, system_content, current_user_input, effective_profile_key)
     except Exception as e:
         logger.warning("预算装配失败，回退原始投影+截尾: %s", e)
         messages = [{"role": "system", "content": system_content}]
         messages.extend(projected[-48:] if len(projected) > 48 else projected)
         diagnosis = {"error": str(e), "fallback": "原始投影截尾"}
+    diagnosis["agent_code"] = agent_code
+    diagnosis["effective_profile_key"] = effective_profile_key
 
     # ── 成功经验注入（批3）：语义匹配当前输入，注入 known success path ──
     try:
@@ -91,7 +107,50 @@ async def 装配上下文(
     return messages, diagnosis
 
 
-async def _build_system_content(db: AsyncSession, owner_id: int) -> str:
+async def read_agent_config(db: AsyncSession, agent_code: str) -> dict | None:
+    """Read agent config from framework_agent_configs table.
+
+    Returns None if no config found for the given agent_code.
+    """
+    try:
+        from app.models.system import AgentConfig
+        r = await db.execute(
+            select(AgentConfig).where(AgentConfig.agent_code == agent_code)
+        )
+        c = r.scalar_one_or_none()
+        if not c:
+            return None
+        return {
+            "agent_code": c.agent_code,
+            "agent_name": c.agent_name,
+            "provider": c.provider,
+            "model": c.model,
+            "system_prompt": c.system_prompt,
+            "enabled": c.enabled,
+            "temperature": c.temperature,
+            "top_p": c.top_p,
+            "max_tokens": c.max_tokens,
+            "timeout_ms": c.timeout_ms,
+            "fallback_model": c.fallback_model,
+            "fallback_enabled": c.fallback_enabled,
+            "max_concurrency": c.max_concurrency,
+            "cooldown_seconds": c.cooldown_seconds,
+            "retry_count": c.retry_count,
+            "daily_call_limit": c.daily_call_limit,
+            "daily_budget": c.daily_budget,
+            "monthly_budget": c.monthly_budget,
+            "response_format": c.response_format,
+            "log_prompt_enabled": c.log_prompt_enabled,
+            "log_response_enabled": c.log_response_enabled,
+            "sensitive_action_policy": c.sensitive_action_policy,
+            "updated_by": c.updated_by,
+        }
+    except Exception as e:
+        logger.warning("Failed to read agent config for '%s': %s", agent_code, e)
+        return None
+
+
+async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str = "erp_chat") -> str:
     sys_prompt = await conv_svc.get_system_prompt(db)
     ent_prompt = await conv_svc.get_enterprise_prompt(db)
     profile_data = await conv_svc.get_active_user_profile(db, owner_id)
@@ -101,6 +160,15 @@ async def _build_system_content(db: AsyncSession, owner_id: int) -> str:
         layers.append(sys_prompt)
     if ent_prompt:
         layers.append(ent_prompt)
+
+    # Agent config override: if the agent has a custom system_prompt, append it
+    try:
+        agent_cfg = await read_agent_config(db, agent_code)
+        if agent_cfg and agent_cfg.get("system_prompt"):
+            layers.append(f"Agent 配置提示词：\n{agent_cfg['system_prompt']}")
+    except Exception as e:
+        logger.warning("Failed to read agent config prompt: %s", e)
+
     if profile_text:
         layers.append(profile_text)
     return "\n\n---\n\n".join(layers)

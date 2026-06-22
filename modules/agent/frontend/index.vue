@@ -6,15 +6,18 @@
       :loading="loading"
       :collapsed="sidebarCollapsed"
       :isAdmin="isAdmin"
+      :adminActive="showAdminPanel || undefined"
       @select="selectConversation"
       @new="newConversation"
       @rename="renameConversation"
       @delete="deleteConversation"
       @toggle="sidebarCollapsed = !sidebarCollapsed"
-      @admin="showAdminPanel = !showAdminPanel"
+      @admin="toggleAdminPanel"
     />
 
-    <EnginePanel v-if="showAdminPanel" class="agent-main" />
+    <EnginePanel v-if="showAdminPanel === 'engine'" class="agent-main" />
+    <AgentConfigPanel v-else-if="showAdminPanel === 'config'" class="agent-main" />
+    <ApprovalPanel v-else-if="showAdminPanel === 'approvals'" class="agent-main" />
 
     <section v-else class="agent-main">
 	      <!-- 消息区域 -->
@@ -81,6 +84,8 @@ import ThinkingCard from './components/ThinkingCard.vue'
 import ToolCallCard from './components/ToolCallCard.vue'
 import ReferencePanel from './components/ReferencePanel.vue'
 import EnginePanel from './admin/EnginePanel.vue'
+import AgentConfigPanel from './admin/AgentConfigPanel.vue'
+import ApprovalPanel from './admin/ApprovalPanel.vue'
 import './components/style-variables.css'
 
 // ── 类型 ──
@@ -113,8 +118,12 @@ const activeReference = ref<RefItem | null>(null)
 const msgArea = ref<HTMLElement | null>(null)
 const inputAreaRef = ref<InstanceType<typeof InputArea> | null>(null)
 const profileKey = ref('deepseek-v4-flash')
-const showAdminPanel = ref(false)
+const showAdminPanel = ref<string | false>(false)
 const isAdmin = ref(false)
+
+function toggleAdminPanel(panel: string) {
+  showAdminPanel.value = showAdminPanel.value === panel ? false : panel
+}
 const allReferences = computed<RefItem[]>(() => {
   const result: RefItem[] = []
   for (const m of messages.value) {

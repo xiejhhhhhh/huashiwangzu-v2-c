@@ -24,6 +24,7 @@ MODULE_BACKEND_DIR = Path(__file__).resolve().parent
 if str(MODULE_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_BACKEND_DIR))
 
+from action_policy import check_action_allowed, resolve_approval, list_pending_approvals
 import conversation_service as conv_svc
 from init_db import ensure_default_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts, ensure_event_table, ensure_processing_column
 from model_client import recover_tool_calls, parse_inline_tool_calls, final_clean_content
@@ -349,11 +350,12 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
     # 记录用户消息事件
     await record_event(db, payload.conversation_id, "user_msg", {"content": payload.content})
 
-    # 引擎装配上下文（事件投影 + 三层提示词 + 动态预算）
+    # 引擎装配上下文（事件投影 + 三层提示词 + 动态预算 + Agent 配置）
     profile_key = payload.profile_key or "deepseek-v4-flash"
+    agent_code = "erp_chat"  # 主对话 agent 的配置标识
     messages, engine_diag = await 装配上下文(
         db, payload.conversation_id, payload.content,
-        profile_key, user.id,
+        profile_key, user.id, agent_code=agent_code,
     )
 
     # 记录装配诊断事件（批5：用于重放展示装配细节）
@@ -581,10 +583,31 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                 if fast_tools:
                     SEM_MAX = 5
                     sem = asyncio.Semaphore(SEM_MAX)
+                    AGENT_CODE = "erp_chat"
 
                     async def _exec_one(tool: dict) -> dict:
                         async with sem:
                             try:
+                                # ── Sensitive action policy check ──────────
+                                from app.database import AsyncSessionLocal as _ASL
+                                async with _ASL() as _pol_db:
+                                    pol = await check_action_allowed(
+                                        _pol_db, tool["name"], AGENT_CODE,
+                                        user.id, payload.conversation_id,
+                                    )
+                                if not pol.get("allowed"):
+                                    pol_result = {
+                                        "policy_action": pol["action"],
+                                        "reason": pol.get("reason", ""),
+                                        "approval_id": pol.get("approval_id"),
+                                        "tool_name": pol.get("tool_name", tool["name"]),
+                                    }
+                                    return {
+                                        "name": tool["name"],
+                                        "tool_call_id": tool["tool_call_id"],
+                                        "result": pol_result,
+                                    }
+
                                 if tool["name"] == "skill_list":
                                     result = await tool_discovery.handle_skill_list(tool["args"], user.role)
                                 elif tool["name"] == "skill_describe":
@@ -610,14 +633,18 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                     tasks = [_exec_one(t) for t in fast_tools]
                     for coro in asyncio.as_completed(tasks):
                         outcome = await coro
-                        result_event = {"type": "tool_result", "name": outcome["name"], "result": outcome["result"]}
+                        # Mark approval-required results for frontend
+                        result_data = outcome["result"]
+                        if isinstance(result_data, dict) and result_data.get("policy_action") == "confirm":
+                            result_data["approval_required"] = True
+                        result_event = {"type": "tool_result", "name": outcome["name"], "result": result_data}
                         tool_events.append(result_event)
                         timeline.append(result_event)
                         yield f"data: {_j(result_event)}\n\n".encode("utf-8")
                         tool_message = {
                             "role": "tool",
                             "name": outcome["name"],
-                            "content": _j(outcome["result"]),
+                            "content": _j(result_data),
                         }
                         if outcome["tool_call_id"]:
                             tool_message["tool_call_id"] = outcome["tool_call_id"]
@@ -627,7 +654,7 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                             "payload": {
                                 "tool_call_id": outcome["tool_call_id"],
                                 "name": outcome["name"],
-                                "result": outcome["result"],
+                                "result": result_data,
                             },
                             "llm_response_id": None,
                         })
@@ -1571,3 +1598,35 @@ async def _submit_memory_distill_task(conversation_id: int, owner_id: int, user_
 
     except Exception as exc:
         logger.warning("_submit_memory_distill_task failed (non-fatal): %s", exc)
+
+
+# ── 敏感操作审批 API ─────────────────────────────────────────
+
+
+@router.get("/admin/approvals/pending")
+async def list_approvals(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    """列出所有待审批的敏感操作请求。"""
+    items = await list_pending_approvals(db)
+    return ApiResponse(data=items)
+
+
+class ApprovalDecision(BaseModel):
+    decision: str  # "approved" | "rejected"
+    reason: str | None = None
+
+
+@router.post("/admin/approvals/{approval_id}/resolve")
+async def resolve_approval_endpoint(
+    approval_id: int,
+    body: ApprovalDecision,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    """审批（同意/拒绝）一个等待确认的敏感操作。"""
+    if body.decision not in ("approved", "rejected"):
+        return ApiResponse(success=False, error="decision must be 'approved' or 'rejected'")
+    result = await resolve_approval(db, approval_id, body.decision, user.id, body.reason)
+    return ApiResponse(data=result)

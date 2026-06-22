@@ -1,7 +1,10 @@
-from sqlalchemy import String, Integer, Text, JSON, DateTime, ForeignKey, BigInteger, Float, Date
+import logging
+from sqlalchemy import String, Integer, Text, JSON, DateTime, ForeignKey, BigInteger, Float, Date, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone, date
 from app.models.base import Base, TimestampMixin
+
+logger = logging.getLogger("v2.models.system")
 
 
 class SystemLog(Base, TimestampMixin):
@@ -107,6 +110,61 @@ class AgentUsageDaily(Base, TimestampMixin):
     cost: Mapped[float] = mapped_column(Float, default=0.0)
 
 
+class ApprovalQueue(Base, TimestampMixin):
+    """Sensitive operation approval queue.
+
+    When an agent tool is flagged as sensitive and the agent's policy is
+    'confirm', a row is inserted here. The admin either approves or rejects
+    it. Status transitions: pending → approved | rejected.
+    """
+    __tablename__ = "framework_approval_queue"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    agent_code: Mapped[str] = mapped_column(String(64), default="", comment="Which agent requested")
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False, comment="Sensitive tool name")
+    tool_args: Mapped[str | None] = mapped_column(Text, nullable=True, comment="JSON tool arguments")
+    status: Mapped[str] = mapped_column(String(16), default="pending", comment="pending|approved|rejected")
+    requested_by: Mapped[int] = mapped_column(Integer, nullable=False, comment="User who triggered the action")
+    decided_by: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="Admin who decided")
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True, comment="Admin rejection reason or note")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentConfig(Base, TimestampMixin):
+    """Per-agent configuration. References models.json profile keys.
+
+    Each row represents one independent agent (erp_chat, file_router, etc.).
+    The 'sensitive_action_policy' column stores the default sensitive operation
+    strategy for this agent: 'allow' | 'confirm' | 'block'.
+    """
+    __tablename__ = "framework_agent_configs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    agent_code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="Unique agent identifier")
+    agent_name: Mapped[str] = mapped_column(String(128), default="", comment="Display name")
+    provider: Mapped[str] = mapped_column(String(64), default="", comment="Provider name from models.json")
+    model: Mapped[str] = mapped_column(String(64), default="", comment="Model profile key from models.json")
+    system_prompt: Mapped[str] = mapped_column(Text, default="", comment="System prompt for this agent")
+    purpose: Mapped[str] = mapped_column(String(256), default="", comment="Brief purpose description")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    top_p: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fallback_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_concurrency: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cooldown_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=3)
+    daily_call_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    daily_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    monthly_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    response_format: Mapped[str] = mapped_column(String(16), default="text", comment="text|json_object")
+    log_prompt_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    log_response_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sensitive_action_policy: Mapped[str] = mapped_column(String(16), default="confirm", comment="allow|confirm|block")
+    updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 _MIGRATIONS_DONE = False
 
 
@@ -135,6 +193,70 @@ async def ensure_usage_daily_table() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS uq_usage_daily
             ON framework_agent_usage_daily (usage_date, model_key, provider, module)
         """))
+
+
+async def ensure_approval_queue_table() -> None:
+    """Create framework_approval_queue if not exists. Idempotent."""
+    from sqlalchemy import text
+    from app.database import engine
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS framework_approval_queue (
+                id BIGSERIAL PRIMARY KEY,
+                agent_code VARCHAR(64) DEFAULT '',
+                tool_name VARCHAR(128) NOT NULL,
+                tool_args TEXT,
+                status VARCHAR(16) DEFAULT 'pending',
+                requested_by INTEGER NOT NULL,
+                decided_by INTEGER,
+                conversation_id BIGINT,
+                reason TEXT,
+                decided_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """))
+
+
+async def ensure_agent_configs_table() -> None:
+    """Create framework_agent_configs if not exists. Idempotent."""
+    from sqlalchemy import text, exc as sa_exc
+    from app.database import engine
+
+    ddl = """
+        CREATE TABLE IF NOT EXISTS framework_agent_configs (
+            id BIGSERIAL PRIMARY KEY,
+            agent_code VARCHAR(64) NOT NULL UNIQUE,
+            agent_name VARCHAR(128) DEFAULT '',
+            provider VARCHAR(64) DEFAULT '',
+            model VARCHAR(64) DEFAULT '',
+            system_prompt TEXT DEFAULT '',
+            purpose VARCHAR(256) DEFAULT '',
+            enabled BOOLEAN DEFAULT TRUE,
+            temperature DOUBLE PRECISION,
+            top_p DOUBLE PRECISION,
+            max_tokens INTEGER,
+            timeout_ms INTEGER,
+            fallback_model VARCHAR(64),
+            fallback_enabled BOOLEAN DEFAULT FALSE,
+            max_concurrency INTEGER,
+            cooldown_seconds INTEGER,
+            retry_count INTEGER DEFAULT 3,
+            daily_call_limit INTEGER,
+            daily_budget DOUBLE PRECISION,
+            monthly_budget DOUBLE PRECISION,
+            response_format VARCHAR(16) DEFAULT 'text',
+            log_prompt_enabled BOOLEAN DEFAULT TRUE,
+            log_response_enabled BOOLEAN DEFAULT TRUE,
+            sensitive_action_policy VARCHAR(16) DEFAULT 'confirm',
+            updated_by INTEGER,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text(ddl))
+    logger.info("Ensured framework_agent_configs table")
 
 
 async def ensure_framework_scheduling_columns() -> None:
