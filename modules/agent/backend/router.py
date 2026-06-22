@@ -26,7 +26,7 @@ if str(MODULE_BACKEND_DIR) not in sys.path:
 
 import conversation_service as conv_svc
 from init_db import ensure_default_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts
-from model_client import recover_tool_calls, parse_inline_tool_calls
+from model_client import recover_tool_calls, parse_inline_tool_calls, final_clean_content
 import tool_discovery
 from profile_evolve import handle_profile_evolve
 
@@ -37,6 +37,12 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 MAX_TOOL_ROUNDS = 5
 EVOLVE_EVERY_N_MESSAGES = 3  # 每 N 轮用户消息触发一次画像进化
+
+# 需后台执行的慢能力集合（不在 SSE 流中同步 await，改为入队后台执行）
+SLOW_SKILL_NAMES: set[str] = {
+    "image-gen__generate",
+    "office-gen__convert",
+}
 
 
 def _j(obj) -> str:
@@ -295,6 +301,33 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
     # 加载历史 + 用 3 层构建 context
     history = await conv_svc.get_messages(db, user.id, payload.conversation_id)
     messages = await conv_svc.build_context_messages(db, user.id, history)
+
+    # ── 记忆召回：自动检索用户相关记忆，注入 system prompt ──────────
+    try:
+        recall_result = await call_capability(
+            "memory", "recall",
+            {"query": payload.content, "limit": 5},
+            caller=f"user:{user.id}",
+            caller_role=user.role,
+        )
+        if recall_result and recall_result.get("success") and recall_result.get("data"):
+            memories = recall_result["data"]
+            if memories:
+                memory_lines = []
+                for m_item in memories:
+                    text = m_item.get("text", "")
+                    if text:
+                        memory_lines.append(f"- {text}")
+                if memory_lines:
+                    memory_block = "你记得该用户之前的一些信息：\n" + "\n".join(memory_lines)
+                    # 注入到已有的 system message 中
+                    for msg in messages:
+                        if msg["role"] == "system":
+                            msg["content"] += "\n\n---\n\n" + memory_block
+                            break
+    except Exception as mem_recall_err:
+        logger.warning("Memory recall failed (non-fatal): %s", mem_recall_err)
+
     tools = tool_discovery.build_tools(user.role)
 
     async def event_stream():
@@ -376,26 +409,64 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                     tool_events.append(call_event)
                     timeline.append(call_event)
                     yield f"data: {_j(call_event)}\n\n".encode("utf-8")
-                    try:
-                        if name == "skill_list":
-                            tool_result = await tool_discovery.handle_skill_list(args, user.role)
-                        elif name == "skill_describe":
-                            tool_result = await tool_discovery.handle_skill_describe(args, user.role)
-                        elif name == "skill_use":
-                            tool_result = await tool_discovery.handle_skill_use(
-                                args, caller=f"user:{user.id}", caller_role=user.role,
-                            )
-                        else:
-                            module_key, action = tool_discovery.parse_tool_name(name)
-                            tool_result = await call_capability(
-                                module_key,
-                                action,
-                                args,
-                                caller=f"user:{user.id}",
-                                caller_role=user.role,
-                            )
-                    except Exception as exc:
-                        tool_result = {"error": str(exc)}
+
+                    # ── 检测慢工具 → 入队后台执行 ──────────────
+                    resolved_slow_name = None
+                    if name == "skill_use":
+                        inner_name = args.get("name", "")
+                        if inner_name in SLOW_SKILL_NAMES:
+                            resolved_slow_name = inner_name
+                    elif name in SLOW_SKILL_NAMES:
+                        resolved_slow_name = name
+
+                    if resolved_slow_name:
+                        # 慢工具：入队后台执行，不阻塞 SSE
+                        task_id = await _submit_slow_tool_task(
+                            conversation_id=payload.conversation_id,
+                            user_id=user.id,
+                            tool_name=resolved_slow_name,
+                            skill_args=args,
+                            caller=f"user:{user.id}",
+                            caller_role=user.role,
+                        )
+                        tool_result = {
+                            "background": True,
+                            "task_id": task_id,
+                            "message": f"🛠️ 后台任务 [{resolved_slow_name}] 已提交，完成后将通过站内信通知你。",
+                        }
+                        # 标记对话有后台任务（多 worker 守护）
+                        from models import AgentConversation
+                        try:
+                            from app.database import AsyncSessionLocal as _ASL
+                            async with _ASL() as _db:
+                                _conv = await _db.get(AgentConversation, payload.conversation_id)
+                                if _conv:
+                                    _conv.processing = True
+                                    await _db.commit()
+                        except Exception as _pe:
+                            logger.warning("Failed to mark processing flag: %s", _pe)
+                    else:
+                        try:
+                            if name == "skill_list":
+                                tool_result = await tool_discovery.handle_skill_list(args, user.role)
+                            elif name == "skill_describe":
+                                tool_result = await tool_discovery.handle_skill_describe(args, user.role)
+                            elif name == "skill_use":
+                                tool_result = await tool_discovery.handle_skill_use(
+                                    args, caller=f"user:{user.id}", caller_role=user.role,
+                                )
+                            else:
+                                module_key, action = tool_discovery.parse_tool_name(name)
+                                tool_result = await call_capability(
+                                    module_key,
+                                    action,
+                                    args,
+                                    caller=f"user:{user.id}",
+                                    caller_role=user.role,
+                                )
+                        except Exception as exc:
+                            tool_result = {"error": str(exc)}
+
                     result_event = {"type": "tool_result", "name": name, "result": tool_result}
                     tool_events.append(result_event)
                     timeline.append(result_event)
@@ -420,7 +491,8 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                 safe_tool_events = json.loads(json.dumps(tool_events, default=str))
                 async with AsyncSessionLocal() as s2:
                     if full:
-                        msg = await conv_svc.add_message(s2, user.id, payload.conversation_id, "assistant", "".join(full))
+                        clean_assistant_content = final_clean_content("".join(full))
+                        msg = await conv_svc.add_message(s2, user.id, payload.conversation_id, "assistant", clean_assistant_content)
                         await conv_svc.add_message_meta(
                             s2,
                             owner_id=user.id,
@@ -438,6 +510,10 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
                             logger.info("[DIAG] event_stream submitting profile_evolve task (fire-and-forget)")
                             asyncio.create_task(_submit_profile_evolve_task(payload.conversation_id, user.id))
                             logger.info("[DIAG] event_stream profile_evolve task submitted")
+                        # 记忆蒸馏：每轮对话后异步提取关键事实并落库（fire-and-forget）
+                        asyncio.create_task(_submit_memory_distill_task(
+                            payload.conversation_id, user.id, payload.content, clean_assistant_content,
+                        ))
                 logger.info("[DIAG] event_stream DB persist done")
             except Exception as exc:
                 logger.warning("event_stream persist/evolve failed (non-fatal): %s", exc)
@@ -453,6 +529,143 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
 # Agent 通过 tool_discovery.build_tools(role) 自动发现这些能力；
 # register_capability 的 min_role 确保低权限用户的 Agent 看不到高权限工具，
 # 且 call_capability 执行侧二次拦截，双重防护。
+
+
+async def _submit_slow_tool_task(
+    conversation_id: int, user_id: int, tool_name: str,
+    skill_args: dict, caller: str, caller_role: str,
+) -> int:
+    """将慢工具提交到 SystemTaskQueue 后台执行。
+
+    Returns: task_id
+    """
+    from datetime import datetime, timezone
+    from app.database import AsyncSessionLocal
+    from app.models.system import SystemTaskQueue
+
+    task_params = {
+        "conversation_id": conversation_id,
+        "owner_id": user_id,
+        "tool_name": tool_name,
+        "skill_args": skill_args,
+        "caller": caller,
+        "caller_role": caller_role,
+    }
+    async with AsyncSessionLocal() as db:
+        task = SystemTaskQueue(
+            task_type="agent_execute_slow_tool",
+            parameters=json.dumps(task_params, ensure_ascii=False),
+            status="pending",
+            priority=0,
+            module="agent",
+            creator_id=user_id,
+        )
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+        return task.id
+
+
+async def _handle_slow_tool(params: dict) -> dict:
+    """后台任务处理器：执行慢工具，结果写入对话，发 IM 通知。
+
+    框架 task_worker 消费。逐任务独立 DB 会话 + commit。
+    成功：结果作为 assistant 消息写入对话 + im.notify 推送。
+    失败：错误消息写入对话 + im.notify 推送失败信息。
+    """
+    conversation_id = params.get("conversation_id")
+    owner_id = params.get("owner_id")
+    tool_name = params.get("tool_name", "")
+    skill_args = params.get("skill_args", {})
+    caller = params.get("caller", "")
+    caller_role = params.get("caller_role", "viewer")
+
+    if not conversation_id or not owner_id or not tool_name:
+        return {"error": "Missing required params"}
+
+    logger.info("Slow tool background exec: tool=%s conv=%s user=%s", tool_name, conversation_id, owner_id)
+
+    try:
+        # 执行慢工具
+        if tool_name.startswith("skill_use__"):
+            # skill_use 透传格式：实际走 skill_use 的 action 名的参数
+            inner_name = skill_args.get("name", "")
+            inner_args = skill_args.get("args", {})
+            if isinstance(inner_args, str):
+                import json as _j2
+                try:
+                    inner_args = _j2.loads(inner_args) if inner_args.strip() else {}
+                except Exception:
+                    inner_args = {}
+            if not isinstance(inner_args, dict):
+                inner_args = {}
+            tool_result = await call_capability(
+                *tool_discovery.parse_tool_name(inner_name),
+                inner_args, caller=caller, caller_role=caller_role,
+            )
+        else:
+            tool_result = await call_capability(
+                *tool_discovery.parse_tool_name(tool_name),
+                skill_args, caller=caller, caller_role=caller_role,
+            )
+    except Exception as exc:
+        tool_result = {"error": str(exc)}
+
+    # 写结果到对话
+    from app.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        try:
+            import conversation_service as conv_svc2
+            result_text = json.dumps(tool_result, ensure_ascii=False, default=str)
+            if isinstance(tool_result, dict) and tool_result.get("error"):
+                await conv_svc2.add_message(
+                    db, owner_id, conversation_id, "assistant",
+                    f"⚠️ 后台任务 [{tool_name}] 执行失败：{tool_result['error']}",
+                )
+            else:
+                await conv_svc2.add_message(
+                    db, owner_id, conversation_id, "assistant",
+                    f"✅ 后台任务 [{tool_name}] 已完成。结果：\n{result_text[:2000]}",
+                )
+
+            # 发 IM 通知
+            try:
+                # 用 call_capability 调 im.notify
+                notify_result = await call_capability(
+                    "im", "notify",
+                    {
+                        "user_id": owner_id,
+                        "content": f"✅ 你的后台任务 [{tool_name}] 已完成，请到 AI 助手对话中查看结果。",
+                        "title": "后台任务完成",
+                    },
+                    caller=f"system:agent_worker",
+                    caller_role="admin",
+                )
+                logger.info("Slow tool notify result: %s", notify_result)
+            except Exception as notify_exc:
+                logger.warning("Slow tool IM notify failed (non-fatal): %s", notify_exc)
+
+            # 清除 conversation processing 标记
+            try:
+                from models import AgentConversation
+                from sqlalchemy import select
+                r = await db.execute(
+                    select(AgentConversation).where(AgentConversation.id == conversation_id)
+                )
+                conv = r.scalar_one_or_none()
+                if conv:
+                    conv.processing = False
+                    await db.commit()
+            except Exception as clear_exc:
+                logger.warning("Failed to clear processing flag: %s", clear_exc)
+
+            return {"status": "ok", "conversation_id": conversation_id}
+        except Exception as persist_exc:
+            logger.error("Failed to persist slow tool result: %s", persist_exc)
+            return {"error": str(persist_exc)}
+
+
+register_task_handler("agent_execute_slow_tool", _handle_slow_tool)
 
 
 def _resolve_user_id(caller: str) -> int:
@@ -606,6 +819,164 @@ register_capability(
     min_role="viewer",
 )
 
+SUBAGENT_MAX_ROUNDS = 4
+SUBAGENT_CONTEXT_LIMIT = 10
+
+
+async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
+    """子 Agent：把子任务委托给一个独立工具循环，拿回结论。
+
+    参数：
+    - task: 任务描述（必填）
+    - tools: 限定技能列表（可选，如 ["image-gen__generate", "web-tools__search"]）
+    - context: 额外上下文（可选字符串，如参考信息）
+
+    内部机制：起一个独立对话，跑工具循环直到出结论或到轮数上限。
+    受 min_role / caller_role 约束，不能越权。
+    """
+    task = params.get("task", "")
+    if not task or not isinstance(task, str):
+        return {"error": "task is required"}
+
+    # 权限：call_capability 已鉴权（agent.spawn_subagent 注册的 min_role 已拦），
+    # 子 Agent 内部再调 call_capability 仍会二次鉴权，这里用 viewer 开工具可见性足矣
+    caller_role = "viewer"
+    extra_tools = params.get("tools") or []
+    extra_context = params.get("context") or ""
+
+    try:
+        # 构建子 Agent 的系统提示词
+        system_prompt = (
+            "你是一个子 Agent，专注于完成一项具体任务，然后返回结论。\n\n"
+            f"任务：{task}\n\n"
+        )
+        if extra_context:
+            system_prompt += f"参考上下文：\n{extra_context}\n\n"
+        system_prompt += (
+            "规则：\n"
+            "1. 使用可用工具完成任务，不要闲聊。\n"
+            f"2. 最多 {SUBAGENT_MAX_ROUNDS} 轮工具调用，超限则返回已有结论。\n"
+            "3. 完成目标后，清晰总结结论。\n"
+            "4. 如果工具调用失败，尝试替代方案。\n"
+            "5. 用中文回答。"
+        )
+
+        # 获取工具定义
+        tools = tool_discovery.build_tools(caller_role)
+        if extra_tools:
+            # 过滤：只保留 task 中指定的技能相关工具，但始终保留 skill_list/describe/use
+            allowed = set(extra_tools) | {"skill_list", "skill_describe", "skill_use"}
+            tools = [t for t in tools if t.get("function", {}).get("name", "") in allowed]
+
+        # 构建消息
+        messages = [
+            {"role": "system", "content": system_prompt},
+        ]
+
+        # 子 Agent 工具循环
+        full_content = ""
+        for _round in range(SUBAGENT_MAX_ROUNDS):
+            kwargs = {"messages": messages, "tools": tools}
+            result = await gateway_router.chat(**kwargs)
+
+            if result.get("error"):
+                full_content = f"子 Agent 执行出错：{result['error']}"
+                break
+
+            content = result.get("content", "")
+            tool_calls = result.get("tool_calls") or []
+
+            # 兜底：检查 content 里的内联工具调用
+            if not tool_calls:
+                clean_content, inline_calls = parse_inline_tool_calls(content)
+                if inline_calls:
+                    result["content"] = clean_content
+                    tool_calls = inline_calls
+
+            if not tool_calls:
+                # 没有工具调用 → 这是最终结论
+                full_content = content
+                break
+
+            # 有工具调用：记录 assistant 消息，执行工具
+            messages.append({
+                "role": "assistant",
+                "content": content,
+                "tool_calls": _tool_calls_for_history(tool_calls),
+            })
+
+            for tc in tool_calls:
+                fn = tc.get("function", tc)
+                name = fn.get("name", "")
+                try:
+                    args = fn.get("arguments") or {}
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                except Exception:
+                    args = {}
+
+                if name == "skill_list":
+                    tool_result = await tool_discovery.handle_skill_list(args, caller_role)
+                elif name == "skill_describe":
+                    tool_result = await tool_discovery.handle_skill_describe(args, caller_role)
+                elif name == "skill_use":
+                    tool_result = await tool_discovery.handle_skill_use(
+                        args, caller=caller, caller_role=caller_role,
+                    )
+                else:
+                    module_key, action = tool_discovery.parse_tool_name(name)
+                    tool_result = await call_capability(
+                        module_key, action, args,
+                        caller=caller, caller_role=caller_role,
+                    )
+
+                messages.append({
+                    "role": "tool",
+                    "name": name,
+                    "content": _j(tool_result),
+                    "tool_call_id": tc.get("id", ""),
+                })
+
+        # 执行完所有轮次仍无结论，用最后一条 assistant 内容
+        if not full_content:
+            # 取最后一条 assistant 消息
+            for msg in reversed(messages):
+                if msg["role"] == "assistant":
+                    full_content = msg.get("content", "") or ""
+                    break
+
+        # 清理内容中的工具标记
+        from model_client import final_clean_content
+        full_content = final_clean_content(full_content)
+
+        return {
+            "success": True,
+            "data": {
+                "conclusion": full_content or "子 Agent 未生成结论",
+                "rounds_used": _round + 1,
+                "messages_count": len(messages),
+            },
+        }
+    except Exception as exc:
+        return {"error": f"子 Agent 执行异常：{exc}"}
+
+
+register_capability(
+    "agent", "spawn_subagent", _cap_spawn_subagent,
+    description="把子任务委托给一个独立子 Agent 执行并拿回结论。子 Agent 会用自己的工具循环执行任务，完成后返回结论。适用于拆解复杂任务（如同时查资料、生图、整理文档）。",
+    brief="委托子Agent执行任务",
+    parameters={
+        "task": {"type": "string", "description": "任务描述，说明子Agent需要完成什么"},
+        "tools": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "限定可用技能列表（可选），如 ['web-tools__search', 'image-gen__generate']",
+        },
+        "context": {"type": "string", "description": "额外上下文（可选），如已有信息或参考数据"},
+    },
+    min_role="viewer",
+)
+
 
 async def _submit_profile_evolve_task(conversation_id: int, owner_id: int) -> None:
     """提交后台画像进化任务到 SystemTaskQueue（fire-and-forget，异常自愈）。"""
@@ -634,3 +1005,76 @@ async def _submit_profile_evolve_task(conversation_id: int, owner_id: int) -> No
             await db.commit()
     except Exception as exc:
         logger.warning("_submit_profile_evolve_task failed (non-fatal): %s", exc)
+
+
+MEMORY_DISTILL_MODEL_KEY = "deepseek-v4-flash"
+
+
+async def _submit_memory_distill_task(conversation_id: int, owner_id: int, user_content: str, assistant_content: str) -> None:
+    """后台记忆蒸馏：从对话中提取值得记住的事实，保存到 memory 模块。
+
+    fire-and-forget，不阻塞主流程。异常只记日志不抛出。
+    """
+    try:
+        from app.database import AsyncSessionLocal
+        from app.gateway.router import gateway_router as _gw
+
+        # 用 LLM 从对话中提取关键事实
+        distill_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个记忆提取助手。分析以下用户和AI的对话，提取出值得记住的事实性信息。\n\n"
+                    "只提取明确的事实（如用户的偏好、重要日期、计划、项目信息、关键决策等）。\n"
+                    "忽略闲聊、问候、确认等非事实内容。\n\n"
+                    "以 JSON 数组格式输出，每项包含 text 字段：\n"
+                    '[\n'
+                    '  {"text": "用户偏好简洁的回答风格"},\n'
+                    '  {"text": "用户正在开发一个电商项目"}\n'
+                    "]\n\n"
+                    "如果没有值得记住的事实，输出空数组 []。\n"
+                    "只输出 JSON，不要额外文字。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"用户：{user_content[:1000]}\n\nAI：{assistant_content[:1000]}",
+            },
+        ]
+        result = await _gw.chat(messages=distill_messages, profile_key=MEMORY_DISTILL_MODEL_KEY)
+        content = result.get("content", "")
+        if not content:
+            return
+
+        # 解析 JSON
+        import json as _jj
+        content = content.strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            cleaned = [l for l in lines if not l.strip().startswith("```")]
+            content = "\n".join(cleaned).strip()
+        start = content.find("[")
+        end = content.rfind("]")
+        if start < 0 or end <= start:
+            return
+        facts = _jj.loads(content[start:end + 1])
+        if not isinstance(facts, list) or not facts:
+            return
+
+        # 逐条保存到 memory 模块
+        for fact in facts:
+            text = fact.get("text", "") if isinstance(fact, dict) else str(fact)
+            if not text or len(text) < 10:
+                continue
+            try:
+                await call_capability(
+                    "memory", "save",
+                    {"text": text.strip(), "tags": "auto-distill"},
+                    caller=f"user:{owner_id}",
+                    caller_role="admin",
+                )
+            except Exception as save_exc:
+                logger.warning("Memory distill save failed (non-fatal): %s", save_exc)
+
+    except Exception as exc:
+        logger.warning("_submit_memory_distill_task failed (non-fatal): %s", exc)

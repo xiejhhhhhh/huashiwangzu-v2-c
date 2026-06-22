@@ -11,6 +11,7 @@ class AgentConversation(Base, TimestampMixin):
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(256), default="新对话")
     status: Mapped[str] = mapped_column(String(16), default="active")
+    processing: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否有正在执行的后台任务")
 
 
 class AgentMessage(Base, TimestampMixin):

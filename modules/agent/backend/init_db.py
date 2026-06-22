@@ -162,8 +162,23 @@ async def update_existing_prompts(db: AsyncSession) -> None:
     await db.commit()
 
 
+async def ensure_processing_column(db: AsyncSession) -> None:
+    """无痛迁移：给 agent_conversations 表加 processing 列。"""
+    try:
+        await db.execute(text(
+            "ALTER TABLE agent_conversations ADD COLUMN IF NOT EXISTS processing "
+            "BOOLEAN DEFAULT FALSE"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured processing column on agent_conversations")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: processing column check failed: %s", e)
+
+
 async def run_init(db: AsyncSession) -> None:
     """Agent 模块启动初始化入口。"""
     await ensure_timeline_column(db)
+    await ensure_processing_column(db)
     await ensure_default_prompts(db)
     await update_existing_prompts(db)
