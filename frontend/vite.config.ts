@@ -40,6 +40,7 @@ export default defineConfig({
       'highlight.js': path.resolve(__dirname, 'node_modules/highlight.js'),
       'pdfjs-dist': path.resolve(__dirname, 'node_modules/pdfjs-dist'),
     },
+    dedupe: ['three'],
   },
   server: {
     host: '0.0.0.0',
