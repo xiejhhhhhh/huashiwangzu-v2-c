@@ -5,27 +5,18 @@
       :activeConvId="activeConvId"
       :loading="loading"
       :collapsed="sidebarCollapsed"
+      :isAdmin="isAdmin"
       @select="selectConversation"
       @new="newConversation"
       @rename="renameConversation"
       @delete="deleteConversation"
       @toggle="sidebarCollapsed = !sidebarCollapsed"
+      @admin="showAdminPanel = !showAdminPanel"
     />
 
     <EnginePanel v-if="showAdminPanel" class="agent-main" />
 
-    <template v-else>
-      <ChatToolbar
-        :profiles="profiles"
-        :profileKey="profileKey"
-        :refPanelVisible="showReferencePanel"
-        :isAdmin="isAdmin"
-        @update:profileKey="profileKey = $event"
-        @toggleRef="showReferencePanel = !showReferencePanel"
-        @newConv="newConversation"
-        @toggleAdminPanel="showAdminPanel = true"
-      />
-      <section class="agent-main">
+    <section v-else class="agent-main">
 	      <!-- 消息区域 -->
       <div class="msg-area" ref="msgArea">
         <div v-if="!activeConvId && !loading" class="msg-empty">
@@ -76,7 +67,6 @@
 
       <p v-if="error" class="error-text">{{ error }}</p>
     </section>
-    </template>
   </div>
 </template>
 
@@ -84,7 +74,6 @@
 import { computed, ref, nextTick, onMounted } from 'vue'
 import { initRuntime, getApiUrl, authHeaders } from '../runtime'
 import ConversationSidebar from './components/ConversationSidebar.vue'
-import ChatToolbar from './components/ChatToolbar.vue'
 
 import InputArea from './components/InputArea.vue'
 import MessageBubble from './components/MessageBubble.vue'
@@ -195,7 +184,7 @@ async function deleteConversation(item: ConvItem) {
 }
 
 async function selectConversation(id: number) {
-  activeConvId.value = id; messages.value = []; showReferencePanel.value = false; error.value = ''
+  activeConvId.value = id; messages.value = []; showReferencePanel.value = false; error.value = ''; showAdminPanel.value = false
   try {
     const raw = await apiFetch<MsgItem[]>(`/agent/conversations/${id}/messages`)
     messages.value = expandTimeline(raw)

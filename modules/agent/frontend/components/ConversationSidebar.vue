@@ -19,6 +19,12 @@
     </div>
 
     <div class="sidebar-actions">
+      <button v-if="isAdmin" class="btn-engine-panel" @click="$emit('admin')" title="引擎调优面板（仅管理员）">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
+          <path d="M2 12l6-10 6 10H2zM8 7v3M8 12v1"/>
+        </svg>
+        <span>引擎面板</span>
+      </button>
       <button class="btn-new-conv" @click="$emit('new')" :disabled="loading">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
           <path d="M8 3v10M3 8h10"/>
@@ -101,6 +107,7 @@ const props = defineProps<{
   activeConvId: number | null
   loading: boolean
   collapsed: boolean
+  isAdmin?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -109,6 +116,7 @@ const emit = defineEmits<{
   rename: [item: ConvItem]
   delete: [item: ConvItem]
   toggle: []
+  admin: []
 }>()
 
 interface ConvItem { id: number; title: string; status?: string }
@@ -206,6 +214,16 @@ function finishEdit(c: ConvItem) {
 }
 .btn-new-conv:hover { background: var(--ag-primary-light); border-color: var(--ag-primary); }
 .btn-new-conv:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-engine-panel {
+  display: flex; align-items: center; gap: var(--ag-space-sm);
+  width: 100%; padding: var(--ag-space-sm) var(--ag-space-md);
+  margin-bottom: var(--ag-space-sm);
+  border: 1px solid var(--ag-border-base); border-radius: var(--ag-radius-md);
+  background: var(--ag-bg-base); color: var(--ag-text-secondary);
+  cursor: pointer; font-size: var(--ag-font-size-base);
+  transition: all var(--ag-transition-fast);
+}
+.btn-engine-panel:hover { background: var(--ag-primary-light); border-color: var(--ag-primary); color: var(--ag-primary); }
 
 /* List */
 .conv-list { flex: 1; overflow-y: auto; padding: 0 var(--ag-space-sm) var(--ag-space-sm); }
