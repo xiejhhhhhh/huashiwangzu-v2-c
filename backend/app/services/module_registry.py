@@ -12,6 +12,13 @@ _CAPABILITIES: dict[str, dict] = {}
 
 _ROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
 
+# 可信系统主体白名单：caller 以 system: 开头时从此处获取角色
+_SERVICE_PRINCIPAL_ROLES = {
+    "system:agent-engine": "admin",
+    "system:app-loader": "admin",
+    "system:task-worker": "admin",
+}
+
 
 def _key(module_key: str, action: str) -> str:
     return f"{module_key}:{action}"
@@ -37,6 +44,30 @@ def register_capability(
     logger.info("Registered capability: %s:%s", module_key, action)
 
 
+def _resolve_caller_role(caller: str, caller_role: str) -> str:
+    """Resolve effective role from caller identity and caller_role parameter.
+
+    - system:{principal}: role from _SERVICE_PRINCIPAL_ROLES whitelist
+    - user:{id}: caller_role is accepted but capped; admin is logged as warning
+    """
+    if caller.startswith("system:"):
+        principal_role = _SERVICE_PRINCIPAL_ROLES.get(caller)
+        if principal_role is None:
+            raise PermissionDenied(
+                f"Unknown system principal: {caller}"
+            )
+        return principal_role
+    if caller.startswith("user:"):
+        if caller_role == "admin":
+            logger.warning(
+                "caller=%s passed caller_role='admin' — "
+                "user callers should not pass admin role",
+                caller,
+            )
+        return caller_role
+    raise PermissionDenied(f"Invalid caller format: {caller}")
+
+
 async def call_capability(
     target_module: str,
     action: str,
@@ -44,18 +75,23 @@ async def call_capability(
     caller: str,
     caller_role: str = "viewer",
 ) -> dict:
-    """跨模块调用的唯一入口。target 未公开或角色不足则抛异常。"""
+    """跨模块调用的唯一入口。target 未公开或角色不足则抛异常。
+
+    caller_role 对 user: 前缀的调用者不做严格审计（保持兼容），
+    对 system: 前缀的调用者从 _SERVICE_PRINCIPAL_ROLES 白名单获取角色。
+    """
     entry = _CAPABILITIES.get(_key(target_module, action))
     if not entry:
         raise NotFound(f"Module '{target_module}' does not expose action '{action}'")
+    resolved_role = _resolve_caller_role(caller, caller_role)
     min_role = entry.get("min_role", "viewer")
-    if _ROLE_ORDER.get(caller_role, -1) < _ROLE_ORDER.get(min_role, 0):
+    if _ROLE_ORDER.get(resolved_role, -1) < _ROLE_ORDER.get(min_role, 0):
         raise PermissionDenied(
-            f"Requires at least '{min_role}' role, got '{caller_role}'"
+            f"Requires at least '{min_role}' role, got '{resolved_role}'"
         )
     logger.info(
         "Cross-module call: caller=%s role=%s -> %s:%s",
-        caller, caller_role, target_module, action,
+        caller, resolved_role, target_module, action,
     )
     return await entry["handler"](params, caller)
 

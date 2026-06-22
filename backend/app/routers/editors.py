@@ -15,8 +15,8 @@ text_svc = TextEditorService()
 csv_svc = CsvEditorService()
 
 
-async def _require_edit_access(db: AsyncSession, file_id: int, user_id: int):
-    """Check user has owner or edit share access to the file."""
+async def _require_read_access(db: AsyncSession, file_id: int, user_id: int):
+    """Check user has read access to the file (owner or shared read/edit)."""
     from app.models.file import File
     file = await db.get(File, file_id)
     if not file or file.deleted:
@@ -26,13 +26,26 @@ async def _require_edit_access(db: AsyncSession, file_id: int, user_id: int):
         raise PermissionDenied("No permission to access this file")
 
 
+async def _require_write_access(db: AsyncSession, file_id: int, user_id: int):
+    """Check user has write access: owner or shared with edit permission."""
+    from app.models.file import File
+    file = await db.get(File, file_id)
+    if not file or file.deleted:
+        raise AppException("File not found", status_code=404)
+    if file.owner_id == user_id:
+        return
+    access = await check_file_access(db, file_id, user_id)
+    if not access["accessible"] or access["permission"] not in ("owner", "edit"):
+        raise PermissionDenied("No write permission for this file")
+
+
 @router.get("/text/{file_id}")
 async def read_text(
     file_id: int,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("viewer")),
 ):
-    await _require_edit_access(db, file_id, user.id)
+    await _require_read_access(db, file_id, user.id)
     try:
         result = await text_svc.read(db, file_id)
         return ApiResponse(data=result)
@@ -51,7 +64,7 @@ async def save_text(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    await _require_edit_access(db, file_id, user.id)
+    await _require_write_access(db, file_id, user.id)
     try:
         await text_svc.save(db, file_id, body.get("content", ""), body.get("mtime"))
         return ApiResponse(data={"message": "Saved successfully"})
@@ -69,7 +82,7 @@ async def read_csv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("viewer")),
 ):
-    await _require_edit_access(db, file_id, user.id)
+    await _require_read_access(db, file_id, user.id)
     try:
         result = await csv_svc.read(db, file_id)
         return ApiResponse(data=result)
@@ -88,7 +101,7 @@ async def save_csv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    await _require_edit_access(db, file_id, user.id)
+    await _require_write_access(db, file_id, user.id)
     try:
         await csv_svc.save(db, file_id, body.get("content", ""), body.get("delimiter", ","), body.get("mtime"))
         return ApiResponse(data={"message": "Saved successfully"})

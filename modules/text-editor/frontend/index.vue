@@ -117,15 +117,13 @@ function onInput(e: Event) {
 
 async function handleSave() {
   if (content.value === originalContent.value) return
+  if (!fileId.value) return
   saveError.value = ''
   try {
-    const formData = new FormData()
-    const blob = new Blob([content.value], { type: 'text/plain' })
-    formData.append('file', blob, fileName.value || 'untitled.txt')
-    const resp = await fetch('/api/files/upload', {
+    const resp = await fetch(`/api/editors/text/${fileId.value}`, {
       method: 'POST',
-      headers: authHeaders(),
-      body: formData,
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ content: content.value }),
     })
     const json = await resp.json()
     if (!json.success) throw new Error(json.error || '保存失败')

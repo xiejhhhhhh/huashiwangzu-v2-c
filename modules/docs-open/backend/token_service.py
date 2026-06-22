@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import PermissionDenied, AppException
+from app.services.file_service import check_file_access as framework_check_file_access
 from .models import DocsOpenToken, generate_access_token
 
 
@@ -13,7 +14,9 @@ async def create_token(
     expiry_hours: int = 2,
 ) -> dict:
     """Create a new document access token.
-    
+
+    Validates scope.doc_ids against current user's file access.
+    Fail-closed: empty scope or non-list doc_ids are rejected.
     Returns dict with client_id, open_id, access_token, scope, expires_at.
     """
     raw, prefix, hashed = generate_access_token()
@@ -82,13 +85,11 @@ async def validate_token(
 
 def check_doc_access(token: DocsOpenToken, doc_id: int) -> bool:
     """Check if token has access to a specific doc.
-    If scope has doc_ids list, check membership.
-    If scope is empty or has 'all_docs', allow access.
+    Fail-closed: only allows if scope has a doc_ids list and doc_id is in it.
+    None/non-list doc_ids or empty scope is rejected.
     """
     scope = token.scope or {}
     doc_ids = scope.get("doc_ids")
-    if doc_ids is None:
-        return True
-    if isinstance(doc_ids, list):
+    if isinstance(doc_ids, list) and len(doc_ids) > 0:
         return doc_id in doc_ids
-    return True
+    return False

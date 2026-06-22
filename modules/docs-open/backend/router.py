@@ -167,13 +167,24 @@ async def issue_token(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_docs_permission("viewer")),
 ):
-    """Issue a document-scoped access token (仿腾讯文档三件套)."""
-    open_id = body.open_id or user.id
+    """Issue a document-scoped access token (仿腾讯文档三件套).
+
+    Forced to current user: open_id cannot be specified by the client.
+    scope.doc_ids are validated one by one via framework_check_file_access.
+    """
+    scope = body.scope or {}
+    doc_ids = scope.get("doc_ids")
+    if doc_ids is not None:
+        if not isinstance(doc_ids, list):
+            raise PermissionDenied("scope.doc_ids must be a list")
+        for fid in doc_ids:
+            await framework_check_file_access(db, int(fid), user.id)
+
     result = await create_token(
         db,
         client_id=body.client_id,
-        open_id=open_id,
-        scope=body.scope,
+        open_id=user.id,
+        scope=scope,
         expiry_hours=body.expiry_hours,
     )
     return ApiResponse(data=result)
@@ -308,7 +319,7 @@ async def get_content(
     file = await framework_check_file_access(db, file_id, user.id)
     ext = (file.extension or "").lower().lstrip(".")
 
-    result = await _read_content(db, file, ext)
+    result = await _read_content(db, file, ext, user.role)
     return ApiResponse(data=result)
 
 
@@ -326,7 +337,7 @@ async def write_content(
     file = await framework_check_file_access(db, file_id, user.id)
     ext = (file.extension or "").lower().lstrip(".")
 
-    await _write_content(db, file, ext, body.content)
+    await _write_content(db, file, ext, body.content, user.role)
     return ApiResponse(data={"message": "Content saved"})
 
 
@@ -395,6 +406,8 @@ async def embed_document(
     if not file or file.deleted:
         raise NotFound("File not found")
 
+    await framework_check_file_access(db, file_id, int(open_id))
+
     ext = (file.extension or "").lower().lstrip(".")
     doc_info = _get_doc_type(ext)
     base = _get_base_url(request)
@@ -419,11 +432,29 @@ async def embed_document(
 @router.get("/{file_id}/file")
 async def get_file_raw(
     file_id: int,
+    request: Request,
+    token: str | None = Query(None),
+    client_id: str | None = Query(None),
+    open_id: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_docs_permission("viewer")),
 ):
-    """Get raw file for embedding (pdf, images, etc.)."""
-    file = await framework_check_file_access(db, file_id, user.id)
+    """Get raw file for embedding (pdf, images, etc.).
+
+    Supports two auth modes:
+    1. Query-parameter token triple (?token=&client_id=&open_id=) for iframe src
+    2. JWT Bearer header (from desktop shell, via get_authenticated_user)
+    """
+    if token and client_id and open_id:
+        await validate_token(db, token, client_id, open_id)
+        await framework_check_file_access(db, file_id, int(open_id))
+    else:
+        user = await get_authenticated_user(request, db)
+        await framework_check_file_access(db, file_id, user.id)
+
+    file = await db.get(File, file_id)
+    if not file or file.deleted:
+        raise NotFound("File not found")
+
     settings = get_settings()
     storage_root = Path(settings.UPLOAD_DIR).resolve()
     full_path = (storage_root / file.storage_path).resolve()
@@ -462,7 +493,7 @@ async def revoke_doc_tokens(
 
 # ── Internal helpers ──
 
-async def _read_content(db: AsyncSession, file: File, ext: str) -> dict:
+async def _read_content(db: AsyncSession, file: File, ext: str, user_role: str = "editor") -> dict:
     """Read document content as structured JSON based on type."""
     settings = get_settings()
     storage_root = Path(settings.UPLOAD_DIR).resolve()
@@ -480,7 +511,7 @@ async def _read_content(db: AsyncSession, file: File, ext: str) -> dict:
                 "excel-engine", "parse",
                 {"file_id": file.id},
                 caller=f"user:{file.owner_id}",
-                caller_role="admin",
+                caller_role=user_role,
             )
             return {"content": result, "format": "excel-json", "extension": ext}
         except Exception as e:
@@ -501,7 +532,7 @@ async def _read_content(db: AsyncSession, file: File, ext: str) -> dict:
                 "pdf-parser", "parse",
                 {"file_id": file.id},
                 caller=f"user:{file.owner_id}",
-                caller_role="admin",
+                caller_role=user_role,
             )
             return {"content": result, "format": "parsed-json", "extension": ext}
         except Exception as e:
@@ -514,7 +545,7 @@ async def _read_content(db: AsyncSession, file: File, ext: str) -> dict:
                 "docx-parser", "parse",
                 {"file_id": file.id},
                 caller=f"user:{file.owner_id}",
-                caller_role="admin",
+                caller_role=user_role,
             )
             return {"content": result, "format": "parsed-json", "extension": ext}
         except Exception as e:
@@ -527,7 +558,7 @@ async def _read_content(db: AsyncSession, file: File, ext: str) -> dict:
                 "pptx-parser", "parse",
                 {"file_id": file.id},
                 caller=f"user:{file.owner_id}",
-                caller_role="admin",
+                caller_role=user_role,
             )
             return {"content": result, "format": "parsed-json", "extension": ext}
         except Exception as e:
@@ -536,17 +567,17 @@ async def _read_content(db: AsyncSession, file: File, ext: str) -> dict:
     return {"content": None, "format": "binary", "extension": ext}
 
 
-async def _write_content(db: AsyncSession, file: File, ext: str, content: dict | list | str) -> None:
-    """Write structured content back to a document."""
-    settings = get_settings()
-    storage_root = Path(settings.UPLOAD_DIR).resolve()
-    full_path = (storage_root / file.storage_path).resolve()
+async def _write_content(db: AsyncSession, file: File, ext: str, content: dict | list | str, user_role: str = "editor") -> None:
+    """Write structured content back to a document.
+
+    Uses framework replace_file_content (content-addressed) instead of
+    direct disk overwrite to preserve content-addressable dedup integrity.
+    """
+    from app.services.file_upload_service import replace_file_content
 
     if ext in ("txt", "md", "json", "yaml", "yml", "xml", "ini", "cfg", "log"):
         text = content if isinstance(content, str) else str(content)
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as f:
-            f.write(text)
+        await replace_file_content(db, file.id, file.owner_id, text.encode("utf-8"))
 
     elif ext in ("xlsx", "xls"):
         try:
@@ -575,9 +606,7 @@ async def _write_content(db: AsyncSession, file: File, ext: str, content: dict |
 
     elif ext == "csv":
         text = content if isinstance(content, str) else str(content)
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as f:
-            f.write(text)
+        await replace_file_content(db, file.id, file.owner_id, text.encode("utf-8"))
 
     else:
         raise AppException(f"Writing to {ext} is not supported yet", status_code=400)
@@ -616,7 +645,7 @@ def _generate_embed_html(
     elif category == "image":
         return _image_embed_html(file_id, file_name, extension, api_base, token, client_id, open_id)
     else:
-        return _fallback_embed_html(file_id, file_name, extension)
+        return _fallback_embed_html(file_id, file_name, extension, api_base, token, client_id, open_id)
 
 
 def _spreadsheet_embed_html(file_id: int, name: str, base: str, token: str, cid: str, oid: str, editable: bool) -> str:
@@ -808,6 +837,7 @@ window.saveText=async function(){{
 
 
 def _pdf_embed_html(file_id: int, name: str, base: str, token: str, cid: str, oid: str) -> str:
+    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -825,12 +855,13 @@ iframe{{width:100%;height:100%;border:none;border-radius:4px;box-shadow:0 2px 8p
 <body>
 <div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">PDF</span></div>
 <div class="content">
-<iframe src="{base}/api/docs/{file_id}/file" title="{__import__("html").escape(name)}"></iframe>
+<iframe src="{file_url}" title="{__import__("html").escape(name)}"></iframe>
 </div>
 </body></html>"""
 
 
 def _doc_embed_html(file_id: int, name: str, ext: str, base: str, token: str, cid: str, oid: str) -> str:
+    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -848,12 +879,13 @@ iframe{{width:100%;height:100%;border:none;border-radius:4px;box-shadow:0 2px 8p
 <body>
 <div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{ext.upper()}</span></div>
 <div class="content">
-<iframe src="{base}/api/docs/{file_id}/file" title="{__import__("html").escape(name)}"></iframe>
+<iframe src="{file_url}" title="{__import__("html").escape(name)}"></iframe>
 </div>
 </body></html>"""
 
 
 def _presentation_embed_html(file_id: int, name: str, ext: str, base: str, token: str, cid: str, oid: str) -> str:
+    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -871,12 +903,13 @@ iframe{{width:100%;height:100%;border:none;border-radius:4px;box-shadow:0 2px 8p
 <body>
 <div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{ext.upper()}</span></div>
 <div class="content">
-<iframe src="{base}/api/docs/{file_id}/file" title="{__import__("html").escape(name)}"></iframe>
+<iframe src="{file_url}" title="{__import__("html").escape(name)}"></iframe>
 </div>
 </body></html>"""
 
 
 def _image_embed_html(file_id: int, name: str, ext: str, base: str, token: str, cid: str, oid: str) -> str:
+    img_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -893,12 +926,13 @@ img{{max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-sha
 <body>
 <div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{ext.upper()}</span></div>
 <div class="content">
-<img src="{base}/api/docs/{file_id}/file" alt="{__import__("html").escape(name)}" />
+<img src="{img_url}" alt="{__import__("html").escape(name)}" />
 </div>
 </body></html>"""
 
 
-def _fallback_embed_html(file_id: int, name: str, ext: str) -> str:
+def _fallback_embed_html(file_id: int, name: str, ext: str, base: str = "", token: str = "", cid: str = "", oid: str = "") -> str:
+    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}" if base and token else f"/api/docs/{file_id}/file"
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -914,7 +948,7 @@ html,body{{height:100%;background:#fff;font-family:苹方,"微软雅黑",宋体,
 <div class="icon">📄</div>
 <h3>{__import__("html").escape(name)}</h3>
 <p>格式 .{ext} 暂不支持在线预览</p>
-<p style="font-size:13px"><a href="/api/docs/{file_id}/file" style="color:#2395bc">下载文件</a></p>
+<p style="font-size:13px"><a href="{file_url}" style="color:#2395bc">下载文件</a></p>
 </div>
 </body></html>"""
 

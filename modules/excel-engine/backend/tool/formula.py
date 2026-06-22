@@ -1,9 +1,70 @@
-"""Formula calculation engine - 1:1 from old 工具/公式.php
+"""Formula calculation engine.
 
 Supports: SUM, AVERAGE, COUNT, MAX, MIN and basic arithmetic.
+Uses ast.parse with strict whitelist instead of eval.
 """
+import ast
+import operator
 import re
 from .address import parse_address, rc_to_address
+
+
+_ALLOWED_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+_MAX_EXPR_LENGTH = 500
+_MAX_NODES = 100
+_MAX_DEPTH = 10
+
+
+def _safe_eval_arithmetic(expr: str) -> float | int | None:
+    """Evaluate a simple arithmetic expression using ast.parse instead of eval."""
+    if len(expr) > _MAX_EXPR_LENGTH:
+        return None
+    try:
+        tree = ast.parse(expr.strip(), mode="eval")
+    except SyntaxError:
+        return None
+
+    node_count = 0
+
+    def _check_depth(node, depth=0):
+        nonlocal node_count
+        if depth > _MAX_DEPTH:
+            raise ValueError("Expression too deep")
+        node_count += 1
+        if node_count > _MAX_NODES:
+            raise ValueError("Too many nodes")
+        if isinstance(node, ast.Expression):
+            return _check_depth(node.body, depth)
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, (int, float)):
+                raise ValueError("Non-numeric constant")
+            return node.value
+        if isinstance(node, ast.UnaryOp):
+            op = _ALLOWED_OPS.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unary operator not allowed: {type(node.op).__name__}")
+            return op(_check_depth(node.operand, depth + 1))
+        if isinstance(node, ast.BinOp):
+            op = _ALLOWED_OPS.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Binary operator not allowed: {type(node.op).__name__}")
+            left = _check_depth(node.left, depth + 1)
+            right = _check_depth(node.right, depth + 1)
+            return op(left, right)
+        raise ValueError(f"Node type not allowed: {type(node).__name__}")
+
+    try:
+        return _check_depth(tree)
+    except (ValueError, TypeError, ZeroDivisionError):
+        return None
 
 
 def calculate_formula(expression: str, cells: dict[str, str]) -> str:
@@ -77,7 +138,4 @@ def _safe_arithmetic(expression: str, cells: dict[str, str]) -> float | int | No
     expr = re.sub(r'\s+', '', expr)
     if not re.match(r'^[0-9+\-*/().]+$', expr):
         return None
-    try:
-        return eval(expr)
-    except Exception:
-        return None
+    return _safe_eval_arithmetic(expr)

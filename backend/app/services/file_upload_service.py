@@ -6,7 +6,7 @@ from typing import BinaryIO
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.file import Folder, File
-from app.core.exceptions import NotFound, AppException
+from app.core.exceptions import NotFound, AppException, PermissionDenied
 from app.config import get_settings
 
 settings = get_settings()
@@ -140,6 +140,198 @@ async def _ensure_folder_path(
             await db.flush()
         current_parent = folder.id
     return current_parent
+
+
+async def replace_file_content(
+    db: AsyncSession,
+    file_id: int,
+    owner_id: int,
+    content: bytes,
+) -> dict:
+    """Replace a file's content with new bytes (content-addressable).
+    
+    Writes new content to a new content-addressed path, updates the File record's
+    storage_path/size/md5_hash, and maintains ref_count (old content cleaned up
+    when its ref_count reaches zero).
+    """
+    file = await db.get(File, file_id)
+    if not file or file.deleted:
+        raise NotFound("File not found")
+    if file.owner_id != owner_id:
+        raise PermissionDenied("Only the file owner can replace content")
+
+    old_storage_path = file.storage_path
+    new_md5 = hashlib.md5(content).hexdigest()
+    ext = file.extension or ""
+    new_content_path = f"{new_md5[:2]}/{new_md5[2:4]}/{new_md5}.{ext}" if ext else f"{new_md5[:2]}/{new_md5[2:4]}/{new_md5}"
+    abs_new_path = UPLOAD_ROOT / new_content_path
+
+    # Check if new content already exists on disk
+    existing = await db.execute(
+        select(File).where(File.md5_hash == new_md5, File.deleted == False).limit(1)
+    )
+    existing_file = existing.scalar_one_or_none()
+
+    if existing_file and abs_new_path.exists():
+        file.storage_path = existing_file.storage_path
+        await db.execute(
+            update(File).where(File.id == existing_file.id).values(ref_count=File.ref_count + 1)
+        )
+    else:
+        abs_new_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_new_path.write_bytes(content)
+        file.storage_path = new_content_path
+
+    file.size = len(content)
+    file.md5_hash = new_md5
+    await db.flush()
+
+    # Decrement ref_count of old content
+    if old_storage_path and old_storage_path != file.storage_path:
+        old_records = await db.execute(
+            select(File).where(
+                File.storage_path == old_storage_path,
+                File.deleted == False,
+            )
+        )
+        old_files = old_records.scalars().all()
+        if len(old_files) == 1 and old_files[0].id == file.id:
+            pass
+        else:
+            for of in old_files:
+                if of.id != file.id:
+                    await db.execute(
+                        update(File).where(File.id == of.id).values(ref_count=File.ref_count - 1)
+                    )
+                    break
+
+    await db.commit()
+    await db.refresh(file)
+
+    return {
+        "id": file.id,
+        "name": file.name,
+        "size": file.size,
+        "md5_hash": file.md5_hash,
+        "storage_path": file.storage_path,
+    }
+
+
+async def upload_file_from_path(
+    db: AsyncSession,
+    file_path: Path,
+    filename: str,
+    owner_id: int,
+    folder_id: int | None = None,
+    relative_path: str | None = None,
+    md5_hex: str | None = None,
+    mime_type: str | None = None,
+) -> dict:
+    """Upload a file from a local temp path (stream-friendly).
+
+    Uses pre-computed md5 and mime if provided, otherwise computes them.
+    Atomic rename from temp to final content-addressed path.
+    """
+    original_name = filename
+    name_part, ext_part = os.path.splitext(original_name)
+    ext_part = ext_part.lstrip(".").lower()
+
+    target_folder_id = folder_id if (folder_id and folder_id > 0) else None
+    if target_folder_id:
+        folder = await db.get(Folder, target_folder_id)
+        if not folder or folder.deleted:
+            raise NotFound("Target folder not found")
+        if folder.owner_id != owner_id:
+            raise AppException("Access denied: target folder does not belong to current user", status_code=403)
+
+    if md5_hex:
+        md5_hash = md5_hex
+    else:
+        md5_hash = hashlib.md5(file_path.read_bytes()).hexdigest()
+
+    file_size = file_path.stat().st_size
+
+    if relative_path:
+        target_folder_id = await _ensure_folder_path(db, relative_path, owner_id, target_folder_id)
+
+    existing_name = await db.execute(
+        select(File).where(
+            File.name == name_part,
+            File.extension == ext_part,
+            File.folder_id == target_folder_id,
+            File.owner_id == owner_id,
+            File.deleted == False,
+        )
+    )
+    if existing_name.scalar_one_or_none():
+        raise AppException("A file with the same name already exists in this directory", status_code=409)
+
+    if mime_type is None:
+        if ext_part:
+            mime_type = _detect_mime(b"", ext_part)
+        else:
+            mime_type = "application/octet-stream"
+
+    content_path = f"{md5_hash[:2]}/{md5_hash[2:4]}/{md5_hash}.{ext_part}" if ext_part else f"{md5_hash[:2]}/{md5_hash[2:4]}/{md5_hash}"
+    abs_content_path = UPLOAD_ROOT / content_path
+
+    existing_content = await db.execute(
+        select(File).where(File.md5_hash == md5_hash, File.deleted == False).limit(1)
+    )
+    existing_file = existing_content.scalar_one_or_none()
+
+    deduplicated = False
+    if existing_file and abs_content_path.exists():
+        deduplicated = True
+        new_file = File(
+            name=name_part, extension=ext_part or "", size=file_size,
+            folder_id=target_folder_id, owner_id=owner_id,
+            storage_path=existing_file.storage_path,
+            mime_type=mime_type, md5_hash=md5_hash, ref_count=1, deleted=False,
+        )
+        db.add(new_file)
+        await db.flush()
+        await db.execute(
+            update(File).where(File.id == existing_file.id).values(ref_count=File.ref_count + 1)
+        )
+        await db.commit()
+        await db.refresh(new_file)
+    else:
+        abs_content_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.rename(abs_content_path)
+        new_file = File(
+            name=name_part, extension=ext_part or "", size=file_size,
+            folder_id=target_folder_id, owner_id=owner_id,
+            storage_path=content_path, mime_type=mime_type,
+            md5_hash=md5_hash, ref_count=1, deleted=False,
+        )
+        db.add(new_file)
+        await db.commit()
+        await db.refresh(new_file)
+
+    return {
+        "id": new_file.id, "name": new_file.name,
+        "extension": new_file.extension, "size": new_file.size,
+        "mime_type": new_file.mime_type, "deduplicated": deduplicated,
+    }
+
+
+def _detect_mime_by_header(file_path: Path, filename: str) -> str:
+    """Read only file header (first 2KB) for MIME detection."""
+    try:
+        header = file_path.read_bytes()[:2048]
+        return magic.from_buffer(header, mime=True)
+    except Exception:
+        _, ext = os.path.splitext(filename)
+        ext = ext.lstrip(".").lower()
+        mime_map = {
+            "txt": "text/plain", "md": "text/markdown", "html": "text/html",
+            "css": "text/css", "js": "application/javascript", "json": "application/json",
+            "csv": "text/csv", "xml": "application/xml", "pdf": "application/pdf",
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "svg": "image/svg+xml",
+        }
+        return mime_map.get(ext, "application/octet-stream")
 
 
 def _detect_mime(data: bytes, ext: str) -> str:

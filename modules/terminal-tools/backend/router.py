@@ -642,6 +642,7 @@ async def _run_python(params: dict, caller: str) -> dict:
     """Run Python code with pandas/numpy/matplotlib in user workspace.
     
     Reuses terminal-tools workspace isolation, timeout, and output truncation.
+    Uses sandbox-exec on macOS (same as _exec), fail-closed on other platforms.
     Automatically collects plt.savefig() charts and uploads them to framework FS.
     """
     user_id = _resolve_user_id(caller)
@@ -688,10 +689,24 @@ async def _run_python(params: dict, caller: str) -> dict:
 
     logger.info("user=%s run_python (timeout=%ss, input_files=%s)", user_id, timeout, input_file_ids)
 
+    if sys.platform == "darwin" and shutil.which("sandbox-exec"):
+        profile = _build_sandbox_profile(workspace_real)
+        argv = ["sandbox-exec", "-p", profile, sys.executable, str(script_path)]
+        cwd = str(run_dir)
+    else:
+        return {
+            "success": False,
+            "error": (
+                "当前平台无可用沙盒(sandbox-exec)，run_python 已禁用。"
+                "需要 macOS 或安装了 bubblewrap 的 Linux。"
+            ),
+            "code_preview": code[:200],
+        }
+
     try:
         proc = subprocess.run(
-            [sys.executable, str(script_path)],
-            cwd=str(run_dir),
+            argv,
+            cwd=cwd,
             capture_output=True,
             text=True,
             timeout=timeout,

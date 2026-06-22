@@ -239,13 +239,13 @@ class ModelGatewayRouter:
             pt = raw["usage"].get("prompt_tokens", 0) or 0
             ct = raw["usage"].get("completion_tokens", 0) or 0
             if pt > 0 or ct > 0:
-                asyncio.create_task(_log_model_usage(
+                await _log_model_usage(
                     model_key=profile_key,
                     prompt_tokens=pt,
                     completion_tokens=ct,
                     provider_name=profile.get("provider", ""),
                     caller_module="gateway.chat",
-                ))
+                )
         if profile["provider"] in ("local",):
             return raw
         adapter = get_adapter(profile["model"])
@@ -338,13 +338,13 @@ class ModelGatewayRouter:
                         pt = raw["usage"].get("prompt_tokens", 0) or 0
                         ct = raw["usage"].get("completion_tokens", 0) or 0
                         if pt > 0 or ct > 0:
-                            asyncio.create_task(_log_model_usage(
+                            await _log_model_usage(
                                 model_key=key,
                                 prompt_tokens=pt,
                                 completion_tokens=ct,
                                 provider_name=profile.get("provider", ""),
                                 caller_module="gateway.describe_image",
-                            ))
+                            )
                     return content
             except Exception as exc:
                 logger.warning("Vision model %s failed (attempt %d/%d): %s", key, idx + 1, len(candidate_keys), exc)
@@ -434,13 +434,13 @@ class ModelGatewayRouter:
 
                             if images:
                                 # Log usage (estimate tokens based on image count)
-                                asyncio.create_task(_log_model_usage(
+                                await _log_model_usage(
                                     model_key=key,
                                     prompt_tokens=len(prompt),
                                     completion_tokens=len(images) * 1000,
                                     provider_name=provider_name,
                                     caller_module="gateway.generate_image",
-                                ))
+                                )
                                 return {"images": images, "placeholder": False}
                             raise ValueError("No image returned (retryable)")
                     except Exception as e:

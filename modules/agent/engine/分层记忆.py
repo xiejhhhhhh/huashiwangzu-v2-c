@@ -26,7 +26,7 @@ async def 记一笔(
                 "source": source,
                 "conversation_id": conversation_id,
             },
-            caller=f"user:{owner_id}",
+            caller="system:agent-engine",
             caller_role="admin",
         )
         return result
@@ -54,7 +54,7 @@ async def 召回记忆(
                 "limit": limit,
                 "expand_chain": expand_chain,
             },
-            caller=f"user:{owner_id}",
+            caller="system:agent-engine",
             caller_role="admin",
         )
         if result and result.get("success") and result.get("data"):
@@ -80,7 +80,7 @@ async def 即时融合(
         result = await call_capability(
             "memory", "fuse",
             {"query": query, "ids": memory_ids},
-            caller=f"user:{owner_id}",
+            caller="system:agent-engine",
             caller_role="admin",
         )
         if result and result.get("success") and result.get("data"):
@@ -101,7 +101,7 @@ async def 触发dream(
         result = await call_capability(
             "memory", "dream",
             {},
-            caller=f"user:{owner_id}",
+            caller="system:agent-engine",
             caller_role="admin",
         )
         return result if result else {}

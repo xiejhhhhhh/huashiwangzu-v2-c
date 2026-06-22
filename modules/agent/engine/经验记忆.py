@@ -19,7 +19,7 @@ async def 保存经验(
     steps: str,
     tools_used: str | None = None,
     source_conversation_id: int | None = None,
-    caller: str = "system:engine",
+    caller: str = "system:agent-engine",
 ) -> dict:
     """保存一条成功经验到 memory 模块。走框架跨模块通路。"""
     try:
@@ -43,7 +43,7 @@ async def 保存经验(
 async def 匹配经验(
     query: str,
     limit: int = 2,
-    caller: str = "system:engine",
+    caller: str = "system:agent-engine",
 ) -> list[dict]:
     """语义匹配当前输入相关的成功经验。失败返回空列表。"""
     if not query or not query.strip():
@@ -67,7 +67,7 @@ async def 经验反馈(
     experience_id: int,
     success: bool,
     note: str | None = None,
-    caller: str = "system:engine",
+    caller: str = "system:agent-engine",
 ) -> dict:
     """反馈经验执行结果：成功加权 / 失败降权+注释。"""
     try:
