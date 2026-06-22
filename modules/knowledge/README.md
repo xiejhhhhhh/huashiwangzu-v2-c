@@ -1,72 +1,58 @@
-# Knowledge Module
+# knowledge — knowledge base
 
-知识库模块是 Agent 的可选插件。它把框架文件系统中的资料登记为知识库文档，调用格式解析模块生成统一内容块，完成分块、向量化、混合检索、页级融合、实体词典、知识图谱和治理候选管理，并通过框架跨模块能力注册表向 Agent 暴露检索技能。
+knowledge 把框架文件系统中的资料登记为知识库文档，调用 parser 模块生成统一内容块，再做分块、向量化、页级融合、实体词典、知识图谱和治理候选。Agent 通过 `knowledge:*` 能力检索资料。
 
-## Capabilities
+## 功能
 
-| Capability | Description | Parameters |
-| --- | --- | --- |
-| `knowledge:search` | Hybrid keyword/vector search over indexed chunks | `query`, `top_k` |
-| `knowledge:get_block` | Read a specific content block | `block_id` |
-| `knowledge:get_page_fusion` | Read fused page content | `document_id`, `page` |
-| `knowledge:get_entity_dictionary` | Query extracted entity dictionary | `keyword` |
-| `knowledge:get_graph_context` | Query graph nodes and edges around an entity | `entity_id` |
-| `knowledge:get_pending_count` | Count pending governance candidates | none |
-| `knowledge:get_evidence_detail` | Query evidence records for an entity | `entity_id` |
+| 功能 | 说明 |
+|---|---|
+| 文档登记 | 把 framework `file_id` 记录为知识库文档 |
+| 解析入库 | 调 PDF/DOCX/PPTX/XLSX/TXT/Image parser，生成 `kb_chunks` |
+| 检索 | 关键词 + 向量混合检索，返回内容块和来源 |
+| 页级融合 | 把页内内容压成更适合问答的融合文本 |
+| 图谱 | 抽取实体、别名、证据、关系，前端用 Three.js 展示 |
+| 治理 | 待审核候选、实体合并、校准和 pending count |
 
-Agent discovers these automatically as function tools named `knowledge__search`, `knowledge__get_block`, etc.
+## 如何调用
 
-## Backend APIs
+HTTP 前缀：`/api/knowledge`
 
-| Method | Path | Description |
-| --- | --- | --- |
-| `GET` | `/api/knowledge/health` | Module health |
-| `POST` | `/api/knowledge/documents` | Register a framework file into knowledge base |
-| `GET` | `/api/knowledge/documents` | List registered documents |
-| `GET` | `/api/knowledge/documents/{id}` | Document detail |
-| `DELETE` | `/api/knowledge/documents/{id}` | Soft delete document |
-| `POST` | `/api/knowledge/documents/parse` | Parse, chunk, embed, fuse pages, and optionally extract graph |
-| `POST` | `/api/knowledge/search` | Hybrid search |
-| `GET` | `/api/knowledge/documents/{id}/chunks` | Read document chunks |
-| `GET` | `/api/knowledge/chunks/{id}` | Read chunk detail |
-| `GET` | `/api/knowledge/documents/{id}/page/{page}` | Read page fusion |
-| `GET` | `/api/knowledge/entities` | Query entity dictionary |
-| `GET` | `/api/knowledge/entities/{id}/graph` | Query graph context |
-| `GET` | `/api/knowledge/entities/{id}/evidence` | Query evidence details |
-| `GET` | `/api/knowledge/governance/candidates` | List governance candidates |
-| `POST` | `/api/knowledge/governance/candidates/{id}/approve` | Approve candidate |
-| `POST` | `/api/knowledge/governance/candidates/{id}/reject` | Reject candidate |
-| `POST` | `/api/knowledge/governance/entities/merge` | Merge entities |
-| `POST` | `/api/knowledge/governance/calibrate` | Calibrate extraction |
-| `GET` | `/api/knowledge/governance/pending-count` | Pending count |
+| 端点 | 方法 | 用途 |
+|---|---|---|
+| `/documents` | GET/POST | 列出或登记文档 |
+| `/documents/{id}` | GET/DELETE | 详情或软删 |
+| `/documents/parse` | POST | 解析、分块、向量化、融合、可选图谱 |
+| `/search` | POST | 混合检索 |
+| `/documents/{id}/chunks` | GET | 文档块列表 |
+| `/chunks/{id}` | GET | 块详情 |
+| `/documents/{id}/page/{page}` | GET | 页级融合 |
+| `/entities` | GET | 实体词典 |
+| `/entities/{id}/graph` | GET | 实体周边图谱 |
+| `/entities/{id}/evidence` | GET | 实体证据 |
+| `/governance/*` | GET/POST | 候选审核、实体合并、校准 |
 
-## Tables
+公开能力：
 
-All tables are module-owned and use the `kb_*` prefix. They do not add database foreign keys to framework tables or other modules.
+| 能力 | 参数 |
+|---|---|
+| `knowledge:search` | `query`, `top_k` |
+| `knowledge:get_block` | `block_id` |
+| `knowledge:get_page_fusion` | `document_id`, `page` |
+| `knowledge:get_entity_dictionary` | `keyword` |
+| `knowledge:get_graph_context` | `entity_id` |
+| `knowledge:get_pending_count` | none |
+| `knowledge:get_evidence_detail` | `entity_id` |
 
-| Table | Purpose |
-| --- | --- |
-| `kb_catalogs` | Knowledge catalog tree |
-| `kb_documents` | Registered document metadata and parse/index status |
-| `kb_chunks` | Chunked parsed content and JSON embeddings |
-| `kb_page_fusions` | Page-level fused text |
-| `kb_entity_dictionary` | Entity dictionary |
-| `kb_entity_aliases` | Entity aliases |
-| `kb_disambiguation` | Ambiguous term candidates |
-| `kb_graph_nodes` | Knowledge graph nodes |
-| `kb_graph_edges` | Knowledge graph relations |
-| `kb_chunk_entities` | Chunk-to-entity links |
-| `kb_evidence` | Source evidence excerpts |
-| `kb_conclusion_evidence` | Conclusion evidence chains |
-| `kb_entity_merge_log` | Entity merge history |
-| `kb_governance_candidates` | Governance review candidates |
+## 数据表
 
-## Parser Dependencies
+所有业务表使用 `kb_*` 前缀：catalogs、documents、chunks、page_fusions、entity_dictionary、entity_aliases、disambiguation、graph_nodes、graph_edges、chunk_entities、evidence、conclusion_evidence、entity_merge_log、governance_candidates。
 
-The module does not parse formats directly. It calls parser modules through the framework capability registry:
+## Parser 依赖
 
-| Format | Capability |
-| --- | --- |
+knowledge 不直接解析文件格式，只通过框架能力调用：
+
+| 格式 | 能力 |
+|---|---|
 | PDF | `pdf-parser:parse` |
 | DOCX | `docx-parser:parse` |
 | PPTX | `pptx-parser:parse` |
@@ -74,43 +60,20 @@ The module does not parse formats directly. It calls parser modules through the 
 | TXT/MD | `text-parser:parse` |
 | Image | `image-vision:describe` |
 
-Every parser reads framework files through `check_file_access`; knowledge only stores `file_id` and parsed products.
+## 边界
 
-## Sandbox
+- 所有源码在 `modules/knowledge/`。
+- 不直接 import Agent 或 parser 模块代码。
+- 所有跨模块调用走 `call_capability`。
+- 按 `file_id` 读文件必须经过框架 `check_file_access` 或 parser 模块的等价校验。
+- 共享状态落库，不依赖 worker 内存。
 
-The sandbox uses the real framework database, file storage, model gateway, and parser modules. It loads `backend/.env` automatically and creates/touches only `kb_*` tables.
-
-```bash
-cd modules/knowledge/sandbox
-PYTHONPATH=../../../backend uvicorn backend.main:app --host 127.0.0.1 --port 38050 --reload
-npm install
-npm run dev
-```
-
-Frontend sandbox URL: `http://127.0.0.1:5185`.
-
-Sandbox build check:
+## 验证
 
 ```bash
-cd modules/knowledge/sandbox
-npm run build
+cd frontend && npm run build
+curl -X POST http://127.0.0.1:33000/api/knowledge/search \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"测试","top_k":5}'
 ```
-
-The sandbox build has been verified. Vite may report chunk-size warnings because the sandbox registers full Element Plus for local development.
-
-## Verification Flow
-
-1. Upload a PDF/DOCX/TXT/MD through the knowledge UI.
-2. Register the framework `file_id` into `kb_documents`.
-3. Run parse/index to call the matching parser module.
-4. Confirm `kb_chunks` and `kb_page_fusions` are populated.
-5. Search from `/api/knowledge/search` or call `knowledge:search` via `/api/modules/call`.
-6. Open Agent tools and confirm `knowledge__search` appears through capability discovery.
-
-## Boundaries
-
-- All source lives under `modules/knowledge/`.
-- Business tables use only `kb_*` names.
-- Cross-module calls use the framework module registry; there are no imports from Agent or parser module code.
-- File access by `file_id` is delegated to parser modules and framework `check_file_access`; knowledge document registration also validates access through `check_file_access`.
-- Shared state is persisted in tables, not in process memory.
