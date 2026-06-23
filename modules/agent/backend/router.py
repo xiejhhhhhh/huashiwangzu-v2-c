@@ -17,6 +17,7 @@ from app.schemas.common import ApiResponse
 
 from .init_db import ensure_default_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts, ensure_event_table, ensure_processing_column, run_init
 from . import conversation_service as conv_svc
+from . import agent_config_service
 from . import tool_discovery
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -269,50 +270,13 @@ class AgentConfigUpdate(BaseModel):
     sensitive_action_policy: str | None = None
 
 
-def _config_to_dict(c) -> dict:
-    return {
-        "id": c.id,
-        "agent_code": c.agent_code,
-        "agent_name": c.agent_name,
-        "provider": c.provider,
-        "model": c.model,
-        "system_prompt": c.system_prompt,
-        "purpose": c.purpose,
-        "enabled": c.enabled,
-        "temperature": c.temperature,
-        "top_p": c.top_p,
-        "max_tokens": c.max_tokens,
-        "timeout_ms": c.timeout_ms,
-        "fallback_model": c.fallback_model,
-        "fallback_enabled": c.fallback_enabled,
-        "max_concurrency": c.max_concurrency,
-        "cooldown_seconds": c.cooldown_seconds,
-        "retry_count": c.retry_count,
-        "daily_call_limit": c.daily_call_limit,
-        "daily_budget": c.daily_budget,
-        "monthly_budget": c.monthly_budget,
-        "response_format": c.response_format,
-        "log_prompt_enabled": c.log_prompt_enabled,
-        "log_response_enabled": c.log_response_enabled,
-        "sensitive_action_policy": c.sensitive_action_policy,
-        "updated_by": c.updated_by,
-        "created_at": c.created_at.isoformat() if c.created_at else None,
-        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
-    }
-
-
 @router.get("/configs")
 async def list_agent_configs(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
-    from sqlalchemy import select
-    from .models import AgentConfig
-    r = await db.execute(
-        select(AgentConfig).order_by(AgentConfig.agent_code)
-    )
-    configs = r.scalars().all()
-    return ApiResponse(data=[_config_to_dict(c) for c in configs])
+    data = await agent_config_service.list_configs(db)
+    return ApiResponse(data=data)
 
 
 @router.get("/configs/{agent_code}")
@@ -321,16 +285,8 @@ async def get_agent_config(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
-    from sqlalchemy import select
-    from .models import AgentConfig
-    from app.core.exceptions import NotFound
-    r = await db.execute(
-        select(AgentConfig).where(AgentConfig.agent_code == agent_code)
-    )
-    c = r.scalar_one_or_none()
-    if not c:
-        raise NotFound(f"Agent config '{agent_code}' not found")
-    return ApiResponse(data=_config_to_dict(c))
+    data = await agent_config_service.get_config(db, agent_code)
+    return ApiResponse(data=data)
 
 
 @router.post("/configs")
@@ -339,38 +295,8 @@ async def create_agent_config(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
-    from sqlalchemy import select
-    from .models import AgentConfig
-    from app.core.exceptions import ConflictError
-    r = await db.execute(
-        select(AgentConfig).where(AgentConfig.agent_code == body.agent_code)
-    )
-    if r.scalar_one_or_none():
-        raise ConflictError(f"Agent config '{body.agent_code}' already exists")
-    config = AgentConfig(
-        agent_code=body.agent_code, agent_name=body.agent_name,
-        provider=body.provider, model=body.model,
-        system_prompt=body.system_prompt, purpose=body.purpose,
-        enabled=body.enabled, temperature=body.temperature,
-        top_p=body.top_p, max_tokens=body.max_tokens,
-        timeout_ms=body.timeout_ms, fallback_model=body.fallback_model,
-        fallback_enabled=body.fallback_enabled,
-        max_concurrency=body.max_concurrency,
-        cooldown_seconds=body.cooldown_seconds,
-        retry_count=body.retry_count,
-        daily_call_limit=body.daily_call_limit,
-        daily_budget=body.daily_budget,
-        monthly_budget=body.monthly_budget,
-        response_format=body.response_format,
-        log_prompt_enabled=body.log_prompt_enabled,
-        log_response_enabled=body.log_response_enabled,
-        sensitive_action_policy=body.sensitive_action_policy,
-        updated_by=user.id,
-    )
-    db.add(config)
-    await db.commit()
-    await db.refresh(config)
-    return ApiResponse(data=_config_to_dict(config))
+    data = await agent_config_service.create_config(db, body.model_dump(), user.id)
+    return ApiResponse(data=data)
 
 
 @router.put("/configs/{agent_code}")
@@ -380,22 +306,8 @@ async def update_agent_config(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
-    from sqlalchemy import select
-    from .models import AgentConfig
-    from app.core.exceptions import NotFound
-    r = await db.execute(
-        select(AgentConfig).where(AgentConfig.agent_code == agent_code)
-    )
-    config = r.scalar_one_or_none()
-    if not config:
-        raise NotFound(f"Agent config '{agent_code}' not found")
-    updates = body.model_dump(exclude_none=True)
-    for field, value in updates.items():
-        setattr(config, field, value)
-    config.updated_by = user.id
-    await db.commit()
-    await db.refresh(config)
-    return ApiResponse(data=_config_to_dict(config))
+    data = await agent_config_service.update_config(db, agent_code, body.model_dump(exclude_none=True), user.id)
+    return ApiResponse(data=data)
 
 
 @router.delete("/configs/{agent_code}")
@@ -404,18 +316,8 @@ async def delete_agent_config(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
-    from sqlalchemy import select
-    from .models import AgentConfig
-    from app.core.exceptions import NotFound
-    r = await db.execute(
-        select(AgentConfig).where(AgentConfig.agent_code == agent_code)
-    )
-    config = r.scalar_one_or_none()
-    if not config:
-        raise NotFound(f"Agent config '{agent_code}' not found")
-    await db.delete(config)
-    await db.commit()
-    return ApiResponse(data={"ok": True})
+    data = await agent_config_service.delete_config(db, agent_code)
+    return ApiResponse(data=data)
 
 
 # Import capabilities to register them at module load
