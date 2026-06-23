@@ -35,7 +35,8 @@
           "type": "int",
           "description": "File ID in file storage"
         }
-      }
+      },
+      "min_role": "viewer"
     }
   ],
   "permission_declaration": {

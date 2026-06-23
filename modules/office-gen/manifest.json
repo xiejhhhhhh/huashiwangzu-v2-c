@@ -6,7 +6,11 @@
   "category": "tools",
   "component_key": "index.vue",
   "route_prefix": "/api/office-gen",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 350,
   "default_width": 720,
   "default_height": 560,
@@ -20,10 +24,26 @@
   "supported_formats": [],
   "editable_formats": [],
   "creatable_formats": [
-    {"extension": "docx", "label": "Word 文档", "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-    {"extension": "xlsx", "label": "Excel 工作簿", "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-    {"extension": "pptx", "label": "PPT 演示文稿", "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
-    {"extension": "pdf", "label": "PDF 文档", "mime_type": "application/pdf"}
+    {
+      "extension": "docx",
+      "label": "Word 文档",
+      "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    },
+    {
+      "extension": "xlsx",
+      "label": "Excel 工作簿",
+      "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    },
+    {
+      "extension": "pptx",
+      "label": "PPT 演示文稿",
+      "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    },
+    {
+      "extension": "pdf",
+      "label": "PDF 文档",
+      "mime_type": "application/pdf"
+    }
   ],
   "module_version": "1.0.0",
   "contract_version": "2.0",
@@ -38,7 +58,8 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "content": "Array of content blocks: {type, level?, text?, bold?, align?, table_header?, table_rows?}"
-      }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "xlsx",
@@ -46,7 +67,8 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "sheets": "Array of sheet objects with name, columns, rows"
-      }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "pptx",
@@ -54,7 +76,8 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "slides": "Array of slide objects with title, bullets, notes"
-      }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "pdf",
@@ -62,7 +85,8 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "content": "Array of content blocks: {type, level?, text?, bold?, align?}"
-      }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "convert",
@@ -70,7 +94,8 @@
       "parameters": {
         "file_id": "Source file ID in the file storage system",
         "target_format": "Target format: pdf, docx, pptx, xlsx, png, etc."
-      }
+      },
+      "min_role": "editor"
     }
   ]
 }

@@ -38,7 +38,7 @@ from .relation_service import get_file_relations, get_relation_graph
 from .progress_service import get_document_progress, list_documents_progress
 from . import pipeline_service  # noqa: F401 注册 kb_pipeline handler
 
-logger = logging.getLogger("v2.knowledge")
+logger = logging.getLogger("v2.knowledge").getChild("router")
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 # ── 模块加载时初始化：建表 + 索引 + 列迁移（一次性，幂等） ──

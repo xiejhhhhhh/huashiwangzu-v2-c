@@ -6,7 +6,11 @@
   "category": "tools",
   "component_key": "",
   "route_prefix": "/api/codemap",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 700,
   "default_width": 0,
   "default_height": 0,
@@ -30,32 +34,50 @@
     {
       "action": "get_file",
       "description": "查询文件的代码地图信息：所属层/模块、语言、符号清单、依赖与被依赖、注册/调用的能力、涉及的表。",
-      "parameters": { "path": "文件路径（相对项目根目录）" }
+      "parameters": {
+        "path": "文件路径（相对项目根目录）"
+      },
+      "min_role": "viewer"
     },
     {
       "action": "impact",
       "description": "查询影响面：正向（我依赖谁）+ 反向（谁依赖我）的传递闭包，返回波及的文件、模块、跨模块能力清单和风险等级。",
-      "parameters": { "path": "文件路径", "symbol": "符号名（可选）" }
+      "parameters": {
+        "path": "文件路径",
+        "symbol": "符号名（可选）"
+      },
+      "min_role": "viewer"
     },
     {
       "action": "check_boundary",
       "description": "检查文件或模块的边界合规性，返回违反隔离铁律的引用清单。",
-      "parameters": { "path": "文件路径", "module_key": "模块 key（与 path 二选一）" }
+      "parameters": {
+        "path": "文件路径",
+        "module_key": "模块 key（与 path 二选一）"
+      },
+      "min_role": "viewer"
     },
     {
       "action": "module_map",
       "description": "查询模块的对外能力、依赖的外部能力、边界健康状态。",
-      "parameters": { "module_key": "模块 key" }
+      "parameters": {
+        "module_key": "模块 key"
+      },
+      "min_role": "viewer"
     },
     {
       "action": "search",
       "description": "按关键词模糊搜索文件和符号。",
-      "parameters": { "keyword": "搜索关键词" }
+      "parameters": {
+        "keyword": "搜索关键词"
+      },
+      "min_role": "viewer"
     },
     {
       "action": "stats",
       "description": "返回索引规模、构建耗时、最后更新时间。",
-      "parameters": {}
+      "parameters": {},
+      "min_role": "viewer"
     },
     {
       "action": "rebuild",
@@ -66,19 +88,26 @@
     {
       "action": "acquire_lock",
       "description": "获取文件锁",
-      "parameters": { "path": "文件路径", "agent_id": "锁主标识" },
+      "parameters": {
+        "path": "文件路径",
+        "agent_id": "锁主标识"
+      },
       "min_role": "viewer"
     },
     {
       "action": "check_lock",
       "description": "检查文件锁状态",
-      "parameters": { "path": "文件路径" },
+      "parameters": {
+        "path": "文件路径"
+      },
       "min_role": "viewer"
     },
     {
       "action": "release_lock",
       "description": "释放文件锁",
-      "parameters": { "path": "文件路径" },
+      "parameters": {
+        "path": "文件路径"
+      },
       "min_role": "viewer"
     },
     {
@@ -90,13 +119,18 @@
     {
       "action": "report_inaccuracy",
       "description": "报告 codemap 查询结果与实际不符",
-      "parameters": { "path": "文件路径", "query_type": "查询类型" },
+      "parameters": {
+        "path": "文件路径",
+        "query_type": "查询类型"
+      },
       "min_role": "viewer"
     },
     {
       "action": "list_feedback",
       "description": "列出 codemap 反馈记录",
-      "parameters": { "path": "过滤路径（可选）" },
+      "parameters": {
+        "path": "过滤路径（可选）"
+      },
       "min_role": "admin"
     }
   ]

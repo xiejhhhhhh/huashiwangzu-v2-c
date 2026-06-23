@@ -6,7 +6,11 @@
   "category": "tools",
   "component_key": "index.vue",
   "route_prefix": "/api/web-tools",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 700,
   "default_width": 800,
   "default_height": 600,
@@ -35,7 +39,8 @@
       "parameters": {
         "query": "搜索关键词",
         "top_k": "返回结果数量（默认8，最大20）"
-      }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "fetch",
@@ -43,7 +48,8 @@
       "parameters": {
         "url": "目标网址",
         "max_chars": "最大返回字符数（默认8000）"
-      }
+      },
+      "min_role": "viewer"
     }
   ]
 }

@@ -6,7 +6,11 @@
   "category": "file-editor",
   "component_key": "index.vue",
   "route_prefix": null,
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 10,
   "default_width": 1100,
   "default_height": 700,
@@ -19,11 +23,26 @@
   "show_in_sidebar": false,
   "window_type": "normal",
   "allow_multiple": true,
-  "supported_formats": ["xlsx", "xls", "csv"],
-  "editable_formats": ["xlsx", "csv"],
+  "supported_formats": [
+    "xlsx",
+    "xls",
+    "csv"
+  ],
+  "editable_formats": [
+    "xlsx",
+    "csv"
+  ],
   "creatable_formats": [
-    {"extension": "xlsx", "label": "Excel 工作簿", "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-    {"extension": "csv", "label": "CSV 文件", "mime_type": "text/csv"}
+    {
+      "extension": "xlsx",
+      "label": "Excel 工作簿",
+      "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    },
+    {
+      "extension": "csv",
+      "label": "CSV 文件",
+      "mime_type": "text/csv"
+    }
   ],
   "module_version": "1.0.0",
   "contract_version": "2.0",
@@ -35,7 +54,12 @@
     {
       "action": "parse",
       "description": "Parse XLSX/CSV files into cell data",
-      "parameters": {"file_id": {"type": "int"}}
+      "parameters": {
+        "file_id": {
+          "type": "int"
+        }
+      },
+      "min_role": "viewer"
     }
   ]
 }

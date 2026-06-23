@@ -6,7 +6,11 @@
   "category": "tools",
   "component_key": "index.vue",
   "route_prefix": "/api/docs",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 180,
   "default_width": 800,
   "default_height": 600,
@@ -30,17 +34,38 @@
     {
       "action": "open",
       "description": "Open a document by file_id, returns embed_url and content info",
-      "parameters": {"file_id": {"type": "int"}, "mode": {"type": "string"}}
+      "parameters": {
+        "file_id": {
+          "type": "int"
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "get_content",
       "description": "Get structured JSON content of a document",
-      "parameters": {"file_id": {"type": "int"}}
+      "parameters": {
+        "file_id": {
+          "type": "int"
+        }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "create_doc",
       "description": "Create a new empty document",
-      "parameters": {"title": {"type": "string"}, "type": {"type": "string"}}
+      "parameters": {
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "min_role": "editor"
     }
   ]
 }

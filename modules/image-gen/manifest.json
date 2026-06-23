@@ -60,11 +60,18 @@
           "description": "模板key，可选值由list_templates给出，缺省用默认模板",
           "default": ""
         }
-      }
+      },
+      "min_role": "editor"
     },
     {
       "action": "list_templates",
       "description": "列出可用生图模板",
+      "parameters": {},
+      "min_role": "viewer"
+    },
+    {
+      "action": "usage_history",
+      "description": "查询当前用户生图消耗记录",
       "parameters": {},
       "min_role": "viewer"
     }

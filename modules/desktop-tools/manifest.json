@@ -6,7 +6,11 @@
   "category": "tools",
   "component_key": "index.vue",
   "route_prefix": "/api/desktop-tools",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 200,
   "default_width": 800,
   "default_height": 600,
@@ -29,11 +33,21 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "folder_id": {"type": "integer", "description": "Folder ID (0 or omit for root)"},
-          "page": {"type": "integer", "description": "Page number"},
-          "page_size": {"type": "integer", "description": "Items per page"}
+          "folder_id": {
+            "type": "integer",
+            "description": "Folder ID (0 or omit for root)"
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number"
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "Items per page"
+          }
         }
-      }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "search_files",
@@ -41,12 +55,25 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "keyword": {"type": "string", "description": "Search keyword"},
-          "extension": {"type": "string", "description": "Filter by extension"},
-          "page": {"type": "integer", "description": "Page number"},
-          "page_size": {"type": "integer", "description": "Items per page"}
+          "keyword": {
+            "type": "string",
+            "description": "Search keyword"
+          },
+          "extension": {
+            "type": "string",
+            "description": "Filter by extension"
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number"
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "Items per page"
+          }
         }
-      }
+      },
+      "min_role": "viewer"
     },
     {
       "action": "read_file",
@@ -54,10 +81,16 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "file_id": {"type": "integer", "description": "File ID in the file storage system"}
+          "file_id": {
+            "type": "integer",
+            "description": "File ID in the file storage system"
+          }
         },
-        "required": ["file_id"]
-      }
+        "required": [
+          "file_id"
+        ]
+      },
+      "min_role": "viewer"
     },
     {
       "action": "list_apps",
@@ -65,7 +98,8 @@
       "parameters": {
         "type": "object",
         "properties": {}
-      }
+      },
+      "min_role": "viewer"
     }
   ],
   "permission_declaration": {
