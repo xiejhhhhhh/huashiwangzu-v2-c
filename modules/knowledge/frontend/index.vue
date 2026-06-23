@@ -514,20 +514,38 @@ async function autoRegisterUnregistered() {
 /**
  * 补齐已登记但未完成分析（非终态、且未在运行中）的文档。
  * 幂等：正在跑的文档不重复入队。
+ * 双重保护：liveProgressMap（实时进度）+ 文档自身 status 字段（持久化）。
+ * 当 progress-batch 因网络/auth 问题失败时，liveProgressMap 可能为空，
+ * 此时 fallback 到文档自身的 raw_status/fusion_status 判断状态，避免
+ * 每次打开知识库都重新触发全部分析。
  */
 async function retryPendingDocuments() {
   const toRetry: number[] = []
   for (const d of documents.value) {
+    // 文档自身持久化状态（不受 liveProgressMap 空影响）
+    const rs = (d.raw_status || d.parse_status || '').toLowerCase()
+    const fs = (d.fusion_status || '').toLowerCase()
+    const docStatusFailed = rs === 'failed' || fs === 'failed'
+    const docStatusDone = rs === 'done' || fs === 'done' || (rs === 'done' && fs === 'done')
+    const docStatusRunning = rs === 'running' || rs === 'collecting' || rs === 'parsing' || fs === 'running' || fs === 'fusing'
+    const docStatusPending = !rs || (!docStatusDone && !docStatusFailed && !docStatusRunning)
+
+    // liveProgressMap 实时进度
     const lp = liveProgressMap.value[d.id]
-    const isRunning = lp?.overall_status === 'running'
-    // 非终态：不是 done/failed，也不是正在跑
-    const isPending = !lp || (lp.overall_status !== 'done' && lp.overall_status !== 'failed' && !isRunning)
-    if (isPending) {
-      toRetry.push(d.id)
-    }
+    const lpRunning = lp?.overall_status === 'running'
+    const lpFailed = lp?.overall_status === 'failed'
+    const lpDone = lp?.overall_status === 'done'
+    const lpPending = !lp || (!lpDone && !lpFailed && !lpRunning)
+
+    // 综合判断：两个维度都认为 pending 才 retry（防误判）
+    if (!docStatusPending && !lpPending) continue
+    // 任一维度认为是 running/failed/done 的不处理
+    if (docStatusRunning || lpRunning || docStatusDone || lpDone || docStatusFailed || lpFailed) continue
+
+    toRetry.push(d.id)
   }
   if (!toRetry.length) return
-  console.log(`[kb] Retrying ${toRetry.length} pending/incomplete documents...`)
+  console.log(`[kb] Retrying ${toRetry.length} stuck documents...`)
 
   const BATCH_SIZE = 3
   for (let i = 0; i < toRetry.length; i += BATCH_SIZE) {

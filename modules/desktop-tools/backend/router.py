@@ -41,7 +41,6 @@ _FILE_FIELDS = (
     "size",
     "mime_type",
     "folder_id",
-    "storage_path",
     "created_at",
     "updated_at",
 )
@@ -59,7 +58,6 @@ def _folder_to_item(folder) -> dict:
         "size": 0,
         "mime_type": None,
         "folder_id": folder.parent_id,
-        "storage_path": None,
         "created_at": str(folder.created_at) if folder.created_at else None,
         "updated_at": str(folder.created_at) if folder.created_at else None,
         "is_folder": True,

@@ -1,6 +1,6 @@
 """Workbook parser - 1:1 from old 解析_工作簿.php"""
 import zipfile
-import xml.etree.ElementTree as T
+import xml.etree.ElementTree as ET
 from typing import Any
 
 SPREAD_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
@@ -28,6 +28,9 @@ def read_workbook_list(zf: zipfile.ZipFile) -> tuple[list[str], dict[str, str], 
             rid = rel.get('Id', '')
             target = rel.get('Target', '')
             if target:
+                target = target.lstrip('/')
+                if target.startswith('xl/'):
+                    target = target[3:]
                 rid_map[rid] = target
     except KeyError:
         pass

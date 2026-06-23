@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  testDir: path.resolve(__dirname, '../脚本/05_验收测试/浏览器用例'),
+  testDir: path.resolve(__dirname, 'tests'),
   timeout: 30000,
   retries: 0,
   workers: 1,

@@ -664,6 +664,8 @@ async def _parse_capability(params: dict, caller: str) -> dict:
 
         if ext in ("xlsx", "xls"):
             r = parse_xlsx(str(full_path), file.name)
+            if r.get('code') != 0:
+                raise ValueError(r.get('msg', 'Parse failed'))
             result = {
                 'file_id': file_id, 'format': ext,
                 'all_sheets': r.get('all_sheets', []),
