@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ MEMORY_DIR = REPO_ROOT / CONFIG["memory_dir"]
 EMBEDDING_CACHE_PATH = REPO_ROOT / CONFIG["embedding_cache"]
 LOG_DIR = REPO_ROOT / CONFIG["log_dir"]
 DB_DSN = CONFIG["db_dsn"]
+UPLOADS_DIR = REPO_ROOT / "backend" / "data" / "uploads"
 
 # 确保记忆目录存在
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -220,6 +222,101 @@ def _tail_file(path: Path, lines: int) -> str:
         return "[错误] tail 超时"
     except Exception as e:
         return f"[错误] {e}"
+
+
+def _is_knowledge_noise_name(name: str) -> bool:
+    lowered = name.lower()
+    patterns = (
+        "e2e-",
+        "smoke-",
+        "test-",
+        "test_",
+        "kb_test",
+        "kb-test",
+        "ui-e2e",
+        "audit-test",
+        "renamed-audit-test",
+        "docs-open验收",
+        "event_test",
+        "e2e_test",
+        "sample",
+        "to_del",
+        "验收",
+        "smoke",
+    )
+    return any(p in lowered for p in patterns)
+
+
+def _cleanup_knowledge_noise() -> dict[str, Any]:
+    removed_uploads: list[str] = []
+    removed_memory: list[str] = []
+
+    if UPLOADS_DIR.exists():
+        for path in UPLOADS_DIR.rglob("*"):
+            if not path.is_file():
+                continue
+            if _is_knowledge_noise_name(path.name):
+                try:
+                    path.unlink()
+                    removed_uploads.append(str(path.relative_to(REPO_ROOT)))
+                except FileNotFoundError:
+                    pass
+
+    if MEMORY_DIR.exists():
+        for path in MEMORY_DIR.glob("*.md"):
+            if path.name.startswith("_"):
+                continue
+            if _is_knowledge_noise_name(path.name):
+                try:
+                    path.unlink()
+                    removed_memory.append(str(path.relative_to(REPO_ROOT)))
+                except FileNotFoundError:
+                    pass
+
+    try:
+        if removed_memory:
+            _update_index()
+    except Exception:
+        pass
+
+    return {
+        "removed_uploads": removed_uploads,
+        "removed_memory": removed_memory,
+        "upload_count": len(removed_uploads),
+        "memory_count": len(removed_memory),
+    }
+
+
+def _knowledge_noise_report() -> dict[str, Any]:
+    upload_counts = Counter()
+    upload_samples: list[str] = []
+    if UPLOADS_DIR.exists():
+      # collect suspicious names from all upload files
+        for path in UPLOADS_DIR.rglob("*"):
+            if not path.is_file():
+                continue
+            if _is_knowledge_noise_name(path.name):
+                upload_counts[path.suffix.lower() or "(no_ext)"] += 1
+                if len(upload_samples) < 40:
+                    upload_samples.append(str(path.relative_to(REPO_ROOT)))
+
+    memory_samples: list[str] = []
+    if MEMORY_DIR.exists():
+        for path in MEMORY_DIR.glob("*.md"):
+            if path.name.startswith("_"):
+                continue
+            if _is_knowledge_noise_name(path.name):
+                if len(memory_samples) < 40:
+                    memory_samples.append(str(path.relative_to(REPO_ROOT)))
+
+    return {
+        "upload_noise_count": sum(upload_counts.values()),
+        "upload_noise_by_suffix": dict(upload_counts),
+        "upload_noise_samples": upload_samples,
+        "memory_noise_count": len(memory_samples),
+        "memory_noise_samples": memory_samples,
+        "hint": "这些名字看起来像测试/烟雾/验收产物，可用 knowledge_cleanup_noise 清理。",
+    }
 
 # ──────────────────── 工具 10: code_explore ──────────────────────────
 
@@ -498,6 +595,18 @@ async def _brief() -> str:
         for m in memories:
             agent = m.get("agent", "unknown")
             parts.append(f"- {m.get('name','')} ({m.get('type','')}) [agent:{agent}] [{', '.join(m.get('tags',[]))}]")
+
+    noise_report = _knowledge_noise_report()
+    if noise_report["upload_noise_count"] or noise_report["memory_noise_count"]:
+        parts.append("## 知识库污染提示")
+        parts.append(
+            f"- 可疑上传文件: {noise_report['upload_noise_count']} 个"
+            f" | 可疑记忆文件: {noise_report['memory_noise_count']} 个"
+        )
+        if noise_report["upload_noise_samples"]:
+            parts.append("- 上传样本: " + "；".join(noise_report["upload_noise_samples"][:8]))
+        if noise_report["memory_noise_samples"]:
+            parts.append("- 记忆样本: " + "；".join(noise_report["memory_noise_samples"][:8]))
 
     return "\n\n".join(parts)
 
@@ -968,6 +1077,16 @@ async def list_tools() -> list[Tool]:
                 "required": ["target"],
             },
         ),
+        Tool(
+            name="knowledge_noise_report",
+            description="扫描知识库相关的测试/烟雾/验收污染文件，返回可疑落盘样本与统计。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="knowledge_cleanup_noise",
+            description="删除知识库相关的测试/烟雾/验收污染文件(上传目录 + 记忆目录中可疑文件)。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 # ── 工具执行 ──────────────────────────────────────────────────────────
@@ -1043,6 +1162,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _db_schema(table=arguments.get("table", ""))
         elif name == "run_test":
             result = await _run_test(target=arguments["target"])
+        elif name == "knowledge_noise_report":
+            result = json.dumps(_knowledge_noise_report(), ensure_ascii=False, indent=2)
+        elif name == "knowledge_cleanup_noise":
+            result = json.dumps(_cleanup_knowledge_noise(), ensure_ascii=False, indent=2)
         else:
             result = json.dumps({"error": f"未知工具: {name}"})
         return [TextContent(type="text", text=result)]
