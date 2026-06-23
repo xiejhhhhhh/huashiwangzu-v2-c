@@ -17,7 +17,7 @@ STUCK_WINDOW_SIZE = 5
 STUCK_THRESHOLD = 3
 
 # File-backed round history for cross-worker consistency
-_STUCK_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "backend" / "data" / "agent"
+_STUCK_DATA_DIR = Path(__file__).resolve().parents[4] / "backend" / "data" / "agent"
 _STUCK_DATA_FILE = _STUCK_DATA_DIR / "stuck_rounds.json"
 
 _round_history: dict[str, list[dict]] = {}

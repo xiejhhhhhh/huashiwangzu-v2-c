@@ -1,11 +1,5 @@
 """Tests for stuck_detector.py — stuck detection."""
-import sys
-from pathlib import Path
-_MODULES_DIR = str(Path(__file__).resolve().parent.parent.parent)
-if _MODULES_DIR not in sys.path:
-    sys.path.insert(0, _MODULES_DIR)
-
-from agent.engine.stuck_detector import detect_stuck, reset
+from .stuck_detector import detect_stuck, reset
 
 
 class TestStuckDetection:

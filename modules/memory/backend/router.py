@@ -1248,8 +1248,6 @@ async def _cap_save_experience(params: dict, caller: str) -> dict:
     await _ensure_init()
     async with AsyncSessionLocal() as db:
         result = await _save_experience(db, trigger_condition, steps, tools_used, source_conversation_id)
-    if result.get("error"):
-        raise ValidationError(result["error"])
     return {"success": True, "data": result}
 
 
@@ -1275,8 +1273,6 @@ async def _cap_experience_feedback(params: dict, caller: str) -> dict:
     await _ensure_init()
     async with AsyncSessionLocal() as db:
         result = await _experience_feedback(db, experience_id, success, note)
-    if result.get("error"):
-        raise ValidationError(result["error"])
     return {"success": True, "data": result}
 
 

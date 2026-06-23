@@ -74,6 +74,6 @@ Agent 对外能力通过 manifest 暴露，子 Agent 使用 `agent:spawn_subagen
 ## 验证
 
 ```bash
-cd backend && .venv/bin/python -m pytest ../modules/agent/engine
+cd backend && .venv/bin/python -m pytest ../modules/agent/backend/engine/test_compressor.py ../modules/agent/backend/engine/test_stuck_detector.py
 cd frontend && npm run build
 ```
