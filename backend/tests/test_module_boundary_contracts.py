@@ -75,9 +75,6 @@ def test_no_cross_module_import_in_non_sandbox_code() -> None:
     ]
     for filepath, pattern in checks:
         source = _read(filepath)
-        # Allow the file to import from its own module
-        if "admin.py" in filepath:
-            continue
         assert pattern not in source, (
             f"{filepath} must not use cross-module import pattern '{pattern}'"
         )
