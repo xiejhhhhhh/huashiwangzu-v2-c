@@ -44,61 +44,49 @@ router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 # ── 模块加载时初始化：建表 + 索引 + 列迁移（一次性，幂等） ──
 _run_startup_init()
 
-
 class RegisterDocumentRequest(BaseModel):
     file_id: int
     catalog_id: int | None = None
 
-
 class ParseDocumentRequest(BaseModel):
     document_id: int
     extract_graph: bool = True
-
 
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 10
     use_rerank: bool = False
 
-
 class MergeEntitiesRequest(BaseModel):
     source_entity_ids: list[int]
     target_entity_id: int
     reason: str = ""
-
 
 class CalibrateRequest(BaseModel):
     candidate_id: int
     new_name: str | None = None
     new_category: str | None = None
 
-
 class CollectRawRequest(BaseModel):
     document_id: int
 
-
 class FuseRequest(BaseModel):
     document_id: int
-
 
 class ProfileRequest(BaseModel):
     document_id: int
     force_raw: bool = False
     force_fusion: bool = False
 
-
 class RelationComputeRequest(BaseModel):
     document_id: int
-
 
 class ProgressBatchRequest(BaseModel):
     document_ids: list[int] = Field(default_factory=list)
 
-
 @router.get("/health")
 async def health():
     return ApiResponse(data={"module": "knowledge", "status": "ok"})
-
 
 @router.post("/documents")
 async def api_register_document(
@@ -108,7 +96,6 @@ async def api_register_document(
 ):
     result = await register_document(db, payload.file_id, user.id, payload.catalog_id)
     return ApiResponse(data=result)
-
 
 @router.get("/documents")
 async def api_list_documents(
@@ -122,7 +109,6 @@ async def api_list_documents(
     result = await list_documents(db, user.id, catalog_id, keyword, page, page_size)
     return ApiResponse(data=result)
 
-
 @router.get("/documents/{document_id}")
 async def api_get_document(
     document_id: int,
@@ -132,7 +118,6 @@ async def api_get_document(
     result = await get_document(db, document_id, user.id)
     return ApiResponse(data=result)
 
-
 @router.delete("/documents/{document_id}")
 async def api_delete_document(
     document_id: int,
@@ -141,7 +126,6 @@ async def api_delete_document(
 ):
     await soft_delete_document(db, document_id, user.id)
     return ApiResponse(data={"deleted": True})
-
 
 @router.post("/documents/parse")
 async def api_parse_document(
@@ -157,7 +141,6 @@ async def api_parse_document(
         extract_graph=payload.extract_graph,
     )
     return ApiResponse(data=result)
-
 
 @router.post("/documents/collect-raw")
 async def api_collect_raw(
@@ -194,7 +177,6 @@ async def api_collect_raw(
     await db.commit()
     return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
 
-
 @router.get("/documents/{document_id}/raw-status")
 async def api_raw_status(
     document_id: int,
@@ -203,7 +185,6 @@ async def api_raw_status(
 ):
     doc = await get_document(db, document_id, user.id)
     return ApiResponse(data={"document_id": document_id, "raw_status": doc.get("raw_status", doc.get("parse_status"))})
-
 
 @router.get("/documents/{document_id}/raw-data")
 async def api_raw_data(
@@ -217,7 +198,6 @@ async def api_raw_data(
     data = await get_raw_data(db, document_id, page, round_num)
     return ApiResponse(data={"raw_data": data})
 
-
 @router.post("/documents/fuse")
 async def api_fuse(
     payload: FuseRequest,
@@ -227,7 +207,6 @@ async def api_fuse(
     """触发页级融合（第4层，后台任务 kb_fuse）。"""
     return await _enqueue_task(db, "kb_fuse", payload.document_id, user.id)
 
-
 @router.get("/documents/{document_id}/fusion-status")
 async def api_fusion_status(
     document_id: int,
@@ -236,7 +215,6 @@ async def api_fusion_status(
 ):
     doc = await get_document(db, document_id, user.id)
     return ApiResponse(data={"document_id": document_id, "fusion_status": doc.get("fusion_status", "pending")})
-
 
 @router.get("/documents/{document_id}/page-fusion/{page}")
 async def api_page_fusion_detail(
@@ -251,7 +229,6 @@ async def api_page_fusion_detail(
         from app.core.exceptions import NotFound
         raise NotFound("Page fusion not found")
     return ApiResponse(data=result)
-
 
 @router.get("/documents/{document_id}/fusions")
 async def api_list_fusions(
@@ -280,7 +257,6 @@ async def api_list_fusions(
     ]
     return ApiResponse(data={"items": items})
 
-
 @router.post("/documents/profile")
 async def api_generate_profile(
     payload: ProfileRequest,
@@ -289,7 +265,6 @@ async def api_generate_profile(
 ):
     """生成第5层文件画像（后台任务 kb_profile）。"""
     return await _enqueue_task(db, "kb_profile", payload.document_id, user.id)
-
 
 @router.get("/documents/{document_id}/profile")
 async def api_get_profile(
@@ -304,7 +279,6 @@ async def api_get_profile(
         raise NotFound("Document profile not found")
     return ApiResponse(data=result)
 
-
 @router.post("/documents/compute-relations")
 async def api_compute_relations(
     payload: RelationComputeRequest,
@@ -313,7 +287,6 @@ async def api_compute_relations(
 ):
     """为文件计算跨文件关联边（第7层，后台任务 kb_relation）。"""
     return await _enqueue_task(db, "kb_relation", payload.document_id, user.id)
-
 
 @router.get("/documents/{document_id}/relations")
 async def api_get_relations(
@@ -325,7 +298,6 @@ async def api_get_relations(
     result = await get_file_relations(db, document_id)
     return ApiResponse(data={"relations": result})
 
-
 @router.get("/relation-graph")
 async def api_relation_graph(
     db: AsyncSession = Depends(get_db),
@@ -334,7 +306,6 @@ async def api_relation_graph(
     """获取文档级知识网络全景图。"""
     result = await get_relation_graph(db, user.id)
     return ApiResponse(data=result)
-
 
 @router.get("/entity-graph")
 async def api_entity_graph(
@@ -370,7 +341,6 @@ async def api_entity_graph(
         "edges": edges_list,
     })
 
-
 @router.post("/documents/rebuild-graph")
 async def api_rebuild_graph(
     payload: ProfileRequest,
@@ -394,7 +364,6 @@ async def api_rebuild_graph(
     db.add(task)
     await db.commit()
     return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
-
 
 @router.post("/documents/full-pipeline")
 async def api_full_pipeline(
@@ -426,7 +395,6 @@ async def api_full_pipeline(
     await db.commit()
     return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
 
-
 @router.get("/documents/{document_id}/progress")
 async def api_document_progress(
     document_id: int,
@@ -436,7 +404,6 @@ async def api_document_progress(
     """单文档细颗粒分析进度(前端轮询/重开握手用)。"""
     result = await get_document_progress(db, document_id, user.id)
     return ApiResponse(data=result)
-
 
 @router.post("/documents/progress-batch")
 async def api_progress_batch(
@@ -448,130 +415,7 @@ async def api_progress_batch(
     result = await list_documents_progress(db, user.id, payload.document_ids)
     return ApiResponse(data=result)
 
-
 @router.get("/dashboard/stats")
-async def api_dashboard_stats(
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("editor")),
-):
-    from .models import (
-        KbDocument, KbEntityDictionary, KbGraphNode, KbGraphEdge,
-        KbFileRelation, KbGovernanceCandidate, KbDocumentProfile,
-    )
-
-    total = (await db.execute(
-        select(func.count(KbDocument.id)).where(KbDocument.deleted == False, KbDocument.owner_id == user.id)
-    )).scalar() or 0
-
-    # 完成=权威口径: fusion done + 画像存在 (与 progress_service.get_document_progress 一致)
-    completed = (await db.execute(
-        select(func.count(KbDocument.id)).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
-            KbDocument.fusion_status == "done",
-            exists(
-                select(KbDocumentProfile.id).where(
-                    KbDocumentProfile.document_id == KbDocument.id
-                )
-            ),
-        )
-    )).scalar() or 0
-
-    failed = (await db.execute(
-        select(func.count(KbDocument.id)).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
-            or_(KbDocument.raw_status == "failed", KbDocument.fusion_status == "failed"),
-        )
-    )).scalar() or 0
-
-    pending = (await db.execute(
-        select(func.count(KbDocument.id)).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
-            KbDocument.raw_status == "pending", KbDocument.fusion_status == "pending",
-        )
-    )).scalar() or 0
-
-    running = total - completed - failed - pending
-
-    entity_count = (await db.execute(
-        select(func.count(KbEntityDictionary.id)).where(KbEntityDictionary.owner_id == user.id)
-    )).scalar() or 0
-
-    relation_count = (await db.execute(
-        select(func.count(KbGraphEdge.id)).where(KbGraphEdge.owner_id == user.id)
-    )).scalar() or 0
-
-    file_relation_count = (await db.execute(
-        select(func.count(KbFileRelation.id)).where(KbFileRelation.owner_id == user.id)
-    )).scalar() or 0
-
-    duplicate_entities = 0
-    dup_rows = await db.execute(
-        select(KbEntityDictionary.name, func.count(KbEntityDictionary.id))
-        .where(KbEntityDictionary.owner_id == user.id, KbEntityDictionary.status != "merged")
-        .group_by(KbEntityDictionary.name)
-        .having(func.count(KbEntityDictionary.id) > 1)
-    )
-    dup_groups = dup_rows.all()
-    duplicate_entities = sum(cnt for _, cnt in dup_groups)
-
-    cat_rows = await db.execute(
-        select(KbEntityDictionary.category, func.count(KbEntityDictionary.id))
-        .where(KbEntityDictionary.owner_id == user.id)
-        .group_by(KbEntityDictionary.category)
-        .order_by(func.count(KbEntityDictionary.id).desc())
-    )
-    entity_category_distribution = {cat: cnt for cat, cnt in cat_rows.all()}
-
-    all_docs = await db.execute(
-        select(KbDocument).where(KbDocument.deleted == False, KbDocument.owner_id == user.id)
-        .order_by(KbDocument.id.desc())
-    )
-    doc_progresses = []
-    stuck_docs = []
-    for d in all_docs.scalars().all():
-        entry = {
-            "id": d.id, "filename": d.filename, "total_pages": d.total_pages,
-            "raw_status": d.raw_status, "fusion_status": d.fusion_status,
-            "parse_status": d.parse_status, "created_at": str(d.created_at or ""),
-        }
-        doc_progresses.append(entry)
-        if d.raw_status == "failed" or d.fusion_status == "failed":
-            stuck_docs.append(entry)
-
-    # 最近完成也用权威口径: fusion done + 画像存在
-    recent = (await db.execute(
-        select(KbDocument).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
-            KbDocument.fusion_status == "done",
-            exists(
-                select(KbDocumentProfile.id).where(
-                    KbDocumentProfile.document_id == KbDocument.id
-                )
-            ),
-        )
-        .order_by(KbDocument.updated_at.desc().nullslast())
-        .limit(10)
-    )).scalars().all()
-    recent_completions = [
-        {"id": d.id, "filename": d.filename, "completed_at": str(d.updated_at or "")}
-        for d in recent
-    ]
-
-    return ApiResponse(data={
-        "total_documents": total,
-        "completed_documents": completed,
-        "running_documents": running,
-        "failed_documents": failed,
-        "total_entities": entity_count,
-        "total_graph_relations": relation_count,
-        "total_file_relations": file_relation_count,
-        "duplicate_entity_count": duplicate_entities,
-        "duplicate_entity_groups": [{"name": name, "count": cnt} for name, cnt in dup_groups],
-        "entity_category_distribution": entity_category_distribution,
-        "document_progresses": doc_progresses,
-        "stuck_documents": stuck_docs,
-        "recent_completions": recent_completions,
-    })
 
 @router.post("/search")
 async def api_search(
@@ -581,7 +425,6 @@ async def api_search(
 ):
     result = await hybrid_search(db, payload.query, user.id, payload.top_k, payload.use_rerank)
     return ApiResponse(data={"query": payload.query, "results": result})
-
 
 @router.get("/documents/{document_id}/chunks")
 async def api_document_chunks(
@@ -593,7 +436,6 @@ async def api_document_chunks(
     await get_document(db, document_id, user.id)
     result = await get_document_chunks(db, document_id)
     return ApiResponse(data=result)
-
 
 @router.get("/chunks/{chunk_id}")
 async def api_get_chunk(
@@ -610,7 +452,6 @@ async def api_get_chunk(
         await get_document(db, result["document_id"], user.id)
     return ApiResponse(data=result)
 
-
 @router.get("/documents/{document_id}/page/{page}")
 async def api_get_page_fusion(
     document_id: int,
@@ -622,7 +463,6 @@ async def api_get_page_fusion(
     result = await get_page_fusion(db, document_id, page)
     return ApiResponse(data=result)
 
-
 @router.get("/entities")
 async def api_entities(
     keyword: str = Query(default=""),
@@ -631,7 +471,6 @@ async def api_entities(
 ):
     result = await get_entity_dictionary(db, user.id, keyword)
     return ApiResponse(data=result)
-
 
 @router.get("/entities/{entity_id}/graph")
 async def api_graph_context(
@@ -642,7 +481,6 @@ async def api_graph_context(
     result = await get_graph_context(db, user.id, entity_id)
     return ApiResponse(data=result)
 
-
 @router.get("/entities/{entity_id}/evidence")
 async def api_evidence_detail(
     entity_id: int,
@@ -651,7 +489,6 @@ async def api_evidence_detail(
 ):
     result = await get_evidence_detail(db, user.id, entity_id)
     return ApiResponse(data=result)
-
 
 @router.get("/governance/candidates")
 async def api_governance_candidates(
@@ -664,7 +501,6 @@ async def api_governance_candidates(
     result = await list_governance_candidates(db, user.id, audit_status, page, page_size)
     return ApiResponse(data=result)
 
-
 @router.post("/governance/candidates/{candidate_id}/approve")
 async def api_approve_candidate(
     candidate_id: int,
@@ -673,7 +509,6 @@ async def api_approve_candidate(
 ):
     ok = await approve_candidate(db, candidate_id, user.id)
     return ApiResponse(data={"ok": ok})
-
 
 @router.post("/governance/candidates/{candidate_id}/reject")
 async def api_reject_candidate(
@@ -684,7 +519,6 @@ async def api_reject_candidate(
     ok = await reject_candidate(db, candidate_id, user.id)
     return ApiResponse(data={"ok": ok})
 
-
 @router.post("/governance/entities/merge")
 async def api_merge_entities(
     payload: MergeEntitiesRequest,
@@ -693,7 +527,6 @@ async def api_merge_entities(
 ):
     ok = await merge_entities(db, payload.source_entity_ids, payload.target_entity_id, user.id, payload.reason)
     return ApiResponse(data={"ok": ok})
-
 
 @router.post("/governance/calibrate")
 async def api_calibrate(
@@ -704,7 +537,6 @@ async def api_calibrate(
     ok = await calibrate_extraction(db, payload.candidate_id, payload.new_name, payload.new_category, user.id)
     return ApiResponse(data={"ok": ok})
 
-
 @router.get("/governance/pending-count")
 async def api_pending_count(
     db: AsyncSession = Depends(get_db),
@@ -713,9 +545,7 @@ async def api_pending_count(
     result = await get_pending_count(db, user.id)
     return ApiResponse(data={"pending_count": result})
 
-
 # ── Cross-module capabilities ───────────────────────────────
-
 
 async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> ApiResponse:
     """将派生层任务入队并立即返回。"""
@@ -746,9 +576,7 @@ async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> A
     await db.commit()
     return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
 
-
 # ── Cross-module capabilities ───────────────────────────────
-
 
 async def _cap_search(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
@@ -777,7 +605,6 @@ async def _cap_search(params: dict, caller: str) -> dict:
             enriched.append(r)
         return {"query": query, "results": enriched}
 
-
 async def _cap_get_block(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     block_id = int(params.get("block_id", 0) or 0)
@@ -790,7 +617,6 @@ async def _cap_get_block(params: dict, caller: str) -> dict:
         await get_document(db, result["document_id"], owner_id)
         return {"block": result}
 
-
 async def _cap_get_page_fusion(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     document_id = int(params.get("document_id", 0) or 0)
@@ -800,14 +626,12 @@ async def _cap_get_page_fusion(params: dict, caller: str) -> dict:
         result = await get_page_fusion(db, document_id, page)
         return {"page_fusion": result}
 
-
 async def _cap_get_entity_dictionary(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     keyword = str(params.get("keyword", "") or "")
     async with AsyncSessionLocal() as db:
         result = await get_entity_dictionary(db, owner_id, keyword)
         return {"entities": result}
-
 
 async def _cap_get_graph_context(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
@@ -816,13 +640,11 @@ async def _cap_get_graph_context(params: dict, caller: str) -> dict:
         result = await get_graph_context(db, owner_id, entity_id)
         return {"graph": result}
 
-
 async def _cap_get_pending_count(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     async with AsyncSessionLocal() as db:
         count = await get_pending_count(db, owner_id)
         return {"pending_count": count}
-
 
 async def _cap_get_evidence_detail(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
@@ -830,7 +652,6 @@ async def _cap_get_evidence_detail(params: dict, caller: str) -> dict:
     async with AsyncSessionLocal() as db:
         result = await get_evidence_detail(db, owner_id, entity_id)
         return {"evidence": result}
-
 
 # 注册对外能力：Agent 会通过 list_capabilities 自动发现 knowledge__search 等工具。
 register_capability(
@@ -889,7 +710,6 @@ register_capability(
     min_role="viewer",
 )
 
-
 async def _cap_get_ocr_words(params: dict, caller: str) -> dict:
     """返回 PDF 某页 OCR 词坐标（供 pdf-viewer 叠文字层）。"""
     owner_id = resolve_user_id(caller)
@@ -918,7 +738,6 @@ INGEST_EXTENSIONS = {
     "pdf", "docx", "pptx", "xlsx", "csv", "txt", "md",
     "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg",
 }
-
 
 async def _cap_ingest(params: dict, caller: str) -> dict:
     """把已上传文件登记进知识库并触发后台分析（幂等、类型白名单）。"""
@@ -960,7 +779,6 @@ async def _cap_ingest(params: dict, caller: str) -> dict:
         result = await register_document(db, file_id, owner_id, catalog_id=None)
         return {"document_id": result["id"], "enqueued": True}
 
-
 register_capability(
     "knowledge", "ingest", _cap_ingest,
     description="把已上传文件登记进知识库并触发后台分析（幂等、类型白名单）",
@@ -969,9 +787,7 @@ register_capability(
     min_role="editor",
 )
 
-
 # ── Event handler: file.uploaded ──────────────────────────────────
-
 
 async def _on_file_uploaded(payload: dict, caller: str, caller_role: str) -> dict:
     """Handle file.uploaded event: register file into knowledge base.
@@ -980,7 +796,6 @@ async def _on_file_uploaded(payload: dict, caller: str, caller_role: str) -> dic
     This is best-effort: failures are logged but do not block the upload flow.
     """
     return await _cap_ingest(payload, caller)
-
 
 from app.services.module_events import register_module_event_handler
 register_module_event_handler("file.uploaded", _on_file_uploaded, "knowledge")
