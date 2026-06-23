@@ -69,11 +69,11 @@ backend/    Desktop shell backend / platform service layer
 
 ## 开工铁律(项目工具台 MCP)
 
-1. **每个开发 agent 开工先连"项目工具台"MCP**: 调 `brief()` 了解全貌。
-2. **测试直接用 `probe` / `call_capability` 打活系统** + `tail_log` 看错, 别写测试脚本搭场景。
-3. **查代码用 codegraph**。
+1. **每个开发 agent 开工先连"项目工具台"MCP**: 调 `brief()` 了解全貌→`code_explore`/`codegraph` 查代码与影响面→`routes`/`capabilities`/`db_schema` 查准端点/能力/表(别猜)→改完 `lint` 静态查错→`probe`/`call_capability` 直接打活系统验(别写测试脚本搭场景)→单测用 `run_test`→收工 `memory_write(agent="<自己>")` 落一条"我是谁/干了啥/commit"。
+2. **跨模块归因**: 每个 agent 任务完成必 `memory_write(agent="<agent名>")` 留一条, 注明 agent、干了啥、关联 commit。重复主题用更新不新建。
+3. **查代码优先 codegraph**: `code_explore`/`code_node`/`code_impact` 或直接 `codegraph` CLI。
 4. **读网页用 `web_read`**(不截图)。
-5. **开工前 `memory_search` 查有没有踩过的坑, 收工把决策/踩坑 `memory_write` 落盘**。
+5. **测试直接用 `probe` / `call_capability` 打活系统** + `tail_log` 看错, 别写测试脚本搭场景。
 
 MCP server 入口: `python3.14 dev_toolkit/server.py` (stdio), 注册在 `.mcp.json`。
 

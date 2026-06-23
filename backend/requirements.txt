@@ -42,3 +42,6 @@ ddgs>=9.14.0
 numpy>=1.26.0
 matplotlib>=3.9.0
 pytesseract>=0.3.10
+
+# ── Dev toolkit ──
+ruff>=0.15.0

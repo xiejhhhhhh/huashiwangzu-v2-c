@@ -1,10 +1,9 @@
 """
 项目工具台 MCP Server
-自包含 MCP 服务器, stdio 传输, 暴露 9 个开发工具.
+自包含 MCP 服务器, stdio 传输, 暴露 15 个开发工具.
 """
 
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -134,7 +133,7 @@ def _parse_frontmatter(content: str) -> dict:
                 val = val.strip()
                 if key == "tags":
                     meta["tags"] = [t.strip().strip('"').strip("'") for t in val.strip("[]").split(",") if t.strip()]
-                elif key in ("name", "type", "created"):
+                elif key in ("name", "type", "created", "agent"):
                     meta[key] = val.strip('"').strip("'")
     return meta
 
@@ -222,6 +221,214 @@ def _tail_file(path: Path, lines: int) -> str:
     except Exception as e:
         return f"[错误] {e}"
 
+# ──────────────────── 工具 10: code_explore ──────────────────────────
+
+_CODEGRAPH_CLI = str(Path.home() / ".npm-global" / "bin" / "codegraph")
+
+async def _code_explore(query: str) -> str:
+    """通过 codegraph 探索代码: 查符号/调用链/影响面."""
+    cmd = [_CODEGRAPH_CLI, "explore", query]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return json.dumps({"error": f"codegraph explore 失败: {stderr.decode()[:500]}"}, ensure_ascii=False)
+    return stdout.decode() or "(空结果)"
+
+async def _code_node(symbol: str) -> str:
+    """通过 codegraph 查符号或文件的定义."""
+    cmd = [_CODEGRAPH_CLI, "node", symbol]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return json.dumps({"error": f"codegraph node 失败: {stderr.decode()[:500]}"}, ensure_ascii=False)
+    return stdout.decode() or "(空结果)"
+
+async def _code_impact(path: str) -> str:
+    """通过 codegraph 查文件改动的影响面."""
+    cmd = [_CODEGRAPH_CLI, "impact", path]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        # fallback: codegraph node 看调用者
+        fallback = [_CODEGRAPH_CLI, "node", path]
+        proc2 = await asyncio.create_subprocess_exec(
+            *fallback, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout2, stderr2 = await proc2.communicate()
+        if proc2.returncode != 0:
+            return json.dumps({"error": f"codegraph impact 失败(无fallback): {stderr.decode()[:500]}; {stderr2.decode()[:500]}"}, ensure_ascii=False)
+        return stdout2.decode() or "(空结果)"
+    return stdout.decode() or "(空结果)"
+
+# ──────────────────── 工具 11: lint ──────────────────────────────────
+
+_RUFF_CLI = str(REPO_ROOT / "backend" / ".venv" / "bin" / "ruff")
+
+async def _lint(path: str) -> str:
+    """用 ruff 静态检查 Python 文件."""
+    abs_path = path if path.startswith("/") else str(REPO_ROOT / path)
+    if not os.path.isfile(abs_path):
+        return json.dumps({"error": f"文件不存在: {abs_path}"}, ensure_ascii=False)
+    proc = await asyncio.create_subprocess_exec(
+        _RUFF_CLI, "check", abs_path,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    output = stdout.decode() + stderr.decode()
+    if not output.strip():
+        return json.dumps({"success": True, "message": "无 lint 错误"}, ensure_ascii=False)
+    return output
+
+# ──────────────────── 工具 12: routes ────────────────────────────────
+
+async def _routes(filter_str: str = "") -> str:
+    """从 openapi.json 查准后端端点."""
+    url = f"{BACKEND_BASE}/openapi.json"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return json.dumps({"error": f"openapi.json 返回 {resp.status_code}"}, ensure_ascii=False)
+            spec = resp.json()
+    except Exception as e:
+        return json.dumps({"error": f"获取 openapi.json 失败: {e}"}, ensure_ascii=False)
+
+    paths = spec.get("paths", {})
+    results = []
+    f = filter_str.lower()
+    for path, methods in paths.items():
+        if f and f not in path.lower():
+            continue
+        for method, detail in methods.items():
+            params = []
+            for p in (detail.get("parameters") or []):
+                params.append({"name": p.get("name"), "in": p.get("in"), "required": p.get("required", False)})
+            req_body = detail.get("requestBody")
+            if req_body:
+                content = req_body.get("content", {})
+                for media_type, media_detail in content.items():
+                    schema = media_detail.get("schema", {})
+                    params.append({"name": "(body)", "in": "body", "schema": schema})
+            results.append({
+                "method": method.upper(),
+                "path": path,
+                "summary": detail.get("summary", ""),
+                "params": params,
+            })
+    results.sort(key=lambda r: r["path"])
+    return json.dumps(results, ensure_ascii=False, indent=2)
+
+# ──────────────────── 工具 13: capabilities ─────────────────────────
+
+async def _capabilities(module: str = "") -> str:
+    """扫描模块 manifest.json 的 public_actions."""
+    modules_dir = REPO_ROOT / "modules"
+    if not modules_dir.exists():
+        return json.dumps({"error": "modules 目录不存在"}, ensure_ascii=False)
+    results = []
+    for manifest_path in sorted(modules_dir.glob("*/manifest.json")):
+        mod_key = manifest_path.parent.name
+        if module and mod_key != module:
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            results.append({"module": mod_key, "error": str(e)})
+            continue
+        public_actions = manifest.get("public_actions", {})
+        if isinstance(public_actions, dict):
+            for action, action_detail in public_actions.items():
+                params = []
+                for p in action_detail.get("parameters", []):
+                    params.append({"name": p.get("name", ""), "type": p.get("type", "")})
+                results.append({
+                    "module": mod_key,
+                    "action": action,
+                    "params": params,
+                    "min_role": action_detail.get("min_role", ""),
+                })
+        elif isinstance(public_actions, list):
+            for item in public_actions:
+                if isinstance(item, str):
+                    results.append({"module": mod_key, "action": item, "params": [], "min_role": ""})
+                elif isinstance(item, dict):
+                    results.append({
+                        "module": mod_key,
+                        "action": item.get("action", item.get("name", "")),
+                        "params": item.get("parameters", []),
+                        "min_role": item.get("min_role", ""),
+                    })
+    return json.dumps(results, ensure_ascii=False, indent=2)
+
+# ──────────────────── 工具 14: db_schema ────────────────────────────
+
+async def _db_schema(table: str = "") -> str:
+    """查数据库表结构."""
+    if not table:
+        # 列出所有表名, 按前缀分组
+        query = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            ORDER BY table_name
+        """
+        rows = await _execute_sql(query)
+        tables = [list(r.values())[0] for r in rows]
+        # 按前缀分组
+        grouped: dict[str, list[str]] = {}
+        for t in tables:
+            prefix = t.split("_")[0] if "_" in t else "(other)"
+            grouped.setdefault(prefix, []).append(t)
+        return json.dumps(grouped, ensure_ascii=False, indent=2)
+    else:
+        query = f"""
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = '{table.replace("'", "''")}'
+            ORDER BY ordinal_position
+        """
+        rows = await _execute_sql(query)
+        columns = []
+        for r in rows:
+            vals = list(r.values())
+            columns.append({
+                "column": vals[0],
+                "type": vals[1],
+                "nullable": vals[2],
+                "default": vals[3],
+            })
+        return json.dumps(columns, ensure_ascii=False, indent=2)
+
+# ──────────────────── 工具 15: run_test ──────────────────────────────
+
+async def _run_test(target: str) -> str:
+    """跑单个测试目标(文件或 文件::用例), 不跑全局."""
+    backend_dir = REPO_ROOT / "backend"
+    pytest = str(backend_dir / ".venv" / "bin" / "pytest")
+    # split target into args for proper subprocess handling
+    target_args = target.split()
+    cmd = [pytest, "-x", "-q"] + target_args
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(backend_dir),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.TimeoutError:
+        return json.dumps({"error": "测试超时(>120s)"}, ensure_ascii=False)
+    output = stdout.decode()
+    if stderr.decode().strip():
+        output += "\n--- stderr ---\n" + stderr.decode()
+    return output or "(无输出)"
+
 # ── MCP Server ───────────────────────────────────────────────────────
 
 server = Server("项目工具台")
@@ -264,17 +471,33 @@ async def _brief() -> str:
     if inbox_dir.exists():
         letters = sorted(inbox_dir.glob("*.md"))
         titles = []
-        for l in letters[-10:]:
-            first_line = l.read_text(encoding="utf-8").strip().split("\n")[0].strip("# ").strip()
-            titles.append(f"- {l.stem}: {first_line}")
+        for letter in letters[-10:]:
+            first_line = letter.read_text(encoding="utf-8").strip().split("\n")[0].strip("# ").strip()
+            titles.append(f"- {letter.stem}: {first_line}")
         parts.append("## 投递箱待处理\n" + "\n".join(titles) if titles else "## 投递箱待处理\n(空)")
 
-    # 最近项目记忆
+    # 最近活动: git commit + 项目记忆(带 agent)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "log", "--oneline", "-5",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=str(REPO_ROOT),
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        git_log = stdout.decode().strip()
+        if git_log:
+            parts.append("## 最近 Git 提交")
+            for line in git_log.split("\n"):
+                parts.append(f"- {line.strip()}")
+    except Exception:
+        pass
+
     memories = _list_memories()[:5]
     if memories:
         parts.append("## 最近项目记忆")
         for m in memories:
-            parts.append(f"- {m.get('name','')} ({m.get('type','')}) [{', '.join(m.get('tags',[]))}]")
+            agent = m.get("agent", "unknown")
+            parts.append(f"- {m.get('name','')} ({m.get('type','')}) [agent:{agent}] [{', '.join(m.get('tags',[]))}]")
 
     return "\n\n".join(parts)
 
@@ -481,11 +704,12 @@ async def _memory_search(query: str, k: int = 5) -> str:
 
 # ──────────────────── 工具 8: memory_write ──────────────────────────
 
-async def _memory_write(type_: str, title: str, body: str, tags: str = "") -> str:
+async def _memory_write(type_: str, title: str, body: str, tags: str = "", agent: str = "") -> str:
     """写入一条项目记忆."""
     valid_types = {"decision", "gotcha", "architecture", "task", "reference"}
     type_ = type_ if type_ in valid_types else "reference"
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    agent_val = agent.strip() or "unknown"
     slug = _slugify(title)
     created = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     filepath = MEMORY_DIR / f"{slug}.md"
@@ -503,6 +727,7 @@ name: "{title}"
 type: {type_}
 tags: [{', '.join(f'"{t}"' for t in tag_list)}]
 created: {created}
+agent: {agent_val}
 ---
 
 {body}
@@ -633,6 +858,7 @@ async def list_tools() -> list[Tool]:
                     "title": {"type": "string", "description": "标题"},
                     "body": {"type": "string", "description": "正文"},
                     "tags": {"type": "string", "description": "逗号分隔的标签", "default": ""},
+                    "agent": {"type": "string", "description": "执行 agent 标识(如 opencode, claude)", "default": ""},
                 },
                 "required": ["type", "title", "body"],
             },
@@ -645,6 +871,91 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "n": {"type": "number", "description": "返回条数", "default": 10},
                 },
+            },
+        ),
+        Tool(
+            name="code_explore",
+            description="通过 codegraph 探索代码: 查符号/调用链/影响面. shell: codegraph explore <query>",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "符号名/文件名/自然语言问题"},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="code_node",
+            description="通过 codegraph 查符号或文件的定义. shell: codegraph node <symbol>",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "符号名或文件路径"},
+                },
+                "required": ["symbol"],
+            },
+        ),
+        Tool(
+            name="code_impact",
+            description="通过 codegraph 查文件改动的影响面. shell: codegraph impact <path>",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径"},
+                },
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="lint",
+            description="用 ruff 静态检查 Python 文件(改后先查错, 不等运行时崩).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Python 文件路径(绝对或相对仓库根)"},
+                },
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="routes",
+            description="从 openapi.json 查准后端端点, 支持按路径过滤.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filter": {"type": "string", "description": "路径关键词过滤", "default": ""},
+                },
+            },
+        ),
+        Tool(
+            name="capabilities",
+            description="扫描模块 manifest.json 查准模块能力+参数名.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "module": {"type": "string", "description": "模块 key, 为空则列出全部", "default": ""},
+                },
+            },
+        ),
+        Tool(
+            name="db_schema",
+            description="查数据库表结构: 无参数列所有表(按前缀分组), 有 table 参数返回列名+类型.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "table": {"type": "string", "description": "表名, 为空则列出所有表", "default": ""},
+                },
+            },
+        ),
+        Tool(
+            name="run_test",
+            description="跑单个测试目标(文件或 文件::用例), 不跑全局.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "测试目标, 如 tests/test_auth.py 或 tests/test_auth.py::test_login"},
+                },
+                "required": ["target"],
             },
         ),
     ]
@@ -690,9 +1001,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 title=arguments["title"],
                 body=arguments["body"],
                 tags=arguments.get("tags", ""),
+                agent=arguments.get("agent", ""),
             )
         elif name == "memory_recent":
             result = await _memory_recent(n=int(arguments.get("n", 10)))
+        elif name == "code_explore":
+            result = await _code_explore(query=arguments["query"])
+        elif name == "code_node":
+            result = await _code_node(symbol=arguments["symbol"])
+        elif name == "code_impact":
+            result = await _code_impact(path=arguments["path"])
+        elif name == "lint":
+            result = await _lint(path=arguments["path"])
+        elif name == "routes":
+            result = await _routes(filter_str=arguments.get("filter", ""))
+        elif name == "capabilities":
+            result = await _capabilities(module=arguments.get("module", ""))
+        elif name == "db_schema":
+            result = await _db_schema(table=arguments.get("table", ""))
+        elif name == "run_test":
+            result = await _run_test(target=arguments["target"])
         else:
             result = json.dumps({"error": f"未知工具: {name}"})
         return [TextContent(type="text", text=result)]
