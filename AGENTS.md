@@ -69,11 +69,20 @@ backend/    Desktop shell backend / platform service layer
 
 ## 开工铁律(项目工具台 MCP)
 
-1. **每个开发 agent 开工先连"项目工具台"MCP**: 调 `brief()` 了解全貌→`code_explore`/`codegraph` 查代码与影响面→`routes`/`capabilities`/`db_schema` 查准端点/能力/表(别猜)→改完 `lint` 静态查错→`probe`/`call_capability` 直接打活系统验(别写测试脚本搭场景)→单测用 `run_test`→收工 `memory_write(agent="<自己>")` 落一条"我是谁/干了啥/commit"。
+1. **每个开发 agent 开工先连"项目工具台"MCP**: 调 `brief()` 了解全貌→`code_explore`/`codegraph` 查代码与影响面→`routes`/`capabilities`/`db_schema` 查准端点/能力/表(别猜)→改完 `lint` 静态查错→`probe`/`call_capability` 直接打活系统验(别写测试脚本搭场景)→单测用 `run_test`→收工**必须用 `memory_write(agent="<自己>")`** 落一条"我是谁/干了啥/commit"(禁止手写JSON/文件到别处)。记忆唯一位置 = `开发文档/项目记忆/`(markdown)。
 2. **跨模块归因**: 每个 agent 任务完成必 `memory_write(agent="<agent名>")` 留一条, 注明 agent、干了啥、关联 commit。重复主题用更新不新建。
 3. **查代码优先 codegraph**: `code_explore`/`code_node`/`code_impact` 或直接 `codegraph` CLI。
 4. **读网页用 `web_read`**(不截图)。
 5. **测试直接用 `probe` / `call_capability` 打活系统** + `tail_log` 看错, 别写测试脚本搭场景。
+
+## 测试铁律
+
+以下测试规则为唯一定义，其他文档引用此处，不重复定义：
+
+1. **活栈是常驻夹具，测试只访问不重建** — 后端的 33000、前端的 5173 是常驻服务，测试只通过 HTTP 访问，不启动/停止服务。只有改代码需重置时才重启。
+2. **登录一次(storageState)全程复用** — Playwright 测试以 `globalSetup` 登录一次，存储 localStorage 到 `.auth/{role}.json`，各 test 通过 `test.use({storageState})` 复用，禁止每测重登。
+3. **条件等待，禁止硬等** — 使用 `waitForSelector`/`waitForResponse`/`expect(locator).toBeVisible()` 等条件等待，禁止 `sleep`/`waitForTimeout`（极少数需稳定间隔处保留但加注释说明）。
+4. **优先黑箱打活系统** — 用 `probe`/`call_capability` 直接验证后端行为，少写测试脚本搭场景。UI 测试才用 Playwright。
 
 MCP server 入口: `python3.14 dev_toolkit/server.py` (stdio), 注册在 `.mcp.json`。
 

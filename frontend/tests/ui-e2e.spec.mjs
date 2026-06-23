@@ -6,8 +6,6 @@ const BASE_URL = 'http://localhost:5173'
 const SCREENSHOT_DIR = path.resolve(process.env.HOME || '/tmp', 'Downloads/ui-e2e')
 const ADMIN_USER = '何焜华'
 const ADMIN_PASS = '123rgE123'
-const VIEWER_USER = 'viewer'
-const VIEWER_PASS = 'admin123'
 const TS = Date.now()  // unique suffix to avoid filename conflicts
 
 const results = []
@@ -20,15 +18,16 @@ function screenshot(page, name) {
   return filePath
 }
 
-async function login(page, username, password) {
-  await page.goto(BASE_URL + '/')
-  await page.waitForSelector('.login-page', { timeout: 10000 })
-  await page.waitForTimeout(500)
-  await page.fill('input[placeholder="Username"]', username)
-  await page.fill('input[placeholder="Password"]', password)
-  await page.click('button:has-text("Login")')
+async function gotoDesktop(page) {
+  await page.goto(BASE_URL, { waitUntil: 'networkidle' })
+  // If login page shows (token expired), log in
+  const loginVisible = await page.locator('.login-page').isVisible().catch(() => false)
+  if (loginVisible) {
+    await page.fill('input[placeholder="Username"]', ADMIN_USER)
+    await page.fill('input[placeholder="Password"]', ADMIN_PASS)
+    await page.click('button:has-text("Login")')
+  }
   await page.waitForSelector('.desktop-shell-container', { timeout: 15000 })
-  await page.waitForTimeout(1500)
 }
 
 async function openLauncher(page) {
@@ -36,7 +35,7 @@ async function openLauncher(page) {
   if (await startBtn.isVisible()) {
     await startBtn.click()
     await page.waitForSelector('.desktop-launcher-panel', { timeout: 5000 })
-    await page.waitForTimeout(300)
+    await expect(page.locator('.desktop-launcher-panel')).toBeVisible({ timeout: 5000 })
   }
 }
 
@@ -45,7 +44,10 @@ async function closeAllWindows(page) {
     const closeBtns = page.locator('.window-action-close')
     const count = await closeBtns.count()
     if (count === 0) break
-    try { await closeBtns.first().click({ timeout: 2000 }); await page.waitForTimeout(200) } catch { break }
+    try {
+      await closeBtns.first().click({ timeout: 2000 })
+      await expect(page.locator('.window-action-close')).toHaveCount(count - 1, { timeout: 3000 }).catch(() => {})
+    } catch { break }
   }
 }
 
@@ -132,7 +134,7 @@ test.beforeEach(({ page }) => {
 
 test.describe('Scene 1: Login + Desktop Shell', () => {
   test('1.1 Admin login - desktop loads without errors', async ({ page }) => {
-    await login(page, ADMIN_USER, ADMIN_PASS)
+    await gotoDesktop(page)
     await expect(page.locator('.desktop-shell-container')).toBeVisible()
     await expect(page.locator('.desktop-taskbar')).toBeVisible()
     const errors = consoleCollector.filter(e => e.startsWith('error:'))
@@ -142,7 +144,7 @@ test.describe('Scene 1: Login + Desktop Shell', () => {
   })
 
   test('1.2 Launcher opens with apps listed', async ({ page }) => {
-    await login(page, ADMIN_USER, ADMIN_PASS)
+    await gotoDesktop(page)
     await openLauncher(page)
     await expect(page.locator('.desktop-launcher-grid')).toBeVisible()
     const appCount = await page.locator('.desktop-launcher-app-item').count()
@@ -151,12 +153,16 @@ test.describe('Scene 1: Login + Desktop Shell', () => {
     expect(appCount).toBeGreaterThan(0)
   })
 
+  test.use({ storageState: 'tests/.auth/viewer.json' })
   test('1.3 Viewer role login', async ({ page }) => {
-    await login(page, VIEWER_USER, VIEWER_PASS)
+    await gotoDesktop(page)
     await expect(page.locator('.desktop-shell-container')).toBeVisible()
     const ss = screenshot(page, '1.3-viewer-desktop')
     results.push({ scenario: '1.3 Viewer login', passed: true, screenshot: ss, consoleErrors: [...consoleCollector] })
   })
+
+  // Restore admin storage state for remaining tests
+  test.use({ storageState: 'tests/.auth/admin.json' })
 })
 
 // ══════════════════════════════════════════════════════════════════════
@@ -187,7 +193,7 @@ test.describe('Scene 2: All Apps Open (Component Mapping)', () => {
 
   for (const appKey of launcherApps) {
     test(`2.1 App opens: ${appKey}`, async ({ page }) => {
-      await login(page, ADMIN_USER, ADMIN_PASS)
+      await gotoDesktop(page)
       await closeAllWindows(page)
       await openLauncher(page)
 
@@ -200,7 +206,7 @@ test.describe('Scene 2: All Apps Open (Component Mapping)', () => {
       }
 
       await appItem.first().click()
-      await page.waitForTimeout(2000)
+      await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
       // Close windows after each app to stay under the 30-window limit
       await closeAllWindows(page)
       const ss = screenshot(page, `2.1-${appKey}`)
@@ -261,9 +267,8 @@ test.describe('Scene 3: File Opening & Viewers', () => {
     xlsx: { expectedApp: 'excel-engine', label: 'xlsx→excel-engine' },
   })) {
     test(`3.1 Open ${info.label}`, async ({ page }) => {
-      await login(page, ADMIN_USER, ADMIN_PASS)
+      await gotoDesktop(page)
       await closeAllWindows(page)
-      await page.waitForTimeout(1000)
 
       const fileId = fileIds[fileType]?.id
       if (!fileId) {
@@ -279,7 +284,7 @@ test.describe('Scene 3: File Opening & Viewers', () => {
       }
 
       await fileIcon.first().dblclick({ force: true })
-      await page.waitForTimeout(3000)
+      await page.waitForSelector('.desktop-window', { timeout: 8000 }).catch(() => {})
       const ss = screenshot(page, `3.1-${fileType}`)
       const hasWindow = await page.locator('.desktop-window').count()
       results.push({
@@ -293,9 +298,8 @@ test.describe('Scene 3: File Opening & Viewers', () => {
   }
 
   test('3.4 text-editor: verify window opens with content', async ({ page, request }) => {
-    await login(page, ADMIN_USER, ADMIN_PASS)
+    await gotoDesktop(page)
     await closeAllWindows(page)
-    await page.waitForTimeout(1000)
 
     const fileId = fileIds['txt']?.id
     if (!fileId) {
@@ -310,13 +314,12 @@ test.describe('Scene 3: File Opening & Viewers', () => {
       return
     }
     await fileIcon.first().dblclick({ force: true })
-    await page.waitForTimeout(3000)
+    await page.waitForSelector('.desktop-window', { timeout: 8000 }).catch(() => {})
 
     // Check that a window opened and content is visible
     const windowCount = await page.locator('.desktop-window').count()
     const contentArea = page.locator('.desktop-window .window-content .window-content-padding')
     const hasContent = await contentArea.count() > 0
-    await page.waitForTimeout(1000)
     const ss = screenshot(page, '3.4-text-editor')
     results.push({
       scenario: '3.4 text-editor edit',
@@ -395,7 +398,7 @@ test.describe('Scene 4: Excel-Engine Parse', () => {
 
 test.describe('Scene 5: Key Interaction Flows', () => {
   test('5.1 Agent chat - open window', async ({ page }) => {
-    await login(page, ADMIN_USER, ADMIN_PASS)
+    await gotoDesktop(page)
     await closeAllWindows(page)
 
     await openLauncher(page)
@@ -407,15 +410,14 @@ test.describe('Scene 5: Key Interaction Flows', () => {
     }
 
     await agentItem.first().click()
-    await page.waitForTimeout(3000)
+    await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
 
     const ss = screenshot(page, '5.1-agent-chat')
     results.push({ scenario: '5.1 Agent chat', passed: true, screenshot: ss, consoleErrors: [...consoleCollector] })
   })
 
   test('5.2 File management - delete and recycle', async ({ page, request }) => {
-    await login(page, ADMIN_USER, ADMIN_PASS)
-    await page.waitForTimeout(1000)
+    await gotoDesktop(page)
 
     // Get fresh token AFTER browser login (login increments session_version)
     const pageToken = await page.evaluate(() => localStorage.getItem('v2_auth_token'))
@@ -462,8 +464,7 @@ test.describe('Scene 5: Key Interaction Flows', () => {
   })
 
   test('5.3 Knowledge base - upload file and check analysis', async ({ page, request }) => {
-    await login(page, ADMIN_USER, ADMIN_PASS)
-    await page.waitForTimeout(1000)
+    await gotoDesktop(page)
 
     // Get fresh token after browser login
     const pageToken = await page.evaluate(() => localStorage.getItem('v2_auth_token'))
@@ -484,7 +485,7 @@ test.describe('Scene 5: Key Interaction Flows', () => {
       return
     }
     await kbItem.first().click()
-    await page.waitForTimeout(3000)
+    await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
 
     // Register file in knowledge base
     const regResp = await request.post(`${BASE_URL}/api/knowledge/documents`, {
@@ -506,7 +507,7 @@ test.describe('Scene 5: Key Interaction Flows', () => {
   })
 
   test('5.4 image-gen - open UI', async ({ page }) => {
-    await login(page, ADMIN_USER, ADMIN_PASS)
+    await gotoDesktop(page)
     await openLauncher(page)
 
     const imgItem = page.locator('.desktop-launcher-app-item').filter({ hasText: 'Office' })
@@ -516,7 +517,7 @@ test.describe('Scene 5: Key Interaction Flows', () => {
       return
     }
     await imgItem.first().click()
-    await page.waitForTimeout(3000)
+    await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
     const ss = screenshot(page, '5.4-image-gen')
     results.push({ scenario: '5.4 image-gen', passed: true, screenshot: ss, consoleErrors: [...consoleCollector] })
   })

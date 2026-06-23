@@ -52,7 +52,7 @@
 
     <div v-if="results.length" class="results-grid">
       <div v-for="img in results" :key="img.file_id" class="result-card">
-        <img :src="previewUrl(img.file_id)" :alt="img.name" class="result-img" />
+        <img :src="imageUrls[img.file_id] || ''" :alt="img.name" class="result-img" />
         <div class="result-meta">
           <span v-if="img.placeholder" class="badge badge-warn">占位图</span>
           <span class="file-size">{{ (img.size / 1024).toFixed(1) }} KB</span>
@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
 
 interface TemplateItem {
   key: string
@@ -103,6 +103,7 @@ const aspectRatio = ref('square')
 const count = ref(1)
 const generating = ref(false)
 const results = ref<ImageResult[]>([])
+const imageUrls = ref<Record<number, string>>({})
 const errorMsg = ref('')
 const costInfo = ref<{ points_cost?: number; balance?: number } | null>(null)
 
@@ -132,8 +133,13 @@ async function apiPost<T>(url: string, body: unknown): Promise<T> {
   return json.data as T
 }
 
-function previewUrl(fileId: number): string {
-  return `/api/files/${fileId}/download`
+async function downloadImageBlob(fileId: number): Promise<Blob> {
+  const token = localStorage.getItem('v2_auth_token')
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const resp = await fetch(`/api/files/download/${fileId}`, { headers })
+  if (!resp.ok) throw new Error(`Download failed: ${resp.status}`)
+  return resp.blob()
 }
 
 async function loadTemplates() {
@@ -177,6 +183,15 @@ async function doGenerate() {
       errorMsg.value = data.error
     }
     results.value = data.images || []
+    imageUrls.value = {}
+    for (const img of results.value) {
+      try {
+        const blob = await downloadImageBlob(img.file_id)
+        imageUrls.value[img.file_id] = URL.createObjectURL(blob)
+      } catch (e) {
+        console.warn('Failed to load image', img.file_id, e)
+      }
+    }
     if (data.points_cost != null || data.balance != null) {
       costInfo.value = { points_cost: data.points_cost, balance: data.balance }
     }
@@ -189,6 +204,12 @@ async function doGenerate() {
 
 onMounted(() => {
   loadTemplates()
+})
+
+onBeforeUnmount(() => {
+  for (const url of Object.values(imageUrls.value)) {
+    URL.revokeObjectURL(url)
+  }
 })
 </script>
 

@@ -907,6 +907,16 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name=    "smoke_all",
+            description="一键全回归: 后端集测(probe/call_capability) + 前端UI(Playwright) + 红绿矩阵.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "skip_ui": {"type": "boolean", "description": "跳过前端UI测试", "default": False},
+                },
+            },
+        ),
+        Tool(
             name="lint",
             description="用 ruff 静态检查 Python 文件(改后先查错, 不等运行时崩).",
             inputSchema={
@@ -1011,6 +1021,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _code_node(symbol=arguments["symbol"])
         elif name == "code_impact":
             result = await _code_impact(path=arguments["path"])
+        elif name == "smoke_all":
+            skip_ui = arguments.get("skip_ui", False)
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, str(REPO_ROOT / "dev_toolkit" / "smoke.py"),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, "SMOKE_SKIP_UI": "1"} if skip_ui else None,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+            output = stdout.decode()
+            if stderr.decode().strip():
+                output += "\n--- stderr ---\n" + stderr.decode()
+            result = output
         elif name == "lint":
             result = await _lint(path=arguments["path"])
         elif name == "routes":

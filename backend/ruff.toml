@@ -1,0 +1,26 @@
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = [
+  "F",    # pyflakes — errors
+  "E",    # pycodestyle — errors
+  "W",    # pycodestyle — warnings
+  "I",    # isort
+]
+ignore = [
+  "E501", # line-too-long (covered by ruff formatter)
+  "E402", # module-import-not-at-top-of-file
+  "E701", # multiple-statements-on-one-line-colon (style choice: single-line if/except)
+  "E702", # multiple-statements-on-one-line-semicolon (style choice: Pydantic inline fields)
+]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"**/sandbox/*.py" = ["E722", "E741"]
+"**/office-gen/backend/generator.py" = ["F401"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

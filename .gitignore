@@ -56,5 +56,11 @@ backend/logs/
 .playwright-cli/
 take_screenshot.mjs
 
+# Dev toolkit memory (防误写)
+dev_toolkit/memory/
+
 # 邮箱工作流目录（本该是仓库的兄弟目录，误建在仓库内的也不入库）
 华世王镞_v2邮箱/
+
+# Playwright 登录态(含token,禁提交)
+frontend/tests/.auth/
