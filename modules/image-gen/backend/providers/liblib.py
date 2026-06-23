@@ -31,13 +31,12 @@ class LiblibProvider(ImageProvider):
         if not access_key or not secret_key:
             raise RuntimeError(f"LiblibAI credentials not configured ({cfg['access_key_env']}/{cfg['secret_key_env']})")
 
-        aspect_ratio = None
-
         gen_params = {
             "prompt": spec.prompt,
             "imgCount": spec.count,
             "steps": spec.steps,
         }
+        aspect_ratio = self._resolve_aspect_ratio(spec)
         if aspect_ratio:
             gen_params["aspectRatio"] = aspect_ratio
         else:
@@ -74,9 +73,11 @@ class LiblibProvider(ImageProvider):
         images: list[GenResult] = []
         for img_info in result_data.get("images", []):
             image_url = img_info.get("imageUrl", "")
+            seed = img_info.get("seed")
             if image_url:
                 images.append(GenResult(
                     image_url=image_url,
+                    seed=seed,
                     meta={"placeholder": False},
                 ))
 

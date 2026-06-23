@@ -3,6 +3,7 @@
 Multi-provider template adapter architecture.
 """
 import io
+import json
 import logging
 import re
 import time
@@ -302,9 +303,6 @@ async def _save_record(
             await db.commit()
     except Exception as e:
         logger.warning("Failed to save imagegen record: %s", e)
-
-
-import json
 
 
 # ---------------------------------------------------------------------------
