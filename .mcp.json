@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "项目工具台": {
+      "command": "python3.14",
+      "args": ["dev_toolkit/server.py"]
+    }
+  }
+}

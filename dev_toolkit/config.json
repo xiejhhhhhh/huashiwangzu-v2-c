@@ -1,0 +1,13 @@
+{
+  "backend_base_url": "http://127.0.0.1:33000",
+  "db_dsn": "postgresql://postgres:123rgE123@127.0.0.1:5432/华世王镞_v2",
+  "bge_m3_url": "http://127.0.0.1:30000",
+  "accounts": {
+    "admin": { "username": "何焜华", "password": "123rgE123", "role": "admin", "user_id": 4 },
+    "editor": { "username": "editor", "password": "admin123", "role": "editor" },
+    "viewer": { "username": "viewer", "password": "admin123", "role": "viewer" }
+  },
+  "memory_dir": "开发文档/项目记忆",
+  "embedding_cache": "dev_toolkit/memory_embeddings.json",
+  "log_dir": "backend/logs"
+}
