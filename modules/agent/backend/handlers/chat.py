@@ -159,7 +159,7 @@ async def _yield_final_stream(
 
 async def handle_chat(payload, db: AsyncSession, user: User):
     """Handle POST /api/agent/chat — the complete chat flow with tool loop."""
-    from ..models import AgentConversation
+    from models import AgentConversation
 
     # 确保默认数据、画像、表结构迁移和engine事件表存在
     await ensure_timeline_column(db)
@@ -392,7 +392,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                         "llm_response_id": None,
                     })
                 if has_slow:
-                    from ..models import AgentConversation
+                    from models import AgentConversation
                     try:
                         from app.database import AsyncSessionLocal as _ASL
                         async with _ASL() as _db:

@@ -178,7 +178,7 @@ async def _handle_slow_tool(params: dict) -> dict:
                 logger.warning("Slow tool IM notify failed (non-fatal): %s", notify_exc)
 
             try:
-                from ..models import AgentConversation
+                from models import AgentConversation
                 from sqlalchemy import select
                 r = await db.execute(
                     select(AgentConversation).where(AgentConversation.id == conversation_id)

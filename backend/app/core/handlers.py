@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -7,6 +8,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import FileResponse
 from app.config import get_settings
 from app.core.exceptions import AppException
+
+logger = logging.getLogger("v2.handlers")
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -75,6 +78,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         settings = get_settings()
+        # 永远记录完整 traceback——否则 500 被吞、无从排查(本项目踩过:chat 500 异常被吞无日志)
+        logger.exception("Unhandled exception on %s %s: %s", request.method, request.url.path, exc)
         error_message = f"Internal server error: {str(exc)}" if settings.APP_DEBUG else "Internal server error"
         return JSONResponse(
             status_code=500,
