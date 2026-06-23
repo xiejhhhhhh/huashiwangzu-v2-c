@@ -1,10 +1,10 @@
 from sqlalchemy import String, Integer, BigInteger, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone
-from app.models.base import Base
+from app.models.base import Base, TimestampMixin
 
 
-class RecycleItem(Base):
+class RecycleItem(Base, TimestampMixin):
     __tablename__ = "framework_file_recycle_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

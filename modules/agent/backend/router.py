@@ -1,8 +1,6 @@
 import json
 import logging
-import sys
 from datetime import datetime
-from pathlib import Path
 
 logger = logging.getLogger("v2.agent").getChild("router")
 
@@ -17,24 +15,8 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 
-MODULE_BACKEND_DIR = Path(__file__).resolve().parent
-if str(MODULE_BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(MODULE_BACKEND_DIR))
-
-from action_policy import check_action_allowed, resolve_approval, list_pending_approvals
-import conversation_service as conv_svc
-from init_db import ensure_default_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts, ensure_event_table, ensure_processing_column, run_init
-from model_client import recover_tool_calls, parse_inline_tool_calls, final_clean_content
-import tool_discovery
-from profile_evolve import handle_profile_evolve
-ENGINE_DIR = (MODULE_BACKEND_DIR / ".." / "engine").resolve()
-if str(ENGINE_DIR) not in sys.path:
-    sys.path.insert(0, str(ENGINE_DIR))
-import event_store
-from event_store import record_event
-import engine
-from engine import 装配上下文, chat_with_degradation_chain, chat_stream_with_degradation_chain
-from stuck_detector import 检测粘滞, 重置 as 重置粘滞
+from .init_db import ensure_default_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts, ensure_event_table, ensure_processing_column, run_init
+from . import tool_discovery
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -324,7 +306,7 @@ async def list_agent_configs(
     user: User = Depends(require_permission("admin")),
 ):
     from sqlalchemy import select
-    from models import AgentConfig
+    from .models import AgentConfig
     r = await db.execute(
         select(AgentConfig).order_by(AgentConfig.agent_code)
     )
@@ -339,7 +321,7 @@ async def get_agent_config(
     user: User = Depends(require_permission("admin")),
 ):
     from sqlalchemy import select
-    from models import AgentConfig
+    from .models import AgentConfig
     from app.core.exceptions import NotFound
     r = await db.execute(
         select(AgentConfig).where(AgentConfig.agent_code == agent_code)
@@ -357,7 +339,7 @@ async def create_agent_config(
     user: User = Depends(require_permission("admin")),
 ):
     from sqlalchemy import select
-    from models import AgentConfig
+    from .models import AgentConfig
     from app.core.exceptions import ConflictError
     r = await db.execute(
         select(AgentConfig).where(AgentConfig.agent_code == body.agent_code)
@@ -398,7 +380,7 @@ async def update_agent_config(
     user: User = Depends(require_permission("admin")),
 ):
     from sqlalchemy import select
-    from models import AgentConfig
+    from .models import AgentConfig
     from app.core.exceptions import NotFound
     r = await db.execute(
         select(AgentConfig).where(AgentConfig.agent_code == agent_code)
@@ -422,7 +404,7 @@ async def delete_agent_config(
     user: User = Depends(require_permission("admin")),
 ):
     from sqlalchemy import select
-    from models import AgentConfig
+    from .models import AgentConfig
     from app.core.exceptions import NotFound
     r = await db.execute(
         select(AgentConfig).where(AgentConfig.agent_code == agent_code)

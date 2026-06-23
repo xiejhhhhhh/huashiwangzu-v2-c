@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, AsyncSessionLocal
 from app.middleware.auth import require_permission
-from app.models.file import File, Folder
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.module_registry import register_capability

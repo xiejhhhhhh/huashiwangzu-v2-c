@@ -20,10 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ValidationError
 from app.schemas.common import ApiResponse
 
-from event_store import read_events
+from ..engine.event_store import read_events
 from ..action_policy import resolve_approval, list_pending_approvals
 
-logger = logging.getLogger("v2.agent").getChild("router")
+logger = logging.getLogger("v2.agent").getChild("handlers.admin")
 
 
 async def handle_admin_replay(

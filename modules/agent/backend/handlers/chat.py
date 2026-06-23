@@ -26,15 +26,15 @@ from ..init_db import (
     ensure_event_table,
     ensure_processing_column,
 )
-from event_store import record_event
+from ..engine.event_store import record_event
 from .. import conversation_service as conv_svc
 from .. import tool_discovery
-from engine import 装配上下文, chat_with_degradation_chain, chat_stream_with_degradation_chain
-from stuck_detector import 检测粘滞, 重置 as 重置粘滞
+from ..engine.engine import assemble_context, chat_with_degradation_chain, chat_stream_with_degradation_chain
+from ..engine.stuck_detector import detect_stuck, reset as reset_stuck
 from ..model_client import recover_tool_calls, parse_inline_tool_calls, final_clean_content
 from ..action_policy import check_action_allowed, resolve_approval, list_pending_approvals
 
-logger = logging.getLogger("v2.agent").getChild("router")
+logger = logging.getLogger("v2.agent").getChild("handlers.chat")
 
 MAX_TOOL_ROUNDS = 5
 EVOLVE_EVERY_N_MESSAGES = 3
@@ -160,7 +160,7 @@ async def _yield_final_stream(
 
 async def handle_chat(payload, db: AsyncSession, user: User):
     """Handle POST /api/agent/chat — the complete chat flow with tool loop."""
-    from models import AgentConversation
+    from ..models import AgentConversation
 
     # 确保默认数据、画像、表结构迁移和engine事件表存在
     await run_init(db)
@@ -175,7 +175,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
     # engine装配上下文（事件投影 + 三层提示词 + 动态预算 + Agent 配置）
     profile_key = payload.profile_key or "deepseek-v4-flash"
     agent_code = "erp_chat"
-    messages, engine_diag = await 装配上下文(
+    messages, engine_diag = await assemble_context(
         db, payload.conversation_id, payload.content,
         profile_key, user.id, agent_code=agent_code,
     )
@@ -239,7 +239,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
         _persisted_event_count = 0
         try:
             _session_key = f"conv_{payload.conversation_id}"
-            重置粘滞(_session_key)
+            reset_stuck(_session_key)
             for _round in range(MAX_TOOL_ROUNDS):
                 # Y1: 每轮开头重置 full，防止跨轮累积
                 full = []
@@ -351,7 +351,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                     yield f"data: {_j(call_event)}\n\n".encode("utf-8")
 
                 # ── Phase 2: slow tools → background queue ──────────────────
-                from ..handlers.tasks import _submit_slow_tool_task
+                from .tasks import _submit_slow_tool_task
                 has_slow = False
                 for tool in parsed_tools:
                     if not tool["slow_name"]:
@@ -392,7 +392,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                         "llm_response_id": None,
                     })
                 if has_slow:
-                    from models import AgentConversation
+                    from ..models import AgentConversation
                     try:
                         from app.database import AsyncSessionLocal as _ASL
                         async with _ASL() as _db:
@@ -492,7 +492,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                 if tool_calls:
                     for tc in tool_calls:
                         fn = tc.get("function", tc)
-                        _stuck_check = 检测粘滞(
+                        _stuck_check = detect_stuck(
                             tool_name=fn.get("name", ""),
                             tool_args=fn.get("arguments", {}),
                             error_text=None, is_empty_response=False,
@@ -503,7 +503,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                 else:
                     has_error = bool(result.get("error"))
                     is_empty = not result.get("content") and not result.get("tool_calls")
-                    _stuck_check = 检测粘滞(
+                    _stuck_check = detect_stuck(
                         tool_name=None, tool_args=None,
                         error_text=str(result.get("error"))[:100] if has_error else None,
                         is_empty_response=is_empty,
@@ -525,7 +525,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                 if _final_summary.get("content"):
                     final_text = str(_final_summary["content"])
                     full = [final_text]
-                    thinking_parts.append(final_text)
+                    timeline.append({"type": "text", "content": final_text})
                     yield f"data: {json.dumps({'type': 'token', 'content': final_text}, ensure_ascii=False)}\n\n".encode("utf-8")
                 elif _final_summary.get("error"):
                     yield f"data: {json.dumps({'type': 'error', 'content': _final_summary['error']}, ensure_ascii=False)}\n\n".encode("utf-8")

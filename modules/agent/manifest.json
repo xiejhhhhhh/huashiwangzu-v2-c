@@ -36,7 +36,7 @@
     {"action": "get_enterprise_prompt", "description": "获取企业提示词", "parameters": {}, "min_role": "admin"},
     {"action": "update_enterprise_prompt", "description": "更新企业提示词", "parameters": {"content": {"type": "string", "description": "提示词内容"}}, "min_role": "admin"},
     {"action": "get_my_profile", "description": "获取个人用户画像", "parameters": {}, "min_role": "viewer"},
-    {"action": "update_my_profile", "description": "更新个人用户画像", "parameters": {"content": {"type": "string", "description": "画像内容"}}, "min_role": "viewer"},
+    {"action": "update_my_profile", "description": "更新个人用户画像", "parameters": {"profile_data": {"type": "object", "description": "画像数据", "properties": {"tone": {"type": "string"}, "taboos": {"type": "array", "items": {"type": "string"}}, "focus": {"type": "array", "items": {"type": "string"}}, "habits": {"type": "array", "items": {"type": "string"}}}}}, "min_role": "viewer"},
     {"action": "spawn_subagent", "description": "生成子 Agent 执行独立任务", "parameters": {"task": {"type": "string", "description": "任务描述"}}, "min_role": "viewer"}
   ],
   "dependency_declaration": [{"module": "knowledge", "optional": true}],

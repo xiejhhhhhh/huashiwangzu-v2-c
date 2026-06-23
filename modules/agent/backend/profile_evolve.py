@@ -51,7 +51,7 @@ async def handle_profile_evolve(params: dict) -> dict:
 
     async with AsyncSessionLocal() as db:
         # 获取最近对话
-        import conversation_service as conv_svc
+        from . import conversation_service as conv_svc
         messages = await conv_svc.get_messages(db, owner_id, conversation_id)
         if not messages:
             return {"error": "No messages found", "owner_id": owner_id}

@@ -21,7 +21,7 @@
   "editable_formats": [],
   "creatable_formats": [],
   "public_actions": [
-    {"action": "create", "description": "创建定时任务", "parameters": {"action_description": {"type": "string", "description": "任务动作描述"}, "schedule_time": {"type": "string", "description": "执行时间"}, "recur": {"type": "string", "description": "重复模式"}}, "min_role": "editor"},
+    {"action": "create", "description": "创建定时任务", "parameters": {"action_description": {"type": "string", "description": "任务动作描述"}, "scheduled_at": {"type": "string", "description": "执行时间"}, "recur": {"type": "string", "description": "重复模式"}}, "min_role": "editor"},
     {"action": "list", "description": "列出用户的定时任务", "parameters": {}, "min_role": "viewer"},
     {"action": "cancel", "description": "取消定时任务", "parameters": {"task_id": {"type": "integer", "description": "任务ID"}}, "min_role": "editor"}
   ],

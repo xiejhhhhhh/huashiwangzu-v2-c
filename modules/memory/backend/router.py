@@ -18,7 +18,7 @@ from app.services.task_worker import register_task_handler
 
 logger = logging.getLogger("v2.memory").getChild("router")
 
-from huashiwangzu_modules.memory.models import AgentMemory, MemoryLink, AgentExperience
+from huashiwangzu_modules.memory.models import MemoryRecord, MemoryLink, MemoryExperience
 from huashiwangzu_modules.memory.init_db import run_init
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -167,7 +167,7 @@ async def _hybrid_recall(
                        recency_score, raw_id, conversation_id, source,
                        memory_type, keywords, access_count, created_at,
                        (1 - (embedding <=> '{vec_literal}'::vector)) AS similarity
-                FROM agent_memory
+                FROM memory_records
                 WHERE owner_id = :owner_id
                   AND embedding IS NOT NULL
                   AND (1 - (embedding <=> '{vec_literal}'::vector)) >= :threshold
@@ -189,17 +189,17 @@ async def _hybrid_recall(
     if not rows:
         keyword = f"%{query}%"
         stmt = (
-            select(AgentMemory)
+            select(MemoryRecord)
             .where(
-                AgentMemory.owner_id == owner_id,
+                MemoryRecord.owner_id == owner_id,
                 or_(
-                    AgentMemory.text.ilike(keyword),
-                    AgentMemory.tags.ilike(keyword),
-                    AgentMemory.summary.ilike(keyword),
-                    AgentMemory.keywords.ilike(keyword),
+                    MemoryRecord.text.ilike(keyword),
+                    MemoryRecord.tags.ilike(keyword),
+                    MemoryRecord.summary.ilike(keyword),
+                    MemoryRecord.keywords.ilike(keyword),
                 ),
             )
-            .order_by(AgentMemory.confidence.desc(), AgentMemory.recency_score.desc())
+            .order_by(MemoryRecord.confidence.desc(), MemoryRecord.recency_score.desc())
             .limit(top_k)
         )
         r = await db.execute(stmt)
@@ -208,7 +208,7 @@ async def _hybrid_recall(
         # Track access count
         for m in items:
             await db.execute(
-                text("UPDATE agent_memory SET access_count = access_count + 1 WHERE id = :id"),
+                text("UPDATE memory_records SET access_count = access_count + 1 WHERE id = :id"),
                 {"id": m.id},
             )
         await db.commit()
@@ -243,7 +243,7 @@ async def _hybrid_recall(
     ids = [r["id"] for r in results]
     for rid in ids:
         await db.execute(
-            text("UPDATE agent_memory SET access_count = access_count + 1 WHERE id = :id"),
+            text("UPDATE memory_records SET access_count = access_count + 1 WHERE id = :id"),
             {"id": rid},
         )
     await db.commit()
@@ -260,10 +260,10 @@ async def _expand_via_chain(
     seed_ids = [r["id"] for r in results]
     seen = set(seed_ids)
     stmt = (
-        select(MemoryLink, AgentMemory)
-        .join(AgentMemory, and_(
-            AgentMemory.id == MemoryLink.to_id,
-            AgentMemory.owner_id == owner_id,
+        select(MemoryLink, MemoryRecord)
+        .join(MemoryRecord, and_(
+            MemoryRecord.id == MemoryLink.to_id,
+            MemoryRecord.owner_id == owner_id,
         ))
         .where(
             MemoryLink.from_id.in_(seed_ids),
@@ -312,7 +312,7 @@ async def http_save(
     if not req.text.strip():
         raise ValidationError("内容不能为空")
     # Save raw text (原始层)
-    memory = AgentMemory(
+    memory = MemoryRecord(
         owner_id=current_user.id,
         text=req.text,
         tags=req.tags if req.tags else None,
@@ -334,14 +334,14 @@ async def _post_save_process(memory_id: int, content: str, source: str | None) -
     try:
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
-            mem = await db.get(AgentMemory, memory_id)
+            mem = await db.get(MemoryRecord, memory_id)
             if not mem:
                 return
             # Compute embedding
             vec = await _compute_embedding(content)
             if vec:
                 vec_literal = "[" + ",".join(str(v) for v in vec) + "]"
-                sql = f"UPDATE agent_memory SET embedding = '{vec_literal}'::vector WHERE id = :id"
+                sql = f"UPDATE memory_records SET embedding = '{vec_literal}'::vector WHERE id = :id"
                 await db.execute(text(sql), {"id": memory_id})
             # Distill summary (cheap model)
             distilled = await _distill_summary(content, source)
@@ -357,7 +357,7 @@ async def _post_save_process(memory_id: int, content: str, source: str | None) -
                 update_parts.append("keywords = :keywords")
                 params["keywords"] = distilled["keywords"]
             if update_parts:
-                sql = "UPDATE agent_memory SET " + ", ".join(update_parts) + " WHERE id = :id"
+                sql = "UPDATE memory_records SET " + ", ".join(update_parts) + " WHERE id = :id"
                 await db.execute(text(sql), params)
             await db.commit()
     except Exception as e:
@@ -372,7 +372,7 @@ async def _update_embedding(memory_id: int, content: str) -> bool:
         if vec:
             async with AsyncSessionLocal() as db:
                 vec_literal = "[" + ",".join(str(v) for v in vec) + "]"
-                sql = f"UPDATE agent_memory SET embedding = '{vec_literal}'::vector WHERE id = :id"
+                sql = f"UPDATE memory_records SET embedding = '{vec_literal}'::vector WHERE id = :id"
                 await db.execute(text(sql), {"id": memory_id})
                 await db.commit()
             return True
@@ -401,9 +401,9 @@ async def http_list(
 ):
     await _ensure_init()
     stmt = (
-        select(AgentMemory)
-        .where(AgentMemory.owner_id == current_user.id)
-        .order_by(AgentMemory.created_at.desc())
+        select(MemoryRecord)
+        .where(MemoryRecord.owner_id == current_user.id)
+        .order_by(MemoryRecord.created_at.desc())
         .offset(offset)
         .limit(limit)
     )
@@ -419,7 +419,7 @@ async def http_delete(
     current_user: User = Depends(require_permission("viewer")),
 ):
     await _ensure_init()
-    memory = await db.get(AgentMemory, req.id)
+    memory = await db.get(MemoryRecord, req.id)
     if not memory:
         raise NotFound("记忆不存在")
     if memory.owner_id != current_user.id:
@@ -454,7 +454,7 @@ async def http_rethink(
     current_user: User = Depends(require_permission("viewer")),
 ):
     await _ensure_init()
-    memory = await db.get(AgentMemory, req.id)
+    memory = await db.get(MemoryRecord, req.id)
     if not memory:
         raise NotFound("记忆不存在")
     if memory.owner_id != current_user.id:
@@ -477,7 +477,7 @@ async def http_replace(
     current_user: User = Depends(require_permission("viewer")),
 ):
     await _ensure_init()
-    memory = await db.get(AgentMemory, req.id)
+    memory = await db.get(MemoryRecord, req.id)
     if not memory:
         raise NotFound("记忆不存在")
     if memory.owner_id != current_user.id:
@@ -498,7 +498,7 @@ async def http_insert(
     current_user: User = Depends(require_permission("viewer")),
 ):
     await _ensure_init()
-    memory = await db.get(AgentMemory, req.id)
+    memory = await db.get(MemoryRecord, req.id)
     if not memory:
         raise NotFound("记忆不存在")
     if memory.owner_id != current_user.id:
@@ -527,7 +527,7 @@ async def _do_fuse(db: AsyncSession, owner_id: int, query: str, ids: list[int]) 
     """On-demand fusion: merge multiple memories into a query-tailored brief."""
     memories = []
     for mid in ids:
-        m = await db.get(AgentMemory, mid)
+        m = await db.get(MemoryRecord, mid)
         if m and m.owner_id == owner_id:
             memories.append(m)
     if not memories:
@@ -565,8 +565,8 @@ async def _do_dream(db: AsyncSession, owner_id: int) -> dict:
         merge_sql = text("""
             SELECT a.id AS keep_id, b.id AS drop_id,
                    (1 - (a.embedding <=> b.embedding)) AS similarity
-            FROM agent_memory a
-            JOIN agent_memory b ON a.owner_id = b.owner_id AND a.id < b.id
+            FROM memory_records a
+            JOIN memory_records b ON a.owner_id = b.owner_id AND a.id < b.id
             WHERE a.owner_id = :owner_id
               AND a.embedding IS NOT NULL
               AND b.embedding IS NOT NULL
@@ -585,8 +585,8 @@ async def _do_dream(db: AsyncSession, owner_id: int) -> dict:
             if keep_id in dropped or drop_id in dropped:
                 continue
             # Merge: keep higher confidence
-            keep = await db.get(AgentMemory, keep_id)
-            drop = await db.get(AgentMemory, drop_id)
+            keep = await db.get(MemoryRecord, keep_id)
+            drop = await db.get(MemoryRecord, drop_id)
             if not keep or not drop:
                 continue
             new_conf = max(keep.confidence, drop.confidence)
@@ -608,8 +608,8 @@ async def _do_dream(db: AsyncSession, owner_id: int) -> dict:
         link_sql = text("""
             SELECT a.id AS from_id, b.id AS to_id,
                    (1 - (a.embedding <=> b.embedding)) AS similarity
-            FROM agent_memory a
-            JOIN agent_memory b ON a.owner_id = b.owner_id AND a.id < b.id
+            FROM memory_records a
+            JOIN memory_records b ON a.owner_id = b.owner_id AND a.id < b.id
             WHERE a.owner_id = :owner_id
               AND a.embedding IS NOT NULL
               AND b.embedding IS NOT NULL
@@ -644,7 +644,7 @@ async def _do_dream(db: AsyncSession, owner_id: int) -> dict:
         cutoff = datetime.now(timezone.utc) - timedelta(days=MEMORY_DREAM_DECAY_DAYS)
         decay_result = await db.execute(
             text("""
-                UPDATE agent_memory
+                UPDATE memory_records
                 SET recency_score = GREATEST(recency_score * 0.85, 0.1)
                 WHERE owner_id = :owner_id
                   AND updated_at < :cutoff
@@ -698,7 +698,7 @@ async def _save_experience(
     if isinstance(tools_used, (list, dict)):
         tools_used = json.dumps(tools_used, ensure_ascii=False)
     if not (trigger_condition or "").strip() or not (steps or "").strip():
-        return {"id": None, "deduplicated": False, "error": "trigger_condition and steps required"}
+        raise ValidationError("trigger_condition and steps required")
 
     trigger_vec = await _compute_embedding(trigger_condition)
 
@@ -708,7 +708,7 @@ async def _save_experience(
             vec_literal = "[" + ",".join(str(v) for v in trigger_vec) + "]"
             sql = text(f"""
                 SELECT id, trigger_condition, steps, success_weight
-                FROM agent_experiences
+                FROM memory_experiences
                 WHERE active = true
                   AND trigger_embedding IS NOT NULL
                   AND (1 - (trigger_embedding <=> '{vec_literal}'::vector)) >= :threshold
@@ -732,14 +732,14 @@ async def _save_experience(
             if same_tools:
                 # Dedup: increment weight of existing
                 await db.execute(
-                    text("UPDATE agent_experiences SET success_weight = success_weight + 1, updated_at = NOW() WHERE id = :id"),
+                    text("UPDATE memory_experiences SET success_weight = success_weight + 1, updated_at = NOW() WHERE id = :id"),
                     {"id": cand["id"]},
                 )
                 await db.commit()
                 return {"id": cand["id"], "deduplicated": True, "success_weight": (cand["success_weight"] or 1) + 1}
 
     # New experience
-    exp = AgentExperience(
+    exp = MemoryExperience(
         trigger_condition=trigger_condition,
         trigger_embedding=trigger_vec,
         steps=steps,
@@ -767,7 +767,7 @@ async def _match_experience(
                        success_weight, fail_count, fail_notes,
                        source_conversation_id, created_at, updated_at,
                        (1 - (trigger_embedding <=> '{vec_literal}'::vector)) AS similarity
-                FROM agent_experiences
+                FROM memory_experiences
                 WHERE active = true
                   AND trigger_embedding IS NOT NULL
                   AND (1 - (trigger_embedding <=> '{vec_literal}'::vector)) >= :threshold
@@ -807,9 +807,9 @@ async def _experience_feedback(
     note: str | None = None,
 ) -> dict:
     """Reinforcement: success +1 weight, fail +1 count + append note."""
-    exp = await db.get(AgentExperience, experience_id)
+    exp = await db.get(MemoryExperience, experience_id)
     if not exp:
-        return {"error": "经验不存在"}
+        raise NotFound("经验不存在")
     if success:
         exp.success_weight = (exp.success_weight or 1) + 1
         exp.updated_at = datetime.now(timezone.utc)
@@ -843,8 +843,8 @@ async def _do_experience_dream(db: AsyncSession) -> dict:
         merge_sql = text("""
             SELECT a.id AS keep_id, b.id AS drop_id,
                    (1 - (a.trigger_embedding <=> b.trigger_embedding)) AS similarity
-            FROM agent_experiences a
-            JOIN agent_experiences b ON a.id < b.id
+            FROM memory_experiences a
+            JOIN memory_experiences b ON a.id < b.id
             WHERE a.active = true AND b.active = true
               AND a.trigger_embedding IS NOT NULL
               AND b.trigger_embedding IS NOT NULL
@@ -859,8 +859,8 @@ async def _do_experience_dream(db: AsyncSession) -> dict:
             drop_id = row["drop_id"]
             if keep_id in dropped or drop_id in dropped:
                 continue
-            keep = await db.get(AgentExperience, keep_id)
-            drop = await db.get(AgentExperience, drop_id)
+            keep = await db.get(MemoryExperience, keep_id)
+            drop = await db.get(MemoryExperience, drop_id)
             if not keep or not drop:
                 continue
             keep.success_weight = (keep.success_weight or 1) + (drop.success_weight or 1)
@@ -875,7 +875,7 @@ async def _do_experience_dream(db: AsyncSession) -> dict:
     try:
         deact_result = await db.execute(
             text("""
-                UPDATE agent_experiences
+                UPDATE memory_experiences
                 SET active = false
                 WHERE active = true
                   AND (success_weight - fail_count * :penalty) <= 0
@@ -925,12 +925,12 @@ async def _cap_save(params: dict, caller: str) -> dict:
     conversation_id = params.get("conversation_id")
     owner_id = _parse_user_id(caller)
     if not owner_id:
-        return {"success": False, "error": "无法解析调用者身份"}
+        raise PermissionDenied("无法解析调用者身份")
     if not text.strip():
-        return {"success": False, "error": "内容不能为空"}
+        raise ValidationError("内容不能为空")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
-        memory = AgentMemory(
+        memory = MemoryRecord(
             owner_id=owner_id,
             text=text,
             tags=tags,
@@ -952,7 +952,7 @@ async def _cap_recall(params: dict, caller: str) -> dict:
     expand_chain = params.get("expand_chain", False)
     owner_id = _parse_user_id(caller)
     if not owner_id:
-        return {"success": False, "error": "无法解析调用者身份"}
+        raise PermissionDenied("无法解析调用者身份")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
         results = await _hybrid_recall(db, owner_id, query, limit, expand_chain)
@@ -964,7 +964,7 @@ async def _cap_fuse(params: dict, caller: str) -> dict:
     ids = params.get("ids", [])
     owner_id = _parse_user_id(caller)
     if not owner_id:
-        return {"success": False, "error": "无法解析调用者身份"}
+        raise PermissionDenied("无法解析调用者身份")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
         result = await _do_fuse(db, owner_id, query, ids)
@@ -974,7 +974,7 @@ async def _cap_fuse(params: dict, caller: str) -> dict:
 async def _cap_dream(params: dict, caller: str) -> dict:
     owner_id = _parse_user_id(caller)
     if not owner_id:
-        return {"success": False, "error": "无法解析调用者身份"}
+        raise PermissionDenied("无法解析调用者身份")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
         memory_report = await _do_dream(db, owner_id)
@@ -988,14 +988,14 @@ async def _cap_rethink(params: dict, caller: str) -> dict:
     tags = params.get("tags")
     owner_id = _parse_user_id(caller)
     if not owner_id or not mem_id:
-        return {"success": False, "error": "参数不完整"}
+        raise ValidationError("参数不完整")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
-        memory = await db.get(AgentMemory, mem_id)
+        memory = await db.get(MemoryRecord, mem_id)
         if not memory:
-            return {"success": False, "error": "记忆不存在"}
+            raise NotFound("记忆不存在")
         if memory.owner_id != owner_id:
-            return {"success": False, "error": "只能编辑自己的记忆"}
+            raise PermissionDenied("只能编辑自己的记忆")
         memory.text = text
         if tags is not None:
             memory.tags = tags
@@ -1012,16 +1012,16 @@ async def _cap_replace(params: dict, caller: str) -> dict:
     new_text = params.get("new_text", "")
     owner_id = _parse_user_id(caller)
     if not owner_id or not mem_id:
-        return {"success": False, "error": "参数不完整"}
+        raise ValidationError("参数不完整")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
-        memory = await db.get(AgentMemory, mem_id)
+        memory = await db.get(MemoryRecord, mem_id)
         if not memory:
-            return {"success": False, "error": "记忆不存在"}
+            raise NotFound("记忆不存在")
         if memory.owner_id != owner_id:
-            return {"success": False, "error": "只能编辑自己的记忆"}
+            raise PermissionDenied("只能编辑自己的记忆")
         if old_text not in memory.text:
-            return {"success": False, "error": "未找到要替换的文本"}
+            raise ValidationError("未找到要替换的文本")
         memory.text = memory.text.replace(old_text, new_text, 1)
         memory.source = "edit"
         await db.commit()
@@ -1035,14 +1035,14 @@ async def _cap_insert(params: dict, caller: str) -> dict:
     text = params.get("text", "")
     owner_id = _parse_user_id(caller)
     if not owner_id or not mem_id:
-        return {"success": False, "error": "参数不完整"}
+        raise ValidationError("参数不完整")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
-        memory = await db.get(AgentMemory, mem_id)
+        memory = await db.get(MemoryRecord, mem_id)
         if not memory:
-            return {"success": False, "error": "记忆不存在"}
+            raise NotFound("记忆不存在")
         if memory.owner_id != owner_id:
-            return {"success": False, "error": "只能编辑自己的记忆"}
+            raise PermissionDenied("只能编辑自己的记忆")
         memory.text += "\n" + text
         memory.source = "edit"
         await db.commit()
@@ -1054,15 +1054,15 @@ async def _cap_insert(params: dict, caller: str) -> dict:
 async def _cap_list(params: dict, caller: str) -> dict:
     owner_id = _parse_user_id(caller)
     if not owner_id:
-        return {"success": False, "error": "无法解析调用者身份"}
+        raise PermissionDenied("无法解析调用者身份")
     limit = params.get("limit", 50)
     offset = params.get("offset", 0)
     await _ensure_init()
     async with AsyncSessionLocal() as db:
         stmt = (
-            select(AgentMemory)
-            .where(AgentMemory.owner_id == owner_id)
-            .order_by(AgentMemory.created_at.desc())
+            select(MemoryRecord)
+            .where(MemoryRecord.owner_id == owner_id)
+            .order_by(MemoryRecord.created_at.desc())
             .offset(offset)
             .limit(limit)
         )
@@ -1075,14 +1075,14 @@ async def _cap_delete(params: dict, caller: str) -> dict:
     mem_id = params.get("id")
     owner_id = _parse_user_id(caller)
     if not owner_id:
-        return {"success": False, "error": "无法解析调用者身份"}
+        raise PermissionDenied("无法解析调用者身份")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
-        memory = await db.get(AgentMemory, mem_id)
+        memory = await db.get(MemoryRecord, mem_id)
         if not memory:
-            return {"success": False, "error": "记忆不存在"}
+            raise NotFound("记忆不存在")
         if memory.owner_id != owner_id:
-            return {"success": False, "error": "只能删除自己的记忆"}
+            raise PermissionDenied("只能删除自己的记忆")
         await db.execute(
             text("DELETE FROM memory_links WHERE from_id = :id OR to_id = :id"),
             {"id": mem_id},
@@ -1249,7 +1249,7 @@ async def _cap_save_experience(params: dict, caller: str) -> dict:
     async with AsyncSessionLocal() as db:
         result = await _save_experience(db, trigger_condition, steps, tools_used, source_conversation_id)
     if result.get("error"):
-        return {"success": False, "error": result["error"]}
+        raise ValidationError(result["error"])
     return {"success": True, "data": result}
 
 
@@ -1271,12 +1271,12 @@ async def _cap_experience_feedback(params: dict, caller: str) -> dict:
     success = params.get("success", True)
     note = params.get("note")
     if not experience_id:
-        return {"success": False, "error": "experience_id required"}
+        raise ValidationError("experience_id required")
     await _ensure_init()
     async with AsyncSessionLocal() as db:
         result = await _experience_feedback(db, experience_id, success, note)
     if result.get("error"):
-        return {"success": False, "error": result["error"]}
+        raise ValidationError(result["error"])
     return {"success": True, "data": result}
 
 
@@ -1343,12 +1343,12 @@ async def _cap_overview_stats(params: dict, caller: str) -> dict:
         result = {}
 
         try:
-            mem_count = await db.scalar(text("SELECT COUNT(*) FROM agent_memory"))
-            mem_with_embedding = await db.scalar(text("SELECT COUNT(*) FROM agent_memory WHERE embedding IS NOT NULL"))
-            mem_avg_confidence = await db.scalar(text("SELECT COALESCE(AVG(confidence), 0) FROM agent_memory"))
-            mem_avg_recency = await db.scalar(text("SELECT COALESCE(AVG(recency_score), 0) FROM agent_memory"))
+            mem_count = await db.scalar(text("SELECT COUNT(*) FROM memory_records"))
+            mem_with_embedding = await db.scalar(text("SELECT COUNT(*) FROM memory_records WHERE embedding IS NOT NULL"))
+            mem_avg_confidence = await db.scalar(text("SELECT COALESCE(AVG(confidence), 0) FROM memory_records"))
+            mem_avg_recency = await db.scalar(text("SELECT COALESCE(AVG(recency_score), 0) FROM memory_records"))
             mem_link_count = await db.scalar(text("SELECT COUNT(*) FROM memory_links"))
-            mem_owner_count = await db.scalar(text("SELECT COUNT(DISTINCT owner_id) FROM agent_memory"))
+            mem_owner_count = await db.scalar(text("SELECT COUNT(DISTINCT owner_id) FROM memory_records"))
             result["memory"] = {
                 "total_count": mem_count or 0,
                 "with_embedding": mem_with_embedding or 0,
@@ -1362,11 +1362,11 @@ async def _cap_overview_stats(params: dict, caller: str) -> dict:
             result["memory"] = {"error": str(e)}
 
         try:
-            exp_count = await db.scalar(text("SELECT COUNT(*) FROM agent_experiences"))
-            exp_active = await db.scalar(text("SELECT COUNT(*) FROM agent_experiences WHERE active = true"))
-            exp_inactive = await db.scalar(text("SELECT COUNT(*) FROM agent_experiences WHERE active = false"))
-            exp_avg_weight = await db.scalar(text("SELECT COALESCE(AVG(success_weight), 0) FROM agent_experiences WHERE active = true"))
-            exp_total_fails = await db.scalar(text("SELECT COALESCE(SUM(fail_count), 0) FROM agent_experiences"))
+            exp_count = await db.scalar(text("SELECT COUNT(*) FROM memory_experiences"))
+            exp_active = await db.scalar(text("SELECT COUNT(*) FROM memory_experiences WHERE active = true"))
+            exp_inactive = await db.scalar(text("SELECT COUNT(*) FROM memory_experiences WHERE active = false"))
+            exp_avg_weight = await db.scalar(text("SELECT COALESCE(AVG(success_weight), 0) FROM memory_experiences WHERE active = true"))
+            exp_total_fails = await db.scalar(text("SELECT COALESCE(SUM(fail_count), 0) FROM memory_experiences"))
             result["experience"] = {
                 "total_count": exp_count or 0,
                 "active_count": exp_active or 0,

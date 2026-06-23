@@ -3,7 +3,7 @@ import json
 import logging
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..backend.models import AgentEvent
+from ..models import AgentEvent
 logger = logging.getLogger("v2.agent").getChild("engine.event_store")
 MAX_PAYLOAD_CONTENT_LENGTH = 50000
 

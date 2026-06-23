@@ -20,7 +20,7 @@ from .. import conversation_service as conv_svc
 from .. import tool_discovery
 from ..model_client import parse_inline_tool_calls, final_clean_content
 
-logger = logging.getLogger("v2.agent").getChild("router")
+logger = logging.getLogger("v2.agent").getChild("handlers.tool")
 
 SUBAGENT_MAX_ROUNDS = 4
 SUBAGENT_CONTEXT_LIMIT = 10

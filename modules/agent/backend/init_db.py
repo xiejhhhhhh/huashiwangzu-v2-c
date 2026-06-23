@@ -2,7 +2,7 @@
 import logging
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import AgentSystemPrompt, AgentEnterprisePrompt, AgentUserProfile, AgentConfig, ApprovalQueue, AgentUsageDaily
+from .models import AgentSystemPrompt, AgentEnterprisePrompt, AgentUserProfile, AgentConfig, ApprovalQueue, AgentUsageDaily
 
 logger = logging.getLogger("v2.agent").getChild("init_db")
 

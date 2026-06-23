@@ -82,7 +82,7 @@ async def check_action_allowed(
         return {"allowed": True}
 
     # 3. Read the agent's sensitive_action_policy from agent_configs
-    from models import AgentConfig
+    from .models import AgentConfig
     r = await db.execute(
         select(AgentConfig).where(AgentConfig.agent_code == agent_code)
     )
@@ -104,7 +104,7 @@ async def check_action_allowed(
         }
     elif policy == "confirm":
         # Insert into approval queue
-        from models import ApprovalQueue
+        from .models import ApprovalQueue
         approval = ApprovalQueue(
             agent_code=agent_code,
             tool_name=tool_name,
@@ -145,7 +145,7 @@ async def resolve_approval(
     Returns the updated approval record.
     """
     from datetime import datetime, timezone
-    from models import ApprovalQueue
+    from .models import ApprovalQueue
     r = await db.execute(
         select(ApprovalQueue).where(ApprovalQueue.id == approval_id)
     )
@@ -175,7 +175,7 @@ async def resolve_approval(
 
 async def list_pending_approvals(db: AsyncSession) -> list[dict]:
     """List all pending approvals for admin review."""
-    from models import ApprovalQueue
+    from .models import ApprovalQueue
     r = await db.execute(
         select(ApprovalQueue)
         .where(ApprovalQueue.status == "pending")

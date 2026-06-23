@@ -96,28 +96,9 @@ class SystemTaskQueue(Base, TimestampMixin):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="预计算的下次运行时间")
 
 
-_MIGRATIONS_DONE = False
-
-
 async def ensure_framework_scheduling_columns() -> None:
-    """ALTER ADD COLUMN IF NOT EXISTS for SystemTaskQueue scheduling fields.
-    Idempotent — safe to call multiple times.
+    """No-op: scheduling columns are now defined directly in the model and
+    created by Base.metadata.create_all at startup.
     """
-    global _MIGRATIONS_DONE
-    if _MIGRATIONS_DONE:
-        return
-    from sqlalchemy import text
-    from app.database import engine
-    cols = [
-        ("scheduled_at", "TIMESTAMP WITH TIME ZONE"),
-        ("recur", "VARCHAR(32)"),
-        ("next_run_at", "TIMESTAMP WITH TIME ZONE"),
-    ]
-    async with engine.begin() as conn:
-        for col_name, col_type in cols:
-            await conn.execute(text(
-                f"ALTER TABLE framework_system_task_queues "
-                f"ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
-            ))
-    _MIGRATIONS_DONE = True
+    pass
 

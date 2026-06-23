@@ -19,7 +19,7 @@ from ..profile_evolve import handle_profile_evolve
 from .. import tool_discovery
 from .. import conversation_service as conv_svc
 
-logger = logging.getLogger("v2.agent").getChild("router")
+logger = logging.getLogger("v2.agent").getChild("handlers.tasks")
 
 MEMORY_DISTILL_MODEL_KEY = "deepseek-v4-flash"
 
@@ -37,8 +37,8 @@ async def _handle_memory_dream(params: dict) -> dict:
     if not owner_id:
         return {"error": "Missing owner_id"}
     try:
-        from layered_memory import 触发dream
-        await 触发dream(owner_id)
+        from ..engine.layered_memory import trigger_dream
+        await trigger_dream(owner_id)
         return {"status": "ok", "owner_id": owner_id}
     except Exception as e:
         logger.warning("Memory dream handler failed (non-fatal): %s", e)
@@ -149,7 +149,7 @@ async def _handle_slow_tool(params: dict) -> dict:
     from app.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         try:
-            import conversation_service as conv_svc2
+            from .. import conversation_service as conv_svc2
             result_text = json.dumps(tool_result, ensure_ascii=False, default=str)
             if isinstance(tool_result, dict) and tool_result.get("error"):
                 await conv_svc2.add_message(
@@ -178,7 +178,7 @@ async def _handle_slow_tool(params: dict) -> dict:
                 logger.warning("Slow tool IM notify failed (non-fatal): %s", notify_exc)
 
             try:
-                from models import AgentConversation
+                from ..models import AgentConversation
                 from sqlalchemy import select
                 r = await db.execute(
                     select(AgentConversation).where(AgentConversation.id == conversation_id)

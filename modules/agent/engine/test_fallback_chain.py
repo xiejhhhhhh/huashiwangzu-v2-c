@@ -1,7 +1,13 @@
 """Tests for fallback_chain.py — model fallback chain."""
+import sys
+from pathlib import Path
+_MODULES_DIR = str(Path(__file__).resolve().parent.parent.parent)
+if _MODULES_DIR not in sys.path:
+    sys.path.insert(0, _MODULES_DIR)
+
 from unittest.mock import AsyncMock, patch
 import pytest
-from fallback_chain import _extract_reason
+from agent.engine.fallback_chain import _extract_reason
 
 
 class TestExtractReason:

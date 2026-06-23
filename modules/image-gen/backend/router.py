@@ -19,7 +19,7 @@ from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.module_registry import register_capability
 
-logger = logging.getLogger("v2.image-gen")
+logger = logging.getLogger("v2.image-gen").getChild("router")
 
 router = APIRouter(prefix="/api/image-gen", tags=["image-gen"])
 

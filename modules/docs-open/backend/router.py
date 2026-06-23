@@ -21,14 +21,11 @@ from app.core.exceptions import NotFound, AppException, PermissionDenied
 from app.services.file_service import check_file_access as framework_check_file_access
 from app.config import get_settings
 
-from .models import DocsOpenToken, ensure_tables
+from .models import DocsOpenToken
 from .token_service import create_token, validate_token, check_doc_access
 from .handlers.auth import get_authenticated_user, require_docs_permission, _get_base_url
 from .handlers.embed import _generate_embed_html, _get_doc_type
 from .handlers.content import _read_content, _write_content
-
-# Ensure tables exist at module load time
-ensure_tables()
 
 router = APIRouter(prefix="/api/docs", tags=["docs-open"])
 

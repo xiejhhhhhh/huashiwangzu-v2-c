@@ -1,7 +1,13 @@
 """Tests for compressor.py — slide window compression + cheap model summarization."""
+import sys
+from pathlib import Path
+_MODULES_DIR = str(Path(__file__).resolve().parent.parent.parent)
+if _MODULES_DIR not in sys.path:
+    sys.path.insert(0, _MODULES_DIR)
+
 import pytest
 from unittest.mock import AsyncMock, patch
-from compressor import _find_tool_pairs
+from agent.engine.compressor import _find_tool_pairs
 
 
 class MockEvent:

@@ -9,7 +9,7 @@ import json
 import logging
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import (
+from .models import (
     AgentConversation, AgentMessage, AgentMessageMeta,
     AgentSystemPrompt, AgentEnterprisePrompt, AgentUserProfile,
 )

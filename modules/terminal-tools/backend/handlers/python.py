@@ -26,7 +26,7 @@ from .sandbox import (
     _MAX_OUTPUT_BYTES,
 )
 
-logger = logging.getLogger("v2.terminal-tools")
+logger = logging.getLogger("v2.terminal-tools").getChild("handlers.python")
 
 _CHART_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg"}
 
