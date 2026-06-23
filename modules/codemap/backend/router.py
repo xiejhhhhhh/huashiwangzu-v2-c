@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db, AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.schemas.common import ApiResponse
+from app.core.exceptions import NotFound
 from app.services.module_registry import register_capability
 
 from . import file_lock
@@ -271,7 +272,7 @@ async def http_get_file(
     await _increment_query_count(db)
     result = graph.get_file(body.path)
     if result is None:
-        return ApiResponse(success=False, error=f"File not found: {body.path}", data=None)
+        raise NotFound(f"File not found: {body.path}")
     result = await _add_reliability_note(result, body.path, db)
     return ApiResponse(data=result)
 

@@ -239,10 +239,13 @@ async def handle_chat(payload, db: AsyncSession, user: User):
         timeline: list[dict] = []
         _pending_events: list[dict] = []
         _event_round = 0
+        _persisted_event_count = 0
         try:
             _session_key = f"conv_{payload.conversation_id}"
             重置粘滞(_session_key)
             for _round in range(MAX_TOOL_ROUNDS):
+                # Y1: 每轮开头重置 full，防止跨轮累积
+                full = []
                 logger.info("[DIAG] event_stream tool_round %d/%d", _round + 1, MAX_TOOL_ROUNDS)
                 logger.info("[DIAG] event_stream calling chat_with_degradation_chain")
                 result = await chat_with_degradation_chain(
@@ -473,6 +476,20 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                             "llm_response_id": None,
                         })
 
+                # B4: 增量持久化——每轮结束后提交本轮 events，崩溃不全丢
+                try:
+                    from app.database import AsyncSessionLocal as _CP_ASL
+                    async with _CP_ASL() as _cp_db:
+                        for pe in _pending_events[_persisted_event_count:]:
+                            await record_event(
+                                _cp_db, payload.conversation_id,
+                                pe["event_type"], pe["payload"],
+                                pe.get("llm_response_id"),
+                            )
+                        _persisted_event_count = len(_pending_events)
+                except Exception as _cp_exc:
+                    logger.warning("Incremental persist failed (non-fatal): %s", _cp_exc)
+
                 # ── stuck_detector ────────────────
                 _stuck_check = {"stuck": False}
                 if tool_calls:
@@ -499,9 +516,26 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                     logger.warning("stuck_detector打断工具循环: %s", _stuck_check["reason"])
                     yield f"data: {json.dumps({'type': 'error', 'content': _stuck_check['reason']}, ensure_ascii=False)}\n\n".encode("utf-8")
                     break
-        except Exception as exc:
+            else:
+                # Y2: 工具轮耗尽后加一轮无工具的最终 LLM 回复
+                logger.info("[DIAG] Tool rounds exhausted, generating final summary")
+                _final_summary = await chat_with_degradation_chain(
+                    messages,
+                    payload.profile_key or "deepseek-v4-flash",
+                    tools=None,
+                    conversation_id=payload.conversation_id,
+                )
+                if _final_summary.get("content"):
+                    final_text = str(_final_summary["content"])
+                    full = [final_text]
+                    thinking_parts.append(final_text)
+                    yield f"data: {json.dumps({'type': 'token', 'content': final_text}, ensure_ascii=False)}\n\n".encode("utf-8")
+                elif _final_summary.get("error"):
+                    yield f"data: {json.dumps({'type': 'error', 'content': _final_summary['error']}, ensure_ascii=False)}\n\n".encode("utf-8")
+        except (Exception, asyncio.CancelledError) as exc:
             logger.info("[DIAG] event_stream EXCEPTION %s: %s", type(exc).__name__, str(exc)[:300])
-            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n".encode("utf-8")
+            if not isinstance(exc, asyncio.CancelledError):
+                yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n".encode("utf-8")
         finally:
             try:
                 from app.database import AsyncSessionLocal
@@ -543,31 +577,34 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                             await s2.commit()
                         except Exception as e:
                             logger.warning("Memory distill enqueue failed (non-fatal): %s", e)
-                if full and not any(
-                    e["event_type"] == "assistant_msg" and e["payload"].get("content", "") == clean_assistant_content[:200]
-                    for e in _pending_events
-                ):
-                    _final_rid = f"round_{_event_round}"
-                    _event_round += 1
-                    _pending_events.append({
-                        "event_type": "assistant_msg",
-                        "payload": {"content": clean_assistant_content},
-                        "llm_response_id": _final_rid,
-                    })
-                for pe in _pending_events:
-                    try:
-                        await record_event(
-                            s2, payload.conversation_id,
-                            pe["event_type"], pe["payload"],
-                            pe.get("llm_response_id"),
-                        )
-                    except Exception as pe_exc:
-                        logger.warning("record_event failed (non-fatal): %s", pe_exc)
-                logger.info("[DIAG] event_stream DB persist done (events=%d)", len(_pending_events))
+                    if full and not any(
+                        e["event_type"] == "assistant_msg" and e["payload"].get("content", "") == clean_assistant_content[:200]
+                        for e in _pending_events
+                    ):
+                        _final_rid = f"round_{_event_round}"
+                        _event_round += 1
+                        _pending_events.append({
+                            "event_type": "assistant_msg",
+                            "payload": {"content": clean_assistant_content},
+                            "llm_response_id": _final_rid,
+                        })
+                    for pe in _pending_events[_persisted_event_count:]:
+                        try:
+                            await record_event(
+                                s2, payload.conversation_id,
+                                pe["event_type"], pe["payload"],
+                                pe.get("llm_response_id"),
+                            )
+                        except Exception as pe_exc:
+                            logger.warning("record_event failed (non-fatal): %s", pe_exc)
+                    logger.info("[DIAG] event_stream DB persist done (events=%d)", len(_pending_events))
             except Exception as exc:
                 logger.warning("event_stream persist/evolve failed (non-fatal): %s", exc)
             logger.info("[DIAG] event_stream yielding [DONE]")
-            yield b"data: [DONE]\n\n"
+            try:
+                yield b"data: [DONE]\n\n"
+            except GeneratorExit:
+                logger.info("[DIAG] event_stream client disconnected, skipping [DONE]")
             logger.info("[DIAG] event_stream EXIT")
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

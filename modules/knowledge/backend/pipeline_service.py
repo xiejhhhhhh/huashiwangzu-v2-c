@@ -51,6 +51,14 @@ async def _run_pipeline(
     else:
         return {"error": f"Document {document_id} not found"}
 
+    # Y3/Y6: 前步失败则短路，不继续跑后续步骤
+    raw_step = steps.get("raw", {})
+    if "error" in raw_step or raw_step.get("status") == "failed":
+        logger.error("Pipeline aborted after step 1 (raw collection failed) for doc_id=%d", document_id)
+        doc.raw_status = "failed"
+        await db.commit()
+        return {"document_id": document_id, "status": "failed", "steps": steps}
+
     # 第2步：融合（固化数据，done 则跳过）
     logger.info("Pipeline step 2/5: fusion doc_id=%d", document_id)
     if doc.fusion_status != "done" or force_fusion:
@@ -62,6 +70,11 @@ async def _run_pipeline(
             logger.error("Pipeline fusion failed: %s", e)
     else:
         steps["fusion"] = {"status": "skipped", "reason": "already done"}
+
+    # Y6: 融合失败则短路，不跑画像/图谱
+    if "error" in steps.get("fusion", {}):
+        logger.error("Pipeline aborted after step 2 (fusion failed) for doc_id=%d", document_id)
+        return {"document_id": document_id, "status": "failed", "steps": steps}
 
     # 第3步：画像（LLM 分析层，始终重跑——模型升级后可能产出更好结果）
     logger.info("Pipeline step 3/5: profile doc_id=%d", document_id)

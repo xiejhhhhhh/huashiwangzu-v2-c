@@ -109,11 +109,10 @@ async def vector_search(db: AsyncSession, query: str, owner_id: int, top_k: int 
     if not query_emb:
         return []
 
-    # 查询有 embedding 的 chunk
+    # 查询有 embedding 的 chunk（移除硬上限，大文档也能召全）
     stmt = (
         select(KbChunk)
         .where(KbChunk.owner_id == owner_id, KbChunk.embedding.isnot(None))
-        .limit(200)
     )
     r = await db.execute(stmt)
     chunks = r.scalars().all()

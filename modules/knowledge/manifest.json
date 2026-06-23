@@ -38,7 +38,7 @@
     {"action": "get_entity_dictionary", "description": "查询实体词典", "parameters": {"keyword": {"type": "string", "description": "搜索关键词（可选）"}}, "min_role": "viewer"},
     {"action": "get_graph_context", "description": "查询图谱上下文", "parameters": {"entity_id": {"type": "integer", "description": "实体ID"}}, "min_role": "viewer"},
     {"action": "get_pending_count", "description": "获取待确认数量（治理用）", "parameters": {}, "min_role": "viewer"},
-    {"action": "get_evidence_detail", "description": "获取证据详情", "parameters": {"evidence_id": {"type": "integer", "description": "证据ID"}}, "min_role": "viewer"},
+    {"action": "get_evidence_detail", "description": "获取证据详情", "parameters": {"entity_id": {"type": "integer", "description": "实体ID"}}, "min_role": "viewer"},
     {"action": "get_ocr_words", "description": "获取 PDF OCR 词坐标", "parameters": {"file_id": {"type": "integer", "description": "文件ID"}, "page": {"type": "integer", "description": "页号"}}, "min_role": "viewer"},
     {"action": "ingest", "description": "将文件注册到知识库并触发分析", "parameters": {"file_id": {"type": "integer", "description": "文件ID"}}, "min_role": "editor"}
   ],

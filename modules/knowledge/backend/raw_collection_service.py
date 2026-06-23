@@ -22,7 +22,7 @@ from app.database import AsyncSessionLocal
 from app.services.task_worker import register_task_handler
 
 from .models import KbDocument, KbRawData
-from .parsing_service import parse_document
+from .parsing_service import parse_document, IMAGE_FORMATS
 from .pdf_render_service import render_page_to_image, get_pdf_page_count
 
 logger = logging.getLogger("v2.knowledge.raw_collection")
@@ -82,12 +82,12 @@ def _hash_content(content: str) -> str:
 
 async def _exec_round_1_text(
     doc_id: int, file_id: int, owner_id: int,
-    page: int, caller: str,
+    page: int, caller: str, ext: str = "pdf",
 ) -> dict:
     """第1轮：文本提取。独立 DB 会话，单独 commit。"""
     async with AsyncSessionLocal() as task_db:
         try:
-            parsed = await parse_document(file_id, "pdf", caller)
+            parsed = await parse_document(file_id, ext, caller)
             blocks = parsed.get("blocks", [])
             page_texts = [
                 (b.get("text") or "").strip()
@@ -254,6 +254,7 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
 
     ext = (doc.extension or "").lower()
     is_pdf = ext == "pdf"
+    is_image = ext in IMAGE_FORMATS
 
     if is_pdf:
         try:
@@ -268,6 +269,15 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
     doc.total_pages = total_pages
     await db.commit()
 
+    # 按文件类型决定采集轮次
+    if is_pdf:
+        rounds_for_type = [1, 2, 3]
+    elif is_image:
+        rounds_for_type = [1, 2]
+    else:
+        rounds_for_type = [1]
+    expected_rounds = len(rounds_for_type)
+
     # 已完成页跳过 → 幂等可重入
     dr = await db.execute(
         select(KbRawData.page).where(KbRawData.document_id == doc_id)
@@ -275,7 +285,6 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
     page_round_count: dict[int, int] = {}
     for (pg,) in dr.all():
         page_round_count[pg] = page_round_count.get(pg, 0) + 1
-    expected_rounds = 3 if is_pdf else 2
     done_pages = {pg for pg, cnt in page_round_count.items() if cnt >= expected_rounds}
 
     # 清除未完成页的残缺旧记录
@@ -291,9 +300,9 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
 
     # 预渲染页面图片（只一次，OCR 与视觉共用）
     page_images: dict[int, bytes] = {}
-    if is_pdf:
+    if is_pdf and (2 in rounds_for_type or 3 in rounds_for_type):
         page_images = await _pre_render_pages(file_id, user_id, total_pages)
-    else:
+    elif is_image and (2 in rounds_for_type or 3 in rounds_for_type):
         # 图片文件：读原始字节一次
         from pathlib import Path
         from app.config import get_settings
@@ -315,7 +324,7 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
     async def _task_wrapper(round_num: int, page: int) -> dict:
         async with sem:
             if round_num == 1:
-                return await _exec_round_1_text(doc_id, file_id, owner_id, page, caller)
+                return await _exec_round_1_text(doc_id, file_id, owner_id, page, caller, ext=ext)
             elif round_num == 2:
                 return await _exec_round_2_ocr(doc_id, file_id, owner_id, page, user_id, img_bytes=page_images.get(page))
             elif round_num == 3:
@@ -327,9 +336,8 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
         if page in done_pages:
             logger.info("Raw collection page=%d already done, skip", page)
             continue
-        tasks.append(_task_wrapper(1, page))
-        tasks.append(_task_wrapper(2, page))
-        tasks.append(_task_wrapper(3, page))
+        for r in rounds_for_type:
+            tasks.append(_task_wrapper(r, page))
 
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -340,14 +348,23 @@ async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id
                 all_results.append(r)
 
     await db.refresh(doc)
-    doc.raw_status = "done"
+    # Y3: 全部页（所有轮次）失败时标 failed，不静默 done
+    if tasks:
+        failed_count = sum(1 for r in results if isinstance(r, Exception))
+        if failed_count == len(tasks):
+            doc.raw_status = "failed"
+            logger.error("All raw collection tasks failed for doc_id=%d", doc_id)
+        else:
+            doc.raw_status = "done"
+    else:
+        doc.raw_status = "done"
     await db.commit()
 
     return {
         "document_id": doc_id,
         "total_pages": total_pages,
         "rounds": all_results,
-        "status": "done",
+        "status": doc.raw_status,
     }
 
 

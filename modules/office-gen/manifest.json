@@ -19,7 +19,12 @@
   "allow_multiple": false,
   "supported_formats": [],
   "editable_formats": [],
-  "creatable_formats": ["docx", "xlsx", "pptx", "pdf"],
+  "creatable_formats": [
+    {"extension": "docx", "label": "Word 文档", "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    {"extension": "xlsx", "label": "Excel 工作簿", "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    {"extension": "pptx", "label": "PPT 演示文稿", "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    {"extension": "pdf", "label": "PDF 文档", "mime_type": "application/pdf"}
+  ],
   "module_version": "1.0.0",
   "contract_version": "2.0",
   "backend": {

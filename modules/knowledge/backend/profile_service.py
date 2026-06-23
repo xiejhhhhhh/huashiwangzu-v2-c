@@ -44,12 +44,13 @@ async def generate_document_profile(
 
     从 kb_page_fusions 聚合所有页的融合正文 → LLM 提炼文件画像 → 写入 kb_document_profiles。
     """
-    # 1. 读取所有页融合内容
+    # 1. 读取所有页融合内容（过滤空文本，与 fusion_service / entity_service 一致）
     r = await db.execute(
         select(KbPageFusion)
         .where(
             KbPageFusion.document_id == document_id,
             KbPageFusion.fusion_status == "done",
+            KbPageFusion.fused_text != "",
         )
         .order_by(KbPageFusion.page)
     )

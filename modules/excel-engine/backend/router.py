@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from app.database import get_db
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
+from app.core.exceptions import NotFound
 from app.services.file_service import check_file_access
 from app.services.module_registry import register_capability
 
@@ -628,10 +629,10 @@ async def download_file(state_key: str, db: AsyncSession = Depends(get_db),
     state = await read_state_full(db, state_key, owner_id=user.id)
     result = await _handle_export('download', state, state_key, 'Sheet1', {}, db)
     if result.get('code') != 0:
-        raise HTTPException(status_code=404, detail=result.get('msg', 'Export failed'))
+        raise NotFound(result.get('msg', 'Export failed'))
     file_path = result.get('file', '')
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail='File not found')
+        raise NotFound('File not found')
     return FileResponse(file_path, filename=result.get('filename', 'export.xlsx'),
                         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
