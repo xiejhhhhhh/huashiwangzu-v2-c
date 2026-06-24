@@ -151,4 +151,66 @@ class ContextSnapshot(Base, TimestampMixin):
     restored_from: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="从哪个snapshot恢复")
 
 
+# ── Agent 状态数据表（原文件存储迁移至 PostgreSQL） ──────────────
+
+class AgentHookRun(Base, TimestampMixin):
+    """Hook run history for lifecycle governance."""
+    __tablename__ = "agent_hook_runs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    hook_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    duration_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AgentRecallQuality(Base, TimestampMixin):
+    """Recall quality metrics for governance dashboard."""
+    __tablename__ = "agent_recall_qualities"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    layer: Mapped[str] = mapped_column(String(32), nullable=False)
+    limit_val: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_results: Mapped[int] = mapped_column(Integer, nullable=False)
+    avg_similarity: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    result_ids: Mapped[list] = mapped_column(JSON, default=list)
+    source_types: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    duration_ms: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class AgentBudgetState(Base, TimestampMixin):
+    """Per-conversation budget tracker state."""
+    __tablename__ = "agent_budget_states"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True, index=True)
+    rounds_data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AgentStuckRound(Base, TimestampMixin):
+    """Per-conversation stuck detector round history."""
+    __tablename__ = "agent_stuck_rounds"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True, index=True)
+    rounds_data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AgentFailureDiagnostic(Base, TimestampMixin):
+    """Structured failure diagnostic records."""
+    __tablename__ = "agent_failure_diagnostics"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    extra_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
 from .models_prompt import AgentPrompt

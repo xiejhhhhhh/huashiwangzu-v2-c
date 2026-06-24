@@ -161,30 +161,25 @@ class TestHookMaintenanceChain:
     def test_hooks_maintenance_interval_positive(self):
         assert "_MAINTENANCE_INTERVAL = 300" in HOOKS_SRC
 
-    def test_budget_tracker_file_persisted(self):
-        assert "_BUDGET_DATA_FILE" in BUDGET_SRC
-        assert "_save_budget_state" in BUDGET_SRC
-        assert "_load_budget_state" in BUDGET_SRC
+    def test_budget_tracker_db_persisted(self):
+        assert "AgentBudgetState" in BUDGET_SRC
+        assert "_save_to_db" in BUDGET_SRC
+        assert "_load_from_db" in BUDGET_SRC
 
-    def test_stuck_detector_file_persisted(self):
+    def test_stuck_detector_db_persisted(self):
         stuck_src = (ENGINE_DIR / "stuck_detector.py").read_text("utf-8")
-        assert "_SAVE_PATH" in stuck_src or "_STUCK_DATA_FILE" in stuck_src
-        assert "tempfile.mkstemp" in stuck_src
+        assert "AgentStuckRound" in stuck_src
+        assert "_save_history" in stuck_src
 
-    def test_hook_runs_max_age_days_exists(self):
-        assert "_HOOK_RUN_MAX_AGE_DAYS" in HOOKS_SRC
+    def test_hook_runs_db_persisted(self):
+        assert "AgentHookRun" in HOOKS_SRC
+        assert "_append_hook_run" in HOOKS_SRC
 
-    def test_hook_runs_max_bytes_exists(self):
-        assert "_HOOK_RUN_MAX_BYTES" in HOOKS_SRC
+    def test_hook_runs_limit_exists(self):
+        assert "_HOOK_RUN_HISTORY_MAX" in HOOKS_SRC
 
-    def test_hook_runs_trim_function_exists(self):
-        assert "_trim_hook_runs" in HOOKS_SRC
-
-    def test_hook_runs_max_age_is_7_days(self):
-        assert "_HOOK_RUN_MAX_AGE_DAYS = 7" in HOOKS_SRC
-
-    def test_hook_runs_max_bytes_is_1mb(self):
-        assert "_HOOK_RUN_MAX_BYTES = 1048576" in HOOKS_SRC
+    def test_hook_runs_admin_endpoint_accepts_owner_id(self):
+        assert "owner_id" in HOOKS_SRC
 
     def test_hook_lifecycle_admin_endpoint(self):
         assert "handle_admin_hook_lifecycle" in ADMIN_SRC
@@ -339,21 +334,14 @@ class TestFailureDiagnostics:
     DIAG_SRC = (ENGINE_DIR / "failure_diagnostics.py").read_text("utf-8")
 
     def test_record_failure_function_exists(self):
-        assert "def record_failure" in self.DIAG_SRC
+        assert "async def record_failure" in self.DIAG_SRC
 
     def test_read_failure_diagnostics_exists(self):
-        assert "def read_failure_diagnostics" in self.DIAG_SRC
+        assert "async def read_failure_diagnostics" in self.DIAG_SRC
 
-    def test_diagnostic_max_bytes_512kb(self):
-        assert "_DIAGNOSTIC_MAX_BYTES = 524288" in self.DIAG_SRC
-
-    def test_jsonl_append_only_write(self):
-        assert ".jsonl" in self.DIAG_SRC
-        assert "f.flush()" in self.DIAG_SRC
-        assert "os.fsync" in self.DIAG_SRC
-
-    def test_trim_diagnostic_file_exists(self):
-        assert "_trim_diagnostic_file" in self.DIAG_SRC
+    def test_db_persisted_not_file(self):
+        assert "FDModel" in self.DIAG_SRC
+        assert ".jsonl" not in self.DIAG_SRC
 
     def test_admin_handler_exists(self):
         assert "handle_admin_failure_diagnostics" in ADMIN_SRC
@@ -366,23 +354,14 @@ class TestFailureDiagnostics:
         """Verify post_turn_hooks wires record_failure for hook failures."""
         assert "record_failure(" in HOOKS_SRC
 
-    def test_diagnostics_recorded_from_recall_quality_write_failure(self):
-        """Verify layered_memory wires record_failure for write failures."""
-        layered_src = (ENGINE_DIR / "layered_memory.py").read_text("utf-8")
-        assert "record_failure(" in layered_src
-
     def test_diagnostics_recorded_from_chat_yield_final_stream(self):
         """Verify chat.py wires record_failure in yield_final_stream."""
         assert "record_failure(" in CHAT_SRC
 
-    def test_recall_quality_has_age_control(self):
+    def test_recall_quality_has_limit(self):
         layered_src = (ENGINE_DIR / "layered_memory.py").read_text("utf-8")
-        assert "_RECALL_QUALITY_MAX_AGE_DAYS" in layered_src
+        assert "_RECALL_QUALITY_MAX_ENTRIES" in layered_src
 
-    def test_recall_quality_has_bytes_control(self):
+    def test_recall_quality_db_persisted(self):
         layered_src = (ENGINE_DIR / "layered_memory.py").read_text("utf-8")
-        assert "_RECALL_QUALITY_MAX_BYTES" in layered_src
-
-    def test_recall_quality_trim_function(self):
-        layered_src = (ENGINE_DIR / "layered_memory.py").read_text("utf-8")
-        assert "_trim_recall_quality" in layered_src
+        assert "AgentRecallQuality" in layered_src

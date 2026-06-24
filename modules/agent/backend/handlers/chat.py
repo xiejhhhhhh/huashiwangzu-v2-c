@@ -113,6 +113,7 @@ async def _yield_final_stream(
     kwargs: dict, full: list[str], thinking_parts: list[str],
     timeline: list[dict], profile_key: str = "deepseek-v4-flash",
     conversation_id: int | None = None,
+    owner_id: int | None = None,
 ):
     """Stream final content while checking for inline XML tool calls.
     
@@ -166,7 +167,7 @@ async def _yield_final_stream(
     except Exception as exc:
         logger.exception("_yield_final_stream unexpected error: %s", exc)
         from ..engine.failure_diagnostics import record_failure
-        record_failure("chat", "yield_final_stream", type(exc).__name__, str(exc), conversation_id)
+        await record_failure("chat", "yield_final_stream", type(exc).__name__, str(exc), conversation_id, owner_id)
         yield f"data: {json.dumps({'type': 'error', 'content': f'(stream error: {exc})'}, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
@@ -228,10 +229,14 @@ async def handle_chat(payload, db: AsyncSession, user: User):
         try:
             try:
                 _session_key = f"conv_{payload.conversation_id}"
-                reset_stuck(_session_key)
+                from app.database import AsyncSessionLocal as _RS_ASL
+                async with _RS_ASL() as _rs_db:
+                    await reset_stuck(_rs_db, _session_key)
                 budget_tracker = get_budget_tracker()
                 _budget_session_key = f"budget_conv_{payload.conversation_id}"
-                budget_tracker.reset(_budget_session_key)
+                from app.database import AsyncSessionLocal as _BT_ASL
+                async with _BT_ASL() as _bt_db:
+                    await budget_tracker.reset(_bt_db, _budget_session_key)
                 _tool_round_tokens_before = 0
                 for _round in range(MAX_TOOL_ROUNDS):
                     # Y1: 每轮开头重置 full，防止跨轮累积
@@ -281,6 +286,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                             stream_kwargs, full, thinking_parts, timeline,
                             profile_key=payload.profile_key or "deepseek-v4-flash",
                             conversation_id=payload.conversation_id,
+                            owner_id=user.id,
                         ):
                             if isinstance(chunk, dict) and chunk.get("type") == "_inline_tool_calls":
                                 inline_from_stream = chunk.get("tool_calls", [])
@@ -489,26 +495,30 @@ async def handle_chat(payload, db: AsyncSession, user: User):
 
                     # ── stuck_detector ────────────────
                     _stuck_check = {"stuck": False}
-                    if tool_calls:
-                        for tc in tool_calls:
-                            fn = tc.get("function", tc)
-                            _stuck_check = detect_stuck(
-                                tool_name=fn.get("name", ""),
-                                tool_args=fn.get("arguments", {}),
-                                error_text=None, is_empty_response=False,
+                    from app.database import AsyncSessionLocal as _SD_ASL
+                    async with _SD_ASL() as _sd_db:
+                        if tool_calls:
+                            for tc in tool_calls:
+                                fn = tc.get("function", tc)
+                                _stuck_check = await detect_stuck(
+                                    _sd_db,
+                                    tool_name=fn.get("name", ""),
+                                    tool_args=fn.get("arguments", {}),
+                                    error_text=None, is_empty_response=False,
+                                    session_key=_session_key,
+                                )
+                                if _stuck_check.get("stuck"):
+                                    break
+                        else:
+                            has_error = bool(result.get("error"))
+                            is_empty = not result.get("content") and not result.get("tool_calls")
+                            _stuck_check = await detect_stuck(
+                                _sd_db,
+                                tool_name=None, tool_args=None,
+                                error_text=str(result.get("error"))[:100] if has_error else None,
+                                is_empty_response=is_empty,
                                 session_key=_session_key,
                             )
-                            if _stuck_check.get("stuck"):
-                                break
-                    else:
-                        has_error = bool(result.get("error"))
-                        is_empty = not result.get("content") and not result.get("tool_calls")
-                        _stuck_check = detect_stuck(
-                            tool_name=None, tool_args=None,
-                            error_text=str(result.get("error"))[:100] if has_error else None,
-                            is_empty_response=is_empty,
-                            session_key=_session_key,
-                        )
                     if _stuck_check.get("stuck"):
                         logger.warning("stuck_detector打断工具循环: %s", _stuck_check["reason"])
                         yield f"data: {json.dumps({'type': 'error', 'content': _stuck_check['reason']}, ensure_ascii=False)}\n\n".encode("utf-8")
@@ -518,13 +528,16 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                     _tokens_after = sum(
                         max(estimate_tokens([m]), 0) for m in messages[-10:]
                     ) if messages else 0
-                    budget_tracker.record_round(
-                        _budget_session_key,
-                        _tool_round_tokens_before,
-                        _tokens_after,
-                    )
-                    _tool_round_tokens_before = _tokens_after
-                    _should_stop, _stop_reason = budget_tracker.should_stop(_budget_session_key)
+                    from app.database import AsyncSessionLocal as _BT2_ASL
+                    async with _BT2_ASL() as _bt2_db:
+                        await budget_tracker.record_round(
+                            _bt2_db,
+                            _budget_session_key,
+                            _tool_round_tokens_before,
+                            _tokens_after,
+                        )
+                        _tool_round_tokens_before = _tokens_after
+                        _should_stop, _stop_reason = await budget_tracker.should_stop(_bt2_db, _budget_session_key)
                     if _should_stop:
                         logger.warning("diminishing_returns打断工具循环: %s", _stop_reason)
                         # Emit a diagnostic event and break — don't yield error,
@@ -562,7 +575,7 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                 logger.info("[DIAG] event_stream EXCEPTION %s: %s", type(exc).__name__, str(exc)[:300])
                 if not isinstance(exc, asyncio.CancelledError):
                     from ..engine.failure_diagnostics import record_failure
-                    record_failure("chat", "event_stream", type(exc).__name__, str(exc), payload.conversation_id)
+                    await record_failure("chat", "event_stream", type(exc).__name__, str(exc), payload.conversation_id, user.id)
                     try:
                         yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n".encode("utf-8")
                     except GeneratorExit:

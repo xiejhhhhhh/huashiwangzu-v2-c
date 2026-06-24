@@ -164,9 +164,10 @@ class TestMemoryRecall:
         assert "except Exception as e" in src
         assert "return []" in src
 
-    def test_recall_quality_file_handles_corruption(self):
+    def test_recall_quality_db_persisted(self):
         src = Path(self.MEMORY_FILE).read_text("utf-8")
-        assert "json.JSONDecodeError" in src
+        assert "AgentRecallQuality" in src
+        assert "_append_recall_quality" in src
 
     def test_static_memory_handles_missing_dir(self):
         src = Path(self.MEMORY_FILE).read_text("utf-8")
@@ -184,23 +185,18 @@ class TestHookRunPersistence:
 
     HOOKS_FILE = str(ENGINE_DIR / "post_turn_hooks.py")
 
-    def test_hook_runs_file_has_atomic_write(self):
+    def test_hook_runs_db_persisted(self):
         src = Path(self.HOOKS_FILE).read_text("utf-8")
-        assert "tempfile.mkstemp" in src
-
-    def test_hook_runs_file_handles_corruption(self):
-        src = Path(self.HOOKS_FILE).read_text("utf-8")
-        assert "json.JSONDecodeError" in src
+        assert "AgentHookRun" in src
+        assert "_append_hook_run" in src
 
     def test_hook_runs_individual_safe_run(self):
         src = Path(self.HOOKS_FILE).read_text("utf-8")
         assert "except Exception as exc" in src
 
-    def test_hook_runs_has_dual_growth_control(self):
+    def test_hook_runs_has_limit(self):
         src = Path(self.HOOKS_FILE).read_text("utf-8")
-        assert "_HOOK_RUN_MAX_AGE_DAYS" in src
-        assert "_HOOK_RUN_MAX_BYTES" in src
-        assert "_trim_hook_runs" in src
+        assert "_HOOK_RUN_HISTORY_MAX" in src
 
     def test_hook_lifecycle_endpoint_available(self, admin_token):
         resp = requests.get(

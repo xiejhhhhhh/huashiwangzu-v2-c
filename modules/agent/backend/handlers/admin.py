@@ -315,28 +315,47 @@ async def handle_admin_overview(db: AsyncSession, user) -> ApiResponse:
     return ApiResponse(data=result)
 
 
-async def handle_admin_hook_lifecycle(db: AsyncSession, user) -> ApiResponse:
-    """Hook 生命周期状态：维护循环状态、hook 运行历史。"""
+async def handle_admin_hook_lifecycle(db: AsyncSession, user, owner_id: int | None = None) -> ApiResponse:
+    """Hook 生命周期状态：维护循环状态、hook 运行历史。
+
+    Query params:
+        owner_id: Filter by user ID. Defaults to current user.
+        all: If "true", return data for all users.
+    """
     from ..engine.post_turn_hooks import get_hook_lifecycle_state
-    state = get_hook_lifecycle_state()
+
+    actual_owner_id = owner_id if owner_id is not None else user.id
+    state = await get_hook_lifecycle_state(db, actual_owner_id if actual_owner_id > 0 else None)
     return ApiResponse(data=state)
 
 
-async def handle_admin_failure_diagnostics(limit: int = 50, _=None, __=None) -> ApiResponse:
+async def handle_admin_failure_diagnostics(db: AsyncSession, user, limit: int = 50, owner_id: int | None = None) -> ApiResponse:
     """Return the most recent failure diagnostic records.
 
     Query params:
         limit: How many records to return (default 50, max 200).
+        owner_id: Filter by user ID. Defaults to current user.
     """
     from ..engine.failure_diagnostics import read_failure_diagnostics
-    records = read_failure_diagnostics(limit=min(limit, 200))
+    actual_owner_id = owner_id if owner_id is not None else user.id
+    records = await read_failure_diagnostics(
+        limit=min(limit, 200),
+        owner_id=actual_owner_id if actual_owner_id > 0 else None,
+    )
     return ApiResponse(data={"total_returned": len(records), "diagnostics": records})
 
 
-async def handle_admin_memory_quality(db: AsyncSession, user) -> ApiResponse:
-    """记忆检索质量概览：命中率、噪声率、可信度得分（engine 侧治理指标）。"""
+async def handle_admin_memory_quality(db: AsyncSession, user, owner_id: int | None = None) -> ApiResponse:
+    """记忆检索质量概览：命中率、噪声率、可信度得分（engine 侧治理指标）。
+
+    Query params:
+        owner_id: Filter by user ID. Defaults to current user.
+    """
     from ..engine.layered_memory import get_recall_quality_summary
-    quality = get_recall_quality_summary()
+    actual_owner_id = owner_id if owner_id is not None else user.id
+    quality = await get_recall_quality_summary(
+        db, owner_id=actual_owner_id if actual_owner_id > 0 else None,
+    )
     return ApiResponse(data=quality)
 
 

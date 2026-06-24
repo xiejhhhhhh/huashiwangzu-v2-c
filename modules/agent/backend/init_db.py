@@ -307,6 +307,94 @@ async def ensure_snapshot_table(db: AsyncSession) -> None:
         logger.warning("Migration: snapshot table check failed: %s", e)
 
 
+async def ensure_agent_state_tables(db: AsyncSession) -> None:
+    """Ensure the 5 agent state tables exist (idempotent CREATE TABLE IF NOT EXISTS)."""
+    tables = [
+        """
+        CREATE TABLE IF NOT EXISTS agent_hook_runs (
+            id BIGSERIAL PRIMARY KEY,
+            owner_id INTEGER NOT NULL,
+            conversation_id BIGINT,
+            hook_name VARCHAR(128) NOT NULL,
+            success BOOLEAN NOT NULL,
+            duration_ms DOUBLE PRECISION NOT NULL,
+            detail TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_recall_qualities (
+            id BIGSERIAL PRIMARY KEY,
+            owner_id INTEGER NOT NULL,
+            conversation_id BIGINT,
+            query TEXT NOT NULL,
+            layer VARCHAR(32) NOT NULL,
+            limit_val INTEGER NOT NULL,
+            total_results INTEGER NOT NULL,
+            avg_similarity DOUBLE PRECISION NOT NULL,
+            avg_confidence DOUBLE PRECISION NOT NULL,
+            result_ids JSONB DEFAULT '[]'::jsonb,
+            source_types JSONB,
+            duration_ms DOUBLE PRECISION DEFAULT 0.0,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_budget_states (
+            id BIGSERIAL PRIMARY KEY,
+            owner_id INTEGER NOT NULL,
+            conversation_id BIGINT NOT NULL UNIQUE,
+            rounds_data JSONB DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_stuck_rounds (
+            id BIGSERIAL PRIMARY KEY,
+            owner_id INTEGER NOT NULL,
+            conversation_id BIGINT NOT NULL UNIQUE,
+            rounds_data JSONB DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_failure_diagnostics (
+            id BIGSERIAL PRIMARY KEY,
+            owner_id INTEGER,
+            conversation_id BIGINT,
+            source VARCHAR(32) NOT NULL,
+            operation VARCHAR(64) NOT NULL,
+            error_type VARCHAR(64) NOT NULL,
+            error_message TEXT NOT NULL,
+            extra_data JSONB,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """,
+    ]
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS ix_agent_hook_runs_owner_id ON agent_hook_runs(owner_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_recall_qualities_owner_id ON agent_recall_qualities(owner_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_budget_states_owner_id ON agent_budget_states(owner_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_budget_states_conversation_id ON agent_budget_states(conversation_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_stuck_rounds_owner_id ON agent_stuck_rounds(owner_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_stuck_rounds_conversation_id ON agent_stuck_rounds(conversation_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_failure_diagnostics_owner_id ON agent_failure_diagnostics(owner_id)",
+    ]
+    try:
+        for sql in tables + indexes:
+            await db.execute(text(sql))
+        await db.commit()
+        logger.info("Migration: ensured all 5 agent state tables")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: agent state tables check failed: %s", e)
+
+
 async def run_init(db: AsyncSession) -> None:
     """Agent 模块启动初始化入口。"""
     await ensure_migrated_tables(db)
@@ -314,5 +402,6 @@ async def run_init(db: AsyncSession) -> None:
     await ensure_processing_column(db)
     await ensure_event_table(db)
     await ensure_snapshot_table(db)
+    await ensure_agent_state_tables(db)
     await ensure_default_prompts(db)
     await update_existing_prompts(db)

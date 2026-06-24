@@ -217,27 +217,31 @@ async def admin_overview(
 async def admin_hook_lifecycle(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
+    owner_id: int | None = None,
 ):
     from .handlers.admin import handle_admin_hook_lifecycle
-    return await handle_admin_hook_lifecycle(db, user)
+    return await handle_admin_hook_lifecycle(db, user, owner_id=owner_id)
 
 
 @router.get("/admin/failure-diagnostics")
 async def admin_failure_diagnostics(
     limit: int = 50,
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
+    owner_id: int | None = None,
 ):
     from .handlers.admin import handle_admin_failure_diagnostics
-    return await handle_admin_failure_diagnostics(limit=limit)
+    return await handle_admin_failure_diagnostics(db, user, limit=limit, owner_id=owner_id)
 
 
 @router.get("/admin/memory-quality")
 async def admin_memory_quality(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
+    owner_id: int | None = None,
 ):
     from .handlers.admin import handle_admin_memory_quality
-    return await handle_admin_memory_quality(db, user)
+    return await handle_admin_memory_quality(db, user, owner_id=owner_id)
 
 
 @router.get("/admin/snapshots/{conversation_id}")

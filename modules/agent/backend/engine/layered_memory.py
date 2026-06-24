@@ -10,29 +10,25 @@
 静态记忆层（Layer 0）从 ``data/static-memory/`` 目录读取 markdown 文件，
 每轮上下文装配时直接注入 system prompt，零延迟、零依赖。
 """
-import json
 import logging
-import os
-import tempfile
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select, desc, func as sa_func
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.services.module_registry import call_capability
+from ..models import AgentRecallQuality as RecallQualityModel
 
 logger = logging.getLogger("v2.agent").getChild("engine.layered_memory")
 
 MEMORY_FUSE_BUDGET_THRESHOLD = 2000  # token, 召回多条且预算紧时触发融合
 MEMORY_RECALL_DEFAULT_LIMIT = 5
 
+# ── Recall quality governance (persisted via DB) ─────────────────────
 
-# ── Recall quality governance (persisted via atomic file writes) ─────
-
-_RECALL_QUALITY_FILE = "data/agent/recall_quality.json"
-_RECALL_QUALITY_MAX_ENTRIES = 1000
-_RECALL_QUALITY_MAX_AGE_DAYS = 30
-_RECALL_QUALITY_MAX_BYTES = 2097152  # 2MB
+_RECALL_QUALITY_MAX_ENTRIES = 200
 
 
 @dataclass
@@ -55,7 +51,6 @@ class RecallQualityRecord:
 
     def to_dict(self) -> dict:
         return {
-            "timestamp": self.timestamp,
             "query": self.query[:200],
             "layer": self.layer,
             "limit": self.limit,
@@ -68,71 +63,62 @@ class RecallQualityRecord:
         }
 
 
-def _read_recall_quality_file() -> list[dict]:
-    """Read all records from the persisted quality file."""
-    path = Path(_RECALL_QUALITY_FILE)
-    if not path.exists():
-        return []
-    try:
-        raw = path.read_text(encoding="utf-8")
-        if not raw.strip():
-            return []
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return data[-_RECALL_QUALITY_MAX_ENTRIES:]
-        return []
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read recall quality file: %s", exc)
-        return []
+async def _append_recall_quality(
+    db: AsyncSession, owner_id: int, conversation_id: int | None, record: RecallQualityRecord,
+) -> None:
+    d = record.to_dict()
+    db.add(RecallQualityModel(
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+        query=d["query"],
+        layer=d["layer"],
+        limit_val=d["limit"],
+        total_results=d["total_results"],
+        avg_similarity=d["avg_similarity"],
+        avg_confidence=d["avg_confidence"],
+        result_ids=d["result_ids"],
+        source_types=d["source_types"],
+        duration_ms=d["duration_ms"],
+    ))
+    await db.commit()
 
 
-def _write_recall_quality_file(records: list[dict]) -> None:
-    """Atomically write records to the quality file (temp+rename)."""
-    from .failure_diagnostics import record_failure
-    path = Path(_RECALL_QUALITY_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    records = _trim_recall_quality(records)
-    try:
-        fd, tmp_path_str = tempfile.mkstemp(
-            suffix=".json", prefix="recall_quality_", dir=str(path.parent),
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False)
-        os.replace(tmp_path_str, str(path))
-    except OSError as exc:
-        logger.warning("Failed to write recall quality file: %s", exc)
-        record_failure("memory", "write_recall_quality_file", type(exc).__name__, str(exc))
+async def record_recall_quality(
+    owner_id: int, conversation_id: int | None, record: RecallQualityRecord,
+) -> None:
+    """Record a recall quality metric for governance (persisted via DB).
+
+    Opens its own DB session (fire-and-forget quality metric).
+    """
+    from app.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await _append_recall_quality(db, owner_id, conversation_id, record)
 
 
-def _trim_recall_quality(records: list[dict]) -> list[dict]:
-    """Apply age, count, and bytes constraints to recall quality records."""
-    now = time.time()
-    age_cutoff = now - _RECALL_QUALITY_MAX_AGE_DAYS * 86400
-    records = [r for r in records if r.get("timestamp", 0) >= age_cutoff]
-    if len(records) > _RECALL_QUALITY_MAX_ENTRIES:
-        records = records[-_RECALL_QUALITY_MAX_ENTRIES:]
-    raw = json.dumps(records, ensure_ascii=False)
-    if len(raw.encode("utf-8")) > _RECALL_QUALITY_MAX_BYTES:
-        drop = max(len(records) // 3, 1)
-        records = records[drop:]
-    return records
-
-
-def record_recall_quality(record: RecallQualityRecord) -> None:
-    """Record a recall quality metric for governance (persisted)."""
-    records = _read_recall_quality_file()
-    records.append(record.to_dict())
-    _write_recall_quality_file(records)
-
-
-def get_recall_quality_summary() -> dict:
+async def get_recall_quality_summary(
+    db: AsyncSession, owner_id: int | None = None,
+) -> dict:
     """Aggregate recall quality metrics for governance dashboard.
 
-    Reads from persisted file (cross-worker safe).
+    Reads from DB (cross-worker safe).
     Returns dict with keys:
         total_recalls, per_layer stats, avg_hit_rate, avg_noise_estimate
     """
-    history = _read_recall_quality_file()
+    q = select(RecallQualityModel)
+    if owner_id is not None and owner_id > 0:
+        q = q.where(RecallQualityModel.owner_id == owner_id)
+    q = q.order_by(desc(RecallQualityModel.created_at)).limit(_RECALL_QUALITY_MAX_ENTRIES)
+    r = await db.execute(q)
+    history = [
+        {
+            "layer": row.layer,
+            "total_results": row.total_results,
+            "avg_similarity": row.avg_similarity,
+            "avg_confidence": row.avg_confidence,
+        }
+        for row in r.scalars().all()
+    ]
+
     if not history:
         return {
             "total_recalls": 0,

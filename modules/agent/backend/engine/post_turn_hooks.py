@@ -21,15 +21,13 @@ interval to enforce retention policies across all conversations.
 import asyncio
 import json
 import logging
-import os
-import tempfile
 import time
-from pathlib import Path
+from datetime import datetime, timezone
 
 from sqlalchemy import select, func, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import AgentEvent, ContextSnapshot
+from ..models import AgentEvent, ContextSnapshot, AgentHookRun
 from .context_snapshot import take_snapshot
 
 logger = logging.getLogger("v2.agent").getChild("engine.post_turn_hooks")
@@ -48,63 +46,48 @@ _background_maintenance_task: asyncio.Task | None = None
 _background_maintenance_started_at: float = 0.0
 _background_maintenance_run_count: int = 0
 
-# ── Hook lifecycle governance (persisted via atomic file writes) ──────
+# ── Hook lifecycle governance (persisted via DB) ──────────────────────
 _HOOK_LIFECYCLE_STATE: dict[str, str] = {
     "maintenance_status": "stopped",
 }
-_HOOK_RUN_FILE = "data/agent/hook_runs.json"
 _HOOK_RUN_HISTORY_MAX = 200
-_HOOK_RUN_MAX_AGE_DAYS = 7
-_HOOK_RUN_MAX_BYTES = 1048576  # 1MB
 
 
-def _trim_hook_runs(records: list[dict]) -> list[dict]:
-    """Apply all three growth constraints: age, count, bytes. Returns trimmed list."""
-    now = time.time()
-    age_cutoff = now - _HOOK_RUN_MAX_AGE_DAYS * 86400
-    records = [r for r in records if r.get("timestamp", 0) >= age_cutoff]
-    if len(records) > _HOOK_RUN_HISTORY_MAX:
-        records = records[-_HOOK_RUN_HISTORY_MAX:]
-    raw = json.dumps(records, ensure_ascii=False)
-    if len(raw.encode("utf-8")) > _HOOK_RUN_MAX_BYTES:
-        drop = max(len(records) // 3, 1)
-        records = records[drop:]
-    return records
+async def _read_hook_runs(db: AsyncSession, owner_id: int | None = None) -> list[dict]:
+    q = select(AgentHookRun)
+    if owner_id is not None and owner_id > 0:
+        q = q.where(AgentHookRun.owner_id == owner_id)
+    q = q.order_by(desc(AgentHookRun.created_at)).limit(_HOOK_RUN_HISTORY_MAX)
+    r = await db.execute(q)
+    return [
+        {
+            "hook_name": row.hook_name,
+            "success": row.success,
+            "duration_ms": row.duration_ms,
+            "detail": row.detail or "",
+            "timestamp": row.created_at.timestamp() if row.created_at else 0,
+            "conversation_id": row.conversation_id,
+        }
+        for row in r.scalars().all()
+    ]
 
 
-def _read_hook_runs_file() -> list[dict]:
-    path = Path(_HOOK_RUN_FILE)
-    if not path.exists():
-        return []
-    try:
-        raw = path.read_text(encoding="utf-8")
-        if not raw.strip():
-            return []
-        data = json.loads(raw)
-        return data[-_HOOK_RUN_HISTORY_MAX:] if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read hook runs file: %s", exc)
-        return []
+async def _append_hook_run(
+    db: AsyncSession, owner_id: int, conversation_id: int | None, record: dict,
+) -> None:
+    db.add(AgentHookRun(
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+        hook_name=record.get("hook_name", ""),
+        success=record.get("success", False),
+        duration_ms=record.get("duration_ms", 0.0),
+        detail=record.get("detail", "")[:500],
+        created_at=datetime.now(timezone.utc),
+    ))
+    await db.commit()
 
 
-def _write_hook_runs_file(records: list[dict]) -> None:
-    from .failure_diagnostics import record_failure
-    path = Path(_HOOK_RUN_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    records = _trim_hook_runs(records)
-    try:
-        fd, tmp_path_str = tempfile.mkstemp(
-            suffix=".json", prefix="hook_runs_", dir=str(path.parent),
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False)
-        os.replace(tmp_path_str, str(path))
-    except OSError as exc:
-        logger.warning("Failed to write hook runs file: %s", exc)
-        record_failure("hook", "write_hook_runs_file", type(exc).__name__, str(exc))
-
-
-def get_hook_lifecycle_state() -> dict:
+async def get_hook_lifecycle_state(db: AsyncSession, owner_id: int | None = None) -> dict:
     """Return observable hook lifecycle state for admin health check."""
     global _HOOK_LIFECYCLE_STATE
     state = dict(_HOOK_LIFECYCLE_STATE)
@@ -113,23 +96,23 @@ def get_hook_lifecycle_state() -> dict:
     )
     state["maintenance_started_at"] = _background_maintenance_started_at
     state["maintenance_run_count"] = _background_maintenance_run_count
-    all_runs = _read_hook_runs_file()
+    all_runs = await _read_hook_runs(db, owner_id)
     state["recent_hook_runs"] = all_runs[-20:]
     state["hook_names"] = ["memory_distill", "profile_evolve", "context_snapshot", "cleanup_archive", "prompt_suggestion"]
     return state
 
 
-def _record_hook_run(name: str, success: bool, duration_ms: float, detail: str = "") -> None:
-    """Record a hook run for lifecycle observability (persisted)."""
-    records = _read_hook_runs_file()
-    records.append({
+async def _record_hook_run(
+    db: AsyncSession, owner_id: int, conversation_id: int | None,
+    name: str, success: bool, duration_ms: float, detail: str = "",
+) -> None:
+    """Record a hook run for lifecycle observability (persisted via DB)."""
+    await _append_hook_run(db, owner_id, conversation_id, {
         "hook_name": name,
         "success": success,
         "duration_ms": round(duration_ms, 1),
         "detail": detail[:200],
-        "timestamp": time.time(),
     })
-    _write_hook_runs_file(records)
 
 
 async def _get_turn_count(db: AsyncSession, conversation_id: int) -> int:
@@ -179,14 +162,18 @@ class PostTurnHooks:
                 await coro
                 _t1 = time.time()
                 summary["hooks_run"].append(name)
-                _record_hook_run(name, True, (_t1 - _t0) * 1000)
+                from app.database import AsyncSessionLocal as _ASL
+                async with _ASL() as _db:
+                    await _record_hook_run(_db, owner_id, conversation_id, name, True, (_t1 - _t0) * 1000)
             except Exception as exc:
                 _t1 = time.time()
                 logger.exception("Post-turn hook '%s' failed (non-fatal): %s", name, exc)
                 summary["errors"][name] = str(exc)
-                _record_hook_run(name, False, (_t1 - _t0) * 1000, str(exc)[:200])
+                from app.database import AsyncSessionLocal as _ASL
+                async with _ASL() as _db:
+                    await _record_hook_run(_db, owner_id, conversation_id, name, False, (_t1 - _t0) * 1000, str(exc)[:200])
                 from .failure_diagnostics import record_failure
-                record_failure("hook", f"run_{name}", type(exc).__name__, str(exc))
+                await record_failure("hook", f"run_{name}", type(exc).__name__, str(exc), conversation_id, owner_id)
 
         asyncio.create_task(
             _safe_run("memory_distill", self._hook_memory_distill(

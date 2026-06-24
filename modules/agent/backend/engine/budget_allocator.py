@@ -2,46 +2,19 @@
 import json
 import logging
 import math
-import os
-import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+
+from sqlalchemy import select, delete as sa_delete
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.gateway.router import MODEL_PROFILES
+from ..models import AgentBudgetState
+
 logger = logging.getLogger("v2.agent").getChild("engine.budget_allocator")
 SAFETY_MAX_TOKENS = 120000
 RESERVED_OUTPUT_TOKENS = 4096
 
-# ── File-backed persistence for cross-worker consistency ──────────────
-_BUDGET_DATA_DIR = Path(__file__).resolve().parents[4] / "backend" / "data" / "agent"
-_BUDGET_DATA_FILE = _BUDGET_DATA_DIR / "budget_tracker.json"
-
-
-def _load_budget_state() -> dict:
-    if _BUDGET_DATA_FILE.exists():
-        try:
-            with open(_BUDGET_DATA_FILE, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("budget_tracker: failed to load state: %s", e)
-    return {}
-
-
-def _save_budget_state(state: dict) -> None:
-    try:
-        _BUDGET_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=str(_BUDGET_DATA_DIR), prefix=".budget_", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(state, f, ensure_ascii=False)
-            os.replace(tmp_path, str(_BUDGET_DATA_FILE))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as e:
-        logger.warning("budget_tracker: failed to save state: %s", e)
+# ── DB-backed persistence for cross-worker consistency ────────────────
 
 
 # ── Diminishing returns tracker ────────────────────────────────────────────
@@ -68,30 +41,51 @@ _DIMINISHING_MIN_ROUNDS = 3    # don't stop before this many rounds
 class DiminishingBudgetTracker:
     """Tracks multi-turn tool round information gain and decides when to stop.
 
-    State is persisted to a file for cross-worker consistency.  Each worker
-    loads the latest state before mutation and saves after each update.
+    State is persisted to DB for cross-worker consistency.
+    Each conversation has one row identified by conversation_id (derived from session_key).
     """
 
     def __init__(self) -> None:
         self._rounds: dict[str, list[dict]] = {}
-        self._load()
 
-    def _load(self) -> None:
-        raw = _load_budget_state()
-        self._rounds = raw.get("rounds", {})
+    async def _load_from_db(self, db: AsyncSession, session_key: str) -> list[dict]:
+        conv_id = self._conv_id(session_key)
+        r = await db.execute(
+            select(AgentBudgetState).where(AgentBudgetState.conversation_id == conv_id)
+        )
+        row = r.scalar_one_or_none()
+        return (row.rounds_data or {}).get("rounds", []) if row else []
 
-    def _save(self) -> None:
-        _save_budget_state({"rounds": self._rounds})
+    async def _save_to_db(self, db: AsyncSession, session_key: str, records: list[dict]) -> None:
+        conv_id = self._conv_id(session_key)
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        stmt = pg_insert(AgentBudgetState).values(
+            conversation_id=conv_id, rounds_data={"rounds": records},
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="agent_budget_states_conversation_id_key",
+            set_={"rounds_data": {"rounds": records}},
+        )
+        await db.execute(stmt)
+        await db.commit()
 
-    def record_round(
+    @staticmethod
+    def _conv_id(session_key: str) -> int:
+        conv_part = session_key.replace("budget_conv_", "").replace("conv_", "")
+        try:
+            return int(conv_part)
+        except (ValueError, TypeError):
+            return hash(session_key) % (10 ** 9)
+
+    async def record_round(
         self,
+        db: AsyncSession,
         session_key: str,
         tokens_before: int,
         tokens_after: int,
     ) -> DiminishingReturnRecord:
         """Record a tool round's token counts and compute net gain."""
-        self._load()
-        records = self._rounds.setdefault(session_key, [])
+        records = await self._load_from_db(db, session_key)
         net_gain = max(tokens_after - tokens_before, 0)
         turn_index = len(records)
         rec = DiminishingReturnRecord(
@@ -106,25 +100,23 @@ class DiminishingBudgetTracker:
             "token_count_after": tokens_after,
             "net_gain_tokens": net_gain,
         })
-        self._save()
+        await self._save_to_db(db, session_key, records)
         return rec
 
-    def should_stop(self, session_key: str) -> tuple[bool, str]:
+    async def should_stop(self, db: AsyncSession, session_key: str) -> tuple[bool, str]:
         """Check if recent rounds show diminishing returns.
 
         Returns ``(should_stop, reason)``.  Checks only the last
         ``_DIMINISHING_WINDOW`` rounds and requires at least
         ``_DIMINISHING_MIN_ROUNDS`` to have elapsed before stopping.
         """
-        self._load()
-        records = self._rounds.get(session_key, [])
+        records = await self._load_from_db(db, session_key)
         if len(records) < _DIMINISHING_MIN_ROUNDS:
             return False, ""
 
         window = records[-_DIMINISHING_WINDOW:]
         recent_gains = [r["net_gain_tokens"] for r in window]
 
-        # All gains below threshold within the window?
         if all(g < _DIMINISHING_THRESHOLD for g in recent_gains):
             avg_gain = sum(recent_gains) // len(recent_gains)
             reason = (
@@ -134,7 +126,6 @@ class DiminishingBudgetTracker:
             )
             return True, reason
 
-        # Are gains monotonically decreasing over the window?
         if len(window) >= 3 and all(
             window[i]["net_gain_tokens"] > window[i + 1]["net_gain_tokens"]
             for i in range(len(window) - 1)
@@ -149,10 +140,9 @@ class DiminishingBudgetTracker:
 
         return False, ""
 
-    def get_diagnosis(self, session_key: str) -> dict:
+    async def get_diagnosis(self, db: AsyncSession, session_key: str) -> dict:
         """Return diagnostic info for the engine diagnosis output."""
-        self._load()
-        records = self._rounds.get(session_key, [])
+        records = await self._load_from_db(db, session_key)
         return {
             "total_rounds": len(records),
             "recent_gains": [r["net_gain_tokens"] for r in records[-_DIMINISHING_WINDOW:]],
@@ -160,11 +150,13 @@ class DiminishingBudgetTracker:
             "threshold": _DIMINISHING_THRESHOLD,
         }
 
-    def reset(self, session_key: str) -> None:
+    async def reset(self, db: AsyncSession, session_key: str) -> None:
         """Clear tracking for a given session."""
-        self._load()
-        self._rounds.pop(session_key, None)
-        self._save()
+        conv_id = self._conv_id(session_key)
+        await db.execute(
+            sa_delete(AgentBudgetState).where(AgentBudgetState.conversation_id == conv_id)
+        )
+        await db.commit()
 
 
 def get_context_budget(profile_key: str) -> int | None:
