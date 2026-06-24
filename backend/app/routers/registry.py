@@ -38,6 +38,7 @@ PLATFORM_ROUTER_MODULES: tuple[str, ...] = (
     "app.routers.system_status",
     "app.routers.dashboard",
     "app.routers.settings",
+    "app.routers.prompt",
     "app.routers.backup",
     "app.routers.tasks",
     "app.routers.notifications",

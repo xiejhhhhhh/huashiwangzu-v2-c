@@ -5,6 +5,7 @@ Extracted from graph.py to follow size guidelines.
 from dataclasses import dataclass, field
 
 
+@dataclass
 class ImportEdge:
     source: str       # file path
     target: str       # file path

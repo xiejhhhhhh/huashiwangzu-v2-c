@@ -15,9 +15,10 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 
-from .init_db import ensure_default_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts, ensure_event_table, ensure_processing_column, run_init
+from .init_db import ensure_default_prompts, ensure_default_agent_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts, ensure_event_table, ensure_processing_column, run_init
 from .services import conversation_service as conv_svc
 from .services import agent_config_service
+from .services import prompt_service as prompt_svc
 from .services import tool_discovery
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -58,6 +59,22 @@ class UpdatePromptRequest(BaseModel):
 class ApprovalDecision(BaseModel):
     decision: str  # "approved" | "rejected"
     reason: str | None = None
+
+
+class PromptItemCreate(BaseModel):
+    title: str
+    category: str
+    content: str
+    is_active: bool = True
+    status: str = "draft"
+
+
+class PromptItemUpdate(BaseModel):
+    title: str | None = None
+    category: str | None = None
+    content: str | None = None
+    is_active: bool | None = None
+    status: str | None = None
 
 
 # ── Health / Profiles / Tools ──
@@ -141,6 +158,7 @@ async def list_conversations(db: AsyncSession = Depends(get_db), user: User = De
 @router.post("/conversations")
 async def create_conversation(payload: CreateConvRequest, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
     await run_init(db)
+    await ensure_default_agent_prompts(db)
     item = await conv_svc.create_conversation(db, user.id, payload.title)
     return ApiResponse(data=_conversation_payload(item))
 
@@ -193,6 +211,54 @@ async def admin_overview(
 ):
     from .handlers.admin import handle_admin_overview
     return await handle_admin_overview(db, user)
+
+
+@router.get("/admin/hook-lifecycle")
+async def admin_hook_lifecycle(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    from .handlers.admin import handle_admin_hook_lifecycle
+    return await handle_admin_hook_lifecycle(db, user)
+
+
+@router.get("/admin/memory-quality")
+async def admin_memory_quality(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    from .handlers.admin import handle_admin_memory_quality
+    return await handle_admin_memory_quality(db, user)
+
+
+@router.get("/admin/snapshots/{conversation_id}")
+async def admin_snapshots(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    from .handlers.admin import handle_admin_snapshots
+    return await handle_admin_snapshots(conversation_id, db, user)
+
+
+@router.get("/admin/compression-chain/{conversation_id}")
+async def admin_compression_chain(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    from .handlers.admin import handle_admin_compression_chain
+    return await handle_admin_compression_chain(conversation_id, db, user)
+
+
+@router.get("/admin/snapshots/{snapshot_id}/restore")
+async def admin_snapshot_restore(
+    snapshot_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    from .handlers.admin import handle_admin_snapshot_restore
+    return await handle_admin_snapshot_restore(snapshot_id, db, user)
 
 
 # ── 敏感操作审批 API ──
@@ -317,6 +383,59 @@ async def delete_agent_config(
     user: User = Depends(require_permission("admin")),
 ):
     data = await agent_config_service.delete_config(db, agent_code)
+    return ApiResponse(data=data)
+
+
+# ── Agent Prompts CRUD ──
+
+@router.get("/prompts")
+async def list_agent_prompts(
+    category: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    data = await prompt_svc.list_prompts(db, user.id, category)
+    return ApiResponse(data=data)
+
+
+@router.get("/prompts/{prompt_id}")
+async def get_agent_prompt(
+    prompt_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    data = await prompt_svc.get_prompt(db, user.id, prompt_id)
+    return ApiResponse(data=data)
+
+
+@router.post("/prompts")
+async def create_agent_prompt(
+    body: PromptItemCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    data = await prompt_svc.create_prompt(db, user.id, body.model_dump())
+    return ApiResponse(data=data)
+
+
+@router.put("/prompts/{prompt_id}")
+async def update_agent_prompt(
+    prompt_id: int,
+    body: PromptItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    data = await prompt_svc.update_prompt(db, user.id, prompt_id, body.model_dump(exclude_none=True))
+    return ApiResponse(data=data)
+
+
+@router.delete("/prompts/{prompt_id}")
+async def delete_agent_prompt(
+    prompt_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    data = await prompt_svc.delete_prompt(db, user.id, prompt_id)
     return ApiResponse(data=data)
 
 

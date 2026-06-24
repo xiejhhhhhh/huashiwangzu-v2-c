@@ -3,6 +3,8 @@
 Contains handler functions for:
   - GET /admin/replay/{conversation_id} — 事件重放
   - GET /admin/overview               — engine概览
+  - GET /admin/snapshots/{conversation_id} — 快照列表与详情
+  - GET /admin/snapshots/{snapshot_id}/restore — 快照恢复（只读审计）
   - GET /admin/approvals/pending       — 待审批列表
   - POST /admin/approvals/{id}/resolve — 审批决策
 """
@@ -106,6 +108,63 @@ async def handle_admin_replay(
                     "events": [ev_dict],
                 })
                 current_round = None
+        elif etype == "compression_trace":
+            if current_round:
+                current_round["compression_trace"] = {
+                    "pre_snapshot_id": ev.payload.get("pre_snapshot_id"),
+                    "post_snapshot_id": ev.payload.get("post_snapshot_id"),
+                    "compaction_event_id": ev.payload.get("compaction_event_id"),
+                    "folded_count": ev.payload.get("folded_count", 0),
+                    "compression_ratio": ev.payload.get("compression_ratio"),
+                    "summary_preview": ev.payload.get("summary_preview", ""),
+                }
+                current_round["events"].append(ev_dict)
+            else:
+                rounds.append({
+                    "round_start_id": ev.id,
+                    "user_input": "",
+                    "assembly_diag": None,
+                    "assistant_msg": None,
+                    "tool_calls": [],
+                    "tool_results": [],
+                    "compression_trace": {
+                        "pre_snapshot_id": ev.payload.get("pre_snapshot_id"),
+                        "post_snapshot_id": ev.payload.get("post_snapshot_id"),
+                        "compaction_event_id": ev.payload.get("compaction_event_id"),
+                        "folded_count": ev.payload.get("folded_count", 0),
+                        "compression_ratio": ev.payload.get("compression_ratio"),
+                    },
+                    "degradation": None,
+                    "events": [ev_dict],
+                })
+                current_round = None
+        elif etype == "snapshot_restore":
+            if current_round:
+                current_round.setdefault("restore_events", []).append({
+                    "snapshot_id": ev.payload.get("snapshot_id"),
+                    "snapshot_type": ev.payload.get("snapshot_type"),
+                    "event_id_before": ev.payload.get("event_id_before"),
+                    "event_id_after": ev.payload.get("event_id_after"),
+                })
+                current_round["events"].append(ev_dict)
+            else:
+                rounds.append({
+                    "round_start_id": ev.id,
+                    "user_input": "",
+                    "assembly_diag": None,
+                    "assistant_msg": None,
+                    "tool_calls": [],
+                    "tool_results": [],
+                    "restore_events": [{
+                        "snapshot_id": ev.payload.get("snapshot_id"),
+                        "snapshot_type": ev.payload.get("snapshot_type"),
+                        "event_id_before": ev.payload.get("event_id_before"),
+                        "event_id_after": ev.payload.get("event_id_after"),
+                    }],
+                    "degradation": None,
+                    "events": [ev_dict],
+                })
+                current_round = None
         elif etype == "degradation" and current_round:
             current_round["degradation"] = {
                 "from_profile": ev.payload.get("from", ""),
@@ -195,7 +254,7 @@ async def handle_admin_overview(db: AsyncSession, user) -> ApiResponse:
     # 6. 粘滞统计
     try:
         stuck_count = 0
-        log_dir = Path(__file__).resolve().parent.parent.parent.parent / "backend" / "logs"
+        log_dir = Path(__file__).resolve().parents[4] / "logs"
         if log_dir.exists():
             for log_file in _glob.glob(str(log_dir / "*.log")):
                 try:
@@ -256,6 +315,97 @@ async def handle_admin_overview(db: AsyncSession, user) -> ApiResponse:
     return ApiResponse(data=result)
 
 
+async def handle_admin_hook_lifecycle(db: AsyncSession, user) -> ApiResponse:
+    """Hook 生命周期状态：维护循环状态、hook 运行历史。"""
+    from ..engine.post_turn_hooks import get_hook_lifecycle_state
+    state = get_hook_lifecycle_state()
+    return ApiResponse(data=state)
+
+
+async def handle_admin_memory_quality(db: AsyncSession, user) -> ApiResponse:
+    """记忆检索质量概览：命中率、噪声率、可信度得分（engine 侧治理指标）。"""
+    from ..engine.layered_memory import get_recall_quality_summary
+    quality = get_recall_quality_summary()
+    return ApiResponse(data=quality)
+
+
+async def handle_admin_compression_chain(
+    conversation_id: int, db: AsyncSession, user,
+) -> ApiResponse:
+    """压缩链审计：追踪 conversation 的压缩事件、快照和恢复溯源。
+
+    返回时间排序的链，每条链节包含：
+      - 如果是 compaction 事件: folded_count, summary_preview, compression_ratio
+      - 关联的 pre_snapshot 和 post_snapshot
+      - 如果有 restore 事件: restored_from snapshot_id
+    """
+    from ..engine.event_store import read_events
+    from ..engine.context_snapshot import list_snapshots
+    from ..models import ContextSnapshot
+
+    events = await read_events(db, conversation_id)
+    snapshots = await list_snapshots(db, conversation_id, limit=50)
+
+    # Build snapshot lookup
+    snap_map: dict[int, dict] = {}
+    for snap in snapshots:
+        snap_map[snap.id] = {
+            "id": snap.id,
+            "snapshot_type": snap.snapshot_type,
+            "event_id_before": snap.event_id_before,
+            "event_id_after": snap.event_id_after,
+            "compression_ratio": snap.compression_ratio,
+            "restored_from": snap.restored_from,
+            "summary": snap.summary,
+            "created_at": snap.created_at.isoformat() if snap.created_at else None,
+        }
+
+    chain: list[dict] = []
+    for ev in events:
+        etype = ev.event_type
+        if etype == "compaction":
+            chain.append({
+                "event_type": "compaction",
+                "event_id": ev.id,
+                "folded_count": ev.payload.get("folded_count", 0),
+                "summary_preview": (ev.payload.get("summary", "") or "")[:300],
+                "compression_ratio": ev.payload.get("compression_ratio"),
+                "total_events_before": ev.payload.get("total_events_before"),
+                "fallback": ev.payload.get("fallback"),
+                "timestamp": ev.created_at.isoformat() if ev.created_at else None,
+            })
+        elif etype == "compression_trace":
+            pre_id = ev.payload.get("pre_snapshot_id")
+            post_id = ev.payload.get("post_snapshot_id")
+            chain.append({
+                "event_type": "compression_trace",
+                "event_id": ev.id,
+                "folded_count": ev.payload.get("folded_count", 0),
+                "compression_ratio": ev.payload.get("compression_ratio"),
+                "summary_preview": ev.payload.get("summary_preview", ""),
+                "pre_snapshot": snap_map.get(pre_id) if pre_id else None,
+                "post_snapshot": snap_map.get(post_id) if post_id else None,
+                "timestamp": ev.created_at.isoformat() if ev.created_at else None,
+            })
+        elif etype == "snapshot_restore":
+            snap_id = ev.payload.get("snapshot_id")
+            chain.append({
+                "event_type": "snapshot_restore",
+                "event_id": ev.id,
+                "snapshot_id": snap_id,
+                "snapshot_type": ev.payload.get("snapshot_type"),
+                "restored_snapshot": snap_map.get(snap_id) if snap_id else None,
+                "timestamp": ev.created_at.isoformat() if ev.created_at else None,
+            })
+
+    return ApiResponse(data={
+        "conversation_id": conversation_id,
+        "total_snapshots": len(snapshots),
+        "total_events": len(events),
+        "chain": chain,
+    })
+
+
 async def handle_list_approvals(db: AsyncSession, user) -> ApiResponse:
     """列出所有待审批的敏感操作请求。"""
     items = await list_pending_approvals(db)
@@ -271,3 +421,64 @@ async def handle_resolve_approval(
         raise ValidationError("decision must be 'approved' or 'rejected'")
     result = await resolve_approval(db, approval_id, decision, user.id, reason)
     return ApiResponse(data=result)
+
+
+async def handle_admin_snapshots(
+    conversation_id: int, db: AsyncSession, user,
+) -> ApiResponse:
+    """快照列表：返回 conversation 所有快照的管理展示字段。"""
+    from ..engine.context_snapshot import list_snapshots, count_snapshots
+
+    snapshots = await list_snapshots(db, conversation_id, limit=50)
+    total = await count_snapshots(db, conversation_id)
+
+    items = []
+    for snap in snapshots:
+        items.append({
+            "id": snap.id,
+            "snapshot_type": snap.snapshot_type,
+            "event_id_before": snap.event_id_before,
+            "event_id_after": snap.event_id_after,
+            "message_count_before": snap.message_count_before,
+            "message_count_after": snap.message_count_after,
+            "token_estimate_before": snap.token_estimate_before,
+            "token_estimate_after": snap.token_estimate_after,
+            "compression_ratio": snap.compression_ratio,
+            "restored_from": snap.restored_from,
+            "summary": snap.summary,
+            "created_at": snap.created_at.isoformat() if snap.created_at else None,
+        })
+
+    return ApiResponse(data={
+        "conversation_id": conversation_id,
+        "total_snapshots": total,
+        "snapshots": items,
+    })
+
+
+async def handle_admin_snapshot_restore(
+    snapshot_id: int, db: AsyncSession, user,
+) -> ApiResponse:
+    """快照恢复（append-only 审计）：恢复指定快照并记录 restore 事件。
+
+    该操作会追加一条 `snapshot_restore` 审计事件，但不回写原始
+    conversation 消息流。恢复结果仅用于查看和审计。
+    """
+    from ..engine.context_snapshot import restore_snapshot
+
+    messages = await restore_snapshot(db, snapshot_id)
+    from sqlalchemy import select
+    from ..models import ContextSnapshot
+    r = await db.execute(select(ContextSnapshot).where(ContextSnapshot.id == snapshot_id))
+    snap = r.scalar_one_or_none()
+
+    return ApiResponse(data={
+        "snapshot_id": snapshot_id,
+        "restored_messages": len(messages),
+        "snapshot_type": snap.snapshot_type if snap else None,
+        "compression_ratio": snap.compression_ratio if snap else None,
+        "event_id_before": snap.event_id_before if snap else None,
+        "event_id_after": snap.event_id_after if snap else None,
+        "summary": snap.summary if snap else None,
+        "messages": messages,
+    })

@@ -9,22 +9,22 @@ request_id 通过 logging.LogRecord 的 request_id 属性注入。
 
 import uuid
 import logging
+from contextvars import ContextVar
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 logger = logging.getLogger("v2.request_id")
+request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
+_old_record_factory = logging.getLogRecordFactory()
 
 
-class _RequestIdFilter(logging.Filter):
-    """Inject request_id into every log record."""
+def _record_factory(*args, **kwargs):
+    record = _old_record_factory(*args, **kwargs)
+    record.request_id = request_id_var.get()
+    return record
 
-    def __init__(self, request_id: str = ""):
-        super().__init__()
-        self.request_id = request_id
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = self.request_id
-        return True
+logging.setLogRecordFactory(_record_factory)
 
 
 class RequestIdMiddleware:
@@ -39,15 +39,9 @@ class RequestIdMiddleware:
             return
 
         request_id = str(uuid.uuid4())[:8]
+        token = request_id_var.set(request_id)
 
-        # Store on scope so downstream middleware/handlers can access it
         scope["request_id"] = request_id
-
-        # Inject request_id into the logger for this request's duration
-        # via a temporary filter on the root logger
-        _filter = _RequestIdFilter(request_id)
-        root_logger = logging.getLogger()
-        root_logger.addFilter(_filter)
 
         # Wrap send to add X-Request-Id header to response
         original_send = send
@@ -65,4 +59,4 @@ class RequestIdMiddleware:
         try:
             await self.app(scope, receive, _send_with_id)
         finally:
-            root_logger.removeFilter(_filter)
+            request_id_var.reset(token)

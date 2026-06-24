@@ -85,7 +85,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { getDashboardStats, startPipeline, type DashboardStats } from './api'
+import { getDashboardStats, startPipeline, type DashboardStats } from '../api'
 
 const s = ref<DashboardStats>({
   total_documents: 0, completed_documents: 0, running_documents: 0, failed_documents: 0,

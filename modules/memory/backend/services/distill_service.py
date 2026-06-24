@@ -2,9 +2,30 @@
 
 Extracted from router.py to follow Router → Service → Model layering.
 """
+from __future__ import annotations
+
+import json
 import logging
+from datetime import datetime
+
+from sqlalchemy import and_, or_, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .embedding_service import _compute_embedding, _update_embedding_sql
+from ..models import MemoryExperience, MemoryLink, MemoryRecord
 
 logger = logging.getLogger("v2.memory").getChild("distill_service")
+
+MEMORY_CHEAP_MODEL_KEY = "deepseek-v4-flash"
+MEMORY_SIMILARITY_THRESHOLD = 0.3
+MEMORY_RECALL_CANDIDATES = 20
+MEMORY_CHAIN_EXPAND_THRESHOLD = 0.4
+MEMORY_CHAIN_MAX_EXPANSION = 3
+MEMORY_DREAM_DECAY_DAYS = 30
+MEMORY_DREAM_SIMILARITY_MERGE = 0.92
+EXPERIENCE_SIMILARITY_THRESHOLD = 0.3
+EXPERIENCE_DEDUP_THRESHOLD = 0.85
+EXPERIENCE_FAIL_PENALTY = 2
 
 async def _call_cheap_model(messages: list[dict]) -> str:
     """调用便宜模型（models.json 配置），返回 content 文本。失败返回空字符串。"""
@@ -209,4 +230,3 @@ def _memory_to_dict(m, similarity: float = 0.0) -> dict:
         "similarity": similarity,
         "created_at": m.created_at.isoformat() if m.created_at else None,
     }
-

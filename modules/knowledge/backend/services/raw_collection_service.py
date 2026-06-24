@@ -107,7 +107,7 @@ async def _exec_round_1_text(
             round=1,
             source_type="text",
             content=content,
-            model_used="deepseek-v4-flash" if "pdf" in str(caller).lower() else "parser",
+            model_used="parser",
             confidence=0.95 if content else 0.0,
             content_hash=_hash_content(content),
         )

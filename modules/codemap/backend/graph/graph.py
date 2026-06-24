@@ -60,10 +60,9 @@ def normalize_path(path: str) -> str:
     cleaned = cleaned.rstrip("/")
     return cleaned
 
-# ── Edge dataclasses ────────────────────────────────────────────────────────
-
-@dataclass
 from .graph_models import ImportEdge, CallEdge, CapabilityEdge, DbTableEdge, FileNode
+
+# ── Graph ──────────────────────────────────────────────────────────────────
 
 class CodeGraph:
     """Thread-safe in-memory code relationship graph."""

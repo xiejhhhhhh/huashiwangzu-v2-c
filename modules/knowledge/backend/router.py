@@ -36,7 +36,8 @@ from .init_db import _run_startup_init
 from .services.profile_service import get_document_profile
 from .services.relation_service import get_file_relations, get_relation_graph
 from .services.progress_service import get_document_progress, list_documents_progress
-from . import pipeline_service  # noqa: F401 注册 kb_pipeline handler
+from .services.dashboard_service import get_dashboard_stats
+from .services import pipeline_service  # noqa: F401 注册 kb_pipeline handler
 
 logger = logging.getLogger("v2.knowledge").getChild("router")
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -416,6 +417,13 @@ async def api_progress_batch(
     return ApiResponse(data=result)
 
 @router.get("/dashboard/stats")
+async def api_dashboard_stats(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    """知识库看板统计。"""
+    result = await get_dashboard_stats(db, user.id)
+    return ApiResponse(data=result)
 
 @router.post("/search")
 async def api_search(

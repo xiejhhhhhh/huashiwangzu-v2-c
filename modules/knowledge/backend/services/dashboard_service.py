@@ -1,6 +1,7 @@
 """Knowledge dashboard stats service.
 
-Extracted from router.py to follow Router → Service → Model layering.
+Pure service layer: accepts db + user_id, returns dict.
+Router layer is responsible for ApiResponse wrapping and auth.
 """
 import logging
 from sqlalchemy import select, func, or_, exists
@@ -14,23 +15,14 @@ from ..models import (
 logger = logging.getLogger("v2.knowledge").getChild("dashboard_service")
 
 
-async def get_dashboard_stats(
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("editor")),
-):
-    from ..models import (
-        KbDocument, KbEntityDictionary, KbGraphNode, KbGraphEdge,
-        KbFileRelation, KbGovernanceCandidate, KbDocumentProfile,
-    )
-
+async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
     total = (await db.execute(
-        select(func.count(KbDocument.id)).where(KbDocument.deleted == False, KbDocument.owner_id == user.id)
+        select(func.count(KbDocument.id)).where(KbDocument.deleted == False, KbDocument.owner_id == user_id)
     )).scalar() or 0
 
-    # 完成=权威口径: fusion done + 画像存在 (与 progress_service.get_document_progress 一致)
     completed = (await db.execute(
         select(func.count(KbDocument.id)).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
+            KbDocument.deleted == False, KbDocument.owner_id == user_id,
             KbDocument.fusion_status == "done",
             exists(
                 select(KbDocumentProfile.id).where(
@@ -42,14 +34,14 @@ async def get_dashboard_stats(
 
     failed = (await db.execute(
         select(func.count(KbDocument.id)).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
+            KbDocument.deleted == False, KbDocument.owner_id == user_id,
             or_(KbDocument.raw_status == "failed", KbDocument.fusion_status == "failed"),
         )
     )).scalar() or 0
 
     pending = (await db.execute(
         select(func.count(KbDocument.id)).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
+            KbDocument.deleted == False, KbDocument.owner_id == user_id,
             KbDocument.raw_status == "pending", KbDocument.fusion_status == "pending",
         )
     )).scalar() or 0
@@ -57,21 +49,21 @@ async def get_dashboard_stats(
     running = total - completed - failed - pending
 
     entity_count = (await db.execute(
-        select(func.count(KbEntityDictionary.id)).where(KbEntityDictionary.owner_id == user.id)
+        select(func.count(KbEntityDictionary.id)).where(KbEntityDictionary.owner_id == user_id)
     )).scalar() or 0
 
     relation_count = (await db.execute(
-        select(func.count(KbGraphEdge.id)).where(KbGraphEdge.owner_id == user.id)
+        select(func.count(KbGraphEdge.id)).where(KbGraphEdge.owner_id == user_id)
     )).scalar() or 0
 
     file_relation_count = (await db.execute(
-        select(func.count(KbFileRelation.id)).where(KbFileRelation.owner_id == user.id)
+        select(func.count(KbFileRelation.id)).where(KbFileRelation.owner_id == user_id)
     )).scalar() or 0
 
     duplicate_entities = 0
     dup_rows = await db.execute(
         select(KbEntityDictionary.name, func.count(KbEntityDictionary.id))
-        .where(KbEntityDictionary.owner_id == user.id, KbEntityDictionary.status != "merged")
+        .where(KbEntityDictionary.owner_id == user_id, KbEntityDictionary.status != "merged")
         .group_by(KbEntityDictionary.name)
         .having(func.count(KbEntityDictionary.id) > 1)
     )
@@ -80,14 +72,14 @@ async def get_dashboard_stats(
 
     cat_rows = await db.execute(
         select(KbEntityDictionary.category, func.count(KbEntityDictionary.id))
-        .where(KbEntityDictionary.owner_id == user.id)
+        .where(KbEntityDictionary.owner_id == user_id)
         .group_by(KbEntityDictionary.category)
         .order_by(func.count(KbEntityDictionary.id).desc())
     )
     entity_category_distribution = {cat: cnt for cat, cnt in cat_rows.all()}
 
     all_docs = await db.execute(
-        select(KbDocument).where(KbDocument.deleted == False, KbDocument.owner_id == user.id)
+        select(KbDocument).where(KbDocument.deleted == False, KbDocument.owner_id == user_id)
         .order_by(KbDocument.id.desc())
     )
     doc_progresses = []
@@ -102,10 +94,9 @@ async def get_dashboard_stats(
         if d.raw_status == "failed" or d.fusion_status == "failed":
             stuck_docs.append(entry)
 
-    # 最近完成也用权威口径: fusion done + 画像存在
     recent = (await db.execute(
         select(KbDocument).where(
-            KbDocument.deleted == False, KbDocument.owner_id == user.id,
+            KbDocument.deleted == False, KbDocument.owner_id == user_id,
             KbDocument.fusion_status == "done",
             exists(
                 select(KbDocumentProfile.id).where(
@@ -121,7 +112,7 @@ async def get_dashboard_stats(
         for d in recent
     ]
 
-    return ApiResponse(data={
+    return {
         "total_documents": total,
         "completed_documents": completed,
         "running_documents": running,
@@ -135,4 +126,4 @@ async def get_dashboard_stats(
         "document_progresses": doc_progresses,
         "stuck_documents": stuck_docs,
         "recent_completions": recent_completions,
-    })
+    }

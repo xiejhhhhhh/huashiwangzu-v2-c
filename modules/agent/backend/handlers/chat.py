@@ -29,7 +29,8 @@ from ..init_db import (
 from ..engine.event_store import record_event
 from ..services import conversation_service as conv_svc
 from ..services import tool_discovery
-from ..engine.engine import assemble_context, chat_with_degradation_chain, chat_stream_with_degradation_chain
+from ..engine.engine import assemble_context, chat_with_degradation_chain, chat_stream_with_degradation_chain, get_orchestrator, get_hooks, get_budget_tracker
+from ..engine.budget_allocator import estimate_tokens
 from ..engine.stuck_detector import detect_stuck, reset as reset_stuck
 from ..services.model_client import recover_tool_calls, parse_inline_tool_calls, final_clean_content
 from ..services.action_policy import check_action_allowed, resolve_approval, list_pending_approvals
@@ -37,7 +38,6 @@ from ..services.action_policy import check_action_allowed, resolve_approval, lis
 logger = logging.getLogger("v2.agent").getChild("handlers.chat")
 
 MAX_TOOL_ROUNDS = 5
-EVOLVE_EVERY_N_MESSAGES = 3
 SLOW_SKILL_NAMES: set[str] = {
     "image-gen__generate",
     "office-gen__convert",
@@ -201,31 +201,6 @@ async def handle_chat(payload, db: AsyncSession, user: User):
     except Exception as diag_exc:
         logger.warning("记录装配诊断事件失败 (non-fatal): %s", diag_exc)
 
-    # 记忆召回：自动检索用户相关记忆，注入 system prompt
-    try:
-        recall_result = await call_capability(
-            "memory", "recall",
-            {"query": payload.content, "limit": 5},
-            caller=f"user:{user.id}",
-            caller_role=user.role,
-        )
-        if recall_result and recall_result.get("success") and recall_result.get("data"):
-            memories = recall_result["data"]
-            if memories:
-                memory_lines = []
-                for m_item in memories:
-                    text = m_item.get("text", "")
-                    if text:
-                        memory_lines.append(f"- {text}")
-                if memory_lines:
-                    memory_block = "你记得该用户之前的一些信息：\n" + "\n".join(memory_lines)
-                    for msg in messages:
-                        if msg["role"] == "system":
-                            msg["content"] += "\n\n---\n\n" + memory_block
-                            break
-    except Exception as mem_recall_err:
-        logger.warning("Memory recall failed (non-fatal): %s", mem_recall_err)
-
     tools = tool_discovery.build_tools(user.role)
 
     async def event_stream():
@@ -237,302 +212,343 @@ async def handle_chat(payload, db: AsyncSession, user: User):
         _pending_events: list[dict] = []
         _event_round = 0
         _persisted_event_count = 0
+        _disconnected = False
         try:
-            _session_key = f"conv_{payload.conversation_id}"
-            reset_stuck(_session_key)
-            for _round in range(MAX_TOOL_ROUNDS):
-                # Y1: 每轮开头重置 full，防止跨轮累积
-                full = []
-                logger.info("[DIAG] event_stream tool_round %d/%d", _round + 1, MAX_TOOL_ROUNDS)
-                logger.info("[DIAG] event_stream calling chat_with_degradation_chain")
-                result = await chat_with_degradation_chain(
-                    messages,
-                    payload.profile_key or "deepseek-v4-flash",
-                    tools,
-                    conversation_id=payload.conversation_id,
-                )
-                logger.info("[DIAG] event_stream chat returned tool_calls=%s error=%s",
-                    bool(result.get("tool_calls")), bool(result.get("error")))
-                if result.get("error"):
-                    error_msg = result.get("error") or ""
-                    yield f"data: {json.dumps({'type': 'error', 'content': error_msg}, ensure_ascii=False)}\n\n".encode("utf-8")
-                    break
-                if result.get("thinking"):
-                    thinking = str(result["thinking"])
-                    thinking_parts.append(thinking)
-                    timeline.append({"type": "thinking", "content": thinking})
-                    logger.info("[DIAG] timeline APPEND thinking len=%d total=%d", len(thinking), len(timeline))
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': thinking}, ensure_ascii=False)}\n\n".encode("utf-8")
-                tool_calls = result.get("tool_calls") or []
-                if not tool_calls and result.get("finish_reason") == "tool_calls" and tools:
-                    result = await recover_tool_calls(messages, payload.profile_key or "deepseek-v4-flash", tools)
-                    tool_calls = result.get("tool_calls") or []
-                # 兜底：检查 content 里是否有 XML 式工具调用标记
-                if not tool_calls:
-                    clean_content, inline_calls = parse_inline_tool_calls(result.get("content", ""))
-                    if inline_calls:
-                        result["content"] = clean_content
-                        tool_calls = inline_calls
-                        logger.info("[DIAG] event_stream parsed %d inline tool calls from chat() content", len(inline_calls))
-                if not tool_calls:
-                    logger.info("[DIAG] event_stream entering _yield_final_stream")
-                    stream_kwargs: dict = {"messages": messages}
-                    if payload.profile_key:
-                        stream_kwargs["profile_key"] = payload.profile_key
-                    inline_from_stream = None
-                    async for chunk in _yield_final_stream(
-                        stream_kwargs, full, thinking_parts, timeline,
-                        profile_key=payload.profile_key or "deepseek-v4-flash",
+            try:
+                _session_key = f"conv_{payload.conversation_id}"
+                reset_stuck(_session_key)
+                budget_tracker = get_budget_tracker()
+                _budget_session_key = f"budget_conv_{payload.conversation_id}"
+                budget_tracker.reset(_budget_session_key)
+                _tool_round_tokens_before = 0
+                for _round in range(MAX_TOOL_ROUNDS):
+                    # Y1: 每轮开头重置 full，防止跨轮累积
+                    full = []
+                    logger.info("[DIAG] event_stream tool_round %d/%d", _round + 1, MAX_TOOL_ROUNDS)
+                    logger.info("[DIAG] event_stream calling chat_with_degradation_chain")
+                    result = await chat_with_degradation_chain(
+                        messages,
+                        payload.profile_key or "deepseek-v4-flash",
+                        tools,
                         conversation_id=payload.conversation_id,
-                    ):
-                        if isinstance(chunk, dict) and chunk.get("type") == "_inline_tool_calls":
-                            inline_from_stream = chunk.get("tool_calls", [])
-                        else:
-                            yield chunk
-                    if inline_from_stream:
-                        tool_calls = inline_from_stream
-                        logger.info("[DIAG] event_stream re-entering tool loop with %d inline tool calls from stream", len(tool_calls))
-                    else:
-                        logger.info("[DIAG] event_stream _yield_final_stream finished")
+                    )
+                    logger.info("[DIAG] event_stream chat returned tool_calls=%s error=%s",
+                        bool(result.get("tool_calls")), bool(result.get("error")))
+                    if result.get("error"):
+                        error_msg = result.get("error") or ""
+                        yield f"data: {json.dumps({'type': 'error', 'content': error_msg}, ensure_ascii=False)}\n\n".encode("utf-8")
                         break
-                logger.info("[DIAG] event_stream executing tool_calls count=%d", len(tool_calls))
-                content_source = "".join(full) if full else (result.get("content") or "")
-                messages.append({
-                    "role": "assistant",
-                    "content": content_source,
-                    "tool_calls": _tool_calls_for_history(tool_calls),
-                })
-                _event_round_id = f"round_{_event_round}"
-                _event_round += 1
-                _pending_events.append({
-                    "event_type": "assistant_msg", "payload": {"content": content_source},
-                    "llm_response_id": _event_round_id,
-                })
-                for tc in tool_calls:
-                    fn = tc.get("function", tc)
+                    if result.get("thinking"):
+                        thinking = str(result["thinking"])
+                        thinking_parts.append(thinking)
+                        timeline.append({"type": "thinking", "content": thinking})
+                        logger.info("[DIAG] timeline APPEND thinking len=%d total=%d", len(thinking), len(timeline))
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': thinking}, ensure_ascii=False)}\n\n".encode("utf-8")
+                    tool_calls = result.get("tool_calls") or []
+                    if not tool_calls and result.get("finish_reason") == "tool_calls" and tools:
+                        result = await recover_tool_calls(messages, payload.profile_key or "deepseek-v4-flash", tools)
+                        tool_calls = result.get("tool_calls") or []
+                    # 兜底：检查 content 里是否有 XML 式工具调用标记
+                    if not tool_calls:
+                        clean_content, inline_calls = parse_inline_tool_calls(result.get("content", ""))
+                        if inline_calls:
+                            result["content"] = clean_content
+                            tool_calls = inline_calls
+                            logger.info("[DIAG] event_stream parsed %d inline tool calls from chat() content", len(inline_calls))
+                    if not tool_calls:
+                        logger.info("[DIAG] event_stream entering _yield_final_stream")
+                        stream_kwargs: dict = {"messages": messages}
+                        if payload.profile_key:
+                            stream_kwargs["profile_key"] = payload.profile_key
+                        inline_from_stream = None
+                        async for chunk in _yield_final_stream(
+                            stream_kwargs, full, thinking_parts, timeline,
+                            profile_key=payload.profile_key or "deepseek-v4-flash",
+                            conversation_id=payload.conversation_id,
+                        ):
+                            if isinstance(chunk, dict) and chunk.get("type") == "_inline_tool_calls":
+                                inline_from_stream = chunk.get("tool_calls", [])
+                            else:
+                                yield chunk
+                        if inline_from_stream:
+                            tool_calls = inline_from_stream
+                            logger.info("[DIAG] event_stream re-entering tool loop with %d inline tool calls from stream", len(tool_calls))
+                        else:
+                            logger.info("[DIAG] event_stream _yield_final_stream finished")
+                            break
+                    logger.info("[DIAG] event_stream executing tool_calls count=%d", len(tool_calls))
+                    content_source = "".join(full) if full else (result.get("content") or "")
+                    messages.append({
+                        "role": "assistant",
+                        "content": content_source,
+                        "tool_calls": _tool_calls_for_history(tool_calls),
+                    })
+                    _event_round_id = f"round_{_event_round}"
+                    _event_round += 1
                     _pending_events.append({
-                        "event_type": "tool_call",
-                        "payload": {
-                            "id": tc.get("id") or fn.get("id") or "",
-                            "name": fn.get("name", ""),
-                            "arguments": fn.get("arguments", {}),
-                        },
+                        "event_type": "assistant_msg", "payload": {"content": content_source},
                         "llm_response_id": _event_round_id,
                     })
+                    for tc in tool_calls:
+                        fn = tc.get("function", tc)
+                        raw_args = fn.get("arguments", {})
+                        if isinstance(raw_args, dict):
+                            args_str = json.dumps(raw_args, ensure_ascii=False)
+                        else:
+                            args_str = str(raw_args)
+                        _pending_events.append({
+                            "event_type": "tool_call",
+                            "payload": {
+                                "id": tc.get("id") or fn.get("id") or "",
+                                "name": fn.get("name", ""),
+                                "arguments": args_str,
+                            },
+                            "llm_response_id": _event_round_id,
+                        })
 
-                # ── Phase 1: parse + detect slow tools + yield all tool_call events ──
-                parsed_tools: list[dict] = []
-                for tc in tool_calls:
-                    fn = tc.get("function", tc)
-                    name = fn.get("name", "")
-                    tool_call_id = tc.get("id") or fn.get("id") or ""
-                    try:
-                        args = fn.get("arguments") or {}
-                        if isinstance(args, str):
-                            args = json.loads(args)
-                    except Exception:
-                        args = {}
-                    resolved_slow = None
-                    if name == "skill_use":
-                        inner_name = args.get("name", "")
-                        if inner_name in SLOW_SKILL_NAMES:
-                            resolved_slow = inner_name
-                    elif name in SLOW_SKILL_NAMES:
-                        resolved_slow = name
-                    parsed_tools.append({
-                        "name": name,
-                        "tool_call_id": tool_call_id,
-                        "args": args,
-                        "slow_name": resolved_slow,
-                    })
-                    call_event = {"type": "tool_call", "name": name, "arguments": args}
-                    tool_events.append(call_event)
-                    timeline.append(call_event)
-                    yield f"data: {_j(call_event)}\n\n".encode("utf-8")
+                    # ── Phase 1: parse + detect slow tools + yield all tool_call events ──
+                    parsed_tools: list[dict] = []
+                    for tc in tool_calls:
+                        fn = tc.get("function", tc)
+                        name = fn.get("name", "")
+                        tool_call_id = tc.get("id") or fn.get("id") or ""
+                        try:
+                            args = fn.get("arguments") or {}
+                            if isinstance(args, str):
+                                args = json.loads(args)
+                        except Exception:
+                            args = {}
+                        resolved_slow = None
+                        if name == "skill_use":
+                            inner_name = args.get("name", "")
+                            if inner_name in SLOW_SKILL_NAMES:
+                                resolved_slow = inner_name
+                        elif name in SLOW_SKILL_NAMES:
+                            resolved_slow = name
+                        parsed_tools.append({
+                            "name": name,
+                            "tool_call_id": tool_call_id,
+                            "args": args,
+                            "slow_name": resolved_slow,
+                        })
+                        call_event = {"type": "tool_call", "name": name, "arguments": args}
+                        tool_events.append(call_event)
+                        timeline.append(call_event)
+                        yield f"data: {_j(call_event)}\n\n".encode("utf-8")
 
-                # ── Phase 2: slow tools → background queue ──────────────────
-                from .tasks import _submit_slow_tool_task
-                has_slow = False
-                for tool in parsed_tools:
-                    if not tool["slow_name"]:
-                        continue
-                    has_slow = True
-                    task_id = await _submit_slow_tool_task(
-                        conversation_id=payload.conversation_id,
-                        user_id=user.id,
-                        tool_name=tool["slow_name"],
-                        skill_args=tool["args"],
-                        caller=f"user:{user.id}",
-                        caller_role=user.role,
-                    )
-                    tool_result = {
-                        "background": True,
-                        "task_id": task_id,
-                        "message": f"🛠️ 后台任务 [{tool['slow_name']}] 已提交，完成后将通过站内信通知你。",
-                    }
-                    result_event = {"type": "tool_result", "name": tool["name"], "result": tool_result}
-                    tool_events.append(result_event)
-                    timeline.append(result_event)
-                    yield f"data: {_j(result_event)}\n\n".encode("utf-8")
-                    tool_message = {
-                        "role": "tool",
-                        "name": tool["name"],
-                        "content": _j(tool_result),
-                    }
-                    if tool["tool_call_id"]:
-                        tool_message["tool_call_id"] = tool["tool_call_id"]
-                    messages.append(tool_message)
-                    _pending_events.append({
-                        "event_type": "tool_result",
-                        "payload": {
-                            "tool_call_id": tool["tool_call_id"],
-                            "name": tool["name"],
-                            "result": tool_result,
-                        },
-                        "llm_response_id": None,
-                    })
-                if has_slow:
-                    from ..models import AgentConversation
-                    try:
-                        from app.database import AsyncSessionLocal as _ASL
-                        async with _ASL() as _db:
-                            _conv = await _db.get(AgentConversation, payload.conversation_id)
-                            if _conv:
-                                _conv.processing = True
-                                await _db.commit()
-                    except Exception as _pe:
-                        logger.warning("Failed to mark processing flag: %s", _pe)
-
-                # ── Phase 3: fast tools → concurrent execution ──────────────
-                fast_tools = [t for t in parsed_tools if not t["slow_name"]]
-                if fast_tools:
-                    SEM_MAX = 5
-                    sem = asyncio.Semaphore(SEM_MAX)
-                    AGENT_CODE = "erp_chat"
-
-                    async def _exec_one(tool: dict) -> dict:
-                        async with sem:
-                            try:
-                                from app.database import AsyncSessionLocal as _ASL
-                                async with _ASL() as _pol_db:
-                                    pol = await check_action_allowed(
-                                        _pol_db, tool["name"], AGENT_CODE,
-                                        user.id, payload.conversation_id,
-                                    )
-                                if not pol.get("allowed"):
-                                    pol_result = {
-                                        "policy_action": pol["action"],
-                                        "reason": pol.get("reason", ""),
-                                        "approval_id": pol.get("approval_id"),
-                                        "tool_name": pol.get("tool_name", tool["name"]),
-                                    }
-                                    return {"name": tool["name"], "tool_call_id": tool["tool_call_id"], "result": pol_result}
-                                if tool["name"] == "skill_list":
-                                    result = await tool_discovery.handle_skill_list(tool["args"], user.role)
-                                elif tool["name"] == "skill_describe":
-                                    result = await tool_discovery.handle_skill_describe(tool["args"], user.role)
-                                elif tool["name"] == "skill_use":
-                                    result = await tool_discovery.handle_skill_use(
-                                        tool["args"], caller=f"user:{user.id}", caller_role=user.role,
-                                    )
-                                else:
-                                    module_key, action = tool_discovery.parse_tool_name(tool["name"])
-                                    result = await call_capability(
-                                        module_key, action, tool["args"],
-                                        caller=f"user:{user.id}", caller_role=user.role,
-                                    )
-                            except Exception as exc:
-                                result = {"error": str(exc)}
-                            return {"name": tool["name"], "tool_call_id": tool["tool_call_id"], "result": result}
-
-                    tasks = [_exec_one(t) for t in fast_tools]
-                    for coro in asyncio.as_completed(tasks):
-                        outcome = await coro
-                        result_data = outcome["result"]
-                        if isinstance(result_data, dict) and result_data.get("policy_action") == "confirm":
-                            result_data["approval_required"] = True
-                        result_event = {"type": "tool_result", "name": outcome["name"], "result": result_data}
+                    # ── Phase 2: slow tools → background queue ──────────────────
+                    from .tasks import _submit_slow_tool_task
+                    has_slow = False
+                    for tool in parsed_tools:
+                        if not tool["slow_name"]:
+                            continue
+                        has_slow = True
+                        task_id = await _submit_slow_tool_task(
+                            conversation_id=payload.conversation_id,
+                            user_id=user.id,
+                            tool_name=tool["slow_name"],
+                            skill_args=tool["args"],
+                            caller=f"user:{user.id}",
+                            caller_role=user.role,
+                        )
+                        tool_result = {
+                            "background": True,
+                            "task_id": task_id,
+                            "message": f"🛠️ 后台任务 [{tool['slow_name']}] 已提交，完成后将通过站内信通知你。",
+                        }
+                        result_event = {"type": "tool_result", "name": tool["name"], "result": tool_result}
                         tool_events.append(result_event)
                         timeline.append(result_event)
                         yield f"data: {_j(result_event)}\n\n".encode("utf-8")
                         tool_message = {
                             "role": "tool",
-                            "name": outcome["name"],
-                            "content": _j(result_data),
+                            "name": tool["name"],
+                            "content": _j(tool_result),
                         }
-                        if outcome["tool_call_id"]:
-                            tool_message["tool_call_id"] = outcome["tool_call_id"]
+                        if tool["tool_call_id"]:
+                            tool_message["tool_call_id"] = tool["tool_call_id"]
                         messages.append(tool_message)
                         _pending_events.append({
                             "event_type": "tool_result",
                             "payload": {
-                                "tool_call_id": outcome["tool_call_id"],
-                                "name": outcome["name"],
-                                "result": result_data,
+                                "tool_call_id": tool["tool_call_id"],
+                                "name": tool["name"],
+                                "result": tool_result,
                             },
                             "llm_response_id": None,
                         })
+                    if has_slow:
+                        from ..models import AgentConversation
+                        try:
+                            from app.database import AsyncSessionLocal as _ASL
+                            async with _ASL() as _db:
+                                _conv = await _db.get(AgentConversation, payload.conversation_id)
+                                if _conv:
+                                    _conv.processing = True
+                                    await _db.commit()
+                        except Exception as _pe:
+                            logger.warning("Failed to mark processing flag: %s", _pe)
 
-                # B4: 增量持久化——每轮结束后提交本轮 events，崩溃不全丢
-                try:
-                    from app.database import AsyncSessionLocal as _CP_ASL
-                    async with _CP_ASL() as _cp_db:
-                        for pe in _pending_events[_persisted_event_count:]:
-                            await record_event(
-                                _cp_db, payload.conversation_id,
-                                pe["event_type"], pe["payload"],
-                                pe.get("llm_response_id"),
+                    # ── Phase 3: fast tools → ToolOrchestrator（批5）──────────────
+                    fast_tools = [t for t in parsed_tools if not t["slow_name"]]
+                    if fast_tools:
+                        AGENT_CODE = "erp_chat"
+                        orchestrator = get_orchestrator()
+
+                        async def _tool_execute_fn(tool: dict) -> dict:
+                            from app.database import AsyncSessionLocal as _ASL
+                            async with _ASL() as _pol_db:
+                                pol = await check_action_allowed(
+                                    _pol_db, tool["name"], AGENT_CODE,
+                                    user.id, payload.conversation_id,
+                                )
+                            if not pol.get("allowed"):
+                                return {
+                                    "policy_action": pol["action"],
+                                    "reason": pol.get("reason", ""),
+                                    "approval_id": pol.get("approval_id"),
+                                    "tool_name": pol.get("tool_name", tool["name"]),
+                                }
+                            if tool["name"] == "skill_list":
+                                return await tool_discovery.handle_skill_list(tool["args"], user.role)
+                            elif tool["name"] == "skill_describe":
+                                return await tool_discovery.handle_skill_describe(tool["args"], user.role)
+                            elif tool["name"] == "skill_use":
+                                return await tool_discovery.handle_skill_use(
+                                    tool["args"], caller=f"user:{user.id}", caller_role=user.role,
+                                )
+                            else:
+                                module_key, action = tool_discovery.parse_tool_name(tool["name"])
+                                return await call_capability(
+                                    module_key, action, tool["args"],
+                                    caller=f"user:{user.id}", caller_role=user.role,
+                                )
+
+                        orchestrator_tools = [
+                            {"name": t["name"], "tool_call_id": t["tool_call_id"], "args": t["args"]}
+                            for t in fast_tools
+                        ]
+                        orchestrated_results = await orchestrator.execute_batch(
+                            orchestrator_tools, _tool_execute_fn,
+                        )
+                        for outcome in orchestrated_results:
+                            result_data = outcome.get("result") or {"error": outcome.get("error", "unknown")}
+                            if isinstance(result_data, dict) and result_data.get("policy_action") == "confirm":
+                                result_data["approval_required"] = True
+                            result_event = {"type": "tool_result", "name": outcome["name"], "result": result_data}
+                            tool_events.append(result_event)
+                            timeline.append(result_event)
+                            yield f"data: {_j(result_event)}\n\n".encode("utf-8")
+                            tool_message = {
+                                "role": "tool",
+                                "name": outcome["name"],
+                                "content": _j(result_data),
+                            }
+                            if outcome.get("tool_call_id"):
+                                tool_message["tool_call_id"] = outcome["tool_call_id"]
+                            messages.append(tool_message)
+                            _pending_events.append({
+                                "event_type": "tool_result",
+                                "payload": {
+                                    "tool_call_id": outcome.get("tool_call_id", ""),
+                                    "name": outcome.get("name", ""),
+                                    "result": result_data,
+                                },
+                                "llm_response_id": None,
+                            })
+
+                    # B4: 增量持久化——每轮结束后提交本轮 events，崩溃不全丢
+                    try:
+                        from app.database import AsyncSessionLocal as _CP_ASL
+                        async with _CP_ASL() as _cp_db:
+                            for pe in _pending_events[_persisted_event_count:]:
+                                await record_event(
+                                    _cp_db, payload.conversation_id,
+                                    pe["event_type"], pe["payload"],
+                                    pe.get("llm_response_id"),
+                                )
+                            _persisted_event_count = len(_pending_events)
+                    except Exception as _cp_exc:
+                        logger.warning("Incremental persist failed (non-fatal): %s", _cp_exc)
+
+                    # ── stuck_detector ────────────────
+                    _stuck_check = {"stuck": False}
+                    if tool_calls:
+                        for tc in tool_calls:
+                            fn = tc.get("function", tc)
+                            _stuck_check = detect_stuck(
+                                tool_name=fn.get("name", ""),
+                                tool_args=fn.get("arguments", {}),
+                                error_text=None, is_empty_response=False,
+                                session_key=_session_key,
                             )
-                        _persisted_event_count = len(_pending_events)
-                except Exception as _cp_exc:
-                    logger.warning("Incremental persist failed (non-fatal): %s", _cp_exc)
-
-                # ── stuck_detector ────────────────
-                _stuck_check = {"stuck": False}
-                if tool_calls:
-                    for tc in tool_calls:
-                        fn = tc.get("function", tc)
+                            if _stuck_check.get("stuck"):
+                                break
+                    else:
+                        has_error = bool(result.get("error"))
+                        is_empty = not result.get("content") and not result.get("tool_calls")
                         _stuck_check = detect_stuck(
-                            tool_name=fn.get("name", ""),
-                            tool_args=fn.get("arguments", {}),
-                            error_text=None, is_empty_response=False,
+                            tool_name=None, tool_args=None,
+                            error_text=str(result.get("error"))[:100] if has_error else None,
+                            is_empty_response=is_empty,
                             session_key=_session_key,
                         )
-                        if _stuck_check.get("stuck"):
-                            break
-                else:
-                    has_error = bool(result.get("error"))
-                    is_empty = not result.get("content") and not result.get("tool_calls")
-                    _stuck_check = detect_stuck(
-                        tool_name=None, tool_args=None,
-                        error_text=str(result.get("error"))[:100] if has_error else None,
-                        is_empty_response=is_empty,
-                        session_key=_session_key,
+                    if _stuck_check.get("stuck"):
+                        logger.warning("stuck_detector打断工具循环: %s", _stuck_check["reason"])
+                        yield f"data: {json.dumps({'type': 'error', 'content': _stuck_check['reason']}, ensure_ascii=False)}\n\n".encode("utf-8")
+                        break
+
+                    # ── Diminishing returns check ────────────
+                    _tokens_after = sum(
+                        max(estimate_tokens([m]), 0) for m in messages[-10:]
+                    ) if messages else 0
+                    budget_tracker.record_round(
+                        _budget_session_key,
+                        _tool_round_tokens_before,
+                        _tokens_after,
                     )
-                if _stuck_check.get("stuck"):
-                    logger.warning("stuck_detector打断工具循环: %s", _stuck_check["reason"])
-                    yield f"data: {json.dumps({'type': 'error', 'content': _stuck_check['reason']}, ensure_ascii=False)}\n\n".encode("utf-8")
-                    break
-            else:
-                # Y2: 工具轮耗尽后加一轮无工具的最终 LLM 回复
-                logger.info("[DIAG] Tool rounds exhausted, generating final summary")
-                _final_summary = await chat_with_degradation_chain(
-                    messages,
-                    payload.profile_key or "deepseek-v4-flash",
-                    tools=None,
-                    conversation_id=payload.conversation_id,
-                )
-                if _final_summary.get("content"):
-                    final_text = str(_final_summary["content"])
-                    full = [final_text]
-                    timeline.append({"type": "text", "content": final_text})
-                    yield f"data: {json.dumps({'type': 'token', 'content': final_text}, ensure_ascii=False)}\n\n".encode("utf-8")
-                elif _final_summary.get("error"):
-                    yield f"data: {json.dumps({'type': 'error', 'content': _final_summary['error']}, ensure_ascii=False)}\n\n".encode("utf-8")
-        except (Exception, asyncio.CancelledError) as exc:
-            logger.info("[DIAG] event_stream EXCEPTION %s: %s", type(exc).__name__, str(exc)[:300])
-            if not isinstance(exc, asyncio.CancelledError):
-                yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n".encode("utf-8")
+                    _tool_round_tokens_before = _tokens_after
+                    _should_stop, _stop_reason = budget_tracker.should_stop(_budget_session_key)
+                    if _should_stop:
+                        logger.warning("diminishing_returns打断工具循环: %s", _stop_reason)
+                        # Emit a diagnostic event and break — don't yield error,
+                        # just stop the tool loop and let the engine finalize.
+                        try:
+                            from ..engine.event_store import record_event as _rec_ev
+                            from app.database import AsyncSessionLocal as _ASL2
+                            async with _ASL2() as _diag_db:
+                                await _rec_ev(
+                                    _diag_db, payload.conversation_id,
+                                    "diminishing_stop",
+                                    {"reason": _stop_reason, "round": _round + 1},
+                                    llm_response_id=None,
+                                )
+                        except Exception:
+                            pass
+                        break
+                else:
+                    # Y2: 工具轮耗尽后加一轮无工具的最终 LLM 回复
+                    logger.info("[DIAG] Tool rounds exhausted, generating final summary")
+                    _final_summary = await chat_with_degradation_chain(
+                        messages,
+                        payload.profile_key or "deepseek-v4-flash",
+                        tools=None,
+                        conversation_id=payload.conversation_id,
+                    )
+                    if _final_summary.get("content"):
+                        final_text = str(_final_summary["content"])
+                        full = [final_text]
+                        timeline.append({"type": "text", "content": final_text})
+                        yield f"data: {json.dumps({'type': 'token', 'content': final_text}, ensure_ascii=False)}\n\n".encode("utf-8")
+                    elif _final_summary.get("error"):
+                        yield f"data: {json.dumps({'type': 'error', 'content': _final_summary['error']}, ensure_ascii=False)}\n\n".encode("utf-8")
+            except (Exception, asyncio.CancelledError) as exc:
+                logger.info("[DIAG] event_stream EXCEPTION %s: %s", type(exc).__name__, str(exc)[:300])
+                if not isinstance(exc, asyncio.CancelledError):
+                    try:
+                        yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n".encode("utf-8")
+                    except GeneratorExit:
+                        _disconnected = True
         finally:
             try:
                 from app.database import AsyncSessionLocal
@@ -552,28 +568,6 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                             timeline=timeline,
                         )
                         logger.info("[DIAG] persist DONE msg=%d timeline_len=%d full_len=%d", msg.id, len(timeline), len(full))
-                        user_msg_count = await conv_svc.count_conversation_messages(s2, user.id, payload.conversation_id)
-                        if user_msg_count > 0 and user_msg_count % EVOLVE_EVERY_N_MESSAGES == 0:
-                            logger.info("[DIAG] event_stream submitting profile_evolve task (fire-and-forget)")
-                            asyncio.create_task(_submit_profile_evolve_task(payload.conversation_id, user.id))
-                            logger.info("[DIAG] event_stream profile_evolve task submitted")
-                        try:
-                            from app.models.system import SystemTaskQueue
-                            task = SystemTaskQueue(
-                                task_type="memory_distill",
-                                parameters=json.dumps({
-                                    "conversation_id": payload.conversation_id,
-                                    "owner_id": user.id,
-                                    "user_content": payload.content,
-                                    "assistant_content": clean_assistant_content,
-                                }),
-                                status="pending", priority=0, module="agent",
-                                creator_id=user.id,
-                            )
-                            s2.add(task)
-                            await s2.commit()
-                        except Exception as e:
-                            logger.warning("Memory distill enqueue failed (non-fatal): %s", e)
                     if full and not any(
                         e["event_type"] == "assistant_msg" and e["payload"].get("content", "") == clean_assistant_content[:200]
                         for e in _pending_events
@@ -595,37 +589,25 @@ async def handle_chat(payload, db: AsyncSession, user: User):
                         except Exception as pe_exc:
                             logger.warning("record_event failed (non-fatal): %s", pe_exc)
                     logger.info("[DIAG] event_stream DB persist done (events=%d)", len(_pending_events))
+
+                    # ── 批5：Post-turn hooks（fire-and-forget）─────────────
+                    try:
+                        hooks = get_hooks()
+                        asyncio.create_task(hooks.run_hooks(
+                            s2, payload.conversation_id, user.id,
+                            messages, tool_events, timeline,
+                        ))
+                    except Exception as pt_exc:
+                        logger.warning("post-turn hooks enqueue failed (non-fatal): %s", pt_exc)
+
             except Exception as exc:
                 logger.warning("event_stream persist/evolve failed (non-fatal): %s", exc)
-            logger.info("[DIAG] event_stream yielding [DONE]")
+
+        if not _disconnected:
             try:
                 yield b"data: [DONE]\n\n"
             except GeneratorExit:
-                logger.info("[DIAG] event_stream client disconnected, skipping [DONE]")
-            logger.info("[DIAG] event_stream EXIT")
+                pass
+        logger.info("[DIAG] event_stream EXIT")
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-async def _submit_profile_evolve_task(conversation_id: int, owner_id: int) -> None:
-    """Submit background profile evolution task to SystemTaskQueue."""
-    try:
-        from datetime import datetime, timezone, timedelta
-        from app.database import AsyncSessionLocal
-        from app.models.system import SystemTaskQueue
-        from ..init_db import ensure_user_profile
-
-        async with AsyncSessionLocal() as db:
-            profile = await ensure_user_profile(db, owner_id)
-            if profile.evolved_at:
-                if datetime.now(timezone.utc) - profile.evolved_at < timedelta(minutes=30):
-                    return
-            task = SystemTaskQueue(
-                task_type="profile_evolve",
-                parameters=json.dumps({"conversation_id": conversation_id, "owner_id": owner_id}),
-                status="pending", priority=0, module="agent", creator_id=owner_id,
-            )
-            db.add(task)
-            await db.commit()
-    except Exception as exc:
-        logger.warning("_submit_profile_evolve_task failed (non-fatal): %s", exc)

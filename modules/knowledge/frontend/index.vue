@@ -169,8 +169,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, nextTick } from 'vue'
 import { initRuntime, platform } from '../runtime'
-import WorkspaceGraph from './WorkspaceGraph.vue'
-import DashboardView from './DashboardView.vue'
+import WorkspaceGraph from './views/WorkspaceGraph.vue'
+import DashboardView from './views/DashboardView.vue'
 import {
   apiDelete, apiPost, apiGet,
   startPipeline, getProgress, getProgressBatch, getFusions, getProfile, getRelations, parseJsonField,

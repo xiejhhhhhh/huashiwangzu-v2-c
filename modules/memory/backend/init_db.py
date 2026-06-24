@@ -2,12 +2,12 @@
 import logging
 from sqlalchemy import text
 from app.database import engine
-from .models import MemoryRecord, MemoryLink, MemoryExperience
+from .models import MemoryRecord, MemoryLink, MemoryExperience, MemoryChunk, MemoryStableRule
 from app.models.base import Base
 
 logger = logging.getLogger("v2.memory").getChild("init_db")
 
-TABLES = [MemoryRecord.__table__, MemoryLink.__table__, MemoryExperience.__table__]
+TABLES = [MemoryRecord.__table__, MemoryLink.__table__, MemoryExperience.__table__, MemoryChunk.__table__, MemoryStableRule.__table__]
 
 
 async def run_init() -> None:

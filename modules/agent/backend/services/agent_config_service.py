@@ -6,7 +6,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import AgentConfig
+from ..models import AgentConfig
 from app.core.exceptions import NotFound
 
 logger = logging.getLogger("v2.agent").getChild("config_service")

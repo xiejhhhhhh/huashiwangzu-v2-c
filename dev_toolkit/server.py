@@ -36,6 +36,10 @@ EMBEDDING_CACHE_PATH = REPO_ROOT / CONFIG["embedding_cache"]
 LOG_DIR = REPO_ROOT / CONFIG["log_dir"]
 DB_DSN = CONFIG["db_dsn"]
 UPLOADS_DIR = REPO_ROOT / "backend" / "data" / "uploads"
+MEMORY_NOISE_PATTERN = re.compile(
+    r"(e2e-|smoke-|test-|test_|kb_test|kb-test|ui-e2e|audit-test|renamed-audit-test|docs-open验收|event_test|e2e_test|sample|to_del|验收|smoke)",
+    re.IGNORECASE,
+)
 
 # 确保记忆目录存在
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,6 +62,7 @@ async def _ensure_token(role: str = "admin") -> str:
             "username": acct["username"],
             "password": acct["password"],
         })
+        data = resp.json()
         data = resp.json()
         token = data.get("data", data).get("access_token") or data.get("access_token")
         if not token:
@@ -225,26 +230,7 @@ def _tail_file(path: Path, lines: int) -> str:
 
 
 def _is_knowledge_noise_name(name: str) -> bool:
-    lowered = name.lower()
-    patterns = (
-        "e2e-",
-        "smoke-",
-        "test-",
-        "test_",
-        "kb_test",
-        "kb-test",
-        "ui-e2e",
-        "audit-test",
-        "renamed-audit-test",
-        "docs-open验收",
-        "event_test",
-        "e2e_test",
-        "sample",
-        "to_del",
-        "验收",
-        "smoke",
-    )
-    return any(p in lowered for p in patterns)
+    return bool(MEMORY_NOISE_PATTERN.search(name))
 
 
 def _cleanup_knowledge_noise() -> dict[str, Any]:
@@ -291,7 +277,7 @@ def _knowledge_noise_report() -> dict[str, Any]:
     upload_counts = Counter()
     upload_samples: list[str] = []
     if UPLOADS_DIR.exists():
-      # collect suspicious names from all upload files
+        # collect suspicious names from all upload files
         for path in UPLOADS_DIR.rglob("*"):
             if not path.is_file():
                 continue
@@ -317,6 +303,308 @@ def _knowledge_noise_report() -> dict[str, Any]:
         "memory_noise_samples": memory_samples,
         "hint": "这些名字看起来像测试/烟雾/验收产物，可用 knowledge_cleanup_noise 清理。",
     }
+
+
+async def _run_psql(sql: str, timeout: int = 60) -> tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(
+        "psql",
+        DB_DSN,
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        sql,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    return proc.returncode, stdout.decode(), stderr.decode()
+
+
+async def _fetch_table_count(table: str) -> int:
+    code, out, err = await _run_psql(f"SELECT count(*) FROM {table};", timeout=30)
+    if code != 0:
+        raise RuntimeError(err.strip() or f"count query failed for {table}")
+    for line in out.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            return int(line)
+    return 0
+
+
+async def _workspace_audit() -> dict[str, Any]:
+    tables = [
+        "framework_file_items",
+        "framework_file_folders",
+        "framework_file_shares",
+        "framework_desktop_states",
+        "framework_file_recycle_items",
+        "framework_file_json_packages",
+        "framework_file_json_versions",
+        "framework_file_json_patches",
+        "framework_file_json_tasks",
+        "kb_catalogs",
+        "kb_documents",
+        "kb_chunks",
+        "kb_page_fusions",
+        "kb_raw_data",
+        "kb_entity_dictionary",
+        "kb_entity_aliases",
+        "kb_disambiguation",
+        "kb_graph_nodes",
+        "kb_graph_edges",
+        "kb_chunk_entities",
+        "kb_evidence",
+        "kb_conclusion_evidence",
+        "kb_entity_merge_log",
+        "kb_governance_candidates",
+        "kb_document_profiles",
+        "kb_file_relations",
+    ]
+    rows = []
+    for table in tables:
+        try:
+            rows.append({"table": table, "count": await _fetch_table_count(table)})
+        except Exception as exc:
+            rows.append({"table": table, "error": str(exc)})
+
+    upload_count = 0
+    if UPLOADS_DIR.exists():
+        upload_count = sum(1 for p in UPLOADS_DIR.rglob("*") if p.is_file())
+
+    noise_report = _knowledge_noise_report()
+    return {
+        "uploads_files": upload_count,
+        "table_counts": rows,
+        "noise_report": noise_report,
+    }
+
+
+async def _workspace_reset(confirm: str, scope: str = "all") -> dict[str, Any]:
+    if confirm != "RESET":
+        return {"error": "confirm must be RESET", "rejected": True}
+
+    scope = scope.lower().strip()
+    if scope not in {"all", "desktop", "knowledge", "files"}:
+        return {"error": "scope must be one of all/desktop/knowledge/files", "rejected": True}
+
+    deleted_files: list[str] = []
+    if scope in {"all", "files", "knowledge"} and UPLOADS_DIR.exists():
+        for path in UPLOADS_DIR.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                path.unlink()
+                deleted_files.append(str(path.relative_to(REPO_ROOT)))
+            except FileNotFoundError:
+                continue
+
+    table_groups = {
+        "files": [
+            "framework_file_shares",
+            "framework_file_recycle_items",
+            "framework_file_json_packages",
+            "framework_file_json_versions",
+            "framework_file_json_patches",
+            "framework_file_json_tasks",
+            "framework_file_items",
+            "framework_file_folders",
+            "framework_desktop_states",
+        ],
+        "knowledge": [
+            "kb_conclusion_evidence",
+            "kb_evidence",
+            "kb_chunk_entities",
+            "kb_graph_edges",
+            "kb_graph_nodes",
+            "kb_disambiguation",
+            "kb_entity_aliases",
+            "kb_entity_dictionary",
+            "kb_raw_data",
+            "kb_page_fusions",
+            "kb_document_profiles",
+            "kb_governance_candidates",
+            "kb_chunks",
+            "kb_documents",
+            "kb_catalogs",
+            "kb_entity_merge_log",
+            "kb_file_relations",
+        ],
+    }
+    tables_to_truncate: list[str] = []
+    if scope == "all":
+        tables_to_truncate = table_groups["knowledge"] + table_groups["files"]
+    else:
+        tables_to_truncate = table_groups[scope]
+
+    if tables_to_truncate:
+        sql = "TRUNCATE TABLE " + ", ".join(tables_to_truncate) + " RESTART IDENTITY CASCADE;"
+        code, out, err = await _run_psql(sql, timeout=60)
+        if code != 0:
+            return {"error": err.strip() or out.strip() or "reset failed", "rejected": True}
+
+    return {
+        "success": True,
+        "scope": scope,
+        "truncated_tables": tables_to_truncate,
+        "deleted_files": deleted_files[:200],
+        "deleted_file_count": len(deleted_files),
+    }
+
+
+
+
+
+# ──────────────────── 工具: _restart_backend ───────────────────────
+
+
+async def _restart_backend() -> dict[str, Any]:
+    """重启后端服务并验证健康检查。"""
+    import signal
+
+    result = {"status": "ok", "restarted": False, "port": 0, "health": ""}
+
+    # 1. 找 uvicorn 进程并杀掉
+    killed = 0
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", "uvicorn app.main:app"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for pid_str in out.stdout.strip().split("\n"):
+            pid_str = pid_str.strip()
+            if pid_str:
+                try:
+                    os.kill(int(pid_str), signal.SIGTERM)
+                    killed += 1
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+    result["killed"] = killed
+
+    # 2. 等待端口释放
+    for _ in range(5):
+        try:
+            subprocess.run(
+                ["lsof", "-ti:33000"], capture_output=True, timeout=3,
+            )
+            await asyncio.sleep(1.0)
+        except Exception:
+            break
+
+    # 3. 启动后端
+    start_script = REPO_ROOT / "scripts" / "start_backend.sh"
+    if not start_script.exists():
+        result["error"] = f"start_backend.sh not found at {start_script}"
+        return result
+
+    proc = await asyncio.create_subprocess_exec(
+        "zsh", str(start_script),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        cwd=str(REPO_ROOT),
+    )
+    stdout, stderr = await proc.communicate()
+    output = (stdout + stderr).decode("utf-8", errors="replace")
+
+    # 4. 等待健康检查
+    port = 33000
+    port_file = REPO_ROOT / "backend" / "logs" / ".backend.port"
+    if port_file.exists():
+        try:
+            port = int(port_file.read_text().strip())
+        except (ValueError, OSError):
+            port = 33000
+
+    health = "unknown"
+    for _ in range(15):
+        try:
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=5) as c:
+                r = await c.get("/api/health")
+                health = r.text[:300]
+                if r.status_code == 200:
+                    break
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+    result["restarted"] = True
+    result["port"] = port
+    result["health"] = health
+    result["output"] = output[-500:]
+    return result
+
+
+# ──────────────────── 工具: _verify_tool_args ──────────────────────
+
+
+async def _verify_tool_args() -> dict[str, Any]:
+    """存入 tool_call 事件并投影, 验证 arguments 类型。"""
+    import asyncio as _asyncio
+
+    result: dict[str, Any] = {"ok": False, "arguments_type": "unknown", "arguments": None}
+
+    async def _inner():
+        from app.database import AsyncSessionLocal
+        from sqlalchemy import select
+        from modules.agent.backend.models import AgentConversation
+        from modules.agent.backend.engine.event_store import record_event, project_to_messages
+
+        async with AsyncSessionLocal() as db:
+            conv = await db.scalar(
+                select(AgentConversation).order_by(AgentConversation.id.desc())
+            )
+            if not conv:
+                result["error"] = "no conversation found"
+                return
+            cid = conv.id
+            await record_event(db, cid, "assistant_msg", {"content": "mcp-test"}, "_mcp_verify")
+            await record_event(
+                db, cid, "tool_call",
+                {"id": "call_mcp", "name": "skill_list", "arguments": {"category": "web-tools"}},
+                "_mcp_verify",
+            )
+            await record_event(
+                db, cid, "tool_result",
+                {"tool_call_id": "call_mcp", "name": "skill_list", "result": {"ok": True}},
+                "_mcp_verify",
+            )
+            msgs = await project_to_messages(db, cid)
+            for m in msgs:
+                if m.get("tool_calls"):
+                    tc = m["tool_calls"][0]
+                    result["arguments_type"] = type(tc["function"]["arguments"]).__name__
+                    result["arguments"] = tc["function"]["arguments"]
+                    result["ok"] = isinstance(tc["function"]["arguments"], str)
+                    result["expected"] = "str"
+                    break
+
+    try:
+        await _inner()
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+# ──────────────────── 工具: _snap_diff ────────────────────────────
+
+
+async def _snap_diff() -> dict[str, Any]:
+    """输出未提交文件的 diff 快照。"""
+    files = []
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "diff", "--name-only",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=str(REPO_ROOT),
+        )
+        out, err = await proc.communicate()
+        files = [f.strip() for f in out.decode().split("\n") if f.strip()]
+    except Exception as e:
+        return {"files": [], "count": 0, "error": str(e)}
+
+        return {"files": files, "count": len(files)}
 
 # ──────────────────── 工具 10: code_explore ──────────────────────────
 
@@ -607,6 +895,19 @@ async def _brief() -> str:
             parts.append("- 上传样本: " + "；".join(noise_report["upload_noise_samples"][:8]))
         if noise_report["memory_noise_samples"]:
             parts.append("- 记忆样本: " + "；".join(noise_report["memory_noise_samples"][:8]))
+
+    try:
+        audit = await _workspace_audit()
+        table_counts = audit.get("table_counts", [])
+        non_zero = [row for row in table_counts if row.get("count", 0)]
+        if audit.get("uploads_files", 0) or non_zero:
+            parts.append("## 工作区状态")
+            parts.append(f"- uploads 文件数: {audit.get('uploads_files', 0)}")
+            if non_zero:
+                preview = ", ".join(f"{row['table']}={row['count']}" for row in non_zero[:10])
+                parts.append("- 非零表: " + preview)
+    except Exception:
+        pass
 
     return "\n\n".join(parts)
 
@@ -1087,6 +1388,38 @@ async def list_tools() -> list[Tool]:
             description="删除知识库相关的测试/烟雾/验收污染文件(上传目录 + 记忆目录中可疑文件)。",
             inputSchema={"type": "object", "properties": {}},
         ),
+        Tool(
+            name="workspace_audit",
+            description="盘点工作区数据现状: 桌面文件/知识库表/上传文件/污染样本。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="workspace_reset",
+            description="一键重置工作区数据(需 confirm=RESET, scope=all/desktop/knowledge/files)。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "confirm": {"type": "string", "description": "必须传 RESET"},
+                    "scope": {"type": "string", "description": "all/desktop/knowledge/files", "default": "all"},
+                },
+                "required": ["confirm"],
+            },
+        ),
+        Tool(
+            name="_restart_backend",
+            description="重启后端服务 (kill uvicorn + start_backend.sh). 返回健康检查和端口。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="_verify_tool_args",
+            description="存入一条 tool_call 事件并投影为消息, 确认 arguments 是 JSON string 而非 dict.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="_snap_diff",
+            description="输出当前未提交 diff 的文件名列表，只检查不用 --name-only 脏检查，结果直接返回。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 # ── 工具执行 ──────────────────────────────────────────────────────────
@@ -1166,6 +1499,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = json.dumps(_knowledge_noise_report(), ensure_ascii=False, indent=2)
         elif name == "knowledge_cleanup_noise":
             result = json.dumps(_cleanup_knowledge_noise(), ensure_ascii=False, indent=2)
+        elif name == "workspace_audit":
+            result = json.dumps(await _workspace_audit(), ensure_ascii=False, indent=2)
+        elif name == "workspace_reset":
+            result = json.dumps(
+                await _workspace_reset(
+                    confirm=arguments["confirm"],
+                    scope=arguments.get("scope", "all"),
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        elif name == "_restart_backend":
+            result = json.dumps(await _restart_backend(), ensure_ascii=False, indent=2)
+        elif name == "_verify_tool_args":
+            result = json.dumps(await _verify_tool_args(), ensure_ascii=False, indent=2)
+        elif name == "_snap_diff":
+            result = json.dumps(await _snap_diff(), ensure_ascii=False, indent=2)
         else:
             result = json.dumps({"error": f"未知工具: {name}"})
         return [TextContent(type="text", text=result)]

@@ -1,13 +1,17 @@
 """compressor：滑窗保头尾 + 中间摘要（便宜模型）。
 与批1事件溯源对接：压缩 = 插入 compaction 事件，不删原始事件。
 触发：budget_allocator装配时仍超预算 → 调compressor。
-降级：便宜模型失败 → 退"只保尾部 M 条"硬截断，不报错。"""
+降级：便宜模型失败 → 退"只保尾部 M 条"硬截断，不报错。
+
+批5增强：压缩前快照 + 压缩链路追踪 + 可回放审计。"""
 import json
 import logging
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 from .event_store import record_event
+from .context_snapshot import take_snapshot
+from .budget_allocator import estimate_tokens as _estimate_tokens
 
 logger = logging.getLogger("v2.agent").getChild("engine.compressor")
 
@@ -51,6 +55,66 @@ def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
 def _estimate_tokens_for_text(text: str) -> int:
     import math
     return max(math.ceil(len(text) / 1.5), 0)
+
+
+async def compress_middle_with_snapshot(
+    db: "AsyncSession",
+    conversation_id: int,
+    all_events: list,
+    messages: list[dict] | None = None,
+    profile_key: str = CHEAP_MODEL_KEY,
+) -> dict:
+    """compress_middle with pre/post snapshots for replayability.
+
+    Takes a snapshot before and after compression, linking them for audit.
+    """
+    # Pre-compress snapshot
+    pre_snap = None
+    if messages:
+        pre_snap = await take_snapshot(
+            db, conversation_id, "pre_compress",
+            messages, all_events,
+        )
+    result = await compress_middle(db, conversation_id, all_events, profile_key)
+    # Post-compress snapshot (re-read events for updated state)
+    if result.get("status") == "compressed":
+        try:
+            from .event_store import read_events, project_to_messages
+            post_events = await read_events(db, conversation_id)
+            post_messages = await project_to_messages(db, conversation_id)
+            compression_ratio = result.get("compression_ratio")
+            snap = await take_snapshot(
+                db, conversation_id, "post_compress",
+                post_messages, post_events,
+                summary=result.get("summary_preview", ""),
+            )
+            # Store compression_ratio on the snapshot for audit
+            if snap and compression_ratio is not None:
+                snap.compression_ratio = float(compression_ratio)
+                snap.restored_from = pre_snap.id if pre_snap else None
+                db.add(snap)
+                await db.commit()
+
+            # Record a compression_trace event linking pre/post snapshots
+            try:
+                await record_event(
+                    db, conversation_id, "compression_trace",
+                    {
+                        "pre_snapshot_id": pre_snap.id if pre_snap else None,
+                        "post_snapshot_id": snap.id if snap else None,
+                        "compaction_event_id": result.get("compaction_id"),
+                        "folded_count": result.get("folded_count", 0),
+                        "compression_ratio": compression_ratio,
+                        "summary_preview": (result.get("summary_preview") or "")[:300],
+                    },
+                    llm_response_id=None,
+                )
+            except Exception as e:
+                logger.warning("compression_trace event failed (non-fatal): %s", e)
+
+        except Exception as e:
+            logger.warning("post-compress snapshot failed (non-fatal): %s", e)
+    return result
 
 
 async def compress_middle(
@@ -130,7 +194,15 @@ async def compress_middle(
     try:
         ev = await record_event(db, conversation_id, "compaction", payload, llm_response_id=None)
         logger.info("压缩完成: 折叠 %d 条事件, compaction_id=%s", len(foldable_ids), ev.id)
-        return {"status": "compressed", "compaction_id": ev.id, "folded_count": len(foldable_ids), "summary_preview": summary_text[:200]}
+        compression_ratio = round(len(foldable_indices) / max(len(all_events), 1) * 100, 1)
+        return {
+            "status": "compressed",
+            "compaction_id": ev.id,
+            "folded_count": len(foldable_ids),
+            "summary_preview": summary_text[:200],
+            "compression_ratio": compression_ratio,
+            "total_events_before": len(all_events),
+        }
     except Exception as e:
         logger.error("记录 compaction 事件失败: %s", e)
         return {"status": "error", "error": str(e)}

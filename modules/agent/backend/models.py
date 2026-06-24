@@ -132,3 +132,23 @@ class AgentUserProfile(Base, TimestampMixin):
     version: Mapped[int] = mapped_column(Integer, default=0)
     evolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     conversation_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ContextSnapshot(Base, TimestampMixin):
+    __tablename__ = "agent_context_snapshots"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    snapshot_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="pre_compress / post_compress / periodic")
+    event_id_before: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="压缩前最后事件id")
+    event_id_after: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="压缩后最后事件id")
+    message_count_before: Mapped[int] = mapped_column(Integer, default=0)
+    message_count_after: Mapped[int] = mapped_column(Integer, default=0)
+    token_estimate_before: Mapped[int] = mapped_column(Integer, default=0)
+    token_estimate_after: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True, comment="压缩/快照摘要")
+    snapshot_data: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="完整消息快照（用于回放）")
+    compression_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    restored_from: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="从哪个snapshot恢复")
+
+
+from .models_prompt import AgentPrompt

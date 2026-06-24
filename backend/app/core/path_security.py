@@ -16,8 +16,8 @@ def validate_within_dir(path: str | Path, root: str | Path) -> None:
     Raises ValueError with a safe (non-leaky) message if the path escapes.
     Uses Path.resolve() to follow symlinks and normalize .. components.
     """
+    root_resolved = Path(root).resolve()
     try:
-        root_resolved = Path(root).resolve()
         target = Path(path).resolve()
         target.relative_to(root_resolved)
     except (ValueError, OSError, RuntimeError) as exc:

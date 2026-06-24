@@ -8,6 +8,23 @@ logger = logging.getLogger("v2.agent").getChild("engine.event_store")
 MAX_PAYLOAD_CONTENT_LENGTH = 50000
 
 
+def _ensure_string_arguments(args: dict | str) -> str:
+    """Ensure tool_call ``arguments`` is a JSON string, not a dict/object.
+
+    DeepSeek, Ollama, and most OpenAI-compatible providers require
+    ``tool_calls[].function.arguments`` to be a JSON-encoded string.
+    The internal unified format keeps it as a dict; this helper converts
+    it back to a string when reconstructing messages for the model API.
+    Idempotent — passing a string returns it unchanged.
+    """
+    if isinstance(args, str):
+        return args
+    try:
+        return json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(args)
+
+
 async def record_event(
     db: AsyncSession,
     conversation_id: int,
@@ -86,7 +103,7 @@ async def project_to_messages(
                         "type": "function",
                         "function": {
                             "name": tc_payload.get("name", ""),
-                            "arguments": tc_payload.get("arguments", {}),
+                            "arguments": _ensure_string_arguments(tc_payload.get("arguments", "{}")),
                         },
                     })
                     j += 1
@@ -117,7 +134,7 @@ async def project_to_messages(
                     "type": "function",
                     "function": {
                         "name": tc_payload.get("name", ""),
-                        "arguments": tc_payload.get("arguments", {}),
+                        "arguments": _ensure_string_arguments(tc_payload.get("arguments", "{}")),
                     },
                 }],
             })

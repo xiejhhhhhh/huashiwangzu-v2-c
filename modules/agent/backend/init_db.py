@@ -2,7 +2,8 @@
 import logging
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from .models import AgentSystemPrompt, AgentEnterprisePrompt, AgentUserProfile, AgentConfig, ApprovalQueue, AgentUsageDaily
+from .models import AgentSystemPrompt, AgentEnterprisePrompt, AgentUserProfile, AgentConfig, ApprovalQueue, AgentUsageDaily, ContextSnapshot
+from .models_prompt import AgentPrompt
 
 logger = logging.getLogger("v2.agent").getChild("init_db")
 
@@ -81,6 +82,23 @@ async def ensure_user_profile(db: AsyncSession, owner_id: int) -> AgentUserProfi
         await db.commit()
         await db.refresh(profile)
     return profile
+
+
+async def ensure_default_agent_prompts(db: AsyncSession) -> None:
+    """Ensure agent_prompts table has a lightweight starter row for admin review."""
+    result = await db.execute(select(AgentPrompt).limit(1))
+    if result.scalar_one_or_none():
+        return
+    db.add(AgentPrompt(
+        owner_id=1,
+        title="默认助手提示",
+        category="system",
+        content="你是华世王镞桌面助手，回答要简洁、可靠、专业。",
+        is_active=True,
+        status="published",
+    ))
+    await db.commit()
+    logger.info("Created default agent prompt")
 
 
 async def ensure_timeline_column(db: AsyncSession) -> None:
@@ -258,11 +276,43 @@ async def ensure_migrated_tables(db: AsyncSession) -> None:
         logger.warning("Migration: migrated tables check failed: %s", e)
 
 
+async def ensure_snapshot_table(db: AsyncSession) -> None:
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_context_snapshots ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  conversation_id BIGINT NOT NULL,"
+            "  snapshot_type VARCHAR(32) NOT NULL,"
+            "  event_id_before BIGINT,"
+            "  event_id_after BIGINT,"
+            "  message_count_before INTEGER DEFAULT 0,"
+            "  message_count_after INTEGER DEFAULT 0,"
+            "  token_estimate_before INTEGER DEFAULT 0,"
+            "  token_estimate_after INTEGER DEFAULT 0,"
+            "  summary TEXT,"
+            "  snapshot_data JSONB,"
+            "  compression_ratio DOUBLE PRECISION,"
+            "  restored_from BIGINT,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_snapshots_conv ON agent_context_snapshots(conversation_id)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured agent_context_snapshots table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: snapshot table check failed: %s", e)
+
+
 async def run_init(db: AsyncSession) -> None:
     """Agent 模块启动初始化入口。"""
     await ensure_migrated_tables(db)
     await ensure_timeline_column(db)
     await ensure_processing_column(db)
     await ensure_event_table(db)
+    await ensure_snapshot_table(db)
     await ensure_default_prompts(db)
     await update_existing_prompts(db)

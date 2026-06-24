@@ -314,6 +314,178 @@ async def http_rebuild(_user=Depends(require_permission("admin"))):
     graph.reindex_now()
     return ApiResponse(data=graph.stats())
 
+
+# ── Cross-module capability handlers ───────────────────────────────────────
+
+async def _cap_get_file(params: dict, caller: str) -> dict:
+    graph = get_graph()
+    if not graph.ready:
+        return {"success": False, "error": "索引构建中"}
+    path = params.get("path", "")
+    result = graph.get_file(path)
+    if result is None:
+        return {"success": False, "error": f"File not found: {path}"}
+    try:
+        async with AsyncSessionLocal() as db:
+            feedback_count, latest_reason = await _load_path_feedback(db, path)
+            note = graph.build_reliability_note(path, feedback_count, latest_reason)
+            if note:
+                result["reliability_note"] = note
+            await _increment_query_count(db)
+    except Exception:
+        pass
+    return {"success": True, "data": result}
+
+
+async def _cap_impact(params: dict, caller: str) -> dict:
+    graph = get_graph()
+    if not graph.ready:
+        return {"success": False, "error": "索引构建中"}
+    path = params.get("path", "")
+    symbol = params.get("symbol")
+    result = graph.impact(path, symbol)
+    try:
+        async with AsyncSessionLocal() as db:
+            feedback_count, latest_reason = await _load_path_feedback(db, path)
+            note = graph.build_reliability_note(path, feedback_count, latest_reason)
+            if note:
+                result["reliability_note"] = note
+            await _increment_query_count(db)
+    except Exception:
+        pass
+    return {"success": True, "data": result}
+
+
+async def _cap_check_boundary(params: dict, caller: str) -> dict:
+    graph = get_graph()
+    if not graph.ready:
+        return {"success": False, "error": "索引构建中"}
+    return {
+        "success": True,
+        "data": graph.check_boundary(
+            path=params.get("path"),
+            module_key=params.get("module_key"),
+        ),
+    }
+
+
+async def _cap_module_map(params: dict, caller: str) -> dict:
+    graph = get_graph()
+    if not graph.ready:
+        return {"success": False, "error": "索引构建中"}
+    return {"success": True, "data": graph.module_map(params.get("module_key", ""))}
+
+
+async def _cap_search(params: dict, caller: str) -> dict:
+    graph = get_graph()
+    if not graph.ready:
+        return {"success": False, "error": "索引构建中"}
+    return {"success": True, "data": graph.search(params.get("keyword", ""))}
+
+
+async def _cap_stats(params: dict, caller: str) -> dict:
+    graph = get_graph()
+    stats = graph.stats()
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(func.count(CodemapFeedback.id)))
+            feedback_count = result.scalar() or 0
+            qc = await _get_query_count(db)
+            stats["query_count"] = qc
+            stats["feedback_count"] = feedback_count
+            stats["empirical_accuracy"] = max(0, 100 - int(feedback_count * 100 / max(qc, 1))) if qc > 0 else 100
+    except Exception:
+        pass
+    return {"success": True, "data": stats}
+
+
+async def _cap_rebuild(params: dict, caller: str) -> dict:
+    graph = get_graph()
+    graph.reindex_now()
+    return {"success": True, "data": graph.stats()}
+
+
+async def _cap_acquire_lock(params: dict, caller: str) -> dict:
+    return file_lock.acquire_lock(
+        params.get("path", ""),
+        params.get("agent_id", caller),
+        params.get("ttl", 600),
+    )
+
+
+async def _cap_check_lock(params: dict, caller: str) -> dict:
+    return file_lock.check_lock(params.get("path", ""))
+
+
+async def _cap_release_lock(params: dict, caller: str) -> dict:
+    return file_lock.release_lock(params.get("path", ""))
+
+
+async def _cap_list_locks(params: dict, caller: str) -> dict:
+    return file_lock.list_locks()
+
+
+async def _cap_report_inaccuracy(params: dict, caller: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as db:
+            feedback = CodemapFeedback(
+                path=params.get("path", ""),
+                query_type=params.get("query_type", ""),
+                codemap_said=params.get("codemap_said", ""),
+                actual=params.get("actual", ""),
+                reason=params.get("reason", ""),
+                agent_id=params.get("agent_id", caller),
+            )
+            db.add(feedback)
+            await db.commit()
+            return {"success": True, "data": {"id": feedback.id, "message": "反馈已记录"}}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def _cap_list_feedback(params: dict, caller: str) -> dict:
+    try:
+        path = params.get("path")
+        page = params.get("page", 1)
+        page_size = params.get("page_size", 50)
+        async with AsyncSessionLocal() as db:
+            if path:
+                result = await db.execute(
+                    select(CodemapFeedback)
+                    .where(CodemapFeedback.path == path)
+                    .order_by(CodemapFeedback.created_at.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+                items = [
+                    {
+                        "id": f.id,
+                        "path": f.path,
+                        "query_type": f.query_type,
+                        "reason": f.reason,
+                        "agent_id": f.agent_id,
+                        "created_at": str(f.created_at),
+                    }
+                    for f in result.scalars().all()
+                ]
+                return {"success": True, "data": {"items": items}}
+            result = await db.execute(
+                select(CodemapFeedback.path, func.count(CodemapFeedback.id).label("count"))
+                .group_by(CodemapFeedback.path)
+                .order_by(desc("count"))
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+            return {
+                "success": True,
+                "data": {
+                    "items": [{"path": row[0], "complaint_count": row[1]} for row in result.all()],
+                    "aggregated_by_path": True,
+                },
+            }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
 register_capability(
     "codemap", "get_file", _cap_get_file,
     description="查询文件的代码地图信息：所属层/模块、语言、符号清单、依赖与被依赖、注册/调用的能力、涉及的表",
@@ -477,5 +649,8 @@ register_capability(
 )
 
 
-# Import lock/fdb endpoints to register routes
-from .locks import lock_router  # noqa: F401
+# Mount lock/feedback HTTP endpoints. Cross-module capabilities are registered
+# in this file only; lock_router stays HTTP-only to avoid duplicate registry.
+from .locks import lock_router
+
+router.include_router(lock_router.router)

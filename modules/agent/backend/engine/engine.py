@@ -1,16 +1,23 @@
-"""engine编排壳：暴露装配上下文()等给 router。批4：compressor、fallback_chain接入。"""
+"""engine编排壳：暴露装配上下文()等给 router。批4：compressor、fallback_chain接入。批5：工具编排、三层记忆、快照、skills注入。"""
 import asyncio
 import json
 import logging
+import os
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..services import conversation_service as conv_svc
 from .event_store import read_events, project_to_messages, record_event
-from .budget_allocator import assemble_context as _budget_assemble_context, estimate_tokens, get_context_budget
+from .budget_allocator import assemble_context as _budget_assemble_context, estimate_tokens, get_context_budget, DiminishingBudgetTracker
 from .layered_memory import record as _layered_memory_record, recall as _layered_memory_recall, fuse as _layered_memory_fuse
+from .layered_memory import recall_stable_rules as _recall_stable_rules, recall_chunk as _recall_chunk, three_layer_recall as _three_layer_recall
+from .layered_memory import read_static_memory_files as _read_static_memory_files, format_static_memory_for_injection as _format_static_memory
 from .experience_memory import match_experience as _experience_match, save_experience as _experience_save, experience_feedback as _experience_feedback, format_injection as _experience_format
-from .compressor import compress_middle as _compress_middle, hard_truncate_tail as _hard_truncate_tail
+from .compressor import compress_middle_with_snapshot as _compress_with_snapshot, hard_truncate_tail as _hard_truncate_tail
 from .fallback_chain import chat_with_fallback as _chat_with_fallback, chat_stream_with_fallback as _chat_stream_with_fallback
+from .tool_orchestrator import ToolOrchestrator
+from .post_turn_hooks import PostTurnHooks
+from .skills_loader import find_skills as _find_skills, match_skills as _match_skills, format_skills_for_prompt as _format_skills, resolve_skill_priority as _resolve_skill_priority
+from .workflow_strategy import apply_workflow_injection as _apply_workflow_injection
 
 logger = logging.getLogger("v2.agent").getChild("engine.engine")
 
@@ -64,8 +71,8 @@ async def assemble_context(
 
     if budget is not None and estimated_total > budget + _COMPRESSION_TOKEN_HEADROOM and len(all_events) > 30:
         try:
-            logger.info("预算超限(est=%d > budget=%d), 触发压缩", estimated_total, budget)
-            result = await _compress_middle(db, conversation_id, all_events, effective_profile_key)
+            logger.info("预算超限(est=%d > budget=%d), 触发压缩(含快照)", estimated_total, budget)
+            result = await _compress_with_snapshot(db, conversation_id, all_events, projected, effective_profile_key)
             if result.get("status") == "compressed":
                 projected = await project_to_messages(db, conversation_id)
                 logger.info("压缩后投影完毕, 事件数=%d", len(projected))
@@ -77,6 +84,25 @@ async def assemble_context(
             except Exception as e2:
                 logger.warning("硬截断也失败: %s", e2)
 
+    # ── 批5：skills注入（带scope优先级解析） ──────────────────────
+    try:
+        skill_base = os.environ.get("SKILLS_DIR", "data/skills")
+        all_skills = _find_skills(skill_base, scope="global")
+        workspace_path = os.environ.get("CURRENT_PATH", "")
+        if workspace_path:
+            workspace_skills_dir = os.path.join(workspace_path, ".agent-skills")
+            if os.path.isdir(workspace_skills_dir):
+                ws_skills = _find_skills(workspace_skills_dir, scope="workspace")
+                all_skills.extend(ws_skills)
+        # Deduplicate by priority (workspace > project > global, then explicit priority)
+        all_skills = _resolve_skill_priority(all_skills)
+        matched = _match_skills(all_skills, workspace_path)
+        skill_injection = _format_skills(matched)
+        if skill_injection and system_content:
+            system_content += "\n\n---\n\n<available_skills>\n" + skill_injection + "\n</available_skills>"
+    except Exception as e:
+        logger.warning("skills注入失败（non-fatal）: %s", e)
+
     try:
         messages, diagnosis = _budget_assemble_context(projected, system_content, current_user_input, effective_profile_key)
     except Exception as e:
@@ -86,6 +112,29 @@ async def assemble_context(
         diagnosis = {"error": str(e), "fallback": "原始投影截尾"}
     diagnosis["agent_code"] = agent_code
     diagnosis["effective_profile_key"] = effective_profile_key
+
+    # ── 三层记忆注入（批5）：稳定规则 + chunk + 语义记忆 ──────────
+    try:
+        three_layer = await _three_layer_recall(owner_id, current_user_input)
+        if three_layer.get("injection") and messages:
+            for msg in messages:
+                if msg["role"] == "system":
+                    msg["content"] += "\n\n---\n\n" + three_layer["injection"]
+                    break
+            diagnosis["three_layer_memory"] = {
+                "stable_rules": len(three_layer.get("stable_rules", [])),
+                "chunks": len(three_layer.get("chunks", [])),
+                "semantic": len(three_layer.get("semantic", [])),
+            }
+    except Exception as e:
+        logger.warning("三层记忆注入失败（non-fatal）: %s", e)
+        diagnosis["three_layer_memory"] = f"降级: {e}"
+
+    # ── 项目工作流约束注入（workflow_strategy）：检测项目关键词，注入工作流指引 ──
+    wf_diag = _apply_workflow_injection(current_user_input, messages)
+    diagnosis["workflow_injected"] = wf_diag.get("workflow_injected", False)
+    if wf_diag.get("workflow_label"):
+        diagnosis["workflow_label"] = wf_diag["workflow_label"]
 
     # ── 成功经验注入（批3）：语义匹配当前输入，注入 known success path ──
     try:
@@ -156,6 +205,16 @@ async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str
     profile_data = await conv_svc.get_active_user_profile(db, owner_id)
     profile_text = conv_svc._format_profile_text(profile_data)
     layers = []
+
+    # Layer 0: Static file memory (zero-latency, deterministic)
+    try:
+        static_texts = _read_static_memory_files()
+        static_injection = _format_static_memory(static_texts)
+        if static_injection:
+            layers.append(static_injection)
+    except Exception as e:
+        logger.warning("Static memory read failed (non-fatal): %s", e)
+
     if sys_prompt:
         layers.append(sys_prompt)
     if ent_prompt:
@@ -172,6 +231,40 @@ async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str
     if profile_text:
         layers.append(profile_text)
     return "\n\n---\n\n".join(layers)
+
+
+# ── 批5：模块级单例 ──────────────────────────────────────────────
+
+_orchestrator: ToolOrchestrator | None = None
+_hooks: PostTurnHooks | None = None
+_budget_tracker: DiminishingBudgetTracker | None = None
+
+
+def get_orchestrator(max_concurrency: int = 8) -> ToolOrchestrator:
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = ToolOrchestrator(max_concurrency=max_concurrency)
+    return _orchestrator
+
+
+def get_budget_tracker() -> DiminishingBudgetTracker:
+    global _budget_tracker
+    if _budget_tracker is None:
+        _budget_tracker = DiminishingBudgetTracker()
+    return _budget_tracker
+
+
+def get_hooks() -> PostTurnHooks:
+    global _hooks
+    if _hooks is None:
+        _hooks = PostTurnHooks()
+        # Start the background maintenance loop on first hook access.
+        # This ensures the global hooks lifecycle starts with the first
+        # real conversation turn rather than at module import time (which
+        # may run before the async event loop is ready).
+        from .post_turn_hooks import setup_global_hooks
+        setup_global_hooks()
+    return _hooks
 
 
 # ── 已实现接口（批2 事实记忆） ──────────────────────────────
@@ -210,7 +303,7 @@ async def compress(db: AsyncSession, conversation_id: int, profile_key: str = "g
         all_events = await read_events(db, conversation_id)
         if len(all_events) <= 30:
             return {"status": "skipped", "reason": "事件数不足"}
-        result = await _compress_middle(db, conversation_id, all_events, profile_key)
+        result = await _compress_with_snapshot(db, conversation_id, all_events, profile_key=profile_key)
         return result
     except Exception as e:
         logger.warning("compress失败: %s", e)

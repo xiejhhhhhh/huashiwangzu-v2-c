@@ -6,6 +6,40 @@ from app.models.base import Base, TimestampMixin
 from pgvector.sqlalchemy import Vector
 
 
+class MemoryStableRule(Base, TimestampMixin):
+    """稳定规则记忆：项目边界、用户偏好、硬约束、长期规则。不参与向量衰减。"""
+    __tablename__ = "memory_stable_rules"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    rule_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="project_boundary / user_preference / hard_constraint / long_term_rule")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="规则文本")
+    priority: Mapped[int] = mapped_column(Integer, default=0, comment="优先级，越高越重要")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="规则来源")
+    hit_count: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"), comment="被命中次数")
+
+
+class MemoryChunk(Base):
+    """Chunk 级记忆：最小粒度段落，保留原文溯源。"""
+    __tablename__ = "memory_chunks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    memory_record_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="所属蒸馏记忆 id（可空：未蒸馏的原始chunk）")
+    chunk_index: Mapped[int] = mapped_column(Integer, default=0, comment="chunk 序号")
+    text: Mapped[str] = mapped_column(Text, nullable=False, comment="chunk 原文")
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True, comment="chunk 级摘要")
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True, comment="bge-m3 1024维向量")
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="来源")
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="来源对话 id")
+    provenance: Mapped[str | None] = mapped_column(Text, nullable=True, comment="溯源信息：来源文件、段落范围等")
+    start_char: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="在原文中的起始字符位置")
+    end_char: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="在原文中的结束字符位置")
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, server_default=sa_text("1.0"))
+    access_count: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=sa_func.now(), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=sa_func.now(), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 class MemoryRecord(Base):
     __tablename__ = "memory_records"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

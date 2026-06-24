@@ -9,6 +9,8 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 ENGINE_DIR = BACKEND_ROOT.parent / "modules" / "agent" / "backend" / "engine"
 MEMORY_BACKEND = BACKEND_ROOT.parent / "modules" / "memory" / "backend"
 MEMORY_ROUTER_PATH = MEMORY_BACKEND / "router.py"
+MEMORY_SERVICE_PATH = MEMORY_BACKEND / "services" / "memory_service.py"
+MEMORY_CAPABILITIES_PATH = MEMORY_BACKEND / "services" / "capabilities.py"
 
 # Import memory models without triggering SQLAlchemy Metadata conflict with other tests.
 # Use a unique module name so pytest doesn't complain about namespace collisions.
@@ -195,7 +197,7 @@ class TestFusion:
         assert not result["fused"]
 
     def test_fuse_is_callable(self):
-        source = MEMORY_ROUTER_PATH.read_text("utf-8")
+        source = MEMORY_SERVICE_PATH.read_text("utf-8")
         assert "async def _do_fuse" in source
 
 
@@ -209,7 +211,7 @@ class TestDreamSelfOptimization:
         assert "decayed" in report
 
     def test_dream_is_callable(self):
-        source = MEMORY_ROUTER_PATH.read_text("utf-8")
+        source = MEMORY_SERVICE_PATH.read_text("utf-8")
         assert "async def _do_dream" in source
 
     def test_cosine_similarity(self):
@@ -244,7 +246,7 @@ class TestSelfEditTools:
     """Test self-edit tool structures."""
 
     def test_rethink_capability_signature(self):
-        source = MEMORY_ROUTER_PATH.read_text("utf-8")
+        source = MEMORY_CAPABILITIES_PATH.read_text("utf-8")
         assert "async def _cap_rethink" in source
 
     def test_replace_text_logic(self):
@@ -262,11 +264,11 @@ class TestSelfEditTools:
         assert result == "旧内容\n新追加"
 
     def test_insert_capability_signature(self):
-        source = MEMORY_ROUTER_PATH.read_text("utf-8")
+        source = MEMORY_CAPABILITIES_PATH.read_text("utf-8")
         assert "async def _cap_insert" in source
 
     def test_replace_capability_signature(self):
-        source = MEMORY_ROUTER_PATH.read_text("utf-8")
+        source = MEMORY_CAPABILITIES_PATH.read_text("utf-8")
         assert "async def _cap_replace" in source
 
 
@@ -305,9 +307,9 @@ class TestCapabilityRegistration:
     """Test that all required capabilities are registered."""
 
     def test_capability_names(self):
-        source = MEMORY_ROUTER_PATH.read_text("utf-8")
+        source = MEMORY_CAPABILITIES_PATH.read_text("utf-8")
         expected = ["_cap_save", "_cap_recall", "_cap_list", "_cap_delete",
                      "_cap_fuse", "_cap_dream", "_cap_rethink", "_cap_replace",
                      "_cap_insert"]
         for name in expected:
-            assert f"async def {name}" in source, f"Missing {name} in router.py"
+            assert f"async def {name}" in source, f"Missing {name} in capabilities.py"
