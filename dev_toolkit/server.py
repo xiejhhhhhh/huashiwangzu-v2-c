@@ -981,6 +981,45 @@ async def _tail_log(module: str = "backend", lines: int = 50) -> str:
 
     return f"[未找到模块日志] {module}"
 
+
+def _resolve_log_path(module: str) -> "Path | None":
+    module_log = LOG_DIR / f"modules/{module}.log"
+    if module_log.exists():
+        return module_log
+    log_file = _LOG_MAP.get(module)
+    if log_file and (LOG_DIR / log_file).exists():
+        return LOG_DIR / log_file
+    for p in LOG_DIR.rglob(f"{module}.log"):
+        return p
+    main_log = LOG_DIR / "uvicorn.out"
+    return main_log if main_log.exists() else None
+
+
+# 被 try/except 吞掉的异常签名——专抓"报告通过但活系统其实崩/不产物"那类
+_ERROR_PAT = re.compile(
+    r"Traceback|Exception|\bError\b|exception:|unexpected keyword|"
+    r"Violation|IntegrityError|does not exist|not-null|NoneType|"
+    r"\bfailed\b|\bcrash|未产出|0 row|got an unexpected",
+    re.IGNORECASE,
+)
+
+
+async def _log_errors(module: str = "backend", lines: int = 400) -> str:
+    """扫模块日志里被吞掉的异常/报错(Traceback/Exception/violation/错参/failed)。
+
+    专治"执行 agent 报告通过、但异常被 try/except 吞成 WARNING、产物表 0 行"那类盲区。
+    后台/异步动作做完后调一次：有命中=功能其实没跑通，别报通过。
+    """
+    lines = min(lines, 2000)
+    path = _resolve_log_path(module)
+    if not path:
+        return f"[未找到模块日志] {module}"
+    text = _tail_file(path, lines)
+    hits = [ln for ln in text.split("\n") if _ERROR_PAT.search(ln)]
+    if not hits:
+        return f"✅ {path.name} 最近 {lines} 行无异常/报错命中"
+    return f"⚠️ {path.name} 命中 {len(hits)} 条疑似吞掉的异常/报错:\n" + "\n".join(hits[-40:])
+
 # ──────────────────── 工具 5: sql ────────────────────────────────────
 
 async def _sql(query: str) -> str:
@@ -1225,6 +1264,17 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="log_errors",
+            description="扫模块日志里被try/except吞掉的异常/报错(Traceback/Exception/violation/错参/failed). 后台/异步动作做完后调一次:有命中=功能其实没跑通,别报通过. 专治'报告通过但产物表0行'盲区.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "module": {"type": "string", "description": "模块名(backend/agent/knowledge...)", "default": "backend"},
+                    "lines": {"type": "number", "description": "扫描最近行数", "default": 400},
+                },
+            },
+        ),
+        Tool(
             name="sql",
             description="只读 SQL 查询. 强制只允许 SELECT/WITH/EXPLAIN, 写操作被拒绝.",
             inputSchema={
@@ -1447,6 +1497,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _tail_log(
                 module=arguments.get("module", "backend"),
                 lines=arguments.get("lines", 50),
+            )
+        elif name == "log_errors":
+            result = await _log_errors(
+                module=arguments.get("module", "backend"),
+                lines=arguments.get("lines", 400),
             )
         elif name == "sql":
             result = await _sql(query=arguments["query"])

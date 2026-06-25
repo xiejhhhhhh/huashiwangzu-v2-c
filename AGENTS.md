@@ -74,6 +74,7 @@ backend/    Desktop shell backend / platform service layer
 3. **查代码优先 codegraph**: `code_explore`/`code_node`/`code_impact` 或直接 `codegraph` CLI。
 4. **读网页用 `web_read`**(不截图)。
 5. **测试直接用 `probe` / `call_capability` 打活系统** + `tail_log` 看错, 别写测试脚本搭场景。
+6. **★产物验证铁律(报"通过"前必做)**: 凡涉及**后台/异步/hook/事件/落库**的功能(如 review fork、stuck 检测、知识库入库、画像演进),做完真实触发后**必须两查**:① `log_errors(module)` 扫有没有被 try/except 吞掉的异常(命中=功能其实没跑通,**禁止报通过**);② `sql`/`db_schema` 查**产物表真有行**(不是只看"任务建了/表存在")。**"任务建了 ≠ 产物出来了"**。栽过两次:stuck 漏 owner_id 插入崩、review fork 错参全程不产 proposal——都是异常被吞成 WARNING、产物表 0 行,只查"表在"就漏了。
 
 ## 测试铁律
 

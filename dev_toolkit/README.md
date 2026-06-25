@@ -32,6 +32,7 @@
 | `probe(method, path, body)` | 自动登录后打后端任意 HTTP 接口 |
 | `call_capability(module, action, params)` | 调模块能力(跨模块) |
 | `tail_log(module, lines)` | 查看模块日志尾部 |
+| `log_errors(module, lines)` | ★扫日志里被try/except吞掉的异常(Traceback/Exception/violation/错参). **后台/异步功能做完后必调**:有命中=没跑通别报通过 |
 | `sql(query)` | 只读 SQL 查询(SELECT/WITH/EXPLAIN) |
 | `web_read(url)` | 读网页返回 markdown 正文 |
 
