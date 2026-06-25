@@ -1,6 +1,6 @@
 """Agent 模块自己的表。表名 agent_ 前缀，不加外键到框架表。"""
 from datetime import date, datetime, timezone
-from sqlalchemy import Boolean, Integer, JSON, String, Text, BigInteger, DateTime, Date, Float
+from sqlalchemy import Boolean, Integer, JSON, String, Text, BigInteger, DateTime, Date, Float, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin
 
@@ -398,6 +398,34 @@ class UnderstandingPacket(Base, TimestampMixin):
     roles_executed: Mapped[list] = mapped_column(JSON, default=list)
     resolved_profile_key: Mapped[str] = mapped_column(String(64), default="")
     resolved_template: Mapped[str] = mapped_column(String(64), default="default")
+
+
+# ── Checkpoint for crash recovery ────────────────────────────────────────
+
+class AgentCheckpoint(Base, TimestampMixin):
+    """Per-round execution checkpoint for crash recovery.
+
+    Saved after each tool round when ``enable_checkpointer`` is True.
+    Enables resuming a conversation from the last checkpoint after a
+    worker crash instead of losing the entire turn.
+
+    Columns deliberately avoid the name ``metadata`` (SQLAlchemy reserved
+    word).  ``owner_id`` is a dedicated NOT NULL column (never buried in
+    JSON).
+    """
+    __tablename__ = "agent_checkpoints"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    checkpoint_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_checkpoint_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    step: Mapped[int] = mapped_column(Integer, default=0)
+    channel_values: Mapped[dict] = mapped_column(JSON, default=dict, comment="messages/tool_events/timeline/pending_events")
+    extra_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="extra metadata, NOT the SQLAlchemy-reserved 'metadata'")
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "checkpoint_id", name="uq_agent_checkpoint_pair"),
+    )
 
 
 class UnderstandingEvent(Base, TimestampMixin):

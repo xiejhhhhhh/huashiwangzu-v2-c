@@ -11,6 +11,7 @@ class BaseProvider(ABC):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        timeout: dict | None = None,
     ) -> dict:
         ...
 
@@ -22,6 +23,7 @@ class BaseProvider(ABC):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        timeout: dict | None = None,
     ) -> AsyncGenerator[dict, None]:
         ...
 

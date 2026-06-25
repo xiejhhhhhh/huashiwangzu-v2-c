@@ -153,7 +153,8 @@
           "response_adapter": "deepseek",
           "context_budget": null,
           "price_input": 2.0,
-          "price_output": 8.0
+          "price_output": 8.0,
+          "timeout": {"connect": 10, "read": 120, "write": 30, "stream_chunk": 60}
         },
         "deepseek-v4-pro": {
           "provider": "opencode",
@@ -164,7 +165,8 @@
           "response_adapter": "deepseek",
           "context_budget": null,
           "price_input": 8.0,
-          "price_output": 24.0
+          "price_output": 24.0,
+          "timeout": {"connect": 10, "read": 120, "write": 30, "stream_chunk": 60}
         },
         "gemma-4": {
           "provider": "llama",
@@ -176,7 +178,8 @@
           "response_adapter": "gemma",
           "context_budget": null,
           "price_input": 0,
-          "price_output": 0
+          "price_output": 0,
+          "timeout": {"connect": 30, "read": 300, "write": 30, "stream_chunk": 120}
         },
         "local-test": {
           "provider": "local",
@@ -187,7 +190,8 @@
           "response_adapter": "openai_compat",
           "context_budget": null,
           "price_input": 0,
-          "price_output": 0
+          "price_output": 0,
+          "timeout": {"connect": 5, "read": 30, "write": 10, "stream_chunk": 30}
         },
         "ollama-local": {
           "provider": "ollama",
@@ -198,7 +202,8 @@
           "response_adapter": "openai_compat",
           "context_budget": 32000,
           "price_input": 0,
-          "price_output": 0
+          "price_output": 0,
+          "timeout": {"connect": 30, "read": 300, "write": 30, "stream_chunk": 120}
         }
       }
     },

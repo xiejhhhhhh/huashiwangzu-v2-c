@@ -29,6 +29,7 @@ from app.database import AsyncSessionLocal
 from ..services.action_policy import check_action_allowed
 from ..services import tool_discovery
 from ..services.model_client import parse_inline_tool_calls, recover_tool_calls
+from .checkpointer import PostgresCheckpointSaver
 from .runtime_policy import RuntimePolicy
 from .stream_emitter import StreamEmitter
 from .task_sink import RuntimeTaskSink
@@ -67,9 +68,15 @@ class ToolLoopRuntime:
         messages: list[dict],
         tools: list[dict],
         sink: RuntimeTaskSink,
+        channel_values: dict | None = None,
     ):
         """Async generator that yields SSE event bytes and possibly
         a dict ``{"type": "_inline_tool_calls", ...}``.
+
+        If *channel_values* is provided (from a checkpoint resume), the
+        internal state (tool_events, timeline, pending_events, event_round,
+        persisted_event_count) is restored from it and the loop skips
+        already-completed rounds (step+1 onward).
 
         Yields:
             - ``bytes``: SSE ``data: ...`` frames for ``StreamingResponse``
@@ -78,12 +85,16 @@ class ToolLoopRuntime:
         """
         full: list[str] = []
         thinking_parts: list[str] = []
-        tool_events: list[dict] = []
-        timeline: list[dict] = []
-        pending_events: list[dict] = []
-        event_round = 0
-        persisted_event_count = 0
+        tool_events: list[dict] = channel_values.get("tool_events", []) if channel_values else []
+        timeline: list[dict] = channel_values.get("timeline", []) if channel_values else []
+        pending_events: list[dict] = channel_values.get("pending_events", []) if channel_values else []
+        event_round = channel_values.get("event_round", 0) if channel_values else 0
+        persisted_event_count = channel_values.get("persisted_event_count", 0) if channel_values else 0
         _disconnected = False
+        _last_checkpoint_id: str | None = None
+
+        # If resuming from a checkpoint, skip already-completed rounds
+        _resume_from_step = channel_values.get("resume_from_step", 0) if channel_values else 0
 
         try:
             # ── Reset sticky session state ─────────────────────────
@@ -98,7 +109,7 @@ class ToolLoopRuntime:
             _tool_round_tokens_before = 0
             emitter = StreamEmitter()
 
-            for _round in range(self.policy.max_tool_rounds):
+            for _round in range(_resume_from_step, self.policy.max_tool_rounds):
                 # Y1: reset full each round to avoid cross-round accumulation
                 full = []
                 logger.info(
@@ -477,6 +488,39 @@ class ToolLoopRuntime:
                     except Exception:
                         pass
                     break
+
+                # ── Checkpoint: save execution state after each round ──
+                if self.policy.enable_checkpointer:
+                    _cp_id = PostgresCheckpointSaver.new_checkpoint_id()
+                    _channel_vals = {
+                        "messages": messages,
+                        "tool_events": tool_events,
+                        "timeline": timeline,
+                        "pending_events": pending_events,
+                        "event_round": event_round,
+                        "persisted_event_count": persisted_event_count,
+                    }
+                    try:
+                        async with AsyncSessionLocal() as _ck_db:
+                            _saver = PostgresCheckpointSaver()
+                            await _saver.put(
+                                _ck_db,
+                                conversation_id=self.conversation_id,
+                                owner_id=self.owner_id,
+                                checkpoint_id=_cp_id,
+                                step=_round + 1,
+                                channel_values=_channel_vals,
+                                parent_checkpoint_id=_last_checkpoint_id,
+                            )
+                        _last_checkpoint_id = _cp_id
+                        logger.info(
+                            "Checkpoint saved: conv=%d step=%d cp=%s",
+                            self.conversation_id, _round + 1, _cp_id,
+                        )
+                    except Exception as _ck_exc:
+                        logger.warning(
+                            "Checkpoint save failed (non-fatal): %s", _ck_exc,
+                        )
             else:
                 # ── Tool rounds exhausted → final summary ───────────
                 if self.policy.allow_final_summary_fallback:

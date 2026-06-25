@@ -13,6 +13,8 @@ class ChatRequest(BaseModel):
     conversation_id: int
     content: str
     profile_key: str | None = None
+    resume_checkpoint_id: str | None = None
+    enable_checkpointer: bool | None = None
 
 
 class UpdatePromptRequest(BaseModel):

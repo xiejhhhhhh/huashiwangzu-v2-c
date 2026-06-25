@@ -538,6 +538,40 @@ async def ensure_review_governance_tables(db: AsyncSession) -> None:
         logger.warning("Migration: review/governance tables check failed: %s", e)
 
 
+async def ensure_checkpoint_table(db: AsyncSession) -> None:
+    """Ensure agent_checkpoints table exists (idempotent)."""
+    try:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_checkpoints (
+                id BIGSERIAL PRIMARY KEY,
+                conversation_id BIGINT NOT NULL,
+                checkpoint_id VARCHAR(64) NOT NULL,
+                parent_checkpoint_id VARCHAR(64),
+                step INTEGER DEFAULT 0,
+                channel_values JSONB DEFAULT '{}'::jsonb,
+                extra_meta JSONB DEFAULT '{}'::jsonb,
+                owner_id INTEGER NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_checkpoint_pair
+            ON agent_checkpoints (conversation_id, checkpoint_id)
+        """))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_checkpoints_conv ON agent_checkpoints(conversation_id)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_checkpoints_owner ON agent_checkpoints(owner_id)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured agent_checkpoints table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: agent_checkpoints table check failed: %s", e)
+
+
 async def ensure_understanding_tables(db: AsyncSession) -> None:
     """Ensure understanding loop tables exist (idempotent)."""
     tables = [
@@ -646,6 +680,7 @@ async def run_init(db: AsyncSession) -> None:
     await ensure_maintenance_state_table(db)
     await ensure_review_governance_tables(db)
     await ensure_memory_snapshot_table(db)
+    await ensure_checkpoint_table(db)
     await ensure_understanding_tables(db)
     await ensure_default_prompts(db)
     await update_existing_prompts(db)

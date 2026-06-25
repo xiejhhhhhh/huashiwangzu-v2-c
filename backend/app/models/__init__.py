@@ -11,6 +11,7 @@ from .prompt import PromptCategory, PromptTemplate
 from .asset import FileAsset
 from .file_upload_session import FileUploadSession
 from .platform_workflow import WorkflowDefinition, WorkflowRunRecord, WorkflowStepRecord
+from .system_trace import SystemTraceSpan
 
 __all__ = ["User", "App", "Folder", "File", "FileShare", "RecycleItem",
            "SystemLog", "Notification", "UserNotificationRead", "Feedback", "Task",
@@ -19,4 +20,5 @@ __all__ = ["User", "App", "Folder", "File", "FileShare", "RecycleItem",
            "FileJsonPackage", "FileJsonVersion", "FileJsonPatch", "FileJsonTask",
            "PromptCategory", "PromptTemplate",
            "FileAsset",
-           "WorkflowDefinition", "WorkflowRunRecord", "WorkflowStepRecord"]
+           "WorkflowDefinition", "WorkflowRunRecord", "WorkflowStepRecord",
+           "SystemTraceSpan"]

@@ -46,6 +46,11 @@ class RuntimePolicy:
     allow_inline_tool_recovery: bool = True
     allow_final_summary_fallback: bool = True
 
+    # ── Checkpointer (crash recovery) ──────────────────────────────
+
+    enable_checkpointer: bool = False
+    checkpoint_interval: int = 1
+
     # ── Understanding loop precision handles ───────────────────────
 
     enable_understanding_loop: bool = True

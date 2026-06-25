@@ -14,11 +14,14 @@ from .config import (
     BUDGET_RATES, VariantTemplate,
     resolve_template_for_role, list_templates, list_routing_policies,
 )
+from .error_classifier import (
+    classify_error, compute_delay, max_attempts_for_category,
+    _get_status_code,
+)
 
 logger = logging.getLogger("v2.gateway.router")
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
-RETRYABLE_STATUSES = {429, 502, 503, 504}
 
 # ── Unified retry budget / attempt trace ──────────────────────────────
 
@@ -72,6 +75,7 @@ class RetryBudget:
             "fallback_reason": self.fallback_reason,
             "attempts": self.attempts,
         }
+
 
 # ── Model governance ─ ModelRouter (template + routing policy + budget/health diag) ──
 
@@ -186,12 +190,7 @@ _VISION_PROFILES: dict[str, dict] = _vision_cfg.get("profiles", {})
 
 
 def _status_code_from_exception(exc: Exception) -> int | None:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code
-    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-    return status if isinstance(status, int) else None
+    return _get_status_code(exc)
 
 
 def _extract_reason_from_str(reason: str) -> str:
@@ -219,11 +218,8 @@ def _extract_reason(exc: Exception) -> str:
     return detail[:500]
 
 
-def _is_retryable_exception(exc: Exception) -> bool:
-    status_code = _status_code_from_exception(exc)
-    if status_code in RETRYABLE_STATUSES:
-        return True
-    return isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError))
+def _get_profile_timeout(profile: dict) -> dict | None:
+    return profile.get("timeout", None)
 
 
 def list_model_profiles() -> list[dict]:
@@ -242,38 +238,49 @@ async def _call_with_retry(
     max_tokens: int,
     tools: list[dict] | None,
     budget: RetryBudget | None = None,
+    timeout: dict | None = None,
 ) -> dict:
+    last_exception = None
     for attempt_index in range(RETRY_MAX_ATTEMPTS):
         try:
-            return await provider.chat(
+            result = await provider.chat(
                 messages=messages,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
+                timeout=timeout,
             )
+            if budget:
+                budget.record_attempt(
+                    profile_key=model,
+                    provider=getattr(provider, "name", type(provider).__name__),
+                    status=200,
+                    reason="Success",
+                )
+            return result
         except Exception as exc:
+            last_exception = exc
             status = _status_code_from_exception(exc)
+            clf = classify_error(exception=exc, status_code=status)
             if budget:
                 budget.record_attempt(
                     profile_key=model,
                     provider=getattr(provider, "name", type(provider).__name__),
                     status=status,
-                    reason=str(exc),
+                    reason=f"[{clf.category}] {clf.message}",
                 )
-            if not _is_retryable_exception(exc) or attempt_index == RETRY_MAX_ATTEMPTS - 1:
-                raise
-            delay = RETRY_BASE_DELAY_SECONDS * (2 ** attempt_index)
+            max_attempts = max_attempts_for_category(clf.category, RETRY_MAX_ATTEMPTS)
+            if not clf.retryable or attempt_index >= max_attempts - 1:
+                break
+            delay = compute_delay(clf, attempt_index, RETRY_BASE_DELAY_SECONDS)
             logger.warning(
-                "AI gateway call attempt %d/%d failed (status=%s), retrying in %.1fs, budget_used=%d",
-                attempt_index + 1,
-                RETRY_MAX_ATTEMPTS,
-                status,
-                delay,
-                len(budget.attempts) if budget else 0,
+                "AI gateway call attempt %d/%d failed (status=%s, category=%s), retrying in %.1fs",
+                attempt_index + 1, max_attempts, status, clf.category, delay,
             )
             await asyncio.sleep(delay)
-    raise RuntimeError("AI gateway retry loop exhausted")
+
+    raise last_exception or RuntimeError("AI gateway retry loop exhausted")
 
 
 class ModelGatewayRouter:
@@ -358,6 +365,7 @@ class ModelGatewayRouter:
         if profile["provider"] == "llama":
             await _ensure_local_text_model(profile)
         provider = self.get_provider(profile["provider"])
+        timeout = _get_profile_timeout(profile)
         try:
             raw = await _call_with_retry(
                 provider=provider,
@@ -367,6 +375,7 @@ class ModelGatewayRouter:
                 max_tokens=profile["max_tokens"],
                 tools=tools,
                 budget=budget,
+                timeout=timeout,
             )
         except Exception as exc:
             detail = str(exc)
@@ -377,8 +386,10 @@ class ModelGatewayRouter:
                         detail = f"{detail}\n响应体: {body[:1000]}"
                 except Exception:
                     pass
-            logger.error("AI gateway chat failed: %s", detail)
-            return {"error": str(exc), "content": f"(Model error: {detail})", "_retry_budget": budget.to_dict()}
+            # Classify the final error for the caller
+            clf = classify_error(exception=exc)
+            logger.error("AI gateway chat failed after retries: [%s] %s", clf.category, detail)
+            return {"error": str(exc), "content": f"(Model error: {detail})", "_retry_budget": budget.to_dict(), "_error_category": clf.category}
         if "error" in raw:
             raw["_retry_budget"] = budget.to_dict()
             return raw
@@ -408,12 +419,14 @@ class ModelGatewayRouter:
         if profile["provider"] == "llama":
             await _ensure_local_text_model(profile)
         provider = self.get_provider(profile["provider"])
+        timeout = _get_profile_timeout(profile)
         async for event in provider.chat_stream(
             messages=messages,
             model=profile["model"],
             temperature=profile["temperature"],
             max_tokens=profile["max_tokens"],
             tools=tools,
+            timeout=timeout,
         ):
             yield event
 
@@ -462,6 +475,7 @@ class ModelGatewayRouter:
                 if profile.get("provider") == "llama":
                     await _ensure_local_vision_model(profile)
                 provider = self.get_provider(profile["provider"])
+                timeout = profile.get("timeout", None)
                 raw = await _call_with_retry(
                     provider=provider,
                     messages=messages,
@@ -469,6 +483,7 @@ class ModelGatewayRouter:
                     temperature=profile.get("temperature", 0.7),
                     max_tokens=profile.get("max_tokens", 4096),
                     tools=None,
+                    timeout=timeout,
                 )
                 if "error" in raw:
                     raise RuntimeError(raw.get("content") or raw.get("error"))
@@ -654,6 +669,7 @@ async def route_and_send(
     profile["temperature"] = temperature
     if profile["provider"] == "llama":
         await _ensure_local_text_model(profile)
+    timeout = _get_profile_timeout(profile)
     raw = await _call_with_retry(
         provider=gateway_router.get_provider(profile["provider"]),
         messages=messages,
@@ -661,6 +677,7 @@ async def route_and_send(
         temperature=profile["temperature"],
         max_tokens=profile["max_tokens"],
         tools=None,
+        timeout=timeout,
     )
     if "error" in raw:
         raise RuntimeError(raw.get("content") or raw.get("error"))
