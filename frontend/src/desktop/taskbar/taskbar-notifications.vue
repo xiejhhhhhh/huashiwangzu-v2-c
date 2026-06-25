@@ -53,7 +53,7 @@ const { unreadCount, notificationList, showNotificationPanel, toggleNotification
   overflow-y: auto;
   background: #fff;
   border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  box-shadow: var(--shadow-28);
   z-index: 11000;
 }
 </style>
