@@ -51,6 +51,7 @@ PLATFORM_ROUTER_MODULES: tuple[str, ...] = (
     "app.routers.app_manager",
     "app.routers.menu",
     "app.routers.assets",
+    "app.routers.workflow",
 )
 
 

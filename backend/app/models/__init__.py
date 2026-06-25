@@ -10,6 +10,7 @@ from .office import FileJsonPackage, FileJsonVersion, FileJsonPatch, FileJsonTas
 from .prompt import PromptCategory, PromptTemplate
 from .asset import FileAsset
 from .file_upload_session import FileUploadSession
+from .platform_workflow import WorkflowDefinition, WorkflowRunRecord, WorkflowStepRecord
 
 __all__ = ["User", "App", "Folder", "File", "FileShare", "RecycleItem",
            "SystemLog", "Notification", "UserNotificationRead", "Feedback", "Task",
@@ -17,4 +18,5 @@ __all__ = ["User", "App", "Folder", "File", "FileShare", "RecycleItem",
            "RoleMatrix", "DesktopState",
            "FileJsonPackage", "FileJsonVersion", "FileJsonPatch", "FileJsonTask",
            "PromptCategory", "PromptTemplate",
-           "FileAsset"]
+           "FileAsset",
+           "WorkflowDefinition", "WorkflowRunRecord", "WorkflowStepRecord"]
