@@ -28,12 +28,18 @@ class RetryBudget:
 
     Records every attempt so _call_with_retry, chat_with_fallback, and
     chat_with_degradation_chain can all see how many tries have been made.
+
+    Diagnostics contract (shared with fallback chain):
+      - trace_id        : propagated from caller
+      - fallback_reason : when a fallback switch occurs, records the reason
+      - attempt history : per-attempt profile/provider/status/reason
     """
 
     def __init__(self, max_retries: int = 6):
         self.max_retries = max_retries
         self.attempts: list[dict] = []
         self.trace_id: str = str(uuid.uuid4())
+        self.fallback_reason: str | None = None
 
     def record_attempt(self, profile_key: str, provider: str, status: int | None, reason: str = "") -> None:
         self.attempts.append({
@@ -41,7 +47,17 @@ class RetryBudget:
             "profile_key": profile_key,
             "provider": provider,
             "status": status,
-            "reason": reason[:200],
+            "reason": _extract_reason_from_str(reason)[:200],
+        })
+
+    def record_fallback(self, from_profile: str, to_profile: str, reason: str) -> None:
+        self.fallback_reason = f"{from_profile} -> {to_profile}: {_extract_reason_from_str(reason)[:200]}"
+        self.attempts.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "profile_key": f"{from_profile}->{to_profile}",
+            "provider": "fallback",
+            "status": None,
+            "reason": self.fallback_reason,
         })
 
     @property
@@ -53,6 +69,7 @@ class RetryBudget:
             "trace_id": self.trace_id,
             "max_retries": self.max_retries,
             "total_attempts": len(self.attempts),
+            "fallback_reason": self.fallback_reason,
             "attempts": self.attempts,
         }
 
@@ -177,6 +194,31 @@ def _status_code_from_exception(exc: Exception) -> int | None:
     return status if isinstance(status, int) else None
 
 
+def _extract_reason_from_str(reason: str) -> str:
+    """Strip noisy prefixes and truncate for diagnostics."""
+    return reason[:300]
+
+
+def _extract_reason(exc: Exception) -> str:
+    """Unified reason extraction — combines _status_code + response body truncation.
+
+    This is the shared function that replaces the separate _extract_reason
+    in fallback_chain.py and the inline error handling in gateway/router.py.
+    """
+    detail = str(exc)
+    status = _status_code_from_exception(exc)
+    if status:
+        detail = f"[HTTP {status}] {detail}"
+    if hasattr(exc, "response"):
+        try:
+            body = exc.response.text
+            if body:
+                detail = f"{detail[:200]} | body:{body[:500]}"
+        except Exception:
+            pass
+    return detail[:500]
+
+
 def _is_retryable_exception(exc: Exception) -> bool:
     status_code = _status_code_from_exception(exc)
     if status_code in RETRYABLE_STATUSES:
@@ -279,6 +321,21 @@ class ModelGatewayRouter:
 
     def get_routing_diagnostics(self) -> dict:
         return ModelRouter.get_diagnostics()
+
+    def get_failover_diagnostics(self) -> dict:
+        """Return failover / fallback / health diagnostic state."""
+        profiles = []
+        for key, profile in MODEL_PROFILES.items():
+            profiles.append({
+                "key": key,
+                "provider": profile.get("provider", ""),
+                "model": profile.get("model", ""),
+            })
+        return {
+            "profiles": profiles,
+            "profiles_available": len(MODEL_PROFILES),
+            "providers_configured": list(self._providers.keys()) if hasattr(self, '_providers') else [],
+        }
 
     def get_provider(self, provider_name: str) -> BaseProvider:
         provider = self._providers.get(provider_name)

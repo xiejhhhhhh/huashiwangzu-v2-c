@@ -1,11 +1,17 @@
-"""Framework-level background task worker.
+"""Framework-level background task worker — unified trace / attempt / stale reclaim.
 
 Consumes SystemTaskQueue (framework_system_task_queues). Concurrency-safe via
 FOR UPDATE SKIP LOCKED. Modules register handlers by task_type.
+
+Diagnostics contract (shared with hooks / gateway):
+  - trace_id       : propagated from caller through handler execution
+  - attempt        : retry/attempt counter embedded in result metadata
+  - stale_reclaim  : per-cycle count of stale tasks reclaimed
 """
 import asyncio
 import json
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Awaitable, Callable
 
@@ -26,6 +32,10 @@ _HANDLERS: dict[str, TaskHandler] = {}
 _worker_task: asyncio.Task | None = None
 _stop_flag = False
 _last_active: datetime | None = None
+
+# -- Diagnostic counters (per-worker, NOT cross-worker consistent) --
+_stale_reclaimed_count: int = 0
+_total_tasks_processed: int = 0
 
 
 def register_task_handler(task_type: str, handler: TaskHandler) -> None:
@@ -55,6 +65,7 @@ async def _reconcile_one_orphan(task: SystemTaskQueue, now: datetime) -> None:
 
 
 async def _recover_stale_tasks(db) -> None:
+    global _stale_reclaimed_count
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=RUNNING_TIMEOUT_SECONDS)
 
@@ -75,7 +86,8 @@ async def _recover_stale_tasks(db) -> None:
             task.status = "pending"
             task.started_at = None
     if stale:
-        logger.info("Timeout recovery: reclaimed %d stale tasks", len(stale))
+        _stale_reclaimed_count += len(stale)
+        logger.info("Timeout recovery: reclaimed %d stale tasks (cumulative: %d)", len(stale), _stale_reclaimed_count)
     await db.commit()
 
 
@@ -150,11 +162,18 @@ async def _run_handler(task: SystemTaskQueue) -> tuple[bool, dict | None, str | 
         params = json.loads(task.parameters) if task.parameters else {}
     except Exception as exc:
         return False, None, f"Invalid parameters JSON: {exc}"
+
+    # Inject trace_id and attempt into params for downstream diagnostics
+    trace_id = params.pop("_trace_id", str(uuid.uuid4()))
+    attempt = (task.retry_count or 0) + 1
+    params["_trace_id"] = trace_id
+    params["_attempt"] = attempt
+
     try:
         result = await handler(params)
         return True, result, None
     except Exception as exc:
-        logger.error("Task %s (%s) handler failed: %s", task.id, task.task_type, exc)
+        logger.error("Task %s (%s) handler failed (trace=%s attempt=%d): %s", task.id, task.task_type, trace_id, attempt, exc)
         return False, None, str(exc)
 
 
@@ -180,9 +199,11 @@ def _compute_next_recur(recur: str, ref_time: datetime) -> datetime | None:
 
 
 async def _finish_task(db, task_id: int, ok: bool, result: dict | None, error: str | None) -> None:
+    global _total_tasks_processed
     task = await db.get(SystemTaskQueue, task_id)
     if not task:
         return
+    _total_tasks_processed += 1
     now = datetime.now(timezone.utc)
     if ok:
         task.status = "completed"
@@ -255,4 +276,9 @@ def worker_health() -> dict:
         "running": _worker_task is not None and not _worker_task.done(),
         "registered_handlers": sorted(_HANDLERS.keys()),
         "last_active": _last_active.isoformat() if _last_active else None,
+        "diagnostics": {
+            "stale_reclaimed_count": _stale_reclaimed_count,
+            "total_tasks_processed": _total_tasks_processed,
+            "handler_count": len(_HANDLERS),
+        },
     }
