@@ -30,17 +30,14 @@
       </div>
 
       <!-- 拒绝原因对话框 -->
-      <div v-if="rejectId" class="ap-dialog-overlay" @click.self="rejectId = null">
-        <div class="ap-dialog">
-          <h3>拒绝操作</h3>
-          <p>工具: {{ currentApproval?.tool_name }}</p>
-          <textarea v-model="rejectReason" placeholder="拒绝原因（可选）" rows="3" class="ap-textarea"></textarea>
-          <div class="ap-dialog-actions">
-            <button class="ap-btn ap-btn-reject" @click="doReject" :disabled="resolving === rejectId">确认拒绝</button>
-            <button class="ap-btn" @click="rejectId = null">取消</button>
-          </div>
-        </div>
-      </div>
+      <el-dialog v-if="rejectId" :visible="!!rejectId" title="拒绝操作" width="400px" @close="rejectId = null" append-to-body>
+        <p style="margin: 0 0 12px; font-size: 13px; color: #5e5e5e;">工具: {{ currentApproval?.tool_name }}</p>
+        <el-input v-model="rejectReason" type="textarea" :rows="3" placeholder="拒绝原因（可选）" />
+        <template #footer>
+          <el-button @click="rejectId = null">取消</el-button>
+          <el-button type="danger" @click="doReject" :disabled="resolving === rejectId">确认拒绝</el-button>
+        </template>
+      </el-dialog>
     </template>
   </div>
 </template>
@@ -48,6 +45,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { apiGet, apiPost } from '../../runtime'
+import { confirmDialog, toast } from '@/shared/ui/interaction'
 
 interface ApprovalItem {
   id: number
@@ -86,9 +84,9 @@ async function resolve(approvalId: number, decision: string) {
   try {
     await apiPost(`/agent/admin/approvals/${approvalId}/resolve`, { decision })
     approvals.value = approvals.value.filter(a => a.id !== approvalId)
-    alert(decision === 'approved' ? '已同意' : '已拒绝')
+    toast.success(decision === 'approved' ? '已同意' : '已拒绝')
   } catch (e: unknown) {
-    alert(String((e as Error).message || e))
+    toast.error(String((e as Error).message || e))
   } finally {
     resolving.value = null
   }
@@ -106,9 +104,9 @@ async function doReject() {
     await apiPost(`/agent/admin/approvals/${rejectId.value}/resolve`, { decision: 'rejected', reason: rejectReason.value || null })
     approvals.value = approvals.value.filter(a => a.id !== rejectId.value)
     rejectId.value = null
-    alert('已拒绝')
+    toast.success('已拒绝')
   } catch (e: unknown) {
-    alert(String((e as Error).message || e))
+    toast.error(String((e as Error).message || e))
   } finally {
     resolving.value = null
   }
@@ -168,18 +166,5 @@ onMounted(loadApprovals)
 .ap-btn-reject { background: #fef0f0; color: #f56c6c; border-color: #fce4e4; }
 .ap-btn-reject:hover { background: #fce4e4; }
 
-/* Dialog */
-.ap-dialog-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.3);
-  display: flex; align-items: center; justify-content: center; z-index: 1000;
-}
-.ap-dialog { background: #fff; border-radius: 8px; padding: 24px; min-width: 360px; max-width: 480px; }
-.ap-dialog h3 { margin: 0 0 12px; font-size: 16px; }
-.ap-dialog p { margin: 0 0 12px; font-size: 13px; color: var(--ap-text-secondary); }
-.ap-textarea {
-  width: 100%; padding: 8px; border: 1px solid var(--ap-border);
-  border-radius: 4px; font-size: 13px; resize: vertical; box-sizing: border-box;
-  font-family: inherit;
-}
-.ap-dialog-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+
 </style>

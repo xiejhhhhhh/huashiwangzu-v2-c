@@ -16,7 +16,15 @@ export function useWindowInteraction(readConfig: () => InteractionConfig) {
   const resizeInfo = ref<{ direction: ResizeDirection; startX: number; startY: number; initialX: number; initialY: number; initialWidth: number; initialHeight: number } | null>(null)
   const getBounds = () => {
     const parent = readConfig().rootEl.value?.parentElement
-    return { containerWidth: parent?.clientWidth ?? window.innerWidth, availableHeight: (parent?.clientHeight ?? window.innerHeight) - 48 }
+    let taskbarHeight = 40
+    if (typeof document !== 'undefined') {
+      const cssVar = getComputedStyle(document.documentElement).getPropertyValue('--taskbar-height').trim()
+      if (cssVar) {
+        const parsed = parseInt(cssVar, 10)
+        if (!isNaN(parsed)) taskbarHeight = parsed
+      }
+    }
+    return { containerWidth: parent?.clientWidth ?? window.innerWidth, availableHeight: (parent?.clientHeight ?? window.innerHeight) - taskbarHeight }
   }
   function startDrag(e: MouseEvent) {
     const cfg = readConfig(); if (cfg.maximized) return

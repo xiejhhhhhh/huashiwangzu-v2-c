@@ -161,6 +161,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api'
+import { confirmDialog, toast } from '@/shared/ui/interaction'
 
 interface AgentConfigItem {
   id: number
@@ -282,7 +283,7 @@ async function loadConfigs() {
 
 async function createConfig() {
   if (!form.value.agent_code.trim()) {
-    alert('agent_code 不能为空')
+    toast.warning('agent_code 不能为空')
     return
   }
   saving.value = true
@@ -291,9 +292,9 @@ async function createConfig() {
     configs.value.push(newConfig)
     showCreateForm.value = false
     resetForm()
-    alert('创建成功')
+    toast.success('创建成功')
   } catch (e: unknown) {
-    alert('创建失败: ' + String((e as Error).message || e))
+    toast.error('创建失败: ' + String((e as Error).message || e))
   } finally {
     saving.value = false
   }
@@ -333,23 +334,24 @@ async function saveEdit() {
     const idx = configs.value.findIndex(c => c.agent_code === editing.value!.agent_code)
     if (idx >= 0) configs.value[idx] = updated
     editing.value = null
-    alert('保存成功')
+    toast.success('保存成功')
   } catch (e: unknown) {
-    alert('保存失败: ' + String((e as Error).message || e))
+    toast.error('保存失败: ' + String((e as Error).message || e))
   } finally {
     saving.value = false
   }
 }
 
 async function deleteConfig(c: AgentConfigItem) {
-  if (!confirm(`确定删除 "${c.agent_code}" 的配置？`)) { return }
+  const confirmed = await confirmDialog(`确定删除 "${c.agent_code}" 的配置？`)
+  if (!confirmed) return
   deleting.value = c.agent_code
   try {
     await httpJson(`/agent/configs/${c.agent_code}`, 'DELETE')
     configs.value = configs.value.filter(x => x.agent_code !== c.agent_code)
-    alert('已删除')
+    toast.success('已删除')
   } catch (e: unknown) {
-    alert('删除失败: ' + String((e as Error).message || e))
+    toast.error('删除失败: ' + String((e as Error).message || e))
   } finally {
     deleting.value = null
   }

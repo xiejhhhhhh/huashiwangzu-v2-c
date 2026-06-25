@@ -150,19 +150,13 @@
     </main>
 
     <!-- 重新分析确认弹窗 -->
-    <div v-if="showRedoDialog" class="redo-overlay" @click.self="showRedoDialog = false">
-      <div class="redo-dialog">
-        <div class="redo-head">
-          <p class="redo-title">重新分析</p>
-          <button class="redo-close" @click="confirmRedo(false)">✕</button>
-        </div>
-        <p class="redo-body">将重跑 LLM 分析层（画像 / 图谱 / 关联）。<br/>是否同时重跑固化数据层（原始采集 + 融合）？</p>
-        <div class="redo-actions">
-          <button class="redo-force" @click="confirmRedo(true)">重跑</button>
-          <button class="redo-skip" @click="confirmRedo(false)">跳过</button>
-        </div>
-      </div>
-    </div>
+    <el-dialog :visible="showRedoDialog" title="重新分析" width="420px" @close="confirmRedo(false)" append-to-body>
+      <p>将重跑 LLM 分析层（画像 / 图谱 / 关联）。<br/>是否同时重跑固化数据层（原始采集 + 融合）？</p>
+      <template #footer>
+        <el-button @click="confirmRedo(false)">跳过</el-button>
+        <el-button type="danger" @click="confirmRedo(true)">重跑</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -179,6 +173,7 @@ import {
   type FusionPage, type DocumentProfile, type FileRelation, type SearchResult,
   type FileTreeNode,
 } from './api'
+import { confirmDialog, toast } from '@/shared/ui/interaction'
 import type { GraphNode } from './graph3d/types'
 
 const documents = ref<KnowledgeDocument[]>([])
@@ -647,7 +642,7 @@ async function startAnalyze() {
       force_fusion: forceFusion,
     })
     progress.value = await getProgress(active.value.id)
-  } catch (error) { window.alert((error as Error).message) }
+  } catch (error) { toast.error((error as Error).message) }
 }
 
 const showRedoDialog = ref(false)
@@ -656,7 +651,8 @@ function confirmRedo(v: boolean) { if (redoResolve) redoResolve(v) }
 
 async function removeDocument() {
   if (!active.value) return
-  if (!window.confirm('确认删除该资料及其分析结果?')) return
+  const confirmed = await confirmDialog('确认删除该资料及其分析结果?')
+  if (!confirmed) return
   await apiDelete(`/knowledge/documents/${active.value.id}`)
   active.value = null; progress.value = null
   await loadFileTree()
@@ -854,17 +850,5 @@ onUnmounted(stopPolling)
 .empty-tip { color: #9aabbd; font-size: 13px; text-align: center; padding: 14px; }
 .empty-tip.pad { padding: 40px; }
 
-/* 重新分析弹窗 */
-.redo-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.redo-dialog { background: #fff; border-radius: 14px; padding: 28px 32px; min-width: 360px; max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
-.redo-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.redo-title { margin: 0; font-size: 17px; font-weight: 700; color: #1c3a4a; }
-.redo-close { border: none; background: none; cursor: pointer; font-size: 16px; color: #8aa0b5; padding: 2px 4px; border-radius: 4px; }
-.redo-close:hover { color: #46586b; background: #f0f2f5; }
-.redo-body { margin: 0 0 24px; font-size: 14px; color: #5a6b7d; line-height: 1.7; }
-.redo-actions { display: flex; gap: 10px; justify-content: flex-end; }
-.redo-skip { height: 36px; padding: 0 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; background: #2bb673; color: #fff; }
-.redo-skip:hover { background: #239a5d; }
-.redo-force { height: 36px; padding: 0 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; background: #e5534b; color: #fff; }
-.redo-force:hover { background: #c94039; }
+
 </style>
