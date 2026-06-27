@@ -16,8 +16,9 @@ from .entity_service import process_document_entities, fuse_page_text
 logger = logging.getLogger("v2.knowledge").getChild("document")
 
 SUPPORTED_EXTENSIONS = {
-    "pdf", "docx", "pptx", "xlsx", "csv", "txt", "md",
-    "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg",
+    "pdf", "docx", "pptx", "xlsx", "csv", "tsv", "txt", "md", "markdown",
+    "json", "yaml", "yml", "eml", "msg",
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg",
 }
 
 

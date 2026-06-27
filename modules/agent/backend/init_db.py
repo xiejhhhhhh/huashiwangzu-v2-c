@@ -1,8 +1,10 @@
 """Agent 模块表初始化：确保三层提示词默认数据存在，并执行无痛迁移。"""
 import logging
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from .models import AgentSystemPrompt, AgentEnterprisePrompt, AgentUserProfile, AgentConfig, ApprovalQueue, AgentUsageDaily, ContextSnapshot
+
+from .models import AgentEnterprisePrompt, AgentSystemPrompt, AgentUserProfile
 from .models_prompt import AgentPrompt
 
 logger = logging.getLogger("v2.agent").getChild("init_db")
@@ -194,9 +196,75 @@ async def ensure_processing_column(db: AsyncSession) -> None:
         logger.warning("Migration: processing column check failed: %s", e)
 
 
+async def ensure_thinking_level_table(db: AsyncSession) -> None:
+    """无痛创建 agent_thinking_levels 表。"""
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_thinking_levels ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  owner_id INTEGER NOT NULL,"
+            "  conversation_id BIGINT NOT NULL,"
+            "  query_text TEXT NOT NULL,"
+            "  thinking_level VARCHAR(16) NOT NULL,"
+            "  confidence DOUBLE PRECISION NOT NULL DEFAULT 0.0,"
+            "  source VARCHAR(16) NOT NULL DEFAULT 'rule',"
+            "  reason TEXT DEFAULT '',"
+            "  accepted BOOLEAN,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_thinking_levels_owner_id ON agent_thinking_levels(owner_id)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_thinking_levels_conversation_id ON agent_thinking_levels(conversation_id)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured agent_thinking_levels table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: thinking level table check failed: %s", e)
+
+
+async def ensure_thinking_level_signal_table(db: AsyncSession) -> None:
+    """无痛创建思考等级隐式反馈信号表。"""
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_thinking_level_signals ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  thinking_level_id BIGINT REFERENCES agent_thinking_levels(id) ON DELETE SET NULL,"
+            "  owner_id INTEGER NOT NULL,"
+            "  conversation_id BIGINT NOT NULL,"
+            "  query_text TEXT NOT NULL,"
+            "  thinking_level VARCHAR(16) NOT NULL,"
+            "  signal_type VARCHAR(32) NOT NULL,"
+            "  signal_value DOUBLE PRECISION NOT NULL DEFAULT 0.0,"
+            "  score_delta DOUBLE PRECISION NOT NULL DEFAULT 0.0,"
+            "  reason TEXT DEFAULT '',"
+            "  metadata JSONB DEFAULT '{}'::jsonb,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_thinking_signals_owner_id ON agent_thinking_level_signals(owner_id)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_thinking_signals_conversation_id ON agent_thinking_level_signals(conversation_id)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_thinking_signals_level ON agent_thinking_level_signals(thinking_level)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured agent_thinking_level_signals table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: thinking level signal table check failed: %s", e)
+
+
 async def ensure_event_table(db: AsyncSession) -> None:
     """引擎事件表迁移：create_all 兜 ALTER ADD COLUMN IF NOT EXISTS。"""
-    from sqlalchemy import text
     try:
         await db.execute(text(
             "CREATE TABLE IF NOT EXISTS agent_events ("
@@ -307,6 +375,19 @@ async def ensure_snapshot_table(db: AsyncSession) -> None:
         logger.warning("Migration: snapshot table check failed: %s", e)
 
 
+async def ensure_message_meta_usage_column(db: AsyncSession) -> None:
+    """无痛迁移：给 agent_message_meta 表加 usage 列。"""
+    try:
+        await db.execute(text(
+            "ALTER TABLE agent_message_meta ADD COLUMN IF NOT EXISTS usage JSON DEFAULT NULL"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured usage column on agent_message_meta")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: usage column check failed: %s", e)
+
+
 async def ensure_message_status_column(db: AsyncSession) -> None:
     """无痛迁移：给 agent_messages 表加 status/edited_from_message_id/branch_root_message_id 列。"""
     try:
@@ -329,13 +410,299 @@ async def ensure_message_status_column(db: AsyncSession) -> None:
         logger.warning("Migration: message status columns check failed: %s", e)
 
 
+async def ensure_trajectory_table(db: AsyncSession) -> None:
+    """Create agent_trajectory_records table (idempotent)."""
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_trajectory_records ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  conversation_id BIGINT NOT NULL,"
+            "  owner_id INTEGER NOT NULL,"
+            "  session_id VARCHAR(64) NOT NULL,"
+            "  turn_index INTEGER DEFAULT 0,"
+            "  user_input TEXT DEFAULT '',"
+            "  tool_calls JSONB DEFAULT '[]'::jsonb,"
+            "  tool_results JSONB DEFAULT '[]'::jsonb,"
+            "  assistant_response TEXT,"
+            "  user_correction TEXT,"
+            "  failure_recovery JSONB,"
+            "  thinking_level VARCHAR(16),"
+            "  profile_signals JSONB DEFAULT '[]'::jsonb,"
+            "  error_occurred BOOLEAN DEFAULT FALSE,"
+            "  duration_ms DOUBLE PRECISION,"
+            "  token_count INTEGER,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_trajectory_conv ON agent_trajectory_records(conversation_id)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_trajectory_session ON agent_trajectory_records(session_id)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_trajectory_owner ON agent_trajectory_records(owner_id)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured agent_trajectory_records table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: trajectory table check failed: %s", e)
+
+
+async def ensure_profile_v2_tables(db: AsyncSession) -> None:
+    """Create profile 2.0 tables (role/enterprise/market/signals)."""
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_role_profiles ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  role_key VARCHAR(64) NOT NULL UNIQUE,"
+            "  role_name VARCHAR(128) DEFAULT '',"
+            "  description TEXT DEFAULT '',"
+            "  tone TEXT,"
+            "  taboos JSONB DEFAULT '[]'::jsonb,"
+            "  focus_areas JSONB DEFAULT '[]'::jsonb,"
+            "  habits JSONB DEFAULT '[]'::jsonb,"
+            "  allowed_tools JSONB DEFAULT '[]'::jsonb,"
+            "  priority INTEGER DEFAULT 0,"
+            "  enabled BOOLEAN DEFAULT TRUE,"
+            "  version INTEGER DEFAULT 1,"
+            "  updated_by INTEGER,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_enterprise_profiles ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  enterprise_key VARCHAR(64) NOT NULL UNIQUE DEFAULT 'default',"
+            "  enterprise_name VARCHAR(256) DEFAULT '',"
+            "  description TEXT DEFAULT '',"
+            "  tone TEXT,"
+            "  taboos JSONB DEFAULT '[]'::jsonb,"
+            "  focus_areas JSONB DEFAULT '[]'::jsonb,"
+            "  business_rules JSONB DEFAULT '[]'::jsonb,"
+            "  communication_style TEXT,"
+            "  version INTEGER DEFAULT 1,"
+            "  updated_by INTEGER,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_market_profiles ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  profile_type VARCHAR(32) NOT NULL,"
+            "  key VARCHAR(128) NOT NULL,"
+            "  name VARCHAR(256) DEFAULT '',"
+            "  description TEXT DEFAULT '',"
+            "  attributes JSONB DEFAULT '{}'::jsonb,"
+            "  tags JSONB DEFAULT '[]'::jsonb,"
+            "  enabled BOOLEAN DEFAULT TRUE,"
+            "  priority INTEGER DEFAULT 0,"
+            "  version INTEGER DEFAULT 1,"
+            "  updated_by INTEGER,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_profile_signals ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  owner_id INTEGER NOT NULL,"
+            "  signal_type VARCHAR(32) NOT NULL,"
+            "  target_profile_type VARCHAR(32) DEFAULT 'user',"
+            "  signal_data JSONB DEFAULT '{}'::jsonb,"
+            "  confidence DOUBLE PRECISION DEFAULT 0.0,"
+            "  source VARCHAR(32) DEFAULT 'auto',"
+            "  conversation_id BIGINT,"
+            "  applied BOOLEAN DEFAULT FALSE,"
+            "  applied_at TIMESTAMPTZ,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_profile_signals_owner ON agent_profile_signals(owner_id)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_profile_signals_type ON agent_profile_signals(signal_type)"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_market_profiles_type ON agent_market_profiles(profile_type)"
+        ))
+        await db.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_market_profiles_key ON agent_market_profiles(profile_type, key)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured profile 2.0 tables")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: profile 2.0 tables check failed: %s", e)
+
+
+async def ensure_checkpoint_table(db: AsyncSession) -> None:
+    """Create agent_checkpoints table (idempotent)."""
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_checkpoints ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  conversation_id BIGINT NOT NULL,"
+            "  owner_id INTEGER NOT NULL,"
+            "  checkpoint_type VARCHAR(32) NOT NULL,"
+            "  round_index INTEGER DEFAULT 0,"
+            "  state_data JSONB DEFAULT '{}'::jsonb,"
+            "  summary TEXT,"
+            "  parent_id BIGINT,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_checkpoints_conv ON agent_checkpoints(conversation_id)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured agent_checkpoints table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: checkpoint table check failed: %s", e)
+
+
+async def ensure_skill_registry_table(db: AsyncSession) -> None:
+    """Create skill governance tables (idempotent)."""
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_skill_registry ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  name VARCHAR(128) NOT NULL UNIQUE,"
+            "  description TEXT DEFAULT '',"
+            "  source VARCHAR(32) DEFAULT 'manual',"
+            "  source_file VARCHAR(512),"
+            "  body TEXT,"
+            "  allowed_tools JSONB DEFAULT '[]'::jsonb,"
+            "  paths JSONB DEFAULT '[]'::jsonb,"
+            "  scope VARCHAR(32) DEFAULT 'global',"
+            "  priority INTEGER DEFAULT 0,"
+            "  enabled BOOLEAN DEFAULT TRUE,"
+            "  approval_status VARCHAR(32) DEFAULT 'pending_approval',"
+            "  created_by INTEGER,"
+            "  updated_by INTEGER,"
+            "  tags JSONB DEFAULT '[]'::jsonb,"
+            "  category VARCHAR(64),"
+            "  version INTEGER DEFAULT 1,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_skill_approvals ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  skill_name VARCHAR(128) NOT NULL,"
+            "  operation VARCHAR(32) NOT NULL,"
+            "  previous_state JSONB,"
+            "  requested_state JSONB,"
+            "  status VARCHAR(32) DEFAULT 'pending_approval',"
+            "  requested_by INTEGER,"
+            "  decided_by INTEGER,"
+            "  decided_at TIMESTAMPTZ,"
+            "  review_result_id BIGINT,"
+            "  reason TEXT,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_skill_provenance ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  skill_name VARCHAR(128) NOT NULL,"
+            "  event_type VARCHAR(32) NOT NULL,"
+            "  source VARCHAR(32) DEFAULT '',"
+            "  detail JSONB DEFAULT '{}'::jsonb,"
+            "  actor_id INTEGER,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_skill_provenance_name ON agent_skill_provenance(skill_name)"
+        ))
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_skill_usage ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  skill_name VARCHAR(128) NOT NULL,"
+            "  conversation_id BIGINT,"
+            "  owner_id INTEGER,"
+            "  success BOOLEAN DEFAULT TRUE,"
+            "  duration_ms DOUBLE PRECISION DEFAULT 0.0,"
+            "  error_detail TEXT,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_skill_usage_name ON agent_skill_usage(skill_name)"
+        ))
+        # Migration: ensure tags/category/version columns on existing agent_skill_registry
+        for col_sql in [
+            "ALTER TABLE agent_skill_registry ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb",
+            "ALTER TABLE agent_skill_registry ADD COLUMN IF NOT EXISTS category VARCHAR(64)",
+            "ALTER TABLE agent_skill_registry ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1",
+        ]:
+            try:
+                await db.execute(text(col_sql))
+            except Exception:
+                pass
+        await db.commit()
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_review_tasks ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  conversation_id BIGINT NOT NULL,"
+            "  owner_id INTEGER NOT NULL,"
+            "  status VARCHAR(16) DEFAULT 'pending',"
+            "  review_context JSONB DEFAULT '{}'::jsonb,"
+            "  started_at TIMESTAMPTZ,"
+            "  completed_at TIMESTAMPTZ,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_review_results ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  review_task_id BIGINT NOT NULL,"
+            "  owner_id INTEGER NOT NULL,"
+            "  result_type VARCHAR(32) NOT NULL,"
+            "  title VARCHAR(256) DEFAULT '',"
+            "  summary TEXT DEFAULT '',"
+            "  detail JSONB DEFAULT '{}'::jsonb,"
+            "  status VARCHAR(16) DEFAULT 'proposal',"
+            "  reviewed_by INTEGER,"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured skill governance tables")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: skill governance tables check failed: %s", e)
+
+
 async def run_init(db: AsyncSession) -> None:
     """Agent 模块启动初始化入口。"""
     await ensure_migrated_tables(db)
     await ensure_timeline_column(db)
+    await ensure_message_meta_usage_column(db)
     await ensure_processing_column(db)
+    await ensure_thinking_level_table(db)
+    await ensure_thinking_level_signal_table(db)
     await ensure_event_table(db)
     await ensure_snapshot_table(db)
     await ensure_message_status_column(db)
+    await ensure_skill_registry_table(db)
+    await ensure_trajectory_table(db)
+    await ensure_checkpoint_table(db)
+    await ensure_profile_v2_tables(db)
     await ensure_default_prompts(db)
     await update_existing_prompts(db)

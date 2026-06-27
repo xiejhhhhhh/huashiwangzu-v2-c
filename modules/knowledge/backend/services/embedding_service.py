@@ -116,15 +116,26 @@ def extract_keywords(text: str, max_keywords: int = 10) -> str:
 async def chunk_and_embed(
     document_id: int,
     owner_id: int,
-    blocks: list[dict],
-    caller: str,
+    blocks: list[dict] | None = None,
+    caller: str = "",
+    doc_ir: object | None = None,
 ) -> list[dict]:
     """将解析块分块 + 向量化，返回待入库的 chunk 记录列表。
 
     blocks: [{"type": str, "text": str, "page": int|null, "resource_ref": int|null}, ...]
+    doc_ir: DocumentIr 实例（优先级高于 blocks），如提供则替换 blocks 参数。
     返回: [{"document_id": int, "owner_id": int, "page": int, "chunk_index": int,
             "block_type": str, "text": str, "embedding": list[float], "keywords": str}, ...]
     """
+    from ..ir_models import DocumentIr
+
+    if doc_ir is not None and isinstance(doc_ir, DocumentIr):
+        ir = doc_ir
+        blocks = [{"type": b.type, "text": b.text, "page": b.page, "resource_ref": b.resource_ref}
+                  for b in ir.iter_non_empty()]
+    elif blocks is None:
+        blocks = []
+
     chunks_to_store: list[dict] = []
     chunk_index = 0
 

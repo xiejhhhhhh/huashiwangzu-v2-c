@@ -52,7 +52,28 @@ async def lifespan(app: FastAPI):
     from app.services.module_logger import setup_v2_loggers_for_modules
     setup_v2_loggers_for_modules()
 
+    # Initialize event bus (create event_log table, start retry scheduler)
+    from app.services.event_bus import _ensure_event_log_table, retry_failed_events
+    import asyncio
+    await _ensure_event_log_table()
+    await retry_failed_events()
+
+    # Periodic event retry (every 60 seconds)
+    async def _event_retry_loop():
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await retry_failed_events()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Event retry loop error: %s", e)
+    _retry_task = asyncio.create_task(_event_retry_loop())
+    app.state._event_retry_task = _retry_task
+
     yield
+    if hasattr(app.state, "_event_retry_task"):
+        app.state._event_retry_task.cancel()
     await stop_worker()
     await dispose_db()
 
@@ -112,12 +133,23 @@ async def health_check():
         database_status = "unreachable"
 
     module_errors = get_module_load_errors()
+
+    # Event bus health
+    event_bus_ok = True
+    try:
+        from app.services.event_bus import get_event_log
+        recent_events = await get_event_log(limit=1)
+    except Exception:
+        event_bus_ok = False
+        recent_events = []
+
     return ApiResponse(data={
         "status": "ok",
         "version": "2.0.0",
         "database": database_status,
         "module_errors": module_errors if module_errors else None,
         "worker": worker_health(),
+        "event_bus": "ok" if event_bus_ok else "error",
     })
 
 

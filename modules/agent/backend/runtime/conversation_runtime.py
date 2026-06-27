@@ -12,22 +12,22 @@ from __future__ import annotations
 import json
 import logging
 
+from app.models.user import User
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.user import User
-
-from ..init_db import run_init, ensure_user_profile
-from ..schemas import ChatRequest
 from ..engine.engine import assemble_context
 from ..engine.event_store import record_event
+from ..engine.thinking_router import record_implicit_thinking_signal, record_thinking_feedback
+from ..init_db import ensure_user_profile, run_init
+from ..schemas import ChatRequest
 from ..services import conversation_service as conv_svc
 from ..services import tool_discovery
 from .checkpointer import PostgresCheckpointSaver
 from .runtime_policy import RuntimePolicy
-from .tool_loop_runtime import ToolLoopRuntime
 from .task_sink import RuntimeTaskSink
+from .tool_loop_runtime import ToolLoopRuntime
 from .understanding_loop import UnderstandingLoopOrchestrator
 
 logger = logging.getLogger("v2.agent").getChild("runtime.conversation")
@@ -104,6 +104,17 @@ class ConversationRuntime:
                 {"content": payload.content},
             )
 
+            # ── Record implicit feedback for previous turn ──────────────
+            try:
+                await record_implicit_thinking_signal(
+                    db,
+                    owner_id=user.id,
+                    conversation_id=payload.conversation_id,
+                    current_input=payload.content,
+                )
+            except Exception as signal_exc:
+                logger.warning("Record implicit thinking signal failed (non-fatal): %s", signal_exc)
+
             # ── Assemble context ────────────────────────────────────
             agent_code = "erp_chat"
             messages, engine_diag = await assemble_context(
@@ -169,7 +180,22 @@ class ConversationRuntime:
                         {"triggered": True, "error": str(uloop_exc)},
                     )
 
-            # ── Build tools ─────────────────────────────────────────
+            try:
+                await record_thinking_feedback(
+                    db,
+                    query_text=payload.content,
+                    recommended_level=engine_diag.get("thinking_level", "medium"),
+                    owner_id=user.id,
+                    conversation_id=payload.conversation_id,
+                    source=engine_diag.get("thinking_source", "rule"),
+                    confidence=float(engine_diag.get("thinking_confidence", 0.0) or 0.0),
+                    used_level=engine_diag.get("thinking_level", "medium"),
+                    accepted=True,
+                    reason=str(engine_diag.get("thinking_reason", "")),
+                )
+            except Exception as feedback_exc:
+                logger.warning("Record thinking feedback failed (non-fatal): %s", feedback_exc)
+
             tools = tool_discovery.build_tools(user.role)
 
         # ── Wire sub-runtimes ───────────────────────────────────────
@@ -183,6 +209,7 @@ class ConversationRuntime:
             owner_id=user.id,
             profile_key=profile_key,
             policy=self.policy,
+            suppress_thinking=(engine_diag.get("thinking_level") == "none") if not channel_values else False,
         )
 
         async def _event_stream():
@@ -217,13 +244,29 @@ class ConversationRuntime:
         if not edited_msg:
             raise HTTPException(status_code=400, detail="Edit-resubmit validation failed")
 
-        # Assemble context — events before the edit point remain, so
-        # project_to_messages returns only pre-edit history.  The edited
-        # content is passed as current_input so the model sees it as the
-        # active turn.
+        # Assemble context — events before the edit point remain. The edited
+        # content is passed as current_input for this immediate rerun.
+        try:
+            await record_implicit_thinking_signal(
+                db,
+                owner_id=user.id,
+                conversation_id=conversation_id,
+                current_input=content,
+            )
+        except Exception as signal_exc:
+            logger.warning("Record edit-resubmit implicit thinking signal failed (non-fatal): %s", signal_exc)
+
         messages, engine_diag = await assemble_context(
             db, conversation_id, content,
             profile_key, user.id, agent_code=agent_code,
+        )
+
+        # Re-record the edited user message after context assembly.
+        # This keeps the current rerun free of duplicated B' input while
+        # preserving B' in event projection for later turns.
+        await record_event(
+            db, conversation_id, "user_msg",
+            {"content": content, "edited_message_id": message_id},
         )
 
         # Record assembly diagnostic
@@ -284,6 +327,22 @@ class ConversationRuntime:
                     {"triggered": True, "error": str(uloop_exc)},
                 )
 
+        try:
+            await record_thinking_feedback(
+                db,
+                query_text=content,
+                recommended_level=engine_diag.get("thinking_level", "medium"),
+                owner_id=user.id,
+                conversation_id=conversation_id,
+                source=engine_diag.get("thinking_source", "rule"),
+                confidence=float(engine_diag.get("thinking_confidence", 0.0) or 0.0),
+                used_level=engine_diag.get("thinking_level", "medium"),
+                accepted=True,
+                reason=str(engine_diag.get("thinking_reason", "")),
+            )
+        except Exception as feedback_exc:
+            logger.warning("Record edit-resubmit thinking feedback failed (non-fatal): %s", feedback_exc)
+
         tools = tool_discovery.build_tools(user.role)
 
         # Wire sub-runtimes
@@ -297,6 +356,7 @@ class ConversationRuntime:
             owner_id=user.id,
             profile_key=profile_key,
             policy=self.policy,
+            suppress_thinking=engine_diag.get("thinking_level") == "none",
         )
 
         async def _event_stream():

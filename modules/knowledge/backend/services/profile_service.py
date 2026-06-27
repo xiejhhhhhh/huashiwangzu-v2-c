@@ -189,11 +189,12 @@ def _heuristic_profile(fusions: list) -> dict:
     }
 
 
-async def get_document_profile(db: AsyncSession, document_id: int) -> dict | None:
-    """获取文件画像。"""
-    r = await db.execute(
-        select(KbDocumentProfile).where(KbDocumentProfile.document_id == document_id)
-    )
+async def get_document_profile(db: AsyncSession, document_id: int, owner_id: int | None = None) -> dict | None:
+    """获取文件画像。支持 owner_id 验证（防止越权访问其他用户的文档画像）。"""
+    q = select(KbDocumentProfile).where(KbDocumentProfile.document_id == document_id)
+    if owner_id is not None:
+        q = q.where(KbDocumentProfile.owner_id == owner_id)
+    r = await db.execute(q)
     profile = r.scalar_one_or_none()
     if not profile:
         return None

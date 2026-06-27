@@ -6,6 +6,7 @@ from app.gateway.adapters import (
     get_adapter,
     list_adapters,
 )
+from app.gateway.contract import ModelResponse, StreamEvent, StreamEventType
 
 
 class TestDeepSeekAdapter:
@@ -24,10 +25,11 @@ class TestDeepSeekAdapter:
             }],
         }
         result = self.adapter.adapt_response(raw, provider="opencode")
-        assert result["content"] == "答案是14"
-        assert result["thinking"] == "3的平方=9, 9+5=14"
-        assert result["finish_reason"] == "stop"
-        assert result["tool_calls"] == []
+        assert isinstance(result, ModelResponse)
+        assert result.content == "答案是14"
+        assert result.thinking == "3的平方=9, 9+5=14"
+        assert result.finish_reason == "stop"
+        assert result.tool_calls == []
 
     def test_adapt_response_ollama(self):
         raw = {
@@ -40,8 +42,8 @@ class TestDeepSeekAdapter:
             "done": True,
         }
         result = self.adapter.adapt_response(raw, provider="ollama")
-        assert result["content"] == "答案是14"
-        assert result["thinking"] == "3的平方=9, 9+5=14"
+        assert result.content == "答案是14"
+        assert result.thinking == "3的平方=9, 9+5=14"
 
     def test_adapt_response_ollama_with_tool_calls(self):
         raw = {
@@ -58,36 +60,38 @@ class TestDeepSeekAdapter:
             "done": True,
         }
         result = self.adapter.adapt_response(raw, provider="ollama")
-        assert len(result["tool_calls"]) == 1
-        assert result["tool_calls"][0]["function"]["arguments"] == {"city": "北京"}
-        assert result["finish_reason"] == "tool_calls"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].function["arguments"] == {"city": "北京"}
+        assert result.finish_reason == "tool_calls"
 
+    def test_adapt_stream_chunk_openai_token(self):
         chunk = {"choices": [{"delta": {"content": "14"}}]}
         event = self.adapter.adapt_stream_chunk(chunk, provider="opencode")
-        assert event["type"] == "token"
-        assert event["content"] == "14"
+        assert isinstance(event, StreamEvent)
+        assert event.type == StreamEventType.TOKEN
+        assert event.content == "14"
 
     def test_adapt_stream_chunk_openai_thinking(self):
         chunk = {"choices": [{"delta": {"reasoning_content": "3的平方=9"}}]}
         event = self.adapter.adapt_stream_chunk(chunk, provider="opencode")
-        assert event["type"] == "thinking"
-        assert event["content"] == "3的平方=9"
+        assert event.type == StreamEventType.THINKING
+        assert event.content == "3的平方=9"
 
     def test_adapt_stream_chunk_openai_done(self):
         chunk = {"choices": [{"delta": {}, "finish_reason": "stop"}]}
         event = self.adapter.adapt_stream_chunk(chunk, provider="opencode")
-        assert event["type"] == "done"
+        assert event.type == StreamEventType.DONE
 
     def test_adapt_stream_chunk_ollama_token(self):
         chunk = {"message": {"content": "14"}, "done": False}
         event = self.adapter.adapt_stream_chunk(chunk, provider="ollama")
-        assert event["type"] == "token"
-        assert event["content"] == "14"
+        assert event.type == StreamEventType.TOKEN
+        assert event.content == "14"
 
     def test_adapt_stream_chunk_ollama_done(self):
         chunk = {"message": {"content": ""}, "done": True}
         event = self.adapter.adapt_stream_chunk(chunk, provider="ollama")
-        assert event["type"] == "done"
+        assert event.type == StreamEventType.DONE
 
     def test_adapt_response_with_tool_calls(self):
         raw = {
@@ -106,11 +110,11 @@ class TestDeepSeekAdapter:
             }],
         }
         result = self.adapter.adapt_response(raw, provider="opencode")
-        assert len(result["tool_calls"]) == 1
-        tc = result["tool_calls"][0]
-        assert tc["function"]["name"] == "get_weather"
-        assert tc["function"]["arguments"] == {"city": "北京"}
-        assert result["finish_reason"] == "tool_calls"
+        assert len(result.tool_calls) == 1
+        tc = result.tool_calls[0]
+        assert tc.function["name"] == "get_weather"
+        assert tc.function["arguments"] == {"city": "北京"}
+        assert result.finish_reason == "tool_calls"
 
     def test_adapt_response_with_parallel_tool_calls(self):
         raw = {
@@ -129,8 +133,8 @@ class TestDeepSeekAdapter:
             }],
         }
         result = self.adapter.adapt_response(raw, provider="opencode")
-        assert len(result["tool_calls"]) == 3
-        assert result["content"] == "我来同时查询"
+        assert len(result.tool_calls) == 3
+        assert result.content == "我来同时查询"
 
     def test_adapt_stream_chunk_openai_tool_calls(self):
         chunk = {
@@ -148,8 +152,8 @@ class TestDeepSeekAdapter:
         }
         event = self.adapter.adapt_stream_chunk(chunk, provider="opencode")
         assert event is not None
-        assert event["type"] == "token"
-        assert len(event["tool_calls"]) == 1
+        assert event.type == StreamEventType.TOKEN
+        assert len(event.tool_calls) == 1
 
 
 class TestGemmaAdapter:
@@ -162,14 +166,14 @@ class TestGemmaAdapter:
             "done": True,
         }
         result = self.adapter.adapt_response(raw, provider="ollama")
-        assert result["content"] == "答案是14"
-        assert result["thinking"] == ""
+        assert result.content == "答案是14"
+        assert result.thinking == ""
 
     def test_adapt_stream_chunk_token(self):
         chunk = {"message": {"content": "答"}, "done": False}
         event = self.adapter.adapt_stream_chunk(chunk, provider="ollama")
-        assert event["type"] == "token"
-        assert event["content"] == "答"
+        assert event.type == StreamEventType.TOKEN
+        assert event.content == "答"
 
 
 class TestQwenAdapter:
@@ -184,8 +188,8 @@ class TestQwenAdapter:
             }],
         }
         result = self.adapter.adapt_response(raw, provider="opencode")
-        assert result["content"] == "14"
-        assert result["thinking"] == ""
+        assert result.content == "14"
+        assert result.thinking == ""
 
 
 class TestOpenAICompatAdapter:
@@ -203,14 +207,14 @@ class TestOpenAICompatAdapter:
             }],
         }
         result = self.adapter.adapt_response(raw, provider="opencode")
-        assert result["content"] == "答案是14"
-        assert result["thinking"] == "3的平方=9, 9+5=14"
+        assert result.content == "答案是14"
+        assert result.thinking == "3的平方=9, 9+5=14"
 
     def test_adapt_response_ollama_fallback(self):
         raw = {"message": {"role": "assistant", "content": "14"}}
         result = self.adapter.adapt_response(raw, provider="ollama")
-        assert result["content"] == "14"
-        assert result["thinking"] == ""
+        assert result.content == "14"
+        assert result.thinking == ""
 
 
 class TestRegistry:

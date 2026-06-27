@@ -49,16 +49,50 @@ HTTP 前缀：`/api/knowledge`
 
 ## Parser 依赖
 
-knowledge 不直接解析文件格式，只通过框架能力调用：
+knowledge 不直接解析文件格式，只通过框架能力调用。所有 parser 产出统一的 **DocumentIr** 中间表示（见 `ir_models.py`），knowledge 的分块、融合、导出只消费 DocumentIr。
 
 | 格式 | 能力 |
 |---|---|
 | PDF | `pdf-parser:parse` |
 | DOCX | `docx-parser:parse` |
 | PPTX | `pptx-parser:parse` |
-| XLSX/CSV | `xlsx-parser:parse` |
-| TXT/MD | `text-parser:parse` |
+| XLSX | `xlsx-parser:parse` |
+| CSV/TSV | `csv-parser:parse` |
+| TXT | `text-parser:parse` |
+| Markdown | `markdown-parser:parse` |
+| JSON/YAML | `structured-parser:parse` |
+| EML/MSG | `email-parser:parse` |
 | Image | `image-vision:describe` |
+
+### 统一文档中间表示 (DocumentIr)
+
+```python
+class DocumentIr(BaseModel):
+    file_id: int
+    format: str
+    blocks: list[ContentBlock]     # 统一内容块
+    resources: list[ResourceRef]   # 二进制资源引用
+    parse_errors: list[str]        # 空结果/低质量/失败区分
+
+class ContentBlock(BaseModel):
+    type: BlockType                # heading/paragraph/table/code/image/...
+    text: str
+    page: int | None
+    hierarchy_level: int           # 标题层级
+    children: list[ContentBlock]   # 子节点（嵌套结构）
+    coordinate: Coordinate | None  # 坐标（版面分析）
+```
+
+### 分块策略
+
+- `fixed_size`：传统段落/句子固定大小分块（向后兼容）
+- `title_aware`：按标题边界切分，标题下内容保持在同一块
+- `structure_aware`：遵循 DocumentIr 层级，表格/代码块保持完整
+
+### 导出
+
+- `POST /api/knowledge/documents/export` — 导出 Markdown/HTML/JSON
+- 导出依赖 DocumentIr，新增格式自动获得导出能力
 
 ## 边界
 

@@ -13,7 +13,7 @@ KB_TABLES = [
     "kb_entity_dictionary", "kb_entity_aliases", "kb_disambiguation",
     "kb_graph_nodes", "kb_graph_edges", "kb_chunk_entities",
     "kb_evidence", "kb_conclusion_evidence", "kb_entity_merge_log",
-    "kb_governance_candidates",
+    "kb_governance_candidates", "kb_pipeline_stale",
 ]
 
 # 关键索引语句（幂等，CREATE INDEX IF NOT EXISTS）
@@ -41,6 +41,7 @@ _INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_kb_file_rel_source ON kb_file_relations(source_document_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_file_rel_target ON kb_file_relations(target_document_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_file_rel_owner ON kb_file_relations(owner_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_stale_doc ON kb_pipeline_stale(document_id)",
 ]
 
 # ALTER 列补齐语句（幂等，ADD COLUMN IF NOT EXISTS）
@@ -69,7 +70,7 @@ async def ensure_kb_tables(db: AsyncSession) -> None:
         KbEntityDictionary, KbEntityAlias, KbDisambiguation,
         KbGraphNode, KbGraphEdge, KbChunkEntity,
         KbEvidence, KbConclusionEvidence, KbEntityMergeLog,
-        KbGovernanceCandidate,
+        KbGovernanceCandidate, KbPipelineStale,
     )
     kb_tables = [t for n, t in Base.metadata.tables.items() if n.startswith("kb_")]
     # 用原始连接执行建表（SQLAlchemy async 兼容）

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 from typing import AsyncGenerator
@@ -6,6 +8,7 @@ import httpx
 
 from .adapters import get_adapter
 from .base import BaseProvider
+from .contract import StreamEventType, stream_event_to_dict
 from .stream_parse import error_message, extract_stream_payload, format_error
 
 logger = logging.getLogger("v2.gateway.openai_compat")
@@ -23,11 +26,20 @@ class OpenAIProvider(BaseProvider):
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    def _build_payload(
+        self, messages: list[dict], model: str, temperature: float,
+        max_tokens: int, stream: bool, tools: list[dict] | None,
+    ) -> dict:
+        data = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": stream}
+        if tools:
+            data["tools"] = tools
+        return data
+
     async def chat(
         self, messages: list[dict], model: str, temperature: float = 0.7,
         max_tokens: int = 4096, tools: list[dict] | None = None,
     ) -> dict:
-        payload = _payload(messages, model, temperature, max_tokens, False, tools)
+        payload = self._build_payload(messages, model, temperature, max_tokens, False, tools)
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(self.api_url, json=payload, headers=self._headers())
             if resp.status_code >= 400:
@@ -45,7 +57,7 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int = 4096, tools: list[dict] | None = None,
     ) -> AsyncGenerator[dict, None]:
         adapter = get_adapter(model)
-        payload = _payload(messages, model, temperature, max_tokens, True, tools)
+        payload = self._build_payload(messages, model, temperature, max_tokens, True, tools)
         try:
             async with httpx.AsyncClient(timeout=300) as client:
                 async with client.stream("POST", self.api_url, json=payload, headers=self._headers()) as resp:
@@ -68,8 +80,8 @@ class OpenAIProvider(BaseProvider):
                             return
                         event = adapter.adapt_stream_chunk(data, provider=self.provider_name)
                         if event:
-                            yield event
-                            if event["type"] == "done":
+                            yield stream_event_to_dict(event)
+                            if event.type == StreamEventType.DONE:
                                 return
         except Exception as e:
             logger.error("OpenAI-compatible stream error: %s", e)
@@ -84,19 +96,10 @@ class OpenAIProvider(BaseProvider):
             logger.warning("OpenAI-compatible health check failed: %s", e)
             return False
 
+
 async def _read_error_body(resp: httpx.Response) -> str:
     try:
         body = resp.text
         return body[:500] if len(body) > 500 else body
     except Exception:
         return "(无法读取响应体)"
-
-
-def _payload(
-    messages: list[dict], model: str, temperature: float, max_tokens: int,
-    stream: bool, tools: list[dict] | None,
-) -> dict:
-    data = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": stream}
-    if tools:
-        data["tools"] = tools
-    return data

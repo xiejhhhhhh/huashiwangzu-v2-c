@@ -1,6 +1,6 @@
 """知识库模块业务表。表名 kb_* 前缀，不加外键到框架表/其他模块表。"""
 from datetime import datetime
-from sqlalchemy import Boolean, Integer, JSON, String, Text, BigInteger, DateTime, Float
+from sqlalchemy import Boolean, Integer, JSON, String, Text, BigInteger, DateTime, Float, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin
 
@@ -283,3 +283,19 @@ class KbFileRelation(Base, TimestampMixin):
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 双向边权重
     weight: Mapped[float] = mapped_column(Float, default=1.0)
+
+
+class KbPipelineStale(Base, TimestampMixin):
+    """Pipeline stage 产物 hash 记录表。
+
+    每个 stage 完成后记录 artifact hash，用于检测上游变更后标记下游为 stale。
+    """
+    __tablename__ = "kb_pipeline_stale"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    artifact_hash: Mapped[str] = mapped_column(String(64), default="")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("document_id", "stage", name="uq_kb_pipeline_stale_doc_stage"),
+    )

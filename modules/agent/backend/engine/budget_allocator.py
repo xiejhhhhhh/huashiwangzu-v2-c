@@ -6,7 +6,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from app.gateway.config import MODEL_PROFILES
+from app.gateway.config import get_model_profiles
 logger = logging.getLogger("v2.agent").getChild("engine.budget_allocator")
 SAFETY_MAX_TOKENS = 120000
 RESERVED_OUTPUT_TOKENS = 4096
@@ -168,7 +168,7 @@ class DiminishingBudgetTracker:
 
 
 def get_context_budget(profile_key: str) -> int | None:
-    profile = MODEL_PROFILES.get(profile_key, {})
+    profile = get_model_profiles().get(profile_key, {})
     budget = profile.get("context_budget")
     if budget is not None:
         try:

@@ -59,6 +59,13 @@ export function buildLabels(
   // ── Create label elements ──
   const labels = new Map<number, CSS2DObject>()
 
+  function safeDisposeRenderer(): void {
+    const dispose = (renderer as unknown as { dispose?: () => void }).dispose
+    if (typeof dispose === 'function') {
+      dispose.call(renderer)
+    }
+  }
+
   for (const node of nodes) {
     const pos = positions.get(node.id)
     if (!pos) continue
@@ -142,8 +149,8 @@ export function buildLabels(
         label.element.remove()
       }
       labels.clear()
-      renderer.domElement.remove()
-      renderer.dispose()
+      renderer.domElement?.remove()
+      safeDisposeRenderer()
     },
   }
 }

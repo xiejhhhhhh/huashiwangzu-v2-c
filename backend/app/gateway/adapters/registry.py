@@ -1,8 +1,8 @@
 from .base import ModelAdapter
 from .deepseek import DeepSeekAdapter
 from .gemma import GemmaAdapter
-from .qwen import QwenAdapter
 from .openai_compat import OpenAICompatAdapter
+from .qwen import QwenAdapter
 
 # ============================================================
 # 如何添加新模型（扩展接口说明）

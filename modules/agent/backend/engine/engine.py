@@ -1,22 +1,36 @@
 """engine编排壳：暴露装配上下文()等给 router。批4：compressor、fallback_chain接入。批5：工具编排、三层记忆、快照、skills注入。"""
-import asyncio
 import json
 import logging
 import os
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..services import conversation_service as conv_svc
-from .event_store import read_events, project_to_messages, record_event
-from .budget_allocator import assemble_context as _budget_assemble_context, estimate_tokens, get_context_budget, DiminishingBudgetTracker
-from .layered_memory import record as _layered_memory_record, recall as _layered_memory_recall, fuse as _layered_memory_fuse
-from .layered_memory import recall_stable_rules as _recall_stable_rules, recall_chunk as _recall_chunk, three_layer_recall as _three_layer_recall
-from .layered_memory import read_static_memory_files as _read_static_memory_files, format_static_memory_for_injection as _format_static_memory
-from .experience_memory import match_experience as _experience_match, save_experience as _experience_save, experience_feedback as _experience_feedback, format_injection as _experience_format
-from .compressor import compress_middle_with_snapshot as _compress_with_snapshot, hard_truncate_tail as _hard_truncate_tail
-from .fallback_chain import chat_with_fallback as _chat_with_fallback, chat_stream_with_fallback as _chat_stream_with_fallback
-from .tool_orchestrator import ToolOrchestrator
+from .budget_allocator import DiminishingBudgetTracker, estimate_tokens, get_context_budget
+from .budget_allocator import assemble_context as _budget_assemble_context
+from .compressor import compress_middle_with_snapshot as _compress_with_snapshot
+from .compressor import hard_truncate_tail as _hard_truncate_tail
+from .event_store import project_to_messages, read_events
+from .experience_memory import experience_feedback as _experience_feedback
+from .experience_memory import format_injection as _experience_format
+from .experience_memory import match_experience as _experience_match
+from .experience_memory import save_experience as _experience_save
+from .fallback_chain import chat_stream_with_fallback as _chat_stream_with_fallback
+from .fallback_chain import chat_with_fallback as _chat_with_fallback
+from .layered_memory import format_static_memory_for_injection as _format_static_memory
+from .layered_memory import fuse as _layered_memory_fuse
+from .layered_memory import read_static_memory_files as _read_static_memory_files
+from .layered_memory import recall as _layered_memory_recall
+from .layered_memory import record as _layered_memory_record
+from .layered_memory import three_layer_recall as _three_layer_recall
 from .post_turn_hooks import PostTurnHooks
-from .skills_loader import find_skills as _find_skills, match_skills as _match_skills, format_skills_for_prompt as _format_skills, resolve_skill_priority as _resolve_skill_priority
+from .skills_loader import find_skills as _find_skills
+from .skills_loader import format_skills_for_prompt as _format_skills
+from .skills_loader import match_skills as _match_skills
+from .skills_loader import resolve_skill_priority as _resolve_skill_priority
+from .thinking_router import route_thinking_level
+from .tool_orchestrator import ToolOrchestrator
 from .workflow_strategy import apply_workflow_injection as _apply_workflow_injection
 
 logger = logging.getLogger("v2.agent").getChild("engine.engine")
@@ -56,10 +70,40 @@ async def assemble_context(
 
     # ── 批4：预算超限时调compressor ──────────────────────────────────────────
     try:
+        thinking_route = await route_thinking_level(
+            db,
+            current_user_input,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            profile_key=effective_profile_key,
+            agent_code=agent_code,
+        )
+    except Exception as e:
+        logger.warning("Thinking routing failed（non-fatal）: %s", e)
+        thinking_route = None
+
+    try:
         system_content = await _build_system_content(db, owner_id, agent_code)
     except Exception as e:
         logger.warning("构建系统提示词失败: %s", e)
         system_content = "You are a helpful AI assistant."
+
+    if thinking_route:
+        thinking_diag = {
+            "thinking_level": thinking_route.level,
+            "thinking_source": thinking_route.source,
+            "thinking_confidence": thinking_route.confidence,
+            "thinking_reason": thinking_route.reason,
+        }
+        if thinking_route.level and thinking_route.level != "medium":
+            system_content += f"\n\n【思考深度建议】建议思考等级：{thinking_route.level}"
+    else:
+        thinking_diag = {
+            "thinking_level": "medium",
+            "thinking_source": "fallback",
+            "thinking_confidence": 0.0,
+            "thinking_reason": "routing unavailable",
+        }
 
     budget = get_context_budget(effective_profile_key)
     projected_tokens = sum(
@@ -110,6 +154,7 @@ async def assemble_context(
         messages = [{"role": "system", "content": system_content}]
         messages.extend(projected[-48:] if len(projected) > 48 else projected)
         diagnosis = {"error": str(e), "fallback": "原始投影截尾"}
+    diagnosis.update(thinking_diag)
     diagnosis["agent_code"] = agent_code
     diagnosis["effective_profile_key"] = effective_profile_key
 
@@ -205,6 +250,8 @@ async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str
     profile_data = await conv_svc.get_active_user_profile(db, owner_id)
     profile_text = conv_svc._format_profile_text(profile_data)
     layers = []
+    total_chars = 0
+    MAX_CHARS = 6000  # Total system content limit to prevent bloat
 
     # Layer 0: Static file memory (zero-latency, deterministic)
     try:
@@ -212,24 +259,43 @@ async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str
         static_injection = _format_static_memory(static_texts)
         if static_injection:
             layers.append(static_injection)
+            total_chars += len(static_injection)
     except Exception as e:
         logger.warning("Static memory read failed (non-fatal): %s", e)
 
     if sys_prompt:
         layers.append(sys_prompt)
+        total_chars += len(sys_prompt)
     if ent_prompt:
         layers.append(ent_prompt)
+        total_chars += len(ent_prompt)
 
     # Agent config override: if the agent has a custom system_prompt, append it
     try:
         agent_cfg = await read_agent_config(db, agent_code)
         if agent_cfg and agent_cfg.get("system_prompt"):
             layers.append(f"Agent 配置提示词：\n{agent_cfg['system_prompt']}")
+            total_chars += len(layers[-1])
     except Exception as e:
         logger.warning("Failed to read agent config prompt: %s", e)
 
     if profile_text:
         layers.append(profile_text)
+        total_chars += len(profile_text)
+
+    # Profile 2.0 injection: role + enterprise profiles with length control
+    try:
+        from ..services.profile_service import build_profile_injections
+        profile_injection = await build_profile_injections(
+            db, owner_id, role_key=None, max_chars=2000,
+        )
+        if profile_injection and total_chars < MAX_CHARS:
+            injection = profile_injection[:MAX_CHARS - total_chars]
+            layers.append(injection)
+            total_chars += len(injection)
+    except Exception as e:
+        logger.debug("Profile 2.0 injection failed (non-fatal): %s", e)
+
     return "\n\n---\n\n".join(layers)
 
 
@@ -354,7 +420,7 @@ async def trigger_dream(owner_id: int) -> None:
         try:
             from app.database import AsyncSessionLocal
             from app.models.system import SystemTaskQueue
-            import json
+
             async with AsyncSessionLocal() as db:
                 task = SystemTaskQueue(
                     task_type="memory_dream",

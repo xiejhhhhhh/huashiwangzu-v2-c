@@ -5,7 +5,8 @@
 import json
 import logging
 from typing import AsyncGenerator
-from app.gateway.router import gateway_router, MODEL_PROFILES, _load_models_config
+from app.gateway.router import gateway_router, MODEL_PROFILES
+from app.gateway.config import _load_models_config
 
 logger = logging.getLogger("v2.agent").getChild("engine.fallback_chain")
 

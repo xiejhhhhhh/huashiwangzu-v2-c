@@ -72,11 +72,13 @@ class ToolLoopRuntime:
         owner_id: int,
         profile_key: str = "deepseek-v4-flash",
         policy: RuntimePolicy | None = None,
+        suppress_thinking: bool = False,
     ) -> None:
         self.conversation_id = conversation_id
         self.owner_id = owner_id
         self.profile_key = profile_key
         self.policy = policy or RuntimePolicy.default()
+        self.suppress_thinking = suppress_thinking
 
     async def run(
         self,
@@ -147,7 +149,7 @@ class ToolLoopRuntime:
                     yield self._sse("error", error_msg)
                     break
 
-                if result.get("thinking"):
+                if result.get("thinking") and not self.suppress_thinking:
                     thinking = str(result["thinking"])
                     thinking_parts.append(thinking)
                     timeline.append({"type": "thinking", "content": thinking})
@@ -187,6 +189,7 @@ class ToolLoopRuntime:
                         full_buffer=full,
                         thinking_buffer=thinking_parts,
                         timeline=timeline,
+                        suppress_thinking=self.suppress_thinking,
                     ):
                         if isinstance(chunk, dict) and chunk.get("type") == "_inline_tool_calls":
                             inline_from_stream = chunk.get("tool_calls", [])

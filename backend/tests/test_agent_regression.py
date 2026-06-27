@@ -331,12 +331,21 @@ class TestEditResubmitChain:
     def test_conversation_runtime_calls_edit_and_resubmit(self):
         assert "edit_and_resubmit" in CONVERSATION_RUNTIME_SRC
 
+    def test_conversation_runtime_rerecords_edited_user_event(self):
+        assert '"user_msg"' in CONVERSATION_RUNTIME_SRC
+        assert "edited_message_id" in CONVERSATION_RUNTIME_SRC
+
     def test_event_store_delete_events_after_supports_inclusive(self):
         assert "inclusive" in EVENT_STORE_SRC
 
     def test_schemas_has_edit_resubmit_request(self):
         schemas_src = (AGENT_DIR / "schemas.py").read_text("utf-8")
         assert "class EditResubmitRequest" in schemas_src
+
+    def test_message_meta_accepts_usage(self):
+        assert "usage:" in MODELS_SRC
+        assert "usage: dict | None = None" in self.CONV_SVC_SRC
+        assert "ensure_message_meta_usage_column" in INIT_SRC
 
     def test_frontend_index_uses_new_endpoint(self):
         frontend_src = (AGENT_DIR.parent / "frontend" / "index.vue").read_text("utf-8")

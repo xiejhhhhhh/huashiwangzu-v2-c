@@ -274,7 +274,7 @@ async def api_get_profile(
     user: User = Depends(require_permission("viewer")),
 ):
     await get_document(db, document_id, user.id)
-    result = await get_document_profile(db, document_id)
+    result = await get_document_profile(db, document_id, owner_id=user.id)
     if not result:
         from app.core.exceptions import NotFound
         raise NotFound("Document profile not found")
@@ -787,12 +787,135 @@ async def _cap_ingest(params: dict, caller: str) -> dict:
         result = await register_document(db, file_id, owner_id, catalog_id=None)
         return {"document_id": result["id"], "enqueued": True}
 
+# ── Chunking strategy support ──────────────────────────────────────
+
+class ChunkRequest(BaseModel):
+    document_id: int
+    strategy: str = "title_aware"  # title_aware / structure_aware / fixed_size
+    max_chars: int = 512
+
+
+@router.post("/documents/chunk")
+async def api_chunk_document(
+    payload: ChunkRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("editor")),
+):
+    """Re-chunk a parsed document using the specified strategy (title_aware/structure_aware/fixed_size)."""
+    await get_document(db, payload.document_id, user.id)
+    from .services.chunking_service import chunk_document
+    from .services.embedding_service import store_chunks
+    from ..ir_models import from_legacy_blocks
+    from ..models import KbChunk, KbDocument
+    from sqlalchemy import delete as sa_delete
+    from .services.search_service import get_document_chunks
+
+    # Read existing chunks as DocumentIr
+    current_chunks = await get_document_chunks(db, payload.document_id)
+    ir_blocks = []
+    for ch in current_chunks:
+        bt = ch.get("block_type", "段落")
+        if bt in ("标题",):
+            block_type = "heading"
+        else:
+            block_type = "paragraph"
+        ir_blocks.append({"type": block_type, "text": ch.get("text", ""), "page": ch.get("page")})
+
+    if not ir_blocks:
+        return ApiResponse(data={"error": "No chunks to re-chunk", "chunks": 0})
+
+    doc_ir = from_legacy_blocks(file_id=0, fmt="", blocks=ir_blocks)
+
+    # Delete old chunks and store new ones
+    await db.execute(sa_delete(KbChunk).where(KbChunk.document_id == payload.document_id))
+    await db.commit()
+
+    new_chunks = chunk_document(doc_ir, strategy=payload.strategy, max_chars=payload.max_chars)
+    stored = 0
+    for i, ch in enumerate(new_chunks):
+        record = KbChunk(
+            document_id=payload.document_id,
+            owner_id=user.id,
+            page=ch.get("page"),
+            chunk_index=i,
+            block_type=ch.get("block_type", "段落"),
+            text=ch.get("text", ""),
+            keywords="",
+        )
+        db.add(record)
+        stored += 1
+        if stored % 50 == 0:
+            await db.flush()
+    await db.commit()
+
+    dr = await db.execute(select(KbDocument).where(KbDocument.id == payload.document_id))
+    doc = dr.scalar_one_or_none()
+    if doc:
+        doc.total_chunks = stored
+
+    await db.commit()
+    return ApiResponse(data={"chunks": stored, "strategy": payload.strategy})
+
+
+# ── Export endpoint ────────────────────────────────────────────────
+
+class ExportRequest(BaseModel):
+    document_id: int
+    format: str = "markdown"  # markdown / html / json
+
+
+@router.post("/documents/export")
+async def api_export_document(
+    payload: ExportRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    """Export a parsed document in markdown/html/json format."""
+    from .services.export_service import export_document
+
+    result = await export_document(db, payload.document_id, fmt=payload.format, owner_id=user.id)
+    if not result.get("success"):
+        from app.core.exceptions import NotFound, ValidationError
+        if result.get("error", "").startswith("Document not"):
+            raise NotFound(result["error"])
+        raise ValidationError(result.get("error", "Export failed"))
+    return ApiResponse(data=result)
+
+
+# ── Capability registrations ──────────────────────────────────────
+
 register_capability(
     "knowledge", "ingest", _cap_ingest,
     description="把已上传文件登记进知识库并触发后台分析（幂等、类型白名单）",
     brief="文件入库知识库",
     parameters={"file_id": {"type": "integer", "description": "Uploaded file ID"}},
     min_role="editor",
+)
+
+async def _cap_export(params: dict, caller: str) -> dict:
+    from .services.export_service import export_document
+    from app.database import AsyncSessionLocal
+
+    document_id = int(params.get("document_id", 0))
+    fmt = params.get("format", "markdown")
+    if document_id <= 0:
+        return {"error": "document_id is required"}
+
+    owner_id = None
+    if caller.startswith("user:"):
+        owner_id = int(caller.split(":", 1)[1])
+
+    async with AsyncSessionLocal() as db:
+        result = await export_document(db, document_id, fmt=fmt, owner_id=owner_id)
+        return result
+
+
+register_capability(
+    "knowledge", "export", _cap_export,
+    description="导出已解析文档（markdown/html/json）",
+    brief="导出文档",
+    parameters={"document_id": {"type": "integer"}, "format": {"type": "string"}},
+    min_role="viewer",
 )
 
 # ── Event handler: file.uploaded ──────────────────────────────────

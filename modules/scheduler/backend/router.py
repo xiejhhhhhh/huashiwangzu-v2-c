@@ -198,18 +198,61 @@ async def _cap_cancel(params: dict, caller: str) -> dict:
 
 async def _cap_scheduled_job_handler(params: dict) -> dict:
     """Handler for scheduled_agent_job tasks.
-    Executes the action description and pushes result via im.notify.
-    (Single-argument signature: TaskHandler = Callable[[dict], Awaitable[dict | None]])
+
+    Triggers a real Agent chat execution with the action_description,
+    stores the result, and notifies the creator via IM.
     """
     title = params.get("title", "定时任务")
     action_desc = params.get("action_description", "")
     creator_id = params.get("creator_id", 0)
 
-    result_text = f"定时任务「{title}」已执行。动作: {action_desc[:200]}"
+    result_text = f"定时任务「{title}」已触发。动作: {action_desc[:200]}"
+    execute_result = ""
 
+    # Try to actually execute via Agent chat if action_description looks like a user query
+    if action_desc and len(action_desc) > 10:
+        try:
+            from app.services.module_registry import call_capability
+
+            # Create a conversation session for this scheduled execution
+            conv_result = await call_capability(
+                "agent", "spawn_subagent",
+                {
+                    "task": f"执行定时任务：{action_desc}",
+                    "track_trajectory": True,
+                    "write_enabled": True,
+                    "tools": [],
+                },
+                caller=f"scheduler:system",
+                caller_role="admin",
+            )
+            if isinstance(conv_result, dict):
+                data = conv_result.get("data", {}) if conv_result.get("success") else {}
+                results = data.get("results", [])
+                if results:
+                    execute_result = results[0].get("conclusion", "")
+                elif conv_result.get("data", {}).get("conclusion"):
+                    execute_result = conv_result["data"]["conclusion"]
+                elif conv_result.get("error"):
+                    execute_result = f"执行错误: {conv_result['error']}"
+                else:
+                    execute_result = _j(conv_result)[:1000]
+            else:
+                execute_result = str(conv_result)[:1000]
+
+        except Exception as agent_exc:
+            logger.warning("Agent scheduled execution failed, falling back to notify: %s", agent_exc)
+            execute_result = f"Agent 执行失败: {agent_exc}"
+
+    if execute_result:
+        result_text = f"定时任务「{title}」执行完成。\n\n动作: {action_desc[:200]}\n\n结果:\n{execute_result[:1500]}"
+    else:
+        result_text = f"定时任务「{title}」已触发。动作: {action_desc[:200]}"
+
+    # Notify creator
     try:
-        from app.services.module_registry import call_capability
-        await call_capability(
+        from app.services.module_registry import call_capability as _cc
+        await _cc(
             "im", "notify",
             {"user_id": creator_id, "content": result_text, "title": title},
             caller=f"scheduler:system",
@@ -218,7 +261,7 @@ async def _cap_scheduled_job_handler(params: dict) -> dict:
     except Exception as exc:
         logger.warning("IM notify unavailable, falling back to log: %s", exc)
 
-    return {"success": True, "result": result_text}
+    return {"success": True, "result": result_text[:2000], "executed": bool(execute_result)}
 
 register_capability(
     "scheduler", "create", _cap_create,

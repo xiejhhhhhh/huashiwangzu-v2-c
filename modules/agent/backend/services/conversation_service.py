@@ -7,11 +7,17 @@
 """
 import json
 import logging
-from sqlalchemy import select, desc
+
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..models import (
-    AgentConversation, AgentMessage, AgentMessageMeta,
-    AgentSystemPrompt, AgentEnterprisePrompt, AgentUserProfile,
+    AgentConversation,
+    AgentEnterprisePrompt,
+    AgentMessage,
+    AgentMessageMeta,
+    AgentSystemPrompt,
+    AgentUserProfile,
 )
 
 logger = logging.getLogger("v2.agent").getChild("conversation_service")
@@ -95,6 +101,7 @@ async def add_message_meta(
     references: list | None = None,
     tool_events: list | None = None,
     timeline: list | None = None,
+    usage: dict | None = None,
 ) -> AgentMessageMeta:
     meta = AgentMessageMeta(
         owner_id=owner_id,
@@ -103,8 +110,10 @@ async def add_message_meta(
         thinking=thinking,
         references=references or [],
         tool_events=tool_events or [],
-        timeline=timeline or [],
-    )
+            timeline=timeline or [],
+            usage=usage or None,
+        )
+
     db.add(meta)
     await db.commit()
     await db.refresh(meta)
@@ -143,6 +152,7 @@ async def get_messages_with_meta(db: AsyncSession, owner_id: int, conversation_i
             "references": meta.references if meta else [],
             "tool_events": meta.tool_events if meta else [],
             "timeline": meta.timeline if meta else [],
+            "usage": meta.usage if meta else None,
         })
     return result
 
@@ -158,6 +168,7 @@ async def rollback_conversation(db: AsyncSession, owner_id: int, conversation_id
         return False
 
     from sqlalchemy import delete
+
     from ..engine.event_store import delete_events_after
 
     await db.execute(
@@ -418,7 +429,9 @@ async def update_user_profile(
 ) -> AgentUserProfile:
     """更新用户画像（版本递增 + 时间戳）。"""
     from datetime import datetime, timezone
+
     from init_db import ensure_user_profile
+
     profile = await ensure_user_profile(db, owner_id)
     profile.profile_data = json.dumps(profile_data, ensure_ascii=False)
     profile.version = (profile.version or 0) + 1

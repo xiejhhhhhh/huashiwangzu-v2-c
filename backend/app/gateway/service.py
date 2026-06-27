@@ -14,14 +14,21 @@ from typing import AsyncGenerator
 
 from .base import BaseProvider
 from .config import (
-    DEFAULT_MODEL, MODEL_PROFILES, _config, resolve_api_key,
-    TEMPLATES, ROUTING_POLICIES, DEFAULT_ROUTING_POLICY,
-    BUDGET_RATES, VariantTemplate,
-    resolve_template_for_role, list_templates, list_routing_policies,
+    BUDGET_RATES,
+    DEFAULT_MODEL,
+    DEFAULT_ROUTING_POLICY,
+    MODEL_PROFILES,
+    TEMPLATES,
+    VariantTemplate,
+    _config,
+    list_routing_policies,
+    list_templates,
+    resolve_api_key,
+    resolve_template_for_role,
 )
 from .local import LocalProvider
-from .opencode_provider import OpenCodeProvider
 from .openai_provider import OpenAIProvider
+from .opencode_provider import OpenCodeProvider
 from .router import ModelGatewayRouter, RetryBudget
 
 logger = logging.getLogger("v2.gateway.service")
@@ -58,7 +65,6 @@ def get_model_provider(provider_name: str) -> BaseProvider:
     if ptype == "opencode":
         return OpenCodeProvider(api_url=cfg.get("api_url", ""))
     if ptype == "openai_compat":
-        from app.config import get_settings
         api_key = resolve_api_key(cfg)
         return OpenAIProvider(
             api_url=cfg.get("api_url", ""),

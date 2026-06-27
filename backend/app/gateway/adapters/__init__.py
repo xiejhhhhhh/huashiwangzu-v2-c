@@ -1,9 +1,9 @@
-from .base import ModelAdapter
+from .base import ModelAdapter, _build_stream_event, _build_unified, _extract_usage
 from .deepseek import DeepSeekAdapter
 from .gemma import GemmaAdapter
-from .qwen import QwenAdapter
 from .openai_compat import OpenAICompatAdapter
-from .registry import get_adapter, register_adapter, list_adapters, clear_cache
+from .qwen import QwenAdapter
+from .registry import clear_cache, get_adapter, list_adapters, register_adapter
 
 __all__ = [
     "ModelAdapter",
@@ -15,4 +15,7 @@ __all__ = [
     "register_adapter",
     "list_adapters",
     "clear_cache",
+    "_extract_usage",
+    "_build_unified",
+    "_build_stream_event",
 ]

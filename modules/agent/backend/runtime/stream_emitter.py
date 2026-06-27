@@ -53,6 +53,7 @@ class StreamEmitter:
         full_buffer: list[str] | None = None,
         thinking_buffer: list[str] | None = None,
         timeline: list[dict] | None = None,
+        suppress_thinking: bool = False,
     ):
         """Stream final content — real-time SSE + buffered copy for inline detection.
 
@@ -84,7 +85,7 @@ class StreamEmitter:
                     "[DIAG] StreamEmitter event #%d type=%s content_len=%d",
                     event_count, event_type, len(content),
                 )
-                if event_type == "thinking" and content:
+                if event_type == "thinking" and content and not suppress_thinking:
                     thinking_parts.append(content)
                     tl.append({"type": "thinking", "content": content})
                     yield self._sse("thinking", content)
