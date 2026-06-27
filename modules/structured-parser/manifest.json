@@ -1,0 +1,49 @@
+{
+  "key": "structured-parser",
+  "name": "Structured Parser",
+  "icon": "List",
+  "icon_asset": "",
+  "category": "tools",
+  "component_key": "",
+  "route_prefix": "/api/structured-parser",
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 320,
+  "default_width": 800,
+  "default_height": 600,
+  "singleton": false,
+  "show_in_launcher": false,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": false,
+  "supported_formats": [],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "public_actions": [
+    {
+      "action": "parse",
+      "description": "Parse JSON/YAML files into unified content blocks",
+      "parameters": {
+        "file_id": {
+          "type": "int",
+          "description": "File ID in file storage"
+        }
+      },
+      "min_role": "viewer"
+    }
+  ],
+  "permission_declaration": {
+    "default": "viewer",
+    "actions": []
+  },
+  "dependency_declaration": [],
+  "event_handler_declaration": [],
+  "db_migration_declaration": [],
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  }
+}
