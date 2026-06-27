@@ -1,27 +1,26 @@
 import json
 import logging
-from datetime import datetime
 
 logger = logging.getLogger("v2.agent").getChild("router")
-
-from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.gateway.router import gateway_router
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from .schemas import ChatRequest, EditResubmitRequest
+from .init_db import (
+    ensure_default_agent_prompts,
+    run_init,
+)
 from .runtime import ConversationRuntime
-from .init_db import ensure_default_prompts, ensure_default_agent_prompts, ensure_timeline_column, ensure_user_profile, update_existing_prompts, ensure_event_table, ensure_processing_column, run_init
+from .schemas import ChatRequest, EditResubmitRequest
+from .services import agent_config_service, tool_discovery
 from .services import conversation_service as conv_svc
-from .services import agent_config_service
 from .services import prompt_service as prompt_svc
-from .services import tool_discovery
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -147,6 +146,7 @@ async def get_my_profile(db: AsyncSession = Depends(get_db), user: User = Depend
 
 @router.get("/conversations")
 async def list_conversations(db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
+    await run_init(db)
     items = await conv_svc.list_conversations(db, user.id)
     return ApiResponse(data=[_conversation_payload(item) for item in items])
 
