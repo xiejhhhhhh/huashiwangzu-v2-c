@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional
 
 from app.models.base import Base, TimestampMixin
 from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, Integer, String, Text
@@ -104,6 +103,7 @@ class AgentConversation(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(256), default="新对话")
     status: Mapped[str] = mapped_column(String(16), default="active")
     processing: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否有正在执行的后台任务")
+    context_vars: Mapped[dict] = mapped_column(JSON, default=dict, comment="工具产出提炼的上下文变量，注入后续提示词")
 
 
 class AgentMessage(Base, TimestampMixin):

@@ -49,9 +49,12 @@ async def record_event(
     if "content" in payload and isinstance(payload["content"], str) and len(payload["content"]) > MAX_PAYLOAD_CONTENT_LENGTH:
         payload = {**payload, "content": payload["content"][:MAX_PAYLOAD_CONTENT_LENGTH] + "...(truncated)"}
     if "result" in payload and isinstance(payload["result"], dict):
-        result_str = json.dumps(payload["result"], ensure_ascii=False)
+        result_str = json.dumps(payload["result"], ensure_ascii=False, default=str)
         if len(result_str) > MAX_PAYLOAD_CONTENT_LENGTH:
             payload["result"] = {"_truncated": True, "_preview": result_str[:MAX_PAYLOAD_CONTENT_LENGTH]}
+    # Sanitize entire payload: convert non-serializable objects (datetime, etc.) to string
+    if payload:
+        payload = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
     event = AgentEvent(
         conversation_id=conversation_id,
         event_type=event_type,
@@ -107,10 +110,13 @@ async def project_to_messages(
             if ev.llm_response_id:
                 tool_calls = []
                 j = i + 1
+                tc_ids: set[str] = set()
                 while j < len(visible) and visible[j].llm_response_id == ev.llm_response_id and visible[j].event_type == "tool_call":
                     tc_payload = visible[j].payload
+                    tc_id = tc_payload.get("id", f"call_{visible[j].id}")
+                    tc_ids.add(tc_id)
                     tool_calls.append({
-                        "id": tc_payload.get("id", f"call_{visible[j].id}"),
+                        "id": tc_id,
                         "type": "function",
                         "function": {
                             "name": tc_payload.get("name", ""),
@@ -118,45 +124,75 @@ async def project_to_messages(
                         },
                     })
                     j += 1
-                msg = {"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))}
-                if tool_calls:
-                    msg["tool_calls"] = tool_calls
-                messages.append(msg)
+                # Match tool_result events by tool_call_id (not llm_response_id,
+                # because tool_result events store llm_response_id=None).
                 k = j
-                while k < len(visible) and visible[k].llm_response_id == ev.llm_response_id and visible[k].event_type == "tool_result":
-                    tr_payload = visible[k].payload
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tr_payload.get("tool_call_id", ""),
-                        "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
-                    })
+                found_any = False
+                while k < len(visible) and visible[k].event_type == "tool_result" and visible[k].payload.get("tool_call_id", "") in tc_ids:
                     k += 1
-                i = k
+                    found_any = True
+                if found_any:
+                    msg = {"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))}
+                    msg["tool_calls"] = tool_calls
+                    messages.append(msg)
+                    for idx in range(j, k):
+                        tr_payload = visible[idx].payload
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr_payload.get("tool_call_id", ""),
+                            "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
+                        })
+                    i = k
+                else:
+                    # Orphaned tool_calls (e.g. from diminishing_stop):
+                    # emit assistant message without tool_calls
+                    messages.append({"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))})
+                    i = j
             else:
                 messages.append({"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))})
                 i += 1
         elif ev.event_type == "tool_call":
+            # Standalone tool_call — look ahead for matching tool_result
             tc_payload = ev.payload
-            messages.append({
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "id": tc_payload.get("id", f"call_{ev.id}"),
-                    "type": "function",
-                    "function": {
-                        "name": tc_payload.get("name", ""),
-                        "arguments": _ensure_string_arguments(tc_payload.get("arguments", "{}")),
-                    },
-                }],
-            })
-            i += 1
+            tc_id = tc_payload.get("id", f"call_{ev.id}")
+            j = i + 1
+            found_matching = False
+            while j < len(visible) and visible[j].event_type == "tool_result" and visible[j].payload.get("tool_call_id", "") == tc_id:
+                found_matching = True
+                break
+            if found_matching:
+                tr_payload = visible[j].payload
+                messages.append({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": tc_payload.get("name", ""),
+                            "arguments": _ensure_string_arguments(tc_payload.get("arguments", "{}")),
+                        },
+                    }],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tr_payload.get("tool_call_id", ""),
+                    "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
+                })
+                i = j + 1
+            else:
+                # Orphaned — skip
+                i += 1
         elif ev.event_type == "tool_result":
-            tr_payload = ev.payload
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tr_payload.get("tool_call_id", ""),
-                "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
-            })
+            # Standalone tool_result — attach to last assistant if it has no tool_calls
+            prev = messages[-1] if messages else None
+            if prev and prev["role"] == "assistant" and not prev.get("tool_calls"):
+                tr_payload = ev.payload
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tr_payload.get("tool_call_id", ""),
+                    "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
+                })
             i += 1
         elif ev.event_type == "memory_op":
             i += 1

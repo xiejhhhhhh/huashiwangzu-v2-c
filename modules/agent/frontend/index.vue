@@ -37,8 +37,9 @@
         </div>
 
         <template v-for="(m, i) in messages" :key="`${m.id}-${i}`">
-          <ToolCallCard v-if="m.eventType === 'tool_call' || m.eventType === 'tool_result'" :message="m" />
-          <ThinkingCard v-else-if="m.eventType === 'thinking'" :content="m.content" :running="m.running" :collapsed="m.collapsed" />
+          <WorkTraceGroup v-if="m.eventType === 'work_group'" :message="m" />
+          <ToolCallCard v-else-if="m.eventType === 'tool_call' || m.eventType === 'tool_result'" :message="m" />
+          <ThinkingCard v-else-if="m.eventType === 'thinking'" :content="m.content" :running="m.running" :collapsed="m.collapsed" :durationMs="m.durationMs" />
           <MessageBubble v-else :message="m" :editingId="editingMessageId" @edit="handleStartEdit" @submitEdit="handleSubmitEdit" />
         </template>
 
@@ -83,6 +84,7 @@ import InputArea from './components/InputArea.vue'
 import MessageBubble from './components/MessageBubble.vue'
 import ThinkingCard from './components/ThinkingCard.vue'
 import ToolCallCard from './components/ToolCallCard.vue'
+import WorkTraceGroup from './components/WorkTraceGroup.vue'
 import ReferencePanel from './components/ReferencePanel.vue'
 import EnginePanel from './admin/EnginePanel.vue'
 import AgentConfigPanel from './admin/AgentConfigPanel.vue'
@@ -94,7 +96,26 @@ interface ConvItem { id: number; title: string; status?: string }
 interface ModelProfile { key: string; name: string; provider: string; model: string }
 interface RefItem { type: string; title: string; source: string; excerpt: string }
 interface ApiBody<T> { success: boolean; data: T; error?: string | null }
-interface MsgItem { id: number; role: string; content: string; created_at?: string | null; eventType?: string; toolName?: string; toolResult?: unknown; thinking?: string; references?: RefItem[]; tool_events?: unknown[]; timeline?: unknown[]; collapsed?: boolean; running?: boolean }
+interface UsageData { work_duration_ms?: number; work_duration_sec?: number; [key: string]: unknown }
+interface MsgItem {
+  id: number
+  role: string
+  content: string
+  created_at?: string | null
+  eventType?: string
+  toolName?: string
+  toolResult?: unknown
+  thinking?: string
+  references?: RefItem[]
+  tool_events?: unknown[]
+  timeline?: unknown[]
+  usage?: UsageData | null
+  collapsed?: boolean
+  running?: boolean
+  durationMs?: number
+  startedAt?: number
+  items?: MsgItem[]
+}
 
 // ── Props（外部模块传入的预填上下文） ──
 const props = defineProps<{
@@ -114,8 +135,10 @@ const streaming = ref(false)
 const streamingText = ref('')
 const loading = ref(false)
 const error = ref('')
-const sidebarCollapsed = ref(false)
-const showReferencePanel = ref(false)
+	const sidebarCollapsed = ref(false)
+	const currentWorkGroup = ref<MsgItem | null>(null)
+	const workLiveTimer = ref<ReturnType<typeof setInterval> | null>(null)
+	const showReferencePanel = ref(false)
 const activeReference = ref<RefItem | null>(null)
 const msgArea = ref<HTMLElement | null>(null)
 const inputAreaRef = ref<InstanceType<typeof InputArea> | null>(null)
@@ -151,9 +174,13 @@ async function handleSubmitEdit(messageId: number, newContent: string) {
   }
   if (abortController) { abortController.abort() }
   abortController = new AbortController()
-  clearIdleTimer()
-  sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
-  scrollToBottom()
+	  clearIdleTimer()
+	  sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
+	  // 编辑重发也立刻创建工作组
+	  currentWorkGroup.value = null
+	  _lastThinkingStart = 0
+	  ensureWorkGroup()
+	  scrollToBottom()
   try {
     const resp = await apiFetchRaw(`/agent/conversations/${activeConvId.value}/messages/${messageId}/edit-resubmit`, {
       method: 'POST',
@@ -220,34 +247,62 @@ function focusReference(ref: RefItem) {
   activeReference.value = ref; showReferencePanel.value = true
 }
 
-/** 按 timeline 展开历史消息：还原思考↔工具↔回复的真实交错顺序 */
+/** 按 timeline 展开历史消息：还原思考↔工具↔回复的真实交错顺序，并用工作组包裹 */
 function expandTimeline(msgs: MsgItem[]): MsgItem[] {
   const out: MsgItem[] = []
   for (const m of msgs) {
     const tl = m.timeline
     if (!tl || !Array.isArray(tl) || tl.length === 0) {
-      out.push(m)  // 无 timeline：原样渲染（MessageBubble inline）
+      out.push(m)
       continue
     }
+
+    // 从 timeline 提取 work_summary 耗时；同时收集过程条目到工作组
+    let workDurationMs = (m.usage as UsageData | null)?.work_duration_ms ?? 0
+    const items: MsgItem[] = []
     let textBuf = ''
-    let hasExpanded = false
+
     for (const entry of tl) {
       const e = entry as Record<string, unknown>
       const entryType = e.type as string
-      if (entryType === 'thinking') {
-        applyThinkingEvent((e.content as string) || '', out, { isRestore: true })
-        hasExpanded = true
+      if (entryType === 'work_summary') {
+        workDurationMs = (e.duration_ms as number) || workDurationMs
+      } else if (entryType === 'schedule_overhead') {
+        items.push({
+          id: 0, role: '', content: '',
+          eventType: 'schedule_overhead',
+          label: (e.label as string) || '响应等待',
+          durationMs: (e.duration_ms as number) || 0,
+        } as MsgItem)
+      } else if (entryType === 'thinking') {
+        applyThinkingEvent((e.content as string) || '', items, { isRestore: true, durationMs: e.duration_ms as number | undefined })
       } else if (entryType === 'tool_call') {
-        applyToolCallEvent((e.name as string) || 'unknown', out)
-        hasExpanded = true
+        applyToolCallEvent((e.name as string) || 'unknown', items)
       } else if (entryType === 'tool_result') {
-        applyToolResultEvent((e.name as string) || 'unknown', e.result, out)
+        applyToolResultEvent((e.name as string) || 'unknown', e.result, items, e.duration_ms as number | undefined)
       } else if (entryType === 'text') {
         textBuf += (e.content as string) || ''
       }
     }
+
+    // 恢复时折叠所有思考/工具条目
+    for (const item of items) {
+      if (item.eventType === 'thinking') { item.running = false; item.collapsed = true }
+    }
+
+    if (items.length > 0) {
+      out.push({
+        id: 0, role: '', content: '',
+        eventType: 'work_group',
+        running: false,
+        collapsed: true,
+        durationMs: workDurationMs,
+        items,
+      } as MsgItem)
+    }
+
     const content = textBuf.trim() || m.content
-    if (content || hasExpanded) {
+    if (content) {
       out.push({ id: m.id, role: m.role, content, created_at: m.created_at, thinking: '', tool_events: [], references: m.references } as MsgItem)
     }
   }
@@ -278,25 +333,37 @@ function normalizeThinking(text: string): string {
 // ── 共享事件处理器（流式 + 恢复 共用，防两条路径逻辑漂移） ──
 
 /** 处理 thinking 事件：合并到上一张卡，或新建。isRestore 控制初始折叠。 */
-function applyThinkingEvent(content: string, messages: MsgItem[], opts?: { isRestore?: boolean }) {
+/** 关闭上一张思考卡并设置耗时，新建时记录开始时间 */
+let _lastThinkingStart = 0
+function applyThinkingEvent(content: string, messages: MsgItem[], opts?: { isRestore?: boolean; durationMs?: number }) {
   const c = normalizeThinking(content)
   if (!c) return
   const last = messages[messages.length - 1]
   if (last && last.eventType === 'thinking') {
     last.content += c
+    // 恢复时合并的时间取两者中较大值
+    if (opts?.durationMs && (!last.durationMs || opts.durationMs > last.durationMs)) {
+      last.durationMs = opts.durationMs
+    }
   } else {
+    // 把上一张思考卡关闭并算耗时
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].eventType === 'thinking') {
+        if (!messages[i].durationMs && _lastThinkingStart) {
+          messages[i].durationMs = Date.now() - _lastThinkingStart
+        }
         messages[i] = { ...messages[i], collapsed: true, running: false }
         break
       }
     }
     const isRestore = opts?.isRestore ?? false
+    _lastThinkingStart = isRestore ? 0 : Date.now()
     messages.push({
       id: 0, role: '', content: c,
       eventType: 'thinking',
       collapsed: isRestore,
       running: !isRestore,
+      durationMs: opts?.durationMs ?? (isRestore ? 0 : undefined),
     } as MsgItem)
   }
 }
@@ -311,11 +378,11 @@ function applyToolCallEvent(name: string, messages: MsgItem[]) {
 }
 
 /** 处理 tool_result 事件：合并到同名 tool_call 卡片，找不到则独立 */
-function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]) {
+function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[], durationMs?: number) {
   let merged = false
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].eventType === 'tool_call' && messages[i].toolName === name) {
-      messages[i] = { ...messages[i], eventType: 'tool_result', toolResult: result }
+      messages[i] = { ...messages[i], eventType: 'tool_result', toolResult: result, durationMs: durationMs || 0 }
       merged = true
       break
     }
@@ -326,6 +393,7 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
       eventType: 'tool_result',
       toolName: name || 'unknown',
       toolResult: result,
+      durationMs: durationMs || 0,
     } as MsgItem)
   }
 }
@@ -346,122 +414,254 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 	  }, STREAM_IDLE_TIMEOUT_MS)
 	}
 	
-	function stopGeneration() {
-	  clearIdleTimer()
-	  if (abortController) { abortController.abort(); abortController = null }
-	  sending.value = false
-	  streaming.value = false
-	  streamingText.value = ''
-	}
-	
-	/** 将 streamingText 落成 assistant 消息 + 折叠 thinking */
-	function flushStreamingAsMessage() {
-	  for (const m of messages.value) {
-	    if (m.eventType === 'thinking') { m.collapsed = true; m.running = false }
-	  }
-	  const finalText = streamingText.value.trim()
-	  streamingText.value = ''
-	  if (finalText) {
-	    messages.value.push({ id: 0, role: 'assistant', content: finalText, created_at: new Date().toISOString() })
-	  }
-	  scrollToBottom()
-	}
-	
-		/** 共享 SSE 流式处理核心：由 sendMessage 和 handleSubmitEdit 共用 */
-		async function processStreamResponse(resp: Response) {
-		  if (!resp.body) { error.value = '无响应体'; return }
-		  const reader = resp.body.getReader()
-		  const decoder = new TextDecoder()
-		  let finished = false
+		function stopGeneration() {
+		  clearIdleTimer()
+		  stopWorkTimer()
+		  closeLastThinking()
+		  const wg = currentWorkGroup.value
+		  if (wg) { wg.running = false; wg.collapsed = true }
+		  if (abortController) { abortController.abort(); abortController = null }
+		  sending.value = false
+		  streaming.value = false
+		  streamingText.value = ''
+		}
 
-		  resetIdleTimer(() => {
-		    if (abortController) { abortController.abort() }
-		    error.value = '响应超时，请重试'
-		  })
+		function stopWorkTimer() {
+		  if (workLiveTimer.value) { clearInterval(workLiveTimer.value); workLiveTimer.value = null }
+		}
 
-		  while (!finished) {
-		    let done = false; let value: Uint8Array | undefined
-		    try { const r = await reader.read(); done = r.done; value = r.value } catch { break }
-		    if (done) {
-		      abortController = null
-		      streaming.value = false; sending.value = false
-		      flushStreamingAsMessage()
-		      finished = true
+		/** 将 streamingText 落成 assistant 消息 + 折叠工作组 */
+			function flushStreamingAsMessage() {
+			  stopWorkTimer()
+			  closeLastThinking()
+			  const wg = currentWorkGroup.value
+			  if (wg) { wg.running = false; wg.collapsed = true }
+			  // 也折叠工作组内的思考和工具条目
+			  if (wg?.items) {
+			    for (const item of wg.items) {
+			      if (item.eventType === 'thinking') { item.collapsed = true; item.running = false }
+			    }
+			  }
+			  for (const m of messages.value) {
+			    if (m.eventType === 'thinking') { m.collapsed = true; m.running = false }
+			  }
+			  const finalText = streamingText.value.trim()
+			  streamingText.value = ''
+			  if (finalText) {
+			    messages.value.push({ id: 0, role: 'assistant', content: finalText, created_at: new Date().toISOString() })
+			  }
+			  scrollToBottom()
+			}
+
+		/** 开始/获取当前工作组 */
+		function closeLastThinking() {
+		  const items = currentWorkGroup.value?.items ?? messages.value
+		  for (let i = items.length - 1; i >= 0; i--) {
+		    if (items[i].eventType === 'thinking') {
+		      if (!items[i].durationMs && _lastThinkingStart) {
+		        items[i].durationMs = Date.now() - _lastThinkingStart
+		      }
+		      items[i].running = false
+		      items[i].collapsed = true
 		      break
 		    }
-		    resetIdleTimer(() => {
-		      if (abortController) { abortController.abort() }
-		      error.value = '响应超时，请重试'
-		    })
-		    const chunk = decoder.decode(value!, { stream: true })
-		    for (const line of chunk.split('\n')) {
-		      const trimmed = line.trim()
-		      if (!trimmed.startsWith('data: ')) continue
-		      const payload = trimmed.slice(6)
-		      if (payload === '[DONE]') {
-		        abortController = null
-		        streaming.value = false; sending.value = false
-		        flushStreamingAsMessage()
-		        finished = true
-		        reader.cancel().catch(() => {})
-		        break
-		      }
-		      let evt: { type?: string; content?: string; name?: string; result?: unknown }
-		      try { evt = JSON.parse(payload) } catch { continue }
-		      if (evt.type === 'content') {
-		        abortController = null
-		        streaming.value = false; sending.value = false
-		        messages.value.push({ id: 0, role: 'assistant', content: evt.content || '', created_at: new Date().toISOString() })
-		        finished = true
-		        reader.cancel().catch(() => {})
-		        break
-		      }
-		      else if (evt.type === 'thinking') {
-		        applyThinkingEvent(evt.content || '', messages.value, { isRestore: false })
-		      }
-		      else if (evt.type === 'tool_call') {
-		        applyToolCallEvent(evt.name || 'unknown', messages.value)
-		      }
-		      else if (evt.type === 'tool_result') {
-		        applyToolResultEvent(evt.name || 'unknown', evt.result, messages.value)
-		      }
-		      else if (evt.type === 'token') { streamingText.value += evt.content || '' }
-		      else if (evt.type === 'error') { streaming.value = false; sending.value = false; error.value = evt.content || '流式错误'; finished = true; reader.cancel().catch(() => {}); break }
-		      scrollToBottom()
-		    }
 		  }
+		  _lastThinkingStart = 0
 		}
 
-		async function sendMessage() {
-		  if (sending.value || !activeConvId.value) return
-		  const text = inputText.value.trim()
-		  if (!text) return
-		  if (abortController) { abortController.abort() }
-		  abortController = new AbortController()
-		  clearIdleTimer()
-		  inputText.value = ''
-		  sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
-		  messages.value.push({ id: 0, role: 'user', content: text, created_at: new Date().toISOString() })
-		  scrollToBottom()
-		  try {
-		    const resp = await apiFetchRaw('/agent/chat', {
-		      method: 'POST',
-		      headers: { 'Content-Type': 'application/json' },
-		      body: JSON.stringify({ conversation_id: activeConvId.value, content: text, profile_key: profileKey.value }),
-		      signal: abortController.signal,
-		    })
-		    if (!resp.ok) { error.value = `请求失败 (${resp.status})`; return }
-		    await processStreamResponse(resp)
-		  } catch (e: unknown) {
-		    if (e instanceof DOMException && e.name === 'AbortError') { console.warn('[Agent] fetch aborted (stop/timeout)') }
-		    else { console.error('[Agent] fetch failed:', e); error.value = String((e as Error).message || e) }
-		  } finally {
-		    clearIdleTimer()
-		    sending.value = false; streaming.value = false
-		    abortController = null
-		    inputAreaRef.value?.focus()
+		function ensureWorkGroup(): MsgItem {
+		  if (!currentWorkGroup.value) {
+		    const wg: MsgItem = {
+		      id: 0, role: '', content: '',
+		      eventType: 'work_group',
+		      running: true,
+		      collapsed: false,
+		      durationMs: 0,
+		      startedAt: Date.now(),
+		      items: [],
+		    }
+		    messages.value.push(wg)
+		    // 取回 Vue 反应式 Proxy 引用——push 后返回的是原始对象，数组元素才是 Proxy
+		    currentWorkGroup.value = messages.value[messages.value.length - 1]
+		    startWorkTimer(currentWorkGroup.value)
 		  }
+		  return currentWorkGroup.value
 		}
+
+		function startWorkTimer(wg: MsgItem) {
+		  stopWorkTimer()
+		  wg.durationMs = 0
+		  workLiveTimer.value = setInterval(() => {
+		    // 始终通过 currentWorkGroup 取 Proxy 引用，避免闭包捕获原始对象
+		    const g = currentWorkGroup.value
+		    if (g) g.durationMs = Date.now() - (g.startedAt ?? 0)
+		  }, 1000)
+		}
+
+		function finishWorkGroup(durationMs: number) {
+		  stopWorkTimer()
+		  // 关闭最后一张思考卡并算耗时
+		  closeLastThinking()
+		  const wg = currentWorkGroup.value
+		  if (wg) {
+		    // 计算未覆盖时间
+		    let accounted = 0
+		    if (wg.items) {
+		      for (const item of wg.items) {
+		        if (item.eventType === 'thinking' || item.eventType === 'tool_result') {
+		          accounted += item.durationMs || 0
+		        }
+		      }
+		    }
+		    const overhead = durationMs - accounted
+		    if (overhead > 500 && wg.items) {
+		      wg.items.unshift({
+		        id: 0, role: '', content: '',
+		        eventType: 'schedule_overhead',
+		        label: '响应等待',
+		        durationMs: overhead,
+		      } as MsgItem)
+		    }
+		    wg.running = false
+		    wg.collapsed = true
+		    wg.durationMs = durationMs
+		  }
+		  currentWorkGroup.value = null
+		}
+
+			/** 共享 SSE 流式处理核心：由 sendMessage 和 handleSubmitEdit 共用 */
+			async function processStreamResponse(resp: Response) {
+			  if (!resp.body) { error.value = '无响应体'; return }
+			  const reader = resp.body.getReader()
+			  const decoder = new TextDecoder()
+			  let finished = false
+
+			  resetIdleTimer(() => {
+			    if (abortController) { abortController.abort() }
+			    error.value = '响应超时，请重试'
+			  })
+
+			  while (!finished) {
+			    let done = false; let value: Uint8Array | undefined
+			    try { const r = await reader.read(); done = r.done; value = r.value } catch { break }
+			    if (done) {
+			      abortController = null
+			      streaming.value = false; sending.value = false
+			      flushStreamingAsMessage()
+			      finished = true
+			      break
+			    }
+			    resetIdleTimer(() => {
+			      if (abortController) { abortController.abort() }
+			      error.value = '响应超时，请重试'
+			    })
+			    const chunk = decoder.decode(value!, { stream: true })
+			    for (const line of chunk.split('\n')) {
+			      const trimmed = line.trim()
+			      if (!trimmed.startsWith('data: ')) continue
+			      const payload = trimmed.slice(6)
+			      if (payload === '[DONE]') {
+			        abortController = null
+			        streaming.value = false; sending.value = false
+			        flushStreamingAsMessage()
+			        finished = true
+			        reader.cancel().catch(() => {})
+			        break
+			      }
+			      let evt: Record<string, unknown>
+			      try { evt = JSON.parse(payload) } catch { continue }
+			      const etype = evt.type as string | undefined
+
+			      if (etype === 'content') {
+			        abortController = null
+			        streaming.value = false; sending.value = false
+			        messages.value.push({ id: 0, role: 'assistant', content: (evt.content as string) || '', created_at: new Date().toISOString() })
+			        finished = true
+			        reader.cancel().catch(() => {})
+			        break
+			      }
+
+			      if (etype === 'work_start') {
+			        ensureWorkGroup()
+			      }
+			      else if (etype === 'work_done') {
+			        const durMs = (evt.duration_ms as number) || 0
+			        finishWorkGroup(durMs)
+			      }
+			      else if (etype === 'replace') {
+			        // 内联工具调用恢复：替换流式回复中的 XML
+			        let replaceContent = ''
+			        try {
+			          const rp = typeof evt.content === 'string' ? JSON.parse(evt.content) : evt
+			          replaceContent = (rp as Record<string, unknown>).content as string || ''
+			        } catch { replaceContent = (evt.content as string) || '' }
+			        if (replaceContent) {
+			          streamingText.value = replaceContent
+			        }
+			      }
+			      else if (etype === 'usage') {
+			        const wg = currentWorkGroup.value
+			        if (wg && evt.content) {
+			          try {
+			            const u = typeof evt.content === 'string' ? JSON.parse(evt.content) : evt
+			            const durMs = (u as Record<string, unknown>).work_duration_ms as number
+			            if (durMs) finishWorkGroup(durMs)
+			          } catch { /* ignore */ }
+			        }
+			      }
+			      else if (etype === 'thinking') {
+			        ensureWorkGroup()
+			        applyThinkingEvent(evt.content as string || '', currentWorkGroup.value?.items ?? messages.value, { isRestore: false })
+			      }
+			      else if (etype === 'tool_call') {
+			        ensureWorkGroup()
+			        applyToolCallEvent(evt.name as string || 'unknown', currentWorkGroup.value?.items ?? messages.value)
+			      }
+			      else if (etype === 'tool_result') {
+			        ensureWorkGroup()
+			        applyToolResultEvent(evt.name as string || 'unknown', evt.result, currentWorkGroup.value?.items ?? messages.value, evt.duration_ms as number | undefined)
+			      }
+			      else if (etype === 'token') { streamingText.value += evt.content as string || '' }
+			      else if (etype === 'error') { streaming.value = false; sending.value = false; error.value = (evt.content as string) || '流式错误'; finished = true; reader.cancel().catch(() => {}); break }
+			      scrollToBottom()
+			    }
+			  }
+			}
+
+			async function sendMessage() {
+			  if (sending.value || !activeConvId.value) return
+			  const text = inputText.value.trim()
+			  if (!text) return
+			  if (abortController) { abortController.abort() }
+			  abortController = new AbortController()
+			  clearIdleTimer()
+			  inputText.value = ''
+			  sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
+			  messages.value.push({ id: 0, role: 'user', content: text, created_at: new Date().toISOString() })
+			  // 立刻创建工作组并开始计时——不等后端 work_start
+			  currentWorkGroup.value = null
+			  _lastThinkingStart = 0
+			  ensureWorkGroup()
+			  scrollToBottom()
+			  try {
+			    const resp = await apiFetchRaw('/agent/chat', {
+			      method: 'POST',
+			      headers: { 'Content-Type': 'application/json' },
+			      body: JSON.stringify({ conversation_id: activeConvId.value, content: text, profile_key: profileKey.value }),
+			      signal: abortController.signal,
+			    })
+			    if (!resp.ok) { error.value = `请求失败 (${resp.status})`; return }
+			    await processStreamResponse(resp)
+			  } catch (e: unknown) {
+			    if (e instanceof DOMException && e.name === 'AbortError') { console.warn('[Agent] fetch aborted (stop/timeout)') }
+			    else { console.error('[Agent] fetch failed:', e); error.value = String((e as Error).message || e) }
+			  } finally {
+			    clearIdleTimer()
+			    sending.value = false; streaming.value = false
+			    abortController = null
+			    inputAreaRef.value?.focus()
+			  }
+			}
 
 async function reloadMessages(convId: number) { try { const raw = await apiFetch<MsgItem[]>(`/agent/conversations/${convId}/messages`); messages.value = expandTimeline(raw) } catch { /* ignore */ } }
 

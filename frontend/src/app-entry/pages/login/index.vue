@@ -4,18 +4,18 @@
       <div class="login-icon">
         <el-icon :size="56" color="var(--primary-color)"><Monitor /></el-icon>
       </div>
-      <h1 class="login-title">Huashiwangzu</h1>
-      <p class="login-subtitle">Enterprise Management System</p>
+      <h1 class="login-title">华世王镞</h1>
+      <p class="login-subtitle">企业管理系统</p>
       <el-form ref="formRef" :model="formData" :rules="formRules" @submit.prevent="submitLogin" style="margin-top: 32px;">
         <el-form-item prop="username">
-          <el-input v-model="formData.username" placeholder="Username" size="large" :prefix-icon="User" />
+          <el-input v-model="formData.username" placeholder="用户名" size="large" :prefix-icon="User" />
         </el-form-item>
         <el-form-item prop="password">
-          <el-input v-model="formData.password" type="password" placeholder="Password" size="large" :prefix-icon="Lock" show-password />
+          <el-input v-model="formData.password" type="password" placeholder="密码" size="large" :prefix-icon="Lock" show-password />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" size="large" native-type="submit" :loading="isLoading" @click="submitLogin" style="width: 100%; font-size: 15px; letter-spacing: 2px;">
-            {{ isLoading ? 'Logging in...' : 'Login' }}
+            {{ isLoading ? '登录中...' : '登录' }}
           </el-button>
         </el-form-item>
       </el-form>
@@ -45,8 +45,8 @@ const formData = reactive({
   password: '',
 })
 const formRules: FormRules = {
-  username: [{ required: true, message: 'Please enter your username', trigger: 'blur' }],
-  password: [{ required: true, message: 'Please enter your password', trigger: 'blur' }],
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
 
 async function submitLogin() {
@@ -58,13 +58,13 @@ async function submitLogin() {
   try {
     const res = await store.login(formData.username, formData.password)
     if (res.success) {
-      ElMessage.success('Login successful')
+      ElMessage.success('登录成功')
       await router.push('/desktop')
     } else {
-      errorMessage.value = res.error || 'Login failed'
+      errorMessage.value = res.error || '登录失败'
     }
   } catch (e: unknown) {
-    errorMessage.value = (e as {error?: string})?.error || 'Login failed, please try again later'
+    errorMessage.value = (e as {error?: string})?.error || '登录失败，请稍后重试'
   } finally {
     isLoading.value = false
   }

@@ -196,6 +196,20 @@ async def ensure_processing_column(db: AsyncSession) -> None:
         logger.warning("Migration: processing column check failed: %s", e)
 
 
+async def ensure_context_vars_column(db: AsyncSession) -> None:
+    """无痛迁移：给 agent_conversations 表加 context_vars 列。"""
+    try:
+        await db.execute(text(
+            "ALTER TABLE agent_conversations ADD COLUMN IF NOT EXISTS context_vars "
+            "JSON DEFAULT '{}'"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured context_vars column on agent_conversations")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: context_vars column check failed: %s", e)
+
+
 async def ensure_thinking_level_table(db: AsyncSession) -> None:
     """无痛创建 agent_thinking_levels 表。"""
     try:
@@ -695,6 +709,7 @@ async def run_init(db: AsyncSession) -> None:
     await ensure_timeline_column(db)
     await ensure_message_meta_usage_column(db)
     await ensure_processing_column(db)
+    await ensure_context_vars_column(db)
     await ensure_thinking_level_table(db)
     await ensure_thinking_level_signal_table(db)
     await ensure_event_table(db)

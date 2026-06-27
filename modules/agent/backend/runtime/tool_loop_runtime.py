@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 from app.database import AsyncSessionLocal
 
@@ -21,6 +22,7 @@ from .._utils import j as _j
 from .._utils import tool_calls_for_history
 from ..engine.budget_allocator import estimate_tokens
 from ..engine.engine import (
+    chat_stream_with_degradation_chain,
     chat_with_degradation_chain,
     get_budget_tracker,
     get_orchestrator,
@@ -117,6 +119,8 @@ class ToolLoopRuntime:
             # ── Reset sticky session state ─────────────────────────
             _session_key = f"conv_{self.conversation_id}"
             _budget_session_key = f"budget_conv_{self.conversation_id}"
+            _work_start_time = time.time()
+            yield self._j_sse({"type": "work_start", "started_at": _work_start_time})
             reset_stuck(_session_key)
             budget_tracker = get_budget_tracker()
             budget_tracker.reset(_budget_session_key)
@@ -140,8 +144,10 @@ class ToolLoopRuntime:
                     conversation_id=self.conversation_id,
                 )
                 logger.info(
-                    "[DIAG] ToolLoopRuntime chat returned tool_calls=%s error=%s",
-                    bool(result.get("tool_calls")), bool(result.get("error")),
+                    "[DIAG] ToolLoopRuntime chat returned tool_calls=%s profile=%s error=%s",
+                    len(result.get("tool_calls") or []),
+                    self.profile_key,
+                    bool(result.get("error")),
                 )
 
                 if result.get("error"):
@@ -151,9 +157,16 @@ class ToolLoopRuntime:
 
                 if result.get("thinking") and not self.suppress_thinking:
                     thinking = str(result["thinking"])
-                    thinking_parts.append(thinking)
-                    timeline.append({"type": "thinking", "content": thinking})
-                    yield self._sse("thinking", thinking)
+                    # 清洗泄漏到思考中的 XML 工具调用标记
+                    clean_thinking, _ = parse_inline_tool_calls(thinking)
+                    thinking_parts.append(clean_thinking)
+                    timeline.append({"type": "thinking", "content": clean_thinking, "started_at": time.time()})
+                    yield self._sse("thinking", clean_thinking)
+                elif self.suppress_thinking and (result.get("tool_calls") or result.get("finish_reason") == "tool_calls"):
+                    # 思考被省略时，仍发一个占位提示，避免工作组空荡荡
+                    placeholder = "（思考已省略）"
+                    timeline.append({"type": "thinking", "content": placeholder, "started_at": time.time(), "duration_ms": 0})
+                    yield self._sse("thinking", placeholder)
 
                 # ── Parse tool_calls with inline/tool recovery ──────
                 tool_calls = result.get("tool_calls") or []
@@ -240,6 +253,7 @@ class ToolLoopRuntime:
 
                 # ── Phase 1: parse + classify tools ─────────────────
                 parsed_tools: list[dict] = []
+                _tool_call_times: dict[str, float] = {}  # tool_call_id → start timestamp
                 for tc in tool_calls:
                     fn = tc.get("function", tc)
                     name = fn.get("name", "")
@@ -263,7 +277,8 @@ class ToolLoopRuntime:
                         "args": args,
                         "slow_name": resolved_slow,
                     })
-                    call_event = {"type": "tool_call", "name": name, "arguments": args}
+                    _tool_call_times[tool_call_id] = time.time()
+                    call_event = {"type": "tool_call", "name": name, "arguments": args, "started_at": time.time()}
                     tool_events.append(call_event)
                     timeline.append(call_event)
                     yield self._j_sse(call_event)
@@ -295,6 +310,8 @@ class ToolLoopRuntime:
                         "type": "tool_result",
                         "name": tool["name"],
                         "result": tool_result,
+                        "started_at": time.time(),
+                        "duration_ms": round((time.time() - _tool_call_times.get(tool["tool_call_id"], time.time())) * 1000),
                     }
                     tool_events.append(result_event)
                     timeline.append(result_event)
@@ -313,6 +330,7 @@ class ToolLoopRuntime:
                             "tool_call_id": tool["tool_call_id"],
                             "name": tool["name"],
                             "result": tool_result,
+                            "duration_ms": round((time.time() - _tool_call_times.get(tool["tool_call_id"], time.time())) * 1000),
                         },
                         "llm_response_id": None,
                     })
@@ -399,6 +417,8 @@ class ToolLoopRuntime:
                             "type": "tool_result",
                             "name": outcome["name"],
                             "result": result_data,
+                            "started_at": time.time(),
+                            "duration_ms": round((time.time() - _tool_call_times.get(outcome.get("tool_call_id", ""), time.time())) * 1000),
                         }
                         tool_events.append(result_event)
                         timeline.append(result_event)
@@ -417,6 +437,7 @@ class ToolLoopRuntime:
                                 "tool_call_id": outcome.get("tool_call_id", ""),
                                 "name": outcome.get("name", ""),
                                 "result": result_data,
+                                "duration_ms": round((time.time() - _tool_call_times.get(outcome.get("tool_call_id", ""), time.time())) * 1000),
                             },
                             "llm_response_id": None,
                         })
@@ -556,10 +577,57 @@ class ToolLoopRuntime:
             try:
                 logger.info("[DIAG] ToolLoopRuntime starting final persist")
                 async with AsyncSessionLocal() as s2:
+                    _usage = dict(emitter.usage_data) if emitter.usage_data else {}
+                    work_duration_ms = round((time.time() - _work_start_time) * 1000)
+                    _usage["work_duration_ms"] = work_duration_ms
+                    _usage["work_duration_sec"] = round(work_duration_ms / 1000)
+                    timeline.append({
+                        "type": "work_summary",
+                        "duration_ms": work_duration_ms,
+                        "duration_sec": round(work_duration_ms / 1000, 3),
+                        "started_at": time.time(),
+                    })
+                    yield self._j_sse({
+                        "type": "work_done",
+                        "duration_ms": work_duration_ms,
+                        "duration_sec": round(work_duration_ms / 1000, 3),
+                    })
+
+                    # ── 计算每段思考耗时，写入 timeline ──────────
+                    _work_end = time.time()
+                    for _idx, _entry in enumerate(timeline):
+                        if _entry.get("type") != "thinking" or "duration_ms" in _entry:
+                            continue
+                        _start = _entry.get("started_at")
+                        if not _start:
+                            continue
+                        # 找下一个有 started_at 的条目
+                        _next_time = _work_end
+                        for _nx in timeline[_idx + 1:]:
+                            if _nx.get("started_at"):
+                                _next_time = _nx["started_at"]
+                                break
+                        _entry["duration_ms"] = max(0, round((_next_time - _start) * 1000))
+
+                    # ── 计算未覆盖时间（网络/模型调度开销） ─────
+                    _accounted = sum(
+                        e.get("duration_ms", 0)
+                        for e in timeline
+                        if e.get("type") in ("thinking", "tool_result")
+                    )
+                    _overhead = work_duration_ms - _accounted
+                    if _overhead > 500:  # 超过 0.5 秒的差额才显示
+                        timeline.insert(0, {
+                            "type": "schedule_overhead",
+                            "label": "响应等待",
+                            "duration_ms": _overhead,
+                            "started_at": time.time(),
+                        })
+
                     msg_id = await sink.persist_assistant(
                         s2, "".join(full) if full else "",
                         thinking_parts, tool_events, timeline,
-                        usage=emitter.usage_data,
+                        usage=_usage,
                     )
                     # Ensure assistant_msg event for final content
                     if msg_id and full:
@@ -583,6 +651,26 @@ class ToolLoopRuntime:
                     await sink.run_post_turn_hooks(
                         s2, messages, tool_events, timeline,
                     )
+
+                    # ── 提炼上下文变量 ──────────────────────────
+                    if tool_events:
+                        try:
+                            from ..engine.context_vars import extract_context_vars
+                            from ..models import AgentConversation
+                            _new_vars = extract_context_vars(tool_events)
+                            if _new_vars:
+                                _conv = await s2.get(AgentConversation, self.conversation_id)
+                                if _conv:
+                                    _merged = dict(_conv.context_vars or {})
+                                    _merged.update(_new_vars)
+                                    _conv.context_vars = _merged
+                                    await s2.commit()
+                                    logger.info(
+                                        "[DIAG] context_vars updated: %s",
+                                        str(list(_new_vars.keys())),
+                                    )
+                        except Exception as _cv_exc:
+                            logger.warning("context_vars extraction failed (non-fatal): %s", _cv_exc)
             except Exception as exc:
                 logger.warning(
                     "ToolLoopRuntime final persist failed (non-fatal): %s", exc,
@@ -642,19 +730,24 @@ class ToolLoopRuntime:
         """Generate a final summary when tool rounds run out or are stopped early."""
         if not self.policy.allow_final_summary_fallback:
             return
-        logger.info("[DIAG] Generating final summary fallback")
-        _final_summary = await chat_with_degradation_chain(
+        logger.info("[DIAG] Generating final summary fallback (streaming)")
+        async for event in chat_stream_with_degradation_chain(
             messages, self.profile_key, tools=None,
             conversation_id=self.conversation_id,
-        )
-        if _final_summary.get("content"):
-            final_text = str(_final_summary["content"])
-            full.clear()
-            full.append(final_text)
-            timeline.append({"type": "text", "content": final_text})
-            yield self._sse("token", final_text)
-        elif _final_summary.get("error"):
-            yield self._sse("error", _final_summary["error"])
+        ):
+            event_type = event.get("type")
+            content = str(event.get("content") or "")
+            if event_type in ("token", "content") and content:
+                full.append(content)
+                timeline.append({"type": "text", "content": content})
+                yield self._sse("token", content)
+            elif event_type == "thinking" and content:
+                timeline.append({"type": "thinking", "content": content})
+                yield self._sse("thinking", content)
+            elif event_type == "error" and content:
+                yield self._sse("error", content)
+            elif event_type == "done":
+                break
 
     @staticmethod
     def _sse(event_type: str, content: str) -> bytes:

@@ -83,7 +83,7 @@ async def assemble_context(
         thinking_route = None
 
     try:
-        system_content = await _build_system_content(db, owner_id, agent_code)
+        system_content = await _build_system_content(db, owner_id, conversation_id, agent_code, profile_key=effective_profile_key)
     except Exception as e:
         logger.warning("构建系统提示词失败: %s", e)
         system_content = "You are a helpful AI assistant."
@@ -244,7 +244,37 @@ async def read_agent_config(db: AsyncSession, agent_code: str) -> dict | None:
         return None
 
 
-async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str = "erp_chat") -> str:
+# ── 工具调用指引（按模型差异化） ──────────────────────────────────
+# 鼓励模型在一次响应中批量返回独立工具调用，减少多轮交互。
+_TOOL_CALL_GUIDANCE: dict[str, str] = {
+    "deepseek": (
+        "【工具调用指引】当需要调用多个互相独立的工具时（例如同时查询多个信息），"
+        "请在同一次响应中一并返回所有工具调用（即多个 tool_calls），"
+        "不要分多轮逐个调用，这能大幅提升效率。"
+    ),
+    "gemma": (
+        "【工具调用指引】如果需要使用多个工具，尽量在一次响应中同时发起所有独立的工具调用。"
+    ),
+    "ollama": (
+        "【工具调用指引】如果需要使用工具，优先一次性返回所有可并行执行的工具调用。"
+    ),
+}
+
+_DEFAULT_TOOL_CALL_GUIDANCE = (
+    "【工具调用指引】当需要调用多个互相独立的工具时，"
+    "请在一次响应中同时返回所有工具调用，不要分多轮逐个调用。"
+)
+
+
+def _get_tool_call_guidance(profile_key: str) -> str:
+    """Resolve model-specific tool call guidance by profile key prefix."""
+    for prefix, guidance in _TOOL_CALL_GUIDANCE.items():
+        if profile_key.startswith(prefix):
+            return guidance
+    return _DEFAULT_TOOL_CALL_GUIDANCE
+
+
+async def _build_system_content(db: AsyncSession, owner_id: int, conversation_id: int, agent_code: str = "erp_chat", profile_key: str = "") -> str:
     sys_prompt = await conv_svc.get_system_prompt(db)
     ent_prompt = await conv_svc.get_enterprise_prompt(db)
     profile_data = await conv_svc.get_active_user_profile(db, owner_id)
@@ -295,6 +325,24 @@ async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str
             total_chars += len(injection)
     except Exception as e:
         logger.debug("Profile 2.0 injection failed (non-fatal): %s", e)
+
+    # ── 上下文变量注入（来自之前工具调用的提炼） ──────────────
+    try:
+        from ..models import AgentConversation
+        from .context_vars import format_context_vars_section
+        _conv = await db.get(AgentConversation, conversation_id)
+        if _conv and _conv.context_vars:
+            _cv_section = format_context_vars_section(_conv.context_vars)
+            if _cv_section and total_chars < MAX_CHARS:
+                layers.append(_cv_section)
+                total_chars += len(_cv_section)
+    except Exception as e:
+        logger.debug("Context vars injection failed (non-fatal): %s", e)
+
+    # ── 工具调用指引（按 profile 差异化） ──────────────────────────
+    tool_guidance = _get_tool_call_guidance(profile_key)
+    if tool_guidance:
+        layers.append(tool_guidance)
 
     return "\n\n---\n\n".join(layers)
 

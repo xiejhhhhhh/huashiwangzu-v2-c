@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from ..engine.engine import chat_stream_with_degradation_chain
 from ..engine.failure_diagnostics import record_failure
@@ -87,11 +88,11 @@ class StreamEmitter:
                 )
                 if event_type == "thinking" and content and not suppress_thinking:
                     thinking_parts.append(content)
-                    tl.append({"type": "thinking", "content": content})
+                    tl.append({"type": "thinking", "content": content, "started_at": time.time()})
                     yield self._sse("thinking", content)
                 elif event_type in ("token", "content") and content:
                     full.append(content)
-                    tl.append({"type": "text", "content": content})
+                    tl.append({"type": "text", "content": content, "started_at": time.time()})
                     # Real-time: yield token immediately to frontend
                     yield self._sse("token", content)
                 elif event_type == "usage":

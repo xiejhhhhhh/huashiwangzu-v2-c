@@ -68,6 +68,7 @@ class RuntimeTaskSink:
             "assistant", clean_content,
         )
         safe_events = json.loads(json.dumps(tool_events, default=str))
+        safe_timeline = json.loads(json.dumps(timeline, default=str))
         await conv_svc.add_message_meta(
             db,
             owner_id=self.owner_id,
@@ -76,7 +77,7 @@ class RuntimeTaskSink:
             thinking="\n".join(thinking_parts) if thinking_parts else "",
             references=references_from_tool_events(tool_events),
             tool_events=safe_events,
-            timeline=timeline,
+            timeline=safe_timeline,
             usage=usage,
         )
         logger.info(
@@ -94,7 +95,9 @@ class RuntimeTaskSink:
     ) -> int:
         """Flush unpersisted events from *pending_events*.
 
-        Returns the new ``persisted_count`` (``len(pending_events)``).
+        Returns the count of events that were successfully persisted
+        (``persisted_count + new_count``), so failed events are retried
+        on the next incremental persist rather than silently lost.
         """
         new_count = 0
         for pe in pending_events[persisted_count:]:
@@ -113,7 +116,7 @@ class RuntimeTaskSink:
             "[DIAG] persist_pending_events done (new=%d total=%d)",
             new_count, len(pending_events),
         )
-        return len(pending_events)
+        return persisted_count + new_count
 
     async def run_post_turn_hooks(
         self,

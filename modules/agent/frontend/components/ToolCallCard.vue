@@ -9,10 +9,11 @@
           <span class="cdot"></span><span class="cdot"></span><span class="cdot"></span>
         </span>
       </template>
-      <template v-else>
-        <span>工具记录</span>
-        <span class="tool-name">{{ message.toolName }}</span>
-        <svg class="tool-chevron" :class="{ rotated: isOpen }" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10">
+	      <template v-else>
+	        <span>工具记录</span>
+	        <span class="tool-name">{{ message.toolName }}</span>
+	        <span v-if="durationText" class="tool-duration">{{ durationText }}</span>
+	        <svg class="tool-chevron" :class="{ rotated: isOpen }" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10">
           <path d="M4 3l4 3-4 3"/>
         </svg>
       </template>
@@ -36,17 +37,30 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 const props = defineProps<{
   message: {
     eventType?: string
     toolName?: string
     toolResult?: unknown
+    durationMs?: number
   }
 }>()
 
 const isOpen = ref(false)
+
+const durationText = computed(() => {
+  if (props.message.eventType !== 'tool_result') return ''
+  const ms = props.message.durationMs
+  if (!ms) return ''
+  if (ms < 1000) return `· ${ms}ms`
+  const sec = ms / 1000
+  if (sec < 60) return `· ${Number(sec.toFixed(sec < 10 ? 1 : 0))}秒`
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  return `· ${m}分${s}秒`
+})
 
 interface ImageEntry {
   type?: string
@@ -87,23 +101,24 @@ function openImage(fileId: number) {
 </script>
 
 <style scoped>
-.tool-row {
-  flex-shrink: 0;
-  align-self: flex-start;
-  max-width: 85%;
-  margin-bottom: var(--ag-space-sm);
-  animation: msgSlideUp 0.25s ease-out;
-}
-@keyframes msgSlideUp {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+	.tool-row {
+	  flex-shrink: 0;
+	  align-self: flex-start;
+	  max-width: 95%;
+	  margin-bottom: var(--ag-space-sm);
+	  animation: msgSlideUp 0.25s ease-out;
+	}
+	@keyframes msgSlideUp {
+	  from { opacity: 0; transform: translateY(10px); }
+	  to { opacity: 1; transform: translateY(0); }
+	}
 
-.tool-toggle {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  border: none;
+	.tool-toggle {
+	  display: flex;
+	  align-items: center;
+	  gap: 5px;
+	  white-space: nowrap;
+	  border: none;
   background: none;
   cursor: pointer;
   font-size: var(--ag-font-size-sm);
@@ -141,6 +156,8 @@ function openImage(fileId: number) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.tool-duration { font-size: 11px; color: var(--ag-text-disabled); flex-shrink: 0; }
 
 .tool-calling-dots { display: inline-flex; gap: 2px; align-items: center; }
 .tool-calling-dots .cdot {

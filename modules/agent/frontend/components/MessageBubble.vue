@@ -35,6 +35,11 @@
         </div>
       </div>
 
+      <!-- 工作耗时 -->
+      <div v-if="message.usage?.work_duration_sec && message.role === 'assistant'" class="work-duration">
+        已工作 {{ message.usage.work_duration_sec }} 秒
+      </div>
+
       <div class="msg-bubble" :class="message.role">
         <div v-if="isEditing" class="msg-edit-area">
           <textarea ref="editTextarea" v-model="editText" class="msg-edit-input" @keydown.escape="cancelEdit" @keydown.enter.ctrl="submitEdit"></textarea>
@@ -72,9 +77,11 @@ import DOMPurify from 'dompurify'
 import hljs from 'highlight.js'
 
 interface UsageInfo {
-  prompt_tokens: number
-  completion_tokens: number
-  total_tokens: number
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  work_duration_sec?: number
+  work_duration_ms?: number
 }
 interface MsgItem {
   id: number
@@ -83,7 +90,7 @@ interface MsgItem {
   created_at?: string | null
   thinking?: string
   tool_events?: unknown[]
-  usage?: UsageInfo
+  usage?: UsageInfo | null
 }
 
 const props = defineProps<{ message: MsgItem; editingId?: number | null }>()
@@ -375,6 +382,13 @@ function formatTime(iso?: string | null): string {
 /* Tool events inline */
 .inline-tools {
   margin-top: var(--ag-space-xs);
+}
+
+/* Work duration */
+.work-duration {
+  font-size: var(--ag-font-size-sm);
+  color: var(--ag-text-tertiary);
+  margin-bottom: var(--ag-space-xs);
 }
 .inline-tools-toggle {
   display: flex; align-items: center; gap: 5px;
