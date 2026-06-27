@@ -2,7 +2,6 @@ import { reactive, ref } from 'vue'
 import { keepaliveFetch } from '@/shared/api'
 import { readDesktopStateRequest, saveDesktopStateRequest } from '@/shared/api/desktop'
 import { deduplicateSnapshots, type DesktopWindowSnapshot } from './desktop-session-storage'
-import { toast } from '@/shared/ui/interaction'
 
 export interface DesktopPersistentState {
   version: number
@@ -22,8 +21,7 @@ export async function loadDesktopState() {
     state.appState = data.appState || {}
     state.iconPositions = data.iconPositions || {}
   } catch {
-    console.warn('[desktop-state] load failed, starting with defaults')
-    toast.warning('桌面状态加载失败，已使用默认状态')
+    // desktop state load failed, start with defaults
   }
   loaded.value = true
   return state
@@ -57,8 +55,7 @@ export async function saveDesktopStateNow() {
   try {
     await saveDesktopStateRequest(JSON.parse(JSON.stringify(state)))
   } catch {
-    console.warn('[desktop-state] save failed')
-    toast.warning('桌面状态保存失败')
+    // desktop state save failed silently
   }
 }
 

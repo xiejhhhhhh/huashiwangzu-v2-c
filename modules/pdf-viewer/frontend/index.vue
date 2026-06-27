@@ -64,7 +64,7 @@ const props = defineProps<{ fileId?: number; fileName?: string; format?: string;
 
 function getPayload(): { fileId: number; fileName: string } | null {
   if (props.fileId) return { fileId: Number(props.fileId), fileName: props.fileName || '' }
-  const p = (window as Window).__MODULE_OPEN_FILE_PAYLOAD__
+  const p = (window as any).__MODULE_OPEN_FILE_PAYLOAD__
   if (p?.fileId) return { fileId: p.fileId, fileName: p.fileName || '' }
   return null
 }

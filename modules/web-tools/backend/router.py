@@ -181,8 +181,8 @@ async def _cap_fetch(params: dict, caller: str) -> dict:
         for el in list(tree.iter(tag)):
             try:
                 el.drop_tree()
-            except Exception as _e:
-                logger.debug("Failed to drop element %s: %s", tag, _e)
+            except Exception:
+                pass
 
     # Get text from body
     body = tree.find(".//body")

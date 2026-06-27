@@ -1,7 +1,4 @@
-"""Tool execution handlers for agent module.
-
-Capability registrations moved to ``bootstrap.py``.
-Handlers are imported there and passed to ``register_capability``.
+"""Tool execution and capability registration for agent module.
 
 Registered capabilities:
   - agent:get_system_prompt / update_system_prompt
@@ -16,17 +13,23 @@ import json
 import logging
 
 from app.core.exceptions import PermissionDenied
-from app.gateway import service as gateway_service
+from app.gateway.router import gateway_router
+from app.services.module_registry import register_capability
 
 from ..services import conversation_service as conv_svc
 from ..services import tool_discovery
 from ..services.model_client import parse_inline_tool_calls, final_clean_content
-from .._utils import j as _j
 
 logger = logging.getLogger("v2.agent").getChild("handlers.tool")
 
 SUBAGENT_MAX_ROUNDS = 4
 SUBAGENT_CONTEXT_LIMIT = 10
+
+
+# ── Helpers ──
+
+def _j(obj) -> str:
+    return json.dumps(obj, ensure_ascii=False, default=str)
 
 
 def _resolve_user_id(caller: str) -> int:
@@ -38,6 +41,24 @@ def _resolve_user_id(caller: str) -> int:
     except (TypeError, ValueError):
         pass
     raise PermissionDenied("Invalid caller")
+
+
+def _tool_calls_for_history(tool_calls: list[dict]) -> list[dict]:
+    normalized = []
+    for item in tool_calls:
+        fn = item.get("function", item)
+        args = fn.get("arguments") or {}
+        if not isinstance(args, str):
+            args = _j(args)
+        normalized.append({
+            "id": item.get("id", ""),
+            "type": item.get("type", "function"),
+            "function": {
+                "name": fn.get("name", ""),
+                "arguments": args,
+            },
+        })
+    return normalized
 
 
 # ── Capability: agent:get_system_prompt ──
@@ -117,11 +138,7 @@ async def _cap_update_my_profile(params: dict, caller: str) -> dict:
 # ── Capability: agent:spawn_subagent ──
 
 async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
-    """子 Agent：把子任务委托给一个独立工具循环，拿回结论。
-
-    Supports role-based model routing via ``role`` param (default: "executor").
-    Supported roles: executor, planner, reviewer, understanding, retrieval.
-    """
+    """子 Agent：把子任务委托给一个独立工具循环，拿回结论。"""
     task = params.get("task", "")
     if not task or not isinstance(task, str):
         return {"error": "task is required"}
@@ -129,7 +146,6 @@ async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
     caller_role = "viewer"
     extra_tools = params.get("tools") or []
     extra_context = params.get("context") or ""
-    agent_role = params.get("role", "executor")
 
     try:
         system_prompt = (
@@ -154,12 +170,10 @@ async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
 
         messages = [{"role": "system", "content": system_prompt}]
 
-        # Resolve profile via role-based template routing
-        profile_key = gateway_service.resolve_role_profile(agent_role)
         full_content = ""
         for _round in range(SUBAGENT_MAX_ROUNDS):
-            kwargs = {"messages": messages, "tools": tools, "profile_key": profile_key}
-            result = await gateway_service.chat(**kwargs)
+            kwargs = {"messages": messages, "tools": tools}
+            result = await gateway_router.chat(**kwargs)
 
             if result.get("error"):
                 full_content = f"子 Agent 执行出错：{result['error']}"
@@ -178,11 +192,10 @@ async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
                 full_content = content
                 break
 
-            from .._utils import tool_calls_for_history
             messages.append({
                 "role": "assistant",
                 "content": content,
-                "tool_calls": tool_calls_for_history(tool_calls),
+                "tool_calls": _tool_calls_for_history(tool_calls),
             })
 
             for tc in tool_calls:
@@ -235,108 +248,69 @@ async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
         return {"error": f"子 Agent 执行异常：{exc}"}
 
 
-# ── Capability: agent:skill_manage ──
+# ── Register capabilities ──
 
-async def _cap_skill_manage(params: dict, caller: str) -> dict:
-    """Manage skills: list, create, update, delete, scan, usage, provenance.
-
-    Review fork proposals CANNOT directly modify skills —
-    review-sourced updates go through approval gate (pending_approval).
-
-    Operations:
-      - action=list        → list all registered skills
-      - action=get         → get a single skill (param: name)
-      - action=create      → create a new skill (param: name, description, body, ...)
-      - action=update      → update a skill (param: name, updates dict)
-      - action=delete      → soft-delete a skill (param: name)
-      - action=scan        → scan file skills into registry
-      - action=usage       → get usage stats (param: skill_name, days)
-      - action=provenance  → get provenance trail (param: skill_name)
-      - action=pending-approvals → list pending approvals
-    """
-    from app.database import AsyncSessionLocal
-    from ..services.skill_governance_service import (
-        list_skills, get_skill, create_skill, update_skill, delete_skill,
-        scan_file_skills_to_registry, get_skill_usage_stats, get_skill_provenance,
-        list_pending_skill_approvals, request_skill_approval,
-    )
-
-    action = params.get("action", "list")
-    caller_uid = _resolve_user_id(caller)
-
-    async with AsyncSessionLocal() as db:
-        if action == "list":
-            scope = params.get("scope")
-            enabled_only = params.get("enabled_only", False)
-            skills = await list_skills(db, scope=scope, enabled_only=enabled_only)
-            return {"skills": skills, "total": len(skills)}
-
-        elif action == "get":
-            name = params.get("name", "")
-            if not name:
-                return {"error": "name is required"}
-            skill = await get_skill(db, name)
-            if not skill:
-                return {"error": f"Skill '{name}' not found"}
-            return {"skill": skill}
-
-        elif action == "create":
-            name = params.get("name", "")
-            if not name:
-                return {"error": "name is required"}
-            source = params.get("source", "manual")
-            result = await create_skill(
-                db,
-                name=name,
-                description=params.get("description", ""),
-                body=params.get("body", ""),
-                allowed_tools=params.get("allowed_tools"),
-                paths=params.get("paths"),
-                scope=params.get("scope", "global"),
-                priority=params.get("priority", 0),
-                source=source,
-                created_by=caller_uid,
-            )
-            return result
-
-        elif action == "update":
-            name = params.get("name", "")
-            if not name:
-                return {"error": "name is required"}
-            updates = params.get("updates", {})
-            from_review = params.get("from_review", False)
-            result = await update_skill(db, name, updates, updated_by=caller_uid, from_review=from_review)
-            return result
-
-        elif action == "delete":
-            name = params.get("name", "")
-            if not name:
-                return {"error": "name is required"}
-            result = await delete_skill(db, name, deleted_by=caller_uid)
-            return result
-
-        elif action == "scan":
-            base_dir = params.get("base_dir", "data/skills")
-            result = await scan_file_skills_to_registry(db, base_dir=base_dir, created_by=caller_uid)
-            return result
-
-        elif action == "usage":
-            skill_name = params.get("skill_name")
-            days = params.get("days", 7)
-            stats = await get_skill_usage_stats(db, skill_name=skill_name, days=days)
-            return {"usage_stats": stats}
-
-        elif action == "provenance":
-            skill_name = params.get("skill_name", "")
-            if not skill_name:
-                return {"error": "skill_name is required"}
-            trail = await get_skill_provenance(db, skill_name)
-            return {"provenance": trail}
-
-        elif action == "pending-approvals":
-            limit = params.get("limit", 50)
-            approvals = await list_pending_skill_approvals(db, limit=limit)
-            return {"approvals": approvals}
-
-        else:
-            return {"error": f"Unknown action: {action}"}
+register_capability(
+    "agent", "get_system_prompt", _cap_get_system_prompt,
+    description="读取当前系统提示词（管理员权限）。系统提示词定义了 Agent 的核心行为、知识库使用规则和联网能力规则。",
+    brief="读取系统提示词",
+    parameters={},
+    min_role="admin",
+)
+register_capability(
+    "agent", "update_system_prompt", _cap_update_system_prompt,
+    description="更新系统提示词（管理员权限）。当管理员用户要求修改 Agent 底层行为规则时调用此工具。",
+    brief="更新系统提示词",
+    parameters={"content": {"type": "string", "description": "新的系统提示词内容"}},
+    min_role="admin",
+)
+register_capability(
+    "agent", "get_enterprise_prompt", _cap_get_enterprise_prompt,
+    description="读取当前企业提示词（管理员权限）。企业提示词包含了公司背景、业务规则等企业上下文信息。",
+    brief="读取企业提示词",
+    parameters={},
+    min_role="admin",
+)
+register_capability(
+    "agent", "update_enterprise_prompt", _cap_update_enterprise_prompt,
+    description="更新企业提示词（管理员权限）。当管理员用户要求修改公司/企业背景设定时调用此工具。",
+    brief="更新企业提示词",
+    parameters={"content": {"type": "string", "description": "新的企业提示词内容"}},
+    min_role="admin",
+)
+register_capability(
+    "agent", "get_my_profile", _cap_get_my_profile,
+    description="读取当前用户的个人画像。个人画像包含用户的语气偏好、禁忌话题、关注领域和习惯，是系统自动学习的个性化配置。",
+    brief="读取我的画像",
+    parameters={},
+    min_role="viewer",
+)
+register_capability(
+    "agent", "update_my_profile", _cap_update_my_profile,
+    description="更新当前用户的个人画像（仅能改自己的）。当用户要求修改自己的语气偏好、设定或个性化配置时调用此工具。owner 固定为当前用户，不允许修改他人画像。",
+    brief="更新我的画像",
+    parameters={
+        "profile_data": {
+            "type": "object",
+            "description": "画像数据字典，包含 tone（语气偏好，字符串）、taboos（禁忌话题，字符串数组）、focus（关注领域，字符串数组）、habits（习惯描述，字符串数组）",
+            "properties": {
+                "tone": {"type": "string", "description": "语气偏好，如'简洁'、'专业'、'友好'"},
+                "taboos": {"type": "array", "items": {"type": "string"}, "description": "禁忌话题列表"},
+                "focus": {"type": "array", "items": {"type": "string"}, "description": "关注领域列表"},
+                "habits": {"type": "array", "items": {"type": "string"}, "description": "习惯描述列表"},
+            },
+        },
+    },
+    min_role="viewer",
+)
+register_capability(
+    "agent", "spawn_subagent", _cap_spawn_subagent,
+    description="把子任务委托给一个独立子 Agent 执行并拿回结论。子 Agent 会用自己的工具循环执行任务，完成后返回结论。适用于拆解复杂任务（如同时查资料、生图、整理文档）。",
+    brief="委托子Agent执行任务",
+    parameters={
+        "task": {"type": "string", "description": "任务描述，说明子Agent需要完成什么"},
+        "tools": {"type": "array", "items": {"type": "string"}, "description": "限定可用技能列表（可选），如 ['web-tools__search', 'image-gen__generate']"},
+        "context": {"type": "string", "description": "额外上下文（可选），如已有信息或参考数据"},
+    },
+    min_role="viewer",
+)

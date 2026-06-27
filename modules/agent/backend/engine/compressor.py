@@ -209,14 +209,14 @@ async def compress_middle(
 
 
 async def _summarize_with_cheap_model(text: str, profile_key: str) -> str:
-    from app.gateway import service as gateway_service
+    from app.gateway.router import gateway_router
     prompt = (
         "请将以下对话历史压缩成一段连贯的摘要，保留关键事实、决策和上下文。"
         "输出纯文本摘要，不要额外格式。\n\n"
         f"{text}"
     )
     messages = [{"role": "user", "content": prompt[:8000]}]
-    result = await gateway_service.chat(messages=messages, profile_key=profile_key)
+    result = await gateway_router.chat(messages=messages, profile_key=profile_key)
     if result.get("error"):
         raise RuntimeError(result.get("content", str(result.get("error"))))
     summary = (result.get("content") or "").strip()

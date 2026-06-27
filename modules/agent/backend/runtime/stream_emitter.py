@@ -1,8 +1,12 @@
 """StreamEmitter — reusable SSE content streamer with inline-tool recovery.
 
 Extracted from the old ``_yield_final_stream()`` in ``chat.py``.
-Wraps the streaming model call, buffers token events, checks for
-inline XML tool calls, and yields properly formatted SSE events.
+Wraps the streaming model call, yields tokens to the frontend in
+real-time while buffering a copy for inline XML tool call detection.
+
+When inline tool calls are found after streaming, a ``replace`` SSE
+event is sent to fix the already-displayed text, followed by a
+``_inline_tool_calls`` dict signal for the caller to re-enter the tool loop.
 """
 
 from __future__ import annotations
@@ -29,7 +33,14 @@ class StreamEmitter:
                 ...
             else:
                 yield event   # raw bytes for StreamingResponse
+
+    After the stream completes (no inline calls), ``emitter.usage_data``
+    contains the token usage dict (prompt_tokens, completion_tokens,
+    total_tokens), or ``None`` if unavailable.
     """
+
+    def __init__(self) -> None:
+        self.usage_data: dict | None = None
 
     async def yield_final_stream(
         self,
@@ -43,19 +54,20 @@ class StreamEmitter:
         thinking_buffer: list[str] | None = None,
         timeline: list[dict] | None = None,
     ):
-        """Stream final content, buffering events for post-processing.
+        """Stream final content — real-time SSE + buffered copy for inline detection.
 
-        Yields ``bytes`` (SSE ``data: ...`` frames).  If inline XML tool
-        calls are found *after* streaming completes, yields a single
-        ``{"type": "_inline_tool_calls", "tool_calls": [...]}`` dict
-        instead of flushing buffered token events — the caller should
-        re-enter its tool loop when it sees this dict.
+        Yields ``bytes`` (SSE ``data: ...`` frames) for the frontend in
+        real-time.  Also buffers all content in *full_buffer* for
+        post-stream inline XML tool call detection.  If inline calls
+        are found, yields a ``replace`` SSE event (to fix the
+        already-displayed text) followed by a
+        ``{"type": "_inline_tool_calls", ...}`` dict signal.
 
         Parameters mirror those of the old ``_yield_final_stream``.
         """
         logger.info("[DIAG] StreamEmitter.yield_final_stream ENTER")
         event_count = 0
-        token_buffer: list[tuple[str, str]] = []
+        usage_event: bytes | None = None
         full = full_buffer if full_buffer is not None else []
         thinking_parts = thinking_buffer if thinking_buffer is not None else []
         tl = timeline if timeline is not None else []
@@ -79,7 +91,12 @@ class StreamEmitter:
                 elif event_type in ("token", "content") and content:
                     full.append(content)
                     tl.append({"type": "text", "content": content})
-                    token_buffer.append((event_type, content))
+                    # Real-time: yield token immediately to frontend
+                    yield self._sse("token", content)
+                elif event_type == "usage":
+                    usage_data = event.get("data", {})
+                    self.usage_data = usage_data
+                    usage_event = self._sse("usage", json.dumps(usage_data, ensure_ascii=False))
                 elif event_type == "error" and content:
                     yield self._sse("error", content)
                 elif event_type == "done":
@@ -103,11 +120,13 @@ class StreamEmitter:
                     "[DIAG] StreamEmitter found %d inline tool calls, "
                     "re-entering tool loop", len(inline_calls),
                 )
+                # Tell frontend to replace streaming text with clean version
+                yield self._sse("replace", json.dumps({"content": clean_content}, ensure_ascii=False))
                 yield {"type": "_inline_tool_calls", "tool_calls": inline_calls}
                 return
 
-            for etype, econtent in token_buffer:
-                yield self._sse("token", econtent)
+            if usage_event:
+                yield usage_event
 
             logger.info(
                 "[DIAG] StreamEmitter EXIT after %d events — no inline calls",

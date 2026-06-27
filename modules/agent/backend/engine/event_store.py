@@ -25,6 +25,17 @@ def _ensure_string_arguments(args: dict | str) -> str:
         return str(args)
 
 
+def _normalize_message_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    try:
+        return json.dumps(content, ensure_ascii=False, default=str)
+    except Exception:
+        return str(content)
+
+
 async def record_event(
     db: AsyncSession,
     conversation_id: int,
@@ -47,25 +58,9 @@ async def record_event(
         payload=payload,
         llm_response_id=llm_response_id,
     )
-    try:
-        db.add(event)
-        await db.commit()
-        await db.refresh(event)
-    except Exception as exc:
-        await db.rollback()
-        logger.warning("record_event failed: event_type=%s conv=%s err=%s", event_type, conversation_id, exc)
-        try:
-            from .failure_diagnostics import record_failure as _record_failure_diag
-            await _record_failure_diag(
-                source="event_store",
-                operation=f"record_{event_type}",
-                error_type=type(exc).__name__,
-                error_message=str(exc)[:500],
-                conversation_id=conversation_id,
-            )
-        except Exception:
-            logger.warning("Failed to record diagnostic for record_%s", event_type)
-        raise
+    db.add(event)
+    await db.commit()
+    await db.refresh(event)
     return event
 
 
@@ -123,7 +118,7 @@ async def project_to_messages(
                         },
                     })
                     j += 1
-                msg = {"role": "assistant", "content": ev.payload.get("content", "")}
+                msg = {"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))}
                 if tool_calls:
                     msg["tool_calls"] = tool_calls
                 messages.append(msg)
@@ -138,7 +133,7 @@ async def project_to_messages(
                     k += 1
                 i = k
             else:
-                messages.append({"role": "assistant", "content": ev.payload.get("content", "")})
+                messages.append({"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))})
                 i += 1
         elif ev.event_type == "tool_call":
             tc_payload = ev.payload
@@ -172,4 +167,37 @@ async def project_to_messages(
     return messages
 
 
+async def run_event_migration(db: AsyncSession) -> None:
+    from sqlalchemy import text
+    try:
+        await db.execute(text(
+            "CREATE TABLE IF NOT EXISTS agent_events ("
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  conversation_id BIGINT NOT NULL,"
+            "  event_type VARCHAR(32) NOT NULL,"
+            "  payload JSONB DEFAULT '{}'::jsonb,"
+            "  llm_response_id VARCHAR(64),"
+            "  created_at TIMESTAMPTZ DEFAULT NOW(),"
+            "  updated_at TIMESTAMPTZ DEFAULT NOW()"
+            ")"
+        ))
+        await db.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_events_conversation_id ON agent_events(conversation_id)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured agent_events table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: agent_events table check failed: %s", e)
 
+
+async def delete_events_after(db: AsyncSession, conversation_id: int, after_created_at: object) -> None:
+    """Delete all events for *conversation_id* created after *after_created_at*."""
+    from sqlalchemy import delete
+    from ..models import AgentEvent
+    await db.execute(
+        delete(AgentEvent).where(
+            AgentEvent.conversation_id == conversation_id,
+            AgentEvent.created_at > after_created_at,
+        )
+    )

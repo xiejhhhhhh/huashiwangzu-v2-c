@@ -20,15 +20,6 @@ async def list_settings(
     return ApiResponse(data=[SettingResponse.model_validate(i) for i in items])
 
 
-@router.get("/module-settings")
-async def get_module_settings(
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("viewer")),
-):
-    config = await svc.get_module_settings(db)
-    return ApiResponse(data=config)
-
-
 @router.get("/system-config")
 async def get_system_config(db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("admin"))):
     config = await svc.get_system_config_map(db)

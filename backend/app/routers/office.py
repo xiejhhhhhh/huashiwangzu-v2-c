@@ -3,11 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppException, ConflictError, NotFound, ValidationError, PermissionDenied
 from app.database import get_db
 from app.schemas.common import ApiResponse
-from app.schemas.document_ir import DocumentIR
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.services.office import JsonPackageService, JsonVersionService, JsonPatchService
-from app.services.file_share_service import require_resource_permission
+from app.services.file_share_service import check_file_access
 
 router = APIRouter(prefix="/api/office", tags=["office"])
 
@@ -22,7 +21,9 @@ async def _require_file_access(db: AsyncSession, file_id: int, user_id: int):
     file = await db.get(File, file_id)
     if not file or file.deleted:
         raise NotFound("File not found")
-    await require_resource_permission(db, "file", file_id, user_id, "read")
+    access = await check_file_access(db, file_id, user_id)
+    if not access["accessible"]:
+        raise PermissionDenied("No permission to access this file")
 
 
 @router.get("/status/{file_id}")
@@ -152,26 +153,6 @@ async def apply_patch(
         raise ValidationError(str(e))
     except RuntimeError as e:
         raise ConflictError(str(e))
-
-
-# ── 8. Document IR preview (unified IR view for any package) ──
-
-@router.get("/ir/{package_id}")
-async def preview_ir(
-    package_id: int,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("viewer")),
-):
-    """Return the package content as a unified DocumentIR."""
-    await _require_package_access(db, package_id, user.id)
-    result = await package_svc.read_package(db, package_id)
-    if not result:
-        raise NotFound("Package not found")
-    json_content = result.get("json_content", {})
-    document_ir = result.get("document_ir")
-    if document_ir:
-        return ApiResponse(data=document_ir)
-    return ApiResponse(data=json_content)
 
 
 @router.post("/rollback")

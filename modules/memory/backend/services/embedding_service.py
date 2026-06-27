@@ -21,7 +21,6 @@ async def _compute_embedding(text: str) -> list[float] | None:
 
 async def _update_embedding_sql(db, memory_id: int, vec_literal: str) -> None:
     """Shared helper: update embedding vector using parameterized SQL."""
-    # 用 CAST(...) 而非 ::vector——:embedding 绑定参数紧挨 :: 会和绑定语法冲突, asyncpg编译出野冒号致语法错
-    sql = "UPDATE memory_records SET embedding = CAST(:embedding AS vector) WHERE id = :id"
+    sql = "UPDATE memory_records SET embedding = :embedding::vector WHERE id = :id"
     await db.execute(text(sql), {"embedding": vec_literal, "id": memory_id})
     await db.commit()

@@ -36,22 +36,46 @@
       </div>
 
       <div class="msg-bubble" :class="message.role">
-        <!-- Markdown rendered content for AI, plain text for user -->
-        <div v-if="message.role === 'assistant'" class="msg-md" v-html="renderedContent"></div>
+        <div v-if="isEditing" class="msg-edit-area">
+          <textarea ref="editTextarea" v-model="editText" class="msg-edit-input" @keydown.escape="cancelEdit" @keydown.enter.ctrl="submitEdit"></textarea>
+          <div class="msg-edit-actions">
+            <button class="msg-edit-ok" @click="submitEdit">发送</button>
+            <button class="msg-edit-cancel" @click="cancelEdit">取消</button>
+          </div>
+        </div>
+        <div v-else-if="message.role === 'assistant'" class="msg-md" v-html="renderedContent"></div>
         <div v-else class="msg-text">{{ message.content }}</div>
       </div>
 
-      <time class="msg-time">{{ formatTime(message.created_at) }}</time>
+      <div class="msg-footer">
+        <time class="msg-time">{{ formatTime(message.created_at) }}</time>
+        <span v-if="message.usage" class="msg-usage">
+          <span>入{{ message.usage.prompt_tokens }} 出{{ message.usage.completion_tokens }} 总计{{ message.usage.total_tokens }}</span>
+        </span>
+        <span class="msg-actions">
+          <button class="msg-action-btn" title="复制" @click="copyContent">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><rect x="4" y="4" width="10" height="10" rx="1"/><path d="M12 4V3a1 1 0 00-1-1H3a1 1 0 00-1 1v8a1 1 0 001 1h1"/></svg>
+          </button>
+          <button v-if="message.role === 'user' && message.id && editingId !== message.id" class="msg-action-btn" title="编辑" @click="$emit('edit', message.id, message.content)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M11.5 2.5a1.5 1.5 0 012 2L5 13l-3 1 1-3 8.5-8.5z"/><path d="M9.5 4.5l2 2"/></svg>
+          </button>
+        </span>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js'
 
+interface UsageInfo {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
 interface MsgItem {
   id: number
   role: string
@@ -59,9 +83,54 @@ interface MsgItem {
   created_at?: string | null
   thinking?: string
   tool_events?: unknown[]
+  usage?: UsageInfo
 }
 
-const props = defineProps<{ message: MsgItem }>()
+const props = defineProps<{ message: MsgItem; editingId?: number | null }>()
+const emit = defineEmits<{ edit: [messageId: number, content: string]; submitEdit: [messageId: number, content: string] }>()
+
+const isEditing = computed(() => props.message.role === 'user' && props.message.id === props.editingId && !!props.editingId)
+const editText = ref('')
+const editTextarea = ref<HTMLTextAreaElement | null>(null)
+
+watch(isEditing, (v) => {
+  if (v) {
+    editText.value = props.message.content
+    nextTick(() => {
+      editTextarea.value?.focus()
+      editTextarea.value?.select()
+    })
+  }
+})
+
+function onDocumentClick(e: MouseEvent) {
+  if (isEditing.value) {
+    const el = (e.target as HTMLElement)?.closest('.msg-edit-area, .msg-action-btn')
+    if (!el) cancelEdit()
+  }
+}
+onMounted(() => document.addEventListener('click', onDocumentClick))
+onUnmounted(() => document.removeEventListener('click', onDocumentClick))
+
+function submitEdit() {
+  const trimmed = editText.value.trim()
+  if (!trimmed) return
+  emit('submitEdit', props.message.id, trimmed)
+}
+
+function cancelEdit() {
+  emit('edit', 0, '')
+}
+
+function copyContent() {
+  const text = props.message.content
+  navigator.clipboard.writeText(text).catch(() => {
+    const ta = document.createElement('textarea')
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy')
+    document.body.removeChild(ta)
+  })
+}
 
 const showThinking = ref(false)
 const showTools = ref(false)
@@ -334,10 +403,65 @@ function formatTime(iso?: string | null): string {
   color: var(--ag-text-secondary);
 }
 
-/* Time */
-.msg-time {
-  font-size: var(--ag-font-size-xs);
-  color: var(--ag-text-tertiary);
+/* Footer: time + usage + actions */
+.msg-footer {
+  display: flex; align-items: center; gap: var(--ag-space-sm);
   margin-top: 2px;
+  font-size: var(--ag-font-size-xs);
 }
+.msg-time {
+  color: var(--ag-text-tertiary);
+}
+.msg-usage {
+  color: var(--ag-text-tertiary);
+  opacity: 0.7;
+}
+.msg-actions {
+  margin-left: auto;
+  display: flex; gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg-row:hover .msg-actions { opacity: 1; }
+.msg-action-btn {
+  border: none; background: none; cursor: pointer;
+  font-size: 12px; padding: 1px 3px;
+  color: var(--ag-text-tertiary);
+  border-radius: var(--ag-radius-sm);
+  line-height: 1;
+}
+.msg-action-btn:hover { color: var(--ag-primary); background: var(--ag-bg-page); }
+
+/* Inline edit */
+.msg-edit-area { width: 100%; }
+.msg-edit-input {
+  width: 100%; min-height: 60px; max-height: 200px;
+  padding: var(--ag-space-sm) var(--ag-space-md);
+  border: 1px solid var(--ag-primary);
+  border-radius: var(--ag-radius-md);
+  font-family: inherit; font-size: inherit;
+  line-height: var(--ag-line-height-relaxed);
+  resize: none;
+  background: var(--ag-bg-base);
+  color: var(--ag-text-primary);
+  outline: none;
+  box-sizing: border-box;
+}
+.msg-edit-input:focus { border-color: var(--ag-primary); box-shadow: 0 0 0 2px var(--ag-primary-light); }
+.msg-edit-actions {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: var(--ag-space-xs);
+}
+.msg-edit-ok, .msg-edit-cancel {
+  border: 1px solid var(--ag-border-light);
+  border-radius: var(--ag-radius-sm);
+  background: var(--ag-bg-base);
+  color: var(--ag-text-secondary);
+  cursor: pointer;
+  padding: 2px 6px;
+  line-height: 1;
+  font-size: var(--ag-font-size-sm);
+}
+.msg-edit-ok:hover { color: var(--ag-primary); border-color: var(--ag-primary); }
+.msg-edit-cancel:hover { color: var(--ag-error); border-color: var(--ag-error); }
 </style>

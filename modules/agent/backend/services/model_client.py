@@ -11,9 +11,39 @@ import logging
 import re
 import uuid
 
-from app.gateway import service as gateway_service
+from app.gateway.router import gateway_router
 
 logger = logging.getLogger("v2.agent").getChild("model_client")
+
+
+def _normalize_inline_markup(content: str) -> str:
+    normalized = content
+    for tag in ("tool_call", "invoke", "parameter"):
+        normalized = normalized.replace(f"<｜{tag}", f"<{tag}")
+        normalized = normalized.replace(f"</｜{tag}", f"</{tag}")
+        normalized = normalized.replace(f"｜{tag}", f"<{tag}")
+        normalized = normalized.replace(f"</｜{tag}", f"</{tag}")
+    return normalized
+
+
+def _normalize_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    normalized = []
+    for item in tool_calls:
+        fn = item.get("function") or item
+        args = fn.get("arguments") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except json.JSONDecodeError:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        normalized.append({
+            "id": item.get("id") or fn.get("id") or "",
+            "type": item.get("type", "function"),
+            "function": {"name": fn.get("name", ""), "arguments": args},
+        })
+    return normalized
 
 
 def parse_inline_tool_calls(content: str) -> tuple[str, list[dict]]:
@@ -30,6 +60,8 @@ def parse_inline_tool_calls(content: str) -> tuple[str, list[dict]]:
     """
     if not content:
         return content, []
+
+    content = _normalize_inline_markup(content)
 
     invoke_re = re.compile(
         r'<\w*:?invoke\s+name=[\"\']([^\"\']+)[\"\']\s*>(.*?)</\w*:?invoke\s*>',
@@ -78,6 +110,7 @@ def final_clean_content(content: str) -> str:
     """
     if not content:
         return content
+    content = _normalize_inline_markup(content)
     cleaned = re.sub(
         r'<\w*:?invoke\s+name=.*?</\w*:?invoke\s*>',
         '', content, flags=re.IGNORECASE | re.DOTALL,
@@ -97,36 +130,15 @@ async def recover_tool_calls(messages: list[dict], profile_key: str, tools: list
     adapter 修对后此函数应极少被触发。
     """
     logger.info("recover_tool_calls triggered — adapter may have missed tool_calls (profile=%s)", profile_key)
-    profile = gateway_service.get_model_profile(profile_key)
-    provider = gateway_service.get_model_provider(profile["provider"])
-    raw = await provider.chat(
+    result = await gateway_router.chat(
         messages=messages,
-        model=profile["model"],
-        temperature=profile["temperature"],
-        max_tokens=profile["max_tokens"],
+        profile_key=profile_key,
         tools=tools,
     )
-    choices = raw.get("choices") or []
-    choice = choices[0] if choices else {}
-    message = choice.get("message") or {}
-    finish_reason = choice.get("finish_reason", "stop") if choice else "stop"
-    tool_calls = []
-    for item in message.get("tool_calls") or []:
-        fn = item.get("function") or {}
-        args = fn.get("arguments") or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except json.JSONDecodeError:
-                args = {}
-        tool_calls.append({
-            "id": item.get("id", ""),
-            "type": item.get("type", "function"),
-            "function": {"name": fn.get("name", ""), "arguments": args},
-        })
     return {
-        "content": message.get("content", ""),
-        "thinking": message.get("reasoning_content", ""),
-        "tool_calls": tool_calls,
-        "finish_reason": finish_reason,
+        "content": result.get("content", ""),
+        "thinking": result.get("thinking", ""),
+        "tool_calls": _normalize_tool_calls(result.get("tool_calls") or []),
+        "finish_reason": result.get("finish_reason", "stop"),
+        **({"error": result["error"]} if result.get("error") else {}),
     }

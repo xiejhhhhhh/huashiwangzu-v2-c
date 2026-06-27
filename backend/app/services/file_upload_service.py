@@ -60,7 +60,7 @@ async def upload_file(
 
     # Check if content already exists on disk (search across all users for same md5_hash)
     existing_content = await db.execute(
-        select(File).where(File.md5_hash == md5_hash, File.deleted == False).limit(1).with_for_update()
+        select(File).where(File.md5_hash == md5_hash, File.deleted == False).limit(1)
     )
     existing_file = existing_content.scalar_one_or_none()
 
@@ -168,7 +168,7 @@ async def replace_file_content(
 
     # Check if new content already exists on disk
     existing = await db.execute(
-        select(File).where(File.md5_hash == new_md5, File.deleted == False).limit(1).with_for_update()
+        select(File).where(File.md5_hash == new_md5, File.deleted == False).limit(1)
     )
     existing_file = existing.scalar_one_or_none()
 
@@ -203,6 +203,7 @@ async def replace_file_content(
                     await db.execute(
                         update(File).where(File.id == of.id).values(ref_count=File.ref_count - 1)
                     )
+                    break
 
     await db.commit()
     await db.refresh(file)

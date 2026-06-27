@@ -166,8 +166,8 @@ class TestMemoryRecall:
 
     def test_recall_quality_db_persisted(self):
         src = Path(self.MEMORY_FILE).read_text("utf-8")
-        assert "AgentRecallQuality" in src
-        assert "_append_recall_quality" in src
+        assert "RecallQualityRecord" in src
+        assert "record_recall_quality" in src
 
     def test_static_memory_handles_missing_dir(self):
         src = Path(self.MEMORY_FILE).read_text("utf-8")
@@ -187,8 +187,8 @@ class TestHookRunPersistence:
 
     def test_hook_runs_db_persisted(self):
         src = Path(self.HOOKS_FILE).read_text("utf-8")
-        assert "AgentHookRun" in src
-        assert "_append_hook_run" in src
+        assert "_HOOK_RUN_FILE" in src
+        assert "_record_hook_run" in src
 
     def test_hook_runs_individual_safe_run(self):
         src = Path(self.HOOKS_FILE).read_text("utf-8")

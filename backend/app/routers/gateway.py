@@ -2,18 +2,16 @@ import json
 import logging
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.gateway.config import DEFAULT_MODEL
-from app.gateway.router import GATEWAY_TRACE_FILE, gateway_router
+from app.schemas.common import ApiResponse
 from app.middleware.auth import require_permission
 from app.models.user import User
-from app.schemas.common import ApiResponse
-from app.services.model_services import describe_image as describe_image_service
-from app.services.model_services import get_embedding
-from app.services.model_services import rerank as rerank_service
+from app.gateway.config import DEFAULT_MODEL
+from app.gateway.router import gateway_router
+from app.services.model_services import get_embedding, rerank as rerank_service, describe_image as describe_image_service
 
 logger = logging.getLogger("v2.gateway.api")
 router = APIRouter(prefix="/api/gateway", tags=["gateway"])
@@ -115,31 +113,3 @@ async def describe_image(payload: DescribeImageRequest, user: User = Depends(req
         mime_type=payload.mime_type,
     )
     return ApiResponse(data={"description": description})
-
-
-@router.post("/traces")
-async def get_gateway_traces(
-    limit: int = Query(20, le=200),
-    profile_key: str = Query("", description="Filter by profile key"),
-    offset: int = Query(0),
-    user: User = Depends(require_permission("viewer")),
-):
-    """Query recent gateway trace entries from the persisted JSONL file."""
-    if not GATEWAY_TRACE_FILE.exists():
-        return ApiResponse(data={"traces": [], "total": 0})
-    lines = GATEWAY_TRACE_FILE.read_text(encoding="utf-8").strip().split("\n")
-    traces = []
-    for line in reversed(lines):
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if profile_key and entry.get("profile_key") != profile_key:
-            continue
-        traces.append(entry)
-        if len(traces) >= limit + offset:
-            break
-    paged = traces[offset:offset + limit]
-    return ApiResponse(data={"traces": paged, "total": len(traces)})

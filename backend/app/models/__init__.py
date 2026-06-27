@@ -8,10 +8,7 @@ from .role_matrix import RoleMatrix
 from .desktop_state import DesktopState
 from .office import FileJsonPackage, FileJsonVersion, FileJsonPatch, FileJsonTask
 from .prompt import PromptCategory, PromptTemplate
-from .asset import FileAsset
-from .file_upload_session import FileUploadSession
-from .platform_workflow import WorkflowDefinition, WorkflowRunRecord, WorkflowStepRecord
-from .system_trace import SystemTraceSpan
+from .private_module import PrivateModule
 
 __all__ = ["User", "App", "Folder", "File", "FileShare", "RecycleItem",
            "SystemLog", "Notification", "UserNotificationRead", "Feedback", "Task",
@@ -19,6 +16,4 @@ __all__ = ["User", "App", "Folder", "File", "FileShare", "RecycleItem",
            "RoleMatrix", "DesktopState",
            "FileJsonPackage", "FileJsonVersion", "FileJsonPatch", "FileJsonTask",
            "PromptCategory", "PromptTemplate",
-           "FileAsset",
-           "WorkflowDefinition", "WorkflowRunRecord", "WorkflowStepRecord",
-           "SystemTraceSpan"]
+           "PrivateModule"]

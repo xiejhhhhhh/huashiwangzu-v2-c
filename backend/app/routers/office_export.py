@@ -35,16 +35,6 @@ async def _require_file_access(db: AsyncSession, file_id: int, user_id: int):
         raise PermissionDenied("No permission to access this file")
 
 
-def _extract_document_ir(json_content: dict) -> dict:
-    """Extract or build a DocumentIR-compatible dict from json_content."""
-    if "blocks" in json_content:
-        return json_content
-    content_val = json_content.get("content") or json_content
-    if isinstance(content_val, dict):
-        return content_val
-    return json_content
-
-
 @router.post("/export/docx/{package_id}")
 async def export_docx(
     package_id: int,
@@ -66,9 +56,8 @@ async def export_docx(
     result = await package_svc.read_package(db, package_id)
     full_path = _resolve_safe_path(file.storage_path)
 
-    ir = _extract_document_ir(result.get("json_content", {}))
     svc = DocxService()
-    await svc.export(str(full_path), ir)
+    await svc.export(str(full_path), result["json_content"])
     return ApiResponse(data={"message": "Document exported and overwritten successfully"})
 
 
@@ -93,9 +82,8 @@ async def export_excel(
     result = await package_svc.read_package(db, package_id)
     full_path = _resolve_safe_path(file.storage_path)
 
-    ir = _extract_document_ir(result.get("json_content", {}))
     svc = ExcelService()
-    await svc.export(str(full_path), ir)
+    await svc.export(str(full_path), result["json_content"])
     return ApiResponse(data={"message": "Excel exported and overwritten successfully"})
 
 
@@ -120,7 +108,6 @@ async def export_pptx(
     result = await package_svc.read_package(db, package_id)
     full_path = _resolve_safe_path(file.storage_path)
 
-    ir = _extract_document_ir(result.get("json_content", {}))
     svc = PptxService()
-    await svc.export(str(full_path), ir)
+    await svc.export(str(full_path), result["json_content"])
     return ApiResponse(data={"message": "PPT exported and overwritten successfully"})

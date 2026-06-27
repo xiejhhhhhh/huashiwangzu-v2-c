@@ -1,15 +1,16 @@
 """Test parse_inline_tool_calls — inline XML tool call detection."""
 
 import sys
-import json
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
-# Add module backend path so we can import model_client
-MODULE_BACKEND = Path(__file__).resolve().parent.parent.parent / "modules" / "agent" / "backend"
-if str(MODULE_BACKEND) not in sys.path:
-    sys.path.insert(0, str(MODULE_BACKEND))
+import pytest
 
-from services.model_client import parse_inline_tool_calls, final_clean_content
+SERVICE_DIR = Path(__file__).resolve().parents[2] / "modules" / "agent" / "backend" / "services"
+if str(SERVICE_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVICE_DIR))
+
+from model_client import final_clean_content, parse_inline_tool_calls, recover_tool_calls
 
 
 class TestParseInlineToolCalls:
@@ -30,7 +31,10 @@ class TestParseInlineToolCalls:
     def test_full_width_vertical_bar(self):
         content = '查一下｜invoke name="web-tools__fetch"><｜parameter name="url" string="true">https://example.com</｜parameter></｜invoke>'
         clean, calls = parse_inline_tool_calls(content)
-        assert calls == []  # full-width ｜invoke is not matched by ASCII-only regex
+        assert clean == "查一下"
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "web-tools__fetch"
+        assert calls[0]["function"]["arguments"] == {"url": "https://example.com"}
 
     def test_string_false_converts_number(self):
         content = '<invoke name="terminal-tools__exec"><parameter name="command" string="true">ls</parameter><parameter name="timeout" string="false">30</parameter></invoke>'
@@ -121,6 +125,53 @@ class TestFinalCleanContent:
     def test_multiple_newlines_collapsed(self):
         content = "a\n\n\n\n\nb"
         assert final_clean_content(content) == "a\n\nb"
+
+    def test_full_width_markup_stripped(self):
+        content = '正文｜invoke name="test__tool"><｜parameter name="x">1</｜parameter></｜invoke>结尾'
+        cleaned = final_clean_content(content)
+        assert "｜invoke" not in cleaned
+        assert "parameter" not in cleaned
+        assert cleaned == "正文结尾"
+
+
+class TestRecoverToolCalls:
+    @pytest.mark.asyncio
+    async def test_recover_uses_gateway_adapter_shape(self):
+        gateway_result = {
+            "content": "",
+            "thinking": "reasoning",
+            "finish_reason": "tool_calls",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "web-tools__search",
+                    "arguments": '{"q": "天气"}',
+                },
+            }],
+        }
+        with patch("model_client.gateway_router.chat", AsyncMock(return_value=gateway_result)) as chat:
+            result = await recover_tool_calls(
+                messages=[{"role": "user", "content": "查天气"}],
+                profile_key="deepseek-v4-flash",
+                tools=[{"type": "function", "function": {"name": "web-tools__search"}}],
+            )
+        chat.assert_awaited_once()
+        assert result["thinking"] == "reasoning"
+        assert result["finish_reason"] == "tool_calls"
+        assert result["tool_calls"][0]["function"]["arguments"] == {"q": "天气"}
+
+    @pytest.mark.asyncio
+    async def test_recover_bad_arguments_fallback_to_empty_dict(self):
+        gateway_result = {
+            "tool_calls": [{
+                "id": "call_1",
+                "function": {"name": "tool", "arguments": "{bad json}"},
+            }],
+        }
+        with patch("model_client.gateway_router.chat", AsyncMock(return_value=gateway_result)):
+            result = await recover_tool_calls([], "deepseek-v4-flash", [])
+        assert result["tool_calls"][0]["function"]["arguments"] == {}
 
 
 class TestHandleSkillUseArgsParsing:

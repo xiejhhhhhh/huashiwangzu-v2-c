@@ -19,18 +19,6 @@ logger = logging.getLogger("v2.agent").getChild("engine.workflow_strategy")
 #   - workflow_steps: ordered list of step dicts, each with "action" and "detail"
 
 WORKFLOW_DEFINITIONS: list[dict[str, Any]] = [
-    # ── 默认开发工作流：适合所有代码相关 agent 任务 ──
-    {
-        "keywords": ["调研", "修复", "开发", "改代码", "查代码", "重构", "bug", "feature", "功能", "验收", "测试"],
-        "label": "dev_workflow",
-        "workflow_steps": [
-            {"action": "brief", "detail": "调 brief() 了解项目全貌"},
-            {"action": "codegraph", "detail": "先 code_explore/code_node/code_impact 查符号/影响面, 再回退 codemap, 最后实读"},
-            {"action": "probe", "detail": "调 probe/call_capability 打活系统验证, 不打日志"},
-            {"action": "memory_write", "detail": "收工后 memory_write(type, title, body, agent=\"<你的标识>\") 落一条项目记忆"},
-            {"action": "report_inaccuracy", "detail": "codegraph/codemap 命中不准时, 调 report_inaccuracy 反馈"},
-        ],
-    },
     {
         "keywords": ["项目", "任务", "收口", "验收", "发信", "投件", "交付", "变更", "重构"],
         "label": "project_workflow",
@@ -67,14 +55,17 @@ WORKFLOW_DEFINITIONS: list[dict[str, Any]] = [
     },
 ]
 
-_DEFAULT_WORKFLOW_PROMPT = """<dev_workflow>
-检测到开发相关任务，请遵循以下默认工作流：
-1. brief — 调 brief() 了解项目全貌
-2. codegraph — 先 code_explore/code_node/code_impact 查符号/影响面, 回退 codemap, 最后实读
-3. probe — 调 probe/call_capability 打活系统验证, 不打日志
-4. memory_write — 收工后 memory_write(type, title, body, agent="<你的标识>") 落一条项目记忆
-5. report_inaccuracy — codegraph/codemap 命中不准时, 调 report_inaccuracy 反馈
-</dev_workflow>"""
+_DEFAULT_WORKFLOW_PROMPT = """<project_workflow>
+检测到项目相关任务，请遵循以下工作流：
+1. 需要发信 → 写入投递箱目录（邮箱/投递箱/）
+2. 需要查代码 → 先用 codegraph or codemap 查影响面
+3. 修改前 → 实读关联文件确认
+4. 修改后 → 运行相关测试
+5. 验收 → 执行验收命令，贴原始输出
+6. 留痕 → memory_write 记录变更摘要
+7. 回信 → 标准五件套写入收件箱
+8. 归档 → 蒸馏变更到开发文档，删除临时文件
+</project_workflow>"""
 
 
 def match_workflow(user_input: str) -> dict | None:

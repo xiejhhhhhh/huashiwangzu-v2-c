@@ -86,7 +86,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { getDashboardStats, startPipeline, type DashboardStats } from '../api'
-import { toast } from '@/shared/ui/interaction'
 
 const s = ref<DashboardStats>({
   total_documents: 0, completed_documents: 0, running_documents: 0, failed_documents: 0,
@@ -149,7 +148,7 @@ async function handleRetrigger(docId: number) {
     await refreshStats()
   } catch (e) {
     console.error('[kb-dashboard] retrigger failed:', e)
-    toast.error('重新触发失败: ' + String((e as Error).message || e))
+    window.alert('重新触发失败: ' + String((e as Error).message || e))
   } finally {
     triggeringSet.value = new Set(triggeringSet.value)
     triggeringSet.value.delete(docId)

@@ -2,19 +2,46 @@
 import json
 import logging
 import math
+import os
+import tempfile
 from dataclasses import dataclass, field
-
-from sqlalchemy import select, delete as sa_delete
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.gateway import service as gateway_service
-from ..models import AgentBudgetState
-
+from pathlib import Path
+from app.gateway.config import MODEL_PROFILES
 logger = logging.getLogger("v2.agent").getChild("engine.budget_allocator")
 SAFETY_MAX_TOKENS = 120000
 RESERVED_OUTPUT_TOKENS = 4096
 
-# ── DB-backed persistence for cross-worker consistency ────────────────
+# ── File-backed persistence for cross-worker consistency ──────────────
+_BUDGET_DATA_DIR = Path(__file__).resolve().parents[4] / "backend" / "data" / "agent"
+_BUDGET_DATA_FILE = _BUDGET_DATA_DIR / "budget_tracker.json"
+
+
+def _load_budget_state() -> dict:
+    if _BUDGET_DATA_FILE.exists():
+        try:
+            with open(_BUDGET_DATA_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("budget_tracker: failed to load state: %s", e)
+    return {}
+
+
+def _save_budget_state(state: dict) -> None:
+    try:
+        _BUDGET_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(_BUDGET_DATA_DIR), prefix=".budget_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(state, f, ensure_ascii=False)
+            os.replace(tmp_path, str(_BUDGET_DATA_FILE))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        logger.warning("budget_tracker: failed to save state: %s", e)
 
 
 # ── Diminishing returns tracker ────────────────────────────────────────────
@@ -41,49 +68,30 @@ _DIMINISHING_MIN_ROUNDS = 3    # don't stop before this many rounds
 class DiminishingBudgetTracker:
     """Tracks multi-turn tool round information gain and decides when to stop.
 
-    State is persisted to DB for cross-worker consistency.
-    Each conversation has one row identified by conversation_id (derived from session_key).
+    State is persisted to a file for cross-worker consistency.  Each worker
+    loads the latest state before mutation and saves after each update.
     """
 
-    async def _load_from_db(self, db: AsyncSession, session_key: str) -> list[dict]:
-        conv_id = self._conv_id(session_key)
-        r = await db.execute(
-            select(AgentBudgetState).where(AgentBudgetState.conversation_id == conv_id)
-        )
-        row = r.scalar_one_or_none()
-        return (row.rounds_data or {}).get("rounds", []) if row else []
+    def __init__(self) -> None:
+        self._rounds: dict[str, list[dict]] = {}
+        self._load()
 
-    async def _save_to_db(self, db: AsyncSession, session_key: str, owner_id: int, records: list[dict]) -> None:
-        conv_id = self._conv_id(session_key)
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-        stmt = pg_insert(AgentBudgetState).values(
-            conversation_id=conv_id, owner_id=owner_id, rounds_data={"rounds": records},
-        )
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["conversation_id"],
-            set_={"rounds_data": {"rounds": records}},
-        )
-        await db.execute(stmt)
-        await db.commit()
+    def _load(self) -> None:
+        raw = _load_budget_state()
+        self._rounds = raw.get("rounds", {})
 
-    @staticmethod
-    def _conv_id(session_key: str) -> int:
-        conv_part = session_key.replace("budget_conv_", "").replace("conv_", "")
-        try:
-            return int(conv_part)
-        except (ValueError, TypeError):
-            return hash(session_key) % (10 ** 9)
+    def _save(self) -> None:
+        _save_budget_state({"rounds": self._rounds})
 
-    async def record_round(
+    def record_round(
         self,
-        db: AsyncSession,
         session_key: str,
-        owner_id: int,
         tokens_before: int,
         tokens_after: int,
     ) -> DiminishingReturnRecord:
         """Record a tool round's token counts and compute net gain."""
-        records = await self._load_from_db(db, session_key)
+        self._load()
+        records = self._rounds.setdefault(session_key, [])
         net_gain = max(tokens_after - tokens_before, 0)
         turn_index = len(records)
         rec = DiminishingReturnRecord(
@@ -98,23 +106,25 @@ class DiminishingBudgetTracker:
             "token_count_after": tokens_after,
             "net_gain_tokens": net_gain,
         })
-        await self._save_to_db(db, session_key, owner_id, records)
+        self._save()
         return rec
 
-    async def should_stop(self, db: AsyncSession, session_key: str) -> tuple[bool, str]:
+    def should_stop(self, session_key: str) -> tuple[bool, str]:
         """Check if recent rounds show diminishing returns.
 
         Returns ``(should_stop, reason)``.  Checks only the last
         ``_DIMINISHING_WINDOW`` rounds and requires at least
         ``_DIMINISHING_MIN_ROUNDS`` to have elapsed before stopping.
         """
-        records = await self._load_from_db(db, session_key)
+        self._load()
+        records = self._rounds.get(session_key, [])
         if len(records) < _DIMINISHING_MIN_ROUNDS:
             return False, ""
 
         window = records[-_DIMINISHING_WINDOW:]
         recent_gains = [r["net_gain_tokens"] for r in window]
 
+        # All gains below threshold within the window?
         if all(g < _DIMINISHING_THRESHOLD for g in recent_gains):
             avg_gain = sum(recent_gains) // len(recent_gains)
             reason = (
@@ -124,6 +134,7 @@ class DiminishingBudgetTracker:
             )
             return True, reason
 
+        # Are gains monotonically decreasing over the window?
         if len(window) >= 3 and all(
             window[i]["net_gain_tokens"] > window[i + 1]["net_gain_tokens"]
             for i in range(len(window) - 1)
@@ -138,9 +149,10 @@ class DiminishingBudgetTracker:
 
         return False, ""
 
-    async def get_diagnosis(self, db: AsyncSession, session_key: str) -> dict:
+    def get_diagnosis(self, session_key: str) -> dict:
         """Return diagnostic info for the engine diagnosis output."""
-        records = await self._load_from_db(db, session_key)
+        self._load()
+        records = self._rounds.get(session_key, [])
         return {
             "total_rounds": len(records),
             "recent_gains": [r["net_gain_tokens"] for r in records[-_DIMINISHING_WINDOW:]],
@@ -148,17 +160,15 @@ class DiminishingBudgetTracker:
             "threshold": _DIMINISHING_THRESHOLD,
         }
 
-    async def reset(self, db: AsyncSession, session_key: str) -> None:
+    def reset(self, session_key: str) -> None:
         """Clear tracking for a given session."""
-        conv_id = self._conv_id(session_key)
-        await db.execute(
-            sa_delete(AgentBudgetState).where(AgentBudgetState.conversation_id == conv_id)
-        )
-        await db.commit()
+        self._load()
+        self._rounds.pop(session_key, None)
+        self._save()
 
 
 def get_context_budget(profile_key: str) -> int | None:
-    profile = gateway_service.get_model_profile_safe(profile_key) or {}
+    profile = MODEL_PROFILES.get(profile_key, {})
     budget = profile.get("context_budget")
     if budget is not None:
         try:
@@ -194,6 +204,38 @@ def estimate_one_message(msg: dict) -> int:
     if isinstance(text, str):
         return max(math.ceil(len(text) / 1.5), 0)
     return 0
+
+
+def _group_projected_messages(projected_messages: list[dict]) -> list[list[dict]]:
+    """Group projected messages into atomic units.
+
+    A tool round must stay intact:
+    assistant message with tool_calls + following tool messages that share
+    the same llm_response_id should be treated as one unit, so budget
+    trimming never leaves the model with an orphan assistant/tool pair.
+    """
+    grouped: list[list[dict]] = []
+    i = 0
+    while i < len(projected_messages):
+        msg = projected_messages[i]
+        unit = [msg]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            tool_call_count = len(msg.get("tool_calls") or [])
+            j = i + 1
+            seen_tool_msgs = 0
+            while j < len(projected_messages) and seen_tool_msgs < tool_call_count:
+                next_msg = projected_messages[j]
+                if next_msg.get("role") != "tool":
+                    break
+                unit.append(next_msg)
+                seen_tool_msgs += 1
+                j += 1
+            grouped.append(unit)
+            i = j
+            continue
+        grouped.append(unit)
+        i += 1
+    return grouped
 
 
 def assemble_context(
@@ -237,15 +279,17 @@ def assemble_context(
     recent: list[dict] = []
     recent_tokens = 0
     dropped = 0
-    for msg in projected_messages:
-        if msg["role"] not in ("user", "assistant", "tool"):
+    for group in _group_projected_messages(projected_messages):
+        group_tokens = sum(estimate_one_message(msg) for msg in group)
+        if not group:
             continue
-        mt = estimate_one_message(msg)
-        if recent_tokens + mt <= remaining:
-            recent.append(msg)
-            recent_tokens += mt
+        if group[0]["role"] not in ("user", "assistant", "tool"):
+            continue
+        if recent_tokens + group_tokens <= remaining:
+            recent.extend(group)
+            recent_tokens += group_tokens
         else:
-            dropped += 1
+            dropped += len(group)
     diagnosis["recent_tokens"] = recent_tokens
     diagnosis["dropped_recent_count"] = dropped
     messages.extend(recent)

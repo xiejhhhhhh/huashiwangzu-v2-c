@@ -2,16 +2,16 @@
 
 Registers the parse capability with the framework's cross-module registry.
 """
+import os
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal, get_db
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
-from app.schemas.document_ir import DocumentIR, ManifestIR, ResourceIR
 from app.services.module_registry import register_capability
-from app.services.file_reader import resolve_caller_user_id, read_uploaded_file
 
 router = APIRouter(prefix="/api/pptx-parser", tags=["pptx-parser"])
 
@@ -20,18 +20,45 @@ class ParseRequest(BaseModel):
     file_id: int
 
 
+def _resolve_user_id(caller: str) -> int:
+    from app.core.exceptions import PermissionDenied
+
+    try:
+        prefix, raw_id = caller.split(":", 1)
+        if prefix == "user":
+            return int(raw_id)
+    except (TypeError, ValueError):
+        pass
+    raise PermissionDenied("Invalid caller")
+
+
 async def _parse(params: dict, caller: str) -> dict:
     """Parse PPTX file into unified content blocks."""
     file_id = int(params.get("file_id", 0))
     if file_id <= 0:
         raise ValueError("file_id must be a positive integer")
 
+    from app.config import get_settings
+    from app.core.exceptions import NotFound, ValidationError, AppException
+    from app.services.file_service import check_file_access
+    from pathlib import Path
     from pptx import Presentation
 
     allowed = {"pptx"}
-    user_id = resolve_caller_user_id(caller)
+    user_id = _resolve_user_id(caller)
     async with AsyncSessionLocal() as db:
-        _, full_path = await read_uploaded_file(db, file_id, user_id, allowed)
+        file = await check_file_access(db, file_id, user_id)
+        ext = (file.extension or "").lower()
+        if ext not in allowed:
+            raise ValidationError(f"Unsupported format '{ext}'. Allowed: {', '.join(sorted(allowed))}")
+        if not file.storage_path:
+            raise NotFound("File storage path is empty")
+        upload_root = Path(get_settings().UPLOAD_DIR).resolve()
+        full_path = (upload_root / file.storage_path).resolve()
+        if os.path.commonpath([str(upload_root), str(full_path)]) != str(upload_root):
+            raise AppException("Unsafe file storage path", status_code=400)
+        if not full_path.exists() or not full_path.is_file():
+            raise NotFound("File on disk not found")
 
         prs = Presentation(str(full_path))
         blocks = []
@@ -46,26 +73,24 @@ async def _parse(params: dict, caller: str) -> dict:
                         text = para.text.strip()
                         if not text:
                             continue
-                        block_type = "heading" if ("title" in str(shape.name).lower() or "标题" in str(shape.name)) else "paragraph"
+                        block_type = "标题" if ("title" in str(shape.name).lower() or "标题" in str(shape.name)) else "段落"
                         blocks.append({"type": block_type, "text": text, "page": pno, "resource_ref": None})
                 if shape.shape_type and "picture" in str(shape.shape_type).lower():
                     resource_counter += 1
-                    blocks.append({"type": "image", "text": "", "page": pno, "resource_ref": resource_counter})
+                    blocks.append({"type": "图片", "text": "", "page": pno, "resource_ref": resource_counter})
                     resources.append({
                         "id": resource_counter,
-                        "type": "image",
+                        "type": "图片",
                         "file_storage_id": None,
                         "text_desc": f"Slide {pno} image ({shape.name})",
                     })
 
-    ir = DocumentIR(
-        file_id=file_id,
-        format="pptx",
-        manifest=ManifestIR(file_type="pptx"),
-        blocks=blocks,
-        resources=resources,
-    )
-    return ir.model_dump(exclude_none=True)
+    return {
+        "file_id": file_id,
+        "format": "pptx",
+        "blocks": blocks,
+        "resources": resources,
+    }
 
 
 @router.get("/health")

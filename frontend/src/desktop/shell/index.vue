@@ -57,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineAsyncComponent, ref, computed, unref, watch, onUnmounted } from 'vue'
+import { defineAsyncComponent, ref, computed, unref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
@@ -74,7 +74,6 @@ import { useDesktopPointer } from './use-desktop-pointer'
 import { buildFileMenu, buildFolderMenu } from '@/desktop/context-menu/file-context-menu'
 import { buildDesktopShellIconMenu as buildAppIconMenu, buildDesktopShellBlankMenu } from '@/desktop/context-menu/desktop-shell-context-menu'
 import { buildRecycleBinMenu, buildRecycleBinItemMenu } from '@/desktop/context-menu/file-context-menu'
-import { useCommandRegistry } from './use-command-registry'
 import { copyItems, cutItems, hasContent, currentClipboardType, currentClipboardItems, clearClipboard, getClipboardIdList } from '@/desktop/clipboard/clipboard-state'
 import type { ClipboardItem } from '@/desktop/clipboard/clipboard-state'
 import { restorePersistedIconPositions } from '@/desktop/drag-drop/drag-tool'
@@ -103,9 +102,6 @@ const { handleDesktopMouseDown } = useDesktopPointer()
 
 const showLauncher = ref(false); const showRightSidebar = ref(false); const rightSidebarAppKey = ref('desktop')
 const canWrite = computed(() => canBusinessWrite.value)
-
-const { registerAllApps } = useCommandRegistry(handleLauncherOpen, (command: string) => handleLauncherCommand(command))
-watch(launcherAppList, (list) => { if (list.length) registerAllApps(list) }, { immediate: true })
 
 const wallpaper = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0f172a"/><stop offset="50%" stop-color="#1d4ed8"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient><radialGradient id="r" cx="30%" cy="20%" r="60%"><stop offset="0%" stop-color="rgba(191,219,254,0.35)"/><stop offset="100%" stop-color="rgba(15,23,42,0)"/></radialGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><rect width="100%" height="100%" fill="url(#r)"/></svg>')
 
@@ -348,12 +344,4 @@ function handleSwitchWindow(id: string) {
     if (w.minimized || !w.isActive) { windowManager.activateWindow(id) } else { windowManager.toggleMinimized(id) }
   }
 }
-
-onUnmounted(() => {
-  if (uploadInputRef.value) {
-    uploadInputRef.value.removeEventListener('change', onUploadSelected)
-    uploadInputRef.value.remove()
-    uploadInputRef.value = null
-  }
-})
 </script>

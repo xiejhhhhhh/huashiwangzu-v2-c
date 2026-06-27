@@ -1,10 +1,7 @@
 """Workbook parser - 1:1 from old 解析_工作簿.php"""
-import logging
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import Any
-
-logger = logging.getLogger("v2.excel-engine.workbook_parser")
 
 SPREAD_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -36,7 +33,7 @@ def read_workbook_list(zf: zipfile.ZipFile) -> tuple[list[str], dict[str, str], 
                     target = target[3:]
                 rid_map[rid] = target
     except KeyError:
-        logger.debug("RID %s not found in workbook relationships", rid)
+        pass
 
     for sheet in root.findall(f'.//{{{SPREAD_NS}}}sheet'):
         name = sheet.get('name', 'Sheet1')

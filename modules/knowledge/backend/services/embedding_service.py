@@ -179,43 +179,24 @@ async def chunk_and_embed(
 
 
 async def store_chunks(db: AsyncSession, chunks: list[dict]) -> int:
-    """批量写入 kb_chunks。返回写入条数。
-
-    注意：embedding 列是 vector(1024)，ORM 可能将 list[float] 误推断为 JSON，
-    导致 ``column is of type vector but expression is of type json`` 错误。
-    这里用原始 SQL + 显式 ``CAST(:emb AS vector(1024))`` 彻底绕过类型推断。
-    """
-    from sqlalchemy import text as sa_text
-
-    if not chunks:
-        return 0
+    """批量写入 kb_chunks。返回写入条数。"""
+    from ..models import KbChunk
 
     stored = 0
     for ch in chunks:
-        embedding = ch.get("embedding")
-        await db.execute(
-            sa_text("""
-                INSERT INTO kb_chunks
-                    (document_id, owner_id, page, chunk_index,
-                     block_type, text, embedding, keywords)
-                VALUES
-                    (:document_id, :owner_id, :page, :chunk_index,
-                     :block_type, :text,
-                     CAST(:embedding AS vector(1024)),
-                     :keywords)
-            """),
-            {
-                "document_id": ch["document_id"],
-                "owner_id": ch["owner_id"],
-                "page": ch["page"],
-                "chunk_index": ch["chunk_index"],
-                "block_type": ch["block_type"],
-                "text": ch["text"],
-                "embedding": str(embedding) if embedding is not None else None,
-                "keywords": ch.get("keywords"),
-            },
+        record = KbChunk(
+            document_id=ch["document_id"],
+            owner_id=ch["owner_id"],
+            page=ch["page"],
+            chunk_index=ch["chunk_index"],
+            block_type=ch["block_type"],
+            text=ch["text"],
+            embedding=ch.get("embedding"),
+            keywords=ch.get("keywords"),
         )
+        db.add(record)
         stored += 1
+        # 每 50 条 flush 一次
         if stored % 50 == 0:
             await db.flush()
     await db.commit()

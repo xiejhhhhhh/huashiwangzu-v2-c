@@ -56,6 +56,7 @@ class RuntimeTaskSink:
         thinking_parts: list[str],
         tool_events: list[dict],
         timeline: list[dict],
+        usage: dict | None = None,
     ) -> int | None:
         """Save the assistant message, meta, and return the message id."""
         if not full_content:
@@ -76,10 +77,12 @@ class RuntimeTaskSink:
             references=references_from_tool_events(tool_events),
             tool_events=safe_events,
             timeline=timeline,
+            usage=usage,
         )
         logger.info(
-            "[DIAG] persist_assistant DONE msg=%d timeline_len=%d full_len=%d",
+            "[DIAG] persist_assistant DONE msg=%d timeline_len=%d full_len=%d usage=%s",
             msg.id, len(timeline), len(full_content),
+            json.dumps(usage) if usage else "None",
         )
         return msg.id
 

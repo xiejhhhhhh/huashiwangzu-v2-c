@@ -1,197 +1,28 @@
 import asyncio
 import json
 import logging
-import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
+from dataclasses import dataclass
 from typing import AsyncGenerator
-
-from .adapters import get_adapter
 from .base import BaseProvider
-from .config import (
-    BUDGET_RATES,
-    DEFAULT_MODEL,
-    DEFAULT_ROUTING_POLICY,
-    MODEL_PROFILES,
-    TEMPLATES,
-    VariantTemplate,
-    _config,
-    list_routing_policies,
-    list_templates,
-    resolve_api_key,
-    resolve_template_for_role,
-)
-from .error_classifier import (
-    _get_status_code,
-    classify_error,
-    compute_delay,
-    max_attempts_for_category,
-)
-from .local import LocalProvider
-from .openai_provider import OpenAIProvider
 from .opencode_provider import OpenCodeProvider
+from .openai_provider import OpenAIProvider
+from .local import LocalProvider
+from .adapters import get_adapter
+from app.gateway.config import DEFAULT_MODEL
 
 logger = logging.getLogger("v2.gateway.router")
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
-
-# ── Gateway trace persistence ─────────────────────────────────────
-GATEWAY_TRACE_DIR = Path(__file__).resolve().parents[2] / "data" / "runtime"
-GATEWAY_TRACE_DIR.mkdir(parents=True, exist_ok=True)
-GATEWAY_TRACE_FILE = GATEWAY_TRACE_DIR / "gateway_traces.jsonl"
+RETRYABLE_STATUSES = {429, 502, 503, 504}
 
 
-def _persist_gateway_trace(entry: dict) -> None:
-    """Append a gateway trace entry to the JSONL file (atomic append).
-
-    Safe for multi-worker: each write appends one line; reads must
-    handle concurrent writers gracefully.
-    """
-    try:
-        line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
-        with open(GATEWAY_TRACE_FILE, "a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception as exc:
-        logger.warning("Failed to persist gateway trace: %s", exc)
-
-
-def _message_chars(messages: list[dict]) -> int:
-    return sum(len(str(m.get("content") or "")) for m in messages)
-
-# ── Unified retry budget / attempt trace ──────────────────────────────
-
-
+@dataclass
 class RetryBudget:
-    """Lightweight budget tracker shared across retry layers.
+    """Compatibility budget container for gateway service callers."""
 
-    Records every attempt so _call_with_retry, chat_with_fallback, and
-    chat_with_degradation_chain can all see how many tries have been made.
-
-    Diagnostics contract (shared with fallback chain):
-      - trace_id        : propagated from caller
-      - fallback_reason : when a fallback switch occurs, records the reason
-      - attempt history : per-attempt profile/provider/status/reason/timing
-    """
-
-    def __init__(self, max_retries: int = 6):
-        self.max_retries = max_retries
-        self.attempts: list[dict] = []
-        self.trace_id: str = str(uuid.uuid4())
-        self.fallback_reason: str | None = None
-
-    def record_attempt(self, profile_key: str, provider: str, status: int | None, reason: str = "",
-                       elapsed_ms: float | None = None, retry_delay_ms: float | None = None,
-                       request_input_chars: int | None = None,
-                       request_body_bytes: int | None = None,
-                       response_content_chars: int | None = None,
-                       reasoning_chars: int | None = None,
-                       tokens: dict | None = None,
-                       error_type: str | None = None,
-                       retryable: bool | None = None) -> None:
-        entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "profile_key": profile_key,
-            "provider": provider,
-            "status": status,
-            "reason": _extract_reason_from_str(reason)[:200],
-        }
-        if elapsed_ms is not None:
-            entry["elapsed_ms"] = round(elapsed_ms, 1)
-        if retry_delay_ms is not None:
-            entry["retry_delay_ms"] = round(retry_delay_ms, 1)
-        if request_input_chars is not None:
-            entry["request_input_chars"] = request_input_chars
-        if request_body_bytes is not None:
-            entry["request_body_bytes"] = request_body_bytes
-        if response_content_chars is not None:
-            entry["response_content_chars"] = response_content_chars
-        if reasoning_chars is not None:
-            entry["reasoning_chars"] = reasoning_chars
-        if tokens is not None:
-            entry["tokens"] = tokens
-        if error_type is not None:
-            entry["error_type"] = error_type
-        if retryable is not None:
-            entry["retryable"] = retryable
-        self.attempts.append(entry)
-
-    def record_fallback(self, from_profile: str, to_profile: str, reason: str) -> None:
-        self.fallback_reason = f"{from_profile} -> {to_profile}: {_extract_reason_from_str(reason)[:200]}"
-        self.attempts.append({
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "profile_key": f"{from_profile}->{to_profile}",
-            "provider": "fallback",
-            "status": None,
-            "reason": self.fallback_reason,
-            "error_type": "fallback",
-        })
-
-    @property
-    def exhausted(self) -> bool:
-        return len(self.attempts) >= self.max_retries
-
-    def to_dict(self) -> dict:
-        return {
-            "trace_id": self.trace_id,
-            "max_retries": self.max_retries,
-            "total_attempts": len(self.attempts),
-            "fallback_reason": self.fallback_reason,
-            "attempts": self.attempts,
-        }
-
-
-# ── Model governance ─ ModelRouter (template + routing policy + budget/health diag) ──
-
-
-class ModelRouter:
-    """Governance-level model router: resolves templates, evaluates policy, reports diagnostics.
-
-    This is the control-plane layer above the existing ``ModelGatewayRouter``.
-    Consumers can ask "what template should role X use?" without knowing
-    about raw profile keys.
-    """
-
-    @staticmethod
-    def resolve_template(role: str = "default",
-                          high_ambiguity: bool = False,
-                          high_cost: bool = False,
-                          budget_tight: bool = False,
-                          policy_name: str = "default_policy") -> VariantTemplate:
-        return resolve_template_for_role(role, high_ambiguity, high_cost, budget_tight, policy_name)
-
-    @staticmethod
-    def resolve_profile_key(role: str = "default",
-                             high_ambiguity: bool = False,
-                             high_cost: bool = False,
-                             budget_tight: bool = False,
-                             policy_name: str = "default_policy") -> str:
-        tpl = resolve_template_for_role(role, high_ambiguity, high_cost, budget_tight, policy_name)
-        return tpl.primary_profile
-
-    @staticmethod
-    def get_template(name: str) -> VariantTemplate | None:
-        return TEMPLATES.get(name)
-
-    @staticmethod
-    def list_templates() -> list[dict]:
-        return list_templates()
-
-    @staticmethod
-    def list_policies() -> list[dict]:
-        return list_routing_policies()
-
-    @staticmethod
-    def get_diagnostics() -> dict:
-        """Return current routing state for admin observability."""
-        return {
-            "templates": list_templates(),
-            "policies": list_routing_policies(),
-            "budget_rates": {k: v for k, v in BUDGET_RATES.items()},
-            "default_policy": DEFAULT_ROUTING_POLICY.name,
-            "available_profiles": list(MODEL_PROFILES.keys()),
-        }
-
+    max_attempts: int = RETRY_MAX_ATTEMPTS
+    base_delay_seconds: float = RETRY_BASE_DELAY_SECONDS
 
 # ── Cost logging helper ───────────────────────────────────────────────
 
@@ -218,10 +49,8 @@ async def _log_model_usage(
         cost = (prompt_tokens * price_input + completion_tokens * price_output) / 1_000_000
 
         from datetime import date
-
-        from sqlalchemy import text
-
         from app.database import AsyncSessionLocal
+        from sqlalchemy import text
 
         today = date.today()
         async with AsyncSessionLocal() as db:
@@ -248,6 +77,33 @@ async def _log_model_usage(
     except Exception as e:
         logger.warning("Usage logging failed (non-fatal): %s", e)
 
+# ── Load model configuration from models.json ──────────────────────────
+_MODELS_CONFIG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "data" / "config" / "models.json"
+)
+
+_CONFIG: dict | None = None
+
+
+def _load_models_config() -> dict:
+    global _CONFIG
+    if _CONFIG is not None:
+        return _CONFIG
+    if not _MODELS_CONFIG_PATH.exists():
+        logger.warning("models.json not found at %s, gateway will use empty config", _MODELS_CONFIG_PATH)
+        _CONFIG = {"providers": {}, "model_types": {"llm": {"profiles": {}}}}
+        return _CONFIG
+    with open(_MODELS_CONFIG_PATH, "r") as f:
+        _CONFIG = json.load(f)
+    return _CONFIG
+
+
+_config = _load_models_config()
+
+# Build MODEL_PROFILES from config (keep interface for existing consumers)
+MODEL_PROFILES: dict[str, dict] = _config["model_types"]["llm"]["profiles"]
+
 # ── Vision profile loading ─────────────────────────────────────────────
 _vision_cfg = _config.get("model_types", {}).get("vision", {})
 _VISION_PRIMARY: str = _vision_cfg.get("primary", "mimo")
@@ -255,45 +111,32 @@ _VISION_FALLBACK: list[str] = _vision_cfg.get("fallback_chain", ["qwen3-vl"])
 _VISION_PROFILES: dict[str, dict] = _vision_cfg.get("profiles", {})
 
 
+def _resolve_api_key(provider_cfg: dict) -> str:
+    """Read api_key from settings using provider config's api_key_env field."""
+    env_name = provider_cfg.get("api_key_env", "")
+    if not env_name:
+        return ""
+    from app.config import get_settings
+    key = getattr(get_settings(), env_name, "")
+    if not key:
+        logger.warning("Provider config references %s but it is empty in settings", env_name)
+    return key
+
+
 def _status_code_from_exception(exc: Exception) -> int | None:
-    return _get_status_code(exc)
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    return status if isinstance(status, int) else None
 
 
-def _extract_reason_from_str(reason: str) -> str:
-    """Strip noisy prefixes and truncate for diagnostics."""
-    return reason[:300]
-
-
-def _extract_reason(exc: Exception) -> str:
-    """Unified reason extraction — combines _status_code + response body truncation.
-
-    This is the shared function that replaces the separate _extract_reason
-    in fallback_chain.py and the inline error handling in gateway/router.py.
-    """
-    detail = str(exc)
-    status = _status_code_from_exception(exc)
-    if status:
-        detail = f"[HTTP {status}] {detail}"
-    if hasattr(exc, "response"):
-        try:
-            body = exc.response.text
-            if body:
-                detail = f"{detail[:200]} | body:{body[:500]}"
-        except Exception:
-            logger.debug("Failed to extract response body from exception")
-    return detail[:500]
-
-
-def _get_profile_timeout(profile: dict) -> dict | None:
-    return profile.get("timeout", None)
-
-
-def list_model_profiles() -> list[dict]:
-    """Return public LLM profile metadata for routers and modules."""
-    return [
-        {"key": key, "name": key, "provider": profile["provider"], "model": profile["model"]}
-        for key, profile in MODEL_PROFILES.items()
-    ]
+def _is_retryable_exception(exc: Exception) -> bool:
+    status_code = _status_code_from_exception(exc)
+    if status_code in RETRYABLE_STATUSES:
+        return True
+    return isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError))
 
 
 async def _call_with_retry(
@@ -303,73 +146,29 @@ async def _call_with_retry(
     temperature: float,
     max_tokens: int,
     tools: list[dict] | None,
-    budget: RetryBudget | None = None,
-    timeout: dict | None = None,
 ) -> dict:
-    last_exception = None
-    input_chars = _message_chars(messages)
-    body_bytes = len(json.dumps(messages, ensure_ascii=False)) if messages else 0
     for attempt_index in range(RETRY_MAX_ATTEMPTS):
-        started = time.perf_counter()
-        retry_delay_ms: float | None = None
         try:
-            result = await provider.chat(
+            return await provider.chat(
                 messages=messages,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
-                timeout=timeout,
             )
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            response_content = str(result.get("content") or "")
-            reasoning_content = str(result.get("reasoning_content") or "")
-            if budget:
-                budget.record_attempt(
-                    profile_key=model,
-                    provider=getattr(provider, "name", type(provider).__name__),
-                    status=200,
-                    reason="Success",
-                    elapsed_ms=elapsed_ms,
-                    request_input_chars=input_chars,
-                    request_body_bytes=body_bytes,
-                    response_content_chars=len(response_content),
-                    reasoning_chars=len(reasoning_content),
-                    tokens=result.get("usage") or result.get("tokens"),
-                )
-            return result
         except Exception as exc:
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            last_exception = exc
-            status = _status_code_from_exception(exc)
-            clf = classify_error(exception=exc, status_code=status)
-            if budget:
-                budget.record_attempt(
-                    profile_key=model,
-                    provider=getattr(provider, "name", type(provider).__name__),
-                    status=status,
-                    reason=f"[{clf.category}] {clf.message}",
-                    elapsed_ms=elapsed_ms,
-                    request_input_chars=input_chars,
-                    request_body_bytes=body_bytes,
-                    error_type=clf.category,
-                    retryable=clf.retryable,
-                )
-            max_attempts = max_attempts_for_category(clf.category, RETRY_MAX_ATTEMPTS)
-            if not clf.retryable or attempt_index >= max_attempts - 1:
-                break
-            delay = compute_delay(clf, attempt_index, RETRY_BASE_DELAY_SECONDS)
-            retry_delay_ms = delay * 1000
+            if not _is_retryable_exception(exc) or attempt_index == RETRY_MAX_ATTEMPTS - 1:
+                raise
+            delay = RETRY_BASE_DELAY_SECONDS * (2 ** attempt_index)
             logger.warning(
-                "AI gateway call attempt %d/%d failed (status=%s, category=%s, elapsed=%.0fms), retrying in %.1fs",
-                attempt_index + 1, max_attempts, status, clf.category, elapsed_ms, delay,
+                "AI gateway call attempt %d/%d failed (status=%s), retrying in %.1fs",
+                attempt_index + 1,
+                RETRY_MAX_ATTEMPTS,
+                _status_code_from_exception(exc),
+                delay,
             )
             await asyncio.sleep(delay)
-            # Record retry delay on the failed attempt
-            if budget and budget.attempts:
-                budget.attempts[-1]["retry_delay_ms"] = round(retry_delay_ms, 1)
-
-    raise last_exception or RuntimeError("AI gateway retry loop exhausted")
+    raise RuntimeError("AI gateway retry loop exhausted")
 
 
 class ModelGatewayRouter:
@@ -385,7 +184,7 @@ class ModelGatewayRouter:
             elif ptype == "openai_compat":
                 self._providers[name] = OpenAIProvider(
                     api_url=cfg.get("api_url", ""),
-                    api_key=resolve_api_key(cfg),
+                    api_key=_resolve_api_key(cfg),
                     provider_name=cfg.get("provider_name", name),
                 )
             elif ptype == "local":
@@ -398,40 +197,10 @@ class ModelGatewayRouter:
         return profile
 
     def list_profiles(self) -> list[dict]:
-        return list_model_profiles()
-
-    def resolve_template(self, role: str = "default",
-                          high_ambiguity: bool = False,
-                          high_cost: bool = False,
-                          budget_tight: bool = False,
-                          policy_name: str = "default_policy") -> VariantTemplate:
-        return resolve_template_for_role(role, high_ambiguity, high_cost, budget_tight, policy_name)
-
-    def resolve_profile_key_for_role(self, role: str = "default",
-                                      high_ambiguity: bool = False,
-                                      high_cost: bool = False,
-                                      budget_tight: bool = False,
-                                      policy_name: str = "default_policy") -> str:
-        tpl = resolve_template_for_role(role, high_ambiguity, high_cost, budget_tight, policy_name)
-        return tpl.primary_profile
-
-    def get_routing_diagnostics(self) -> dict:
-        return ModelRouter.get_diagnostics()
-
-    def get_failover_diagnostics(self) -> dict:
-        """Return failover / fallback / health diagnostic state."""
-        profiles = []
-        for key, profile in MODEL_PROFILES.items():
-            profiles.append({
-                "key": key,
-                "provider": profile.get("provider", ""),
-                "model": profile.get("model", ""),
-            })
-        return {
-            "profiles": profiles,
-            "profiles_available": len(MODEL_PROFILES),
-            "providers_configured": list(self._providers.keys()) if hasattr(self, '_providers') else [],
-        }
+        return [
+            {"key": k, "name": k, "provider": v["provider"], "model": v["model"]}
+            for k, v in MODEL_PROFILES.items()
+        ]
 
     def get_provider(self, provider_name: str) -> BaseProvider:
         provider = self._providers.get(provider_name)
@@ -447,49 +216,11 @@ class ModelGatewayRouter:
         messages: list[dict],
         profile_key: str = DEFAULT_MODEL,
         tools: list[dict] | None = None,
-        budget: RetryBudget | None = None,
     ) -> dict:
-        budget = budget or RetryBudget()
         profile = self.get_profile(profile_key)
-        total_started = time.perf_counter()
         if profile["provider"] == "llama":
             await _ensure_local_text_model(profile)
         provider = self.get_provider(profile["provider"])
-        timeout = _get_profile_timeout(profile)
-
-        def _build_diagnostics(result_dict: dict | None = None,
-                               error_info: dict | None = None) -> dict:
-            total_elapsed = (time.perf_counter() - total_started) * 1000
-            diag = {
-                "trace_id": budget.trace_id,
-                "profile_key": profile_key,
-                "provider": profile.get("provider", ""),
-                "model": profile.get("model", ""),
-                "attempts": len(budget.attempts),
-                "total_elapsed_ms": round(total_elapsed, 1),
-                "attempt_logs": budget.attempts,
-                "request_summary": {
-                    "message_count": len(messages),
-                    "input_chars": _message_chars(messages),
-                    "max_tokens": profile.get("max_tokens"),
-                    "temperature": profile.get("temperature"),
-                    "stream": False,
-                },
-            }
-            if error_info:
-                diag["error"] = error_info
-            if result_dict:
-                content = str(result_dict.get("content") or "")
-                diag["response_summary"] = {
-                    "output_chars": len(content),
-                    "reasoning_chars": len(str(result_dict.get("reasoning_content") or "")),
-                }
-                tokens = result_dict.get("tokens") or result_dict.get("usage")
-                if tokens:
-                    diag["response_summary"]["tokens"] = tokens
-            return diag
-
-        error_diag = None
         try:
             raw = await _call_with_retry(
                 provider=provider,
@@ -498,8 +229,6 @@ class ModelGatewayRouter:
                 temperature=profile["temperature"],
                 max_tokens=profile["max_tokens"],
                 tools=tools,
-                budget=budget,
-                timeout=timeout,
             )
         except Exception as exc:
             detail = str(exc)
@@ -509,23 +238,10 @@ class ModelGatewayRouter:
                     if body:
                         detail = f"{detail}\n响应体: {body[:1000]}"
                 except Exception:
-                    logger.debug("Failed to extract error response body from LLM provider")
-            clf = classify_error(exception=exc)
-            logger.error("AI gateway chat failed after retries: [%s] %s", clf.category, detail)
-            error_diag = _build_diagnostics(error_info={"category": clf.category, "detail": detail[:500]})
-            _persist_gateway_trace(error_diag)
-            return {
-                "error": str(exc),
-                "content": f"(Model error: {detail})",
-                "_retry_budget": budget.to_dict(),
-                "_error_category": clf.category,
-                "diagnostics": error_diag,
-            }
+                    pass
+            logger.error("AI gateway chat failed: %s", detail)
+            return {"error": str(exc), "content": f"(Model error: {detail})"}
         if "error" in raw:
-            raw["_retry_budget"] = budget.to_dict()
-            error_diag = _build_diagnostics(error_info={"detail": str(raw.get("error", ""))[:500]})
-            raw["diagnostics"] = error_diag
-            _persist_gateway_trace(error_diag)
             return raw
         # Log usage cost
         if "usage" in raw:
@@ -539,12 +255,10 @@ class ModelGatewayRouter:
                     provider_name=profile.get("provider", ""),
                     caller_module="gateway.chat",
                 )
-        result = raw if profile["provider"] in ("local",) else get_adapter(profile["model"]).adapt_response(raw, provider=profile["provider"])
-        result["_retry_budget"] = budget.to_dict()
-        diag = _build_diagnostics(result_dict=result)
-        result["diagnostics"] = diag
-        _persist_gateway_trace(diag)
-        return result
+        if profile["provider"] in ("local",):
+            return raw
+        adapter = get_adapter(profile["model"])
+        return adapter.adapt_response(raw, provider=profile["provider"])
 
     async def chat_stream(
         self,
@@ -556,14 +270,12 @@ class ModelGatewayRouter:
         if profile["provider"] == "llama":
             await _ensure_local_text_model(profile)
         provider = self.get_provider(profile["provider"])
-        timeout = _get_profile_timeout(profile)
         async for event in provider.chat_stream(
             messages=messages,
             model=profile["model"],
             temperature=profile["temperature"],
             max_tokens=profile["max_tokens"],
             tools=tools,
-            timeout=timeout,
         ):
             yield event
 
@@ -612,7 +324,6 @@ class ModelGatewayRouter:
                 if profile.get("provider") == "llama":
                     await _ensure_local_vision_model(profile)
                 provider = self.get_provider(profile["provider"])
-                timeout = profile.get("timeout", None)
                 raw = await _call_with_retry(
                     provider=provider,
                     messages=messages,
@@ -620,7 +331,6 @@ class ModelGatewayRouter:
                     temperature=profile.get("temperature", 0.7),
                     max_tokens=profile.get("max_tokens", 4096),
                     tools=None,
-                    timeout=timeout,
                 )
                 if "error" in raw:
                     raise RuntimeError(raw.get("content") or raw.get("error"))
@@ -695,9 +405,9 @@ class ModelGatewayRouter:
                 if m:
                     tool_config["dimensions"] = f"{m.group(1)}x{m.group(2)}"
 
-                import random
-
                 import httpx
+                import base64 as b64
+                import random
 
                 max_retries = 3
                 for attempt in range(max_retries):
@@ -783,7 +493,6 @@ gateway_router = ModelGatewayRouter()
 
 async def _ensure_local_text_model(profile: dict | None = None) -> None:
     from asyncio import to_thread
-
     from app.services.model_watchdog.watchdog import ensure_model
     watchdog_name = (profile or {}).get("watchdog", "gemma-4")
     await to_thread(ensure_model, watchdog_name)
@@ -792,7 +501,6 @@ async def _ensure_local_text_model(profile: dict | None = None) -> None:
 async def _ensure_local_vision_model(profile: dict) -> None:
     """Ensure a local vision model (e.g. qwen3-vl) is running via watchdog."""
     from asyncio import to_thread
-
     from app.services.model_watchdog.watchdog import ensure_model
     watchdog_name = profile.get("watchdog", "qwen3-vl")
     await to_thread(ensure_model, watchdog_name)
@@ -808,7 +516,6 @@ async def route_and_send(
     profile["temperature"] = temperature
     if profile["provider"] == "llama":
         await _ensure_local_text_model(profile)
-    timeout = _get_profile_timeout(profile)
     raw = await _call_with_retry(
         provider=gateway_router.get_provider(profile["provider"]),
         messages=messages,
@@ -816,7 +523,6 @@ async def route_and_send(
         temperature=profile["temperature"],
         max_tokens=profile["max_tokens"],
         tools=None,
-        timeout=timeout,
     )
     if "error" in raw:
         raise RuntimeError(raw.get("content") or raw.get("error"))

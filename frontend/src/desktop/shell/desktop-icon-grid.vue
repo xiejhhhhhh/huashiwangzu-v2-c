@@ -47,7 +47,7 @@ import type { FileEntry } from '@/shared/api/types'
 import AppIcon from '@/desktop/components/app-icon.vue'
 import FileVisualIcon from '@/shared/components/file-visual-icon.vue'
 import { isSelected, select, appendSelection, selectedIds } from '@/desktop/selection/desktop-selection-state'
-import { nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { nextTick, onMounted, watch } from 'vue'
 import { formatFileDisplayName } from '@/shared/files/display-name'
 import { startDrag, dragState } from '@/desktop/drag-drop/drag-state'
 import { getDropOverlayStyle, restorePersistedIconPositions } from '@/desktop/drag-drop/drag-tool'
@@ -75,14 +75,6 @@ async function restoreIconPositionsAfterRender(): Promise<void> {
 
 onMounted(() => {
   void restoreIconPositionsAfterRender()
-})
-
-onUnmounted(() => {
-  if (pendingDrag) {
-    document.removeEventListener('mousemove', handlePendingDragMove)
-    document.removeEventListener('mouseup', clearPendingDrag)
-    pendingDrag = null
-  }
 })
 
 watch(() => [props.appList, props.fileList], () => {

@@ -5,26 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.office import FileJsonPackage
 from app.models.file import File
 from app.core.exceptions import NotFound
-from app.schemas.document_ir import DocumentIR, ManifestIR
 from .json_version_service import JsonVersionService
 
 logger = logging.getLogger(__name__)
-
-
-def _make_empty_ir(file_id: int, fmt: str, file_name: str) -> dict:
-    """Create an empty DocumentIR dict for a new package."""
-    ir = DocumentIR(
-        file_id=file_id,
-        format=fmt,
-        manifest=ManifestIR(
-            file_name=file_name,
-            file_type=fmt,
-            ir_version="1.0",
-        ),
-        blocks=[],
-        resources=[],
-    )
-    return json.loads(ir.model_dump_json(exclude_none=True))
 
 
 class JsonPackageService:
@@ -44,13 +27,17 @@ class JsonPackageService:
             raise NotFound("文件不存在或已删除")
 
         fmt = file.extension.lower() if file.extension else ""
-        supported = {"docx", "xlsx", "pptx", "txt", "csv", "md", "markdown"}
+        supported = {"docx", "xlsx", "pptx", "txt", "csv"}
         if fmt not in supported:
             raise ValueError(f"不支持的格式: {fmt}")
 
-        file_name = f"{file.name}.{file.extension}" if file.extension else file.name
-        ir_dict = _make_empty_ir(file_id, fmt, file_name)
-        json_content = json.dumps(ir_dict, ensure_ascii=False, indent=2)
+        json_content = json.dumps({
+            "manifest": {
+                "file_type": fmt, "version": "1.0.0",
+                "file_name": f"{file.name}.{file.extension}",
+            },
+            "content": {},
+        }, ensure_ascii=False, indent=2)
 
         existing = await self.get_status(db, file_id)
 
@@ -103,5 +90,4 @@ class JsonPackageService:
                 "created_at": version.created_at.isoformat() if version.created_at else None,
             },
             "json_content": json_content,
-            "document_ir": json_content if "blocks" in json_content else None,
         }

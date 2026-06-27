@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
 const MODULES_DIR = path.join(ROOT, 'modules')
+const WORKSPACES_DIR = path.join(ROOT, 'data', 'workspaces')
 const COMPONENT_OUTPUT = path.join(
   ROOT, 'frontend', 'src', 'desktop', 'app-registry', 'component-key-map.generated.ts',
 )
@@ -21,6 +22,40 @@ const ICON_OUTPUT = path.join(
 
 const entries = []
 const iconEntries = []  // { moduleName, iconKey, iconAssetPath }
+
+function scanPrivateModules() {
+  if (!fs.existsSync(WORKSPACES_DIR)) return
+  for (const userId of fs.readdirSync(WORKSPACES_DIR)) {
+    if (userId.startsWith('.')) continue
+    const pmDir = path.join(WORKSPACES_DIR, userId, 'private_modules')
+    if (!fs.existsSync(pmDir)) continue
+    for (const moduleName of fs.readdirSync(pmDir)) {
+      if (moduleName.startsWith('_') || moduleName.startsWith('.')) continue
+      const manifestPath = path.join(pmDir, moduleName, 'manifest.json')
+      if (!fs.existsSync(manifestPath)) continue
+      const stat = fs.statSync(path.join(pmDir, moduleName))
+      if (!stat.isDirectory()) continue
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'))
+      const entryFile = manifest.component_key || 'index.vue'
+      const frontendFile = path.join(pmDir, moduleName, 'frontend', entryFile)
+      if (!fs.existsSync(frontendFile)) continue
+      const importPath = `@workspace/${userId}/private_modules/${moduleName}/frontend/${entryFile}`
+      entries.push({
+        key: `__private__${userId}__${moduleName}/${entryFile}`,
+        importPath,
+        appName: manifest.name || moduleName,
+      })
+      const iconAsset = (manifest.icon_asset || '').trim()
+      if (iconAsset) {
+        iconEntries.push({
+          moduleName: `__private__${userId}__${moduleName}`,
+          iconKey: manifest.icon || 'Collection',
+          iconAssetPath: `@workspace/${userId}/private_modules/${moduleName}/frontend/${iconAsset}`,
+        })
+      }
+    }
+  }
+}
 
 if (fs.existsSync(MODULES_DIR)) {
   for (const moduleName of fs.readdirSync(MODULES_DIR)) {
@@ -59,6 +94,9 @@ if (fs.existsSync(MODULES_DIR)) {
     }
   }
 }
+
+// Scan private modules from user workspaces
+scanPrivateModules()
 
 // ── Generate component-key-map ──────────────────────────────────────
 const compLines = [

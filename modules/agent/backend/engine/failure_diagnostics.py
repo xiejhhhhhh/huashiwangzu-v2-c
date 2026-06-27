@@ -36,8 +36,8 @@ async def record_failure(
     """
     from app.database import AsyncSessionLocal
 
-    async with AsyncSessionLocal() as db:
-        try:
+    try:
+        async with AsyncSessionLocal() as db:
             db.add(FDModel(
                 owner_id=owner_id,
                 conversation_id=conversation_id,
@@ -49,8 +49,8 @@ async def record_failure(
                 created_at=datetime.now(timezone.utc),
             ))
             await db.commit()
-        except Exception as exc:
-            logger.warning("Failed to record failure diagnostic: %s", exc)
+    except Exception as exc:
+        logger.warning("Failed to record failure diagnostic: %s", exc)
 
 
 async def read_failure_diagnostics(
@@ -68,23 +68,27 @@ async def read_failure_diagnostics(
     """
     from app.database import AsyncSessionLocal
 
-    async with AsyncSessionLocal() as db:
-        q = select(FDModel)
-        if owner_id is not None and owner_id > 0:
-            q = q.where(FDModel.owner_id == owner_id)
-        q = q.order_by(desc(FDModel.created_at)).limit(limit)
-        r = await db.execute(q)
-        rows = r.scalars().all()
-        return [
-            {
-                "timestamp": row.created_at.timestamp() if row.created_at else 0,
-                "source": row.source,
-                "operation": row.operation,
-                "error_type": row.error_type,
-                "error_message": row.error_message,
-                "conversation_id": row.conversation_id,
-                "owner_id": row.owner_id,
-                "extra": row.extra_data or {},
-            }
-            for row in rows
-        ]
+    try:
+        async with AsyncSessionLocal() as db:
+            q = select(FDModel)
+            if owner_id is not None and owner_id > 0:
+                q = q.where(FDModel.owner_id == owner_id)
+            q = q.order_by(desc(FDModel.created_at)).limit(limit)
+            r = await db.execute(q)
+            rows = r.scalars().all()
+            return [
+                {
+                    "timestamp": row.created_at.timestamp() if row.created_at else 0,
+                    "source": row.source,
+                    "operation": row.operation,
+                    "error_type": row.error_type,
+                    "error_message": row.error_message,
+                    "conversation_id": row.conversation_id,
+                    "owner_id": row.owner_id,
+                    "extra": row.extra_data or {},
+                }
+                for row in rows
+            ]
+    except Exception as exc:
+        logger.warning("Failed to read failure diagnostics: %s", exc)
+        return []

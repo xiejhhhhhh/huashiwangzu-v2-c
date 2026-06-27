@@ -12,10 +12,11 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 APPS_MANIFEST = Path(__file__).parent.parent / "seed_data" / "apps.json"
 MODULES_ROOT = Path(__file__).resolve().parents[3] / "modules"
+WORKSPACES_ROOT = Path(__file__).resolve().parents[3] / "data" / "workspaces"
 
 
 async def list_apps(db: AsyncSession, current_user: User, category: str | None = None):
-    query = select(App).where(App.enabled == True)
+    query = select(App).where(App.enabled)
     if category:
         query = query.where(App.category == category)
     query = query.order_by(App.sort_order)
@@ -139,8 +140,49 @@ def _read_module_app_manifests(modules_root: Path = MODULES_ROOT) -> list[dict]:
     return rows
 
 
+def _read_private_module_app_manifests(
+    owner_id: int | None = None
+) -> list[dict]:
+    rows: list[dict] = []
+    base = WORKSPACES_ROOT
+    if not base.exists():
+        return rows
+
+    user_dirs = [base / str(owner_id)] if owner_id else sorted(base.iterdir())
+    for user_dir in user_dirs:
+        if not user_dir.is_dir() or not user_dir.name.isdigit():
+            continue
+        uid = int(user_dir.name)
+        pm_dir = user_dir / "private_modules"
+        if not pm_dir.exists():
+            continue
+        for module_dir in sorted(pm_dir.iterdir()):
+            if not module_dir.is_dir() or module_dir.name.startswith(("_", ".")):
+                continue
+            manifest_path = module_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if manifest.get("enabled") is False:
+                    continue
+                payload = _module_manifest_to_app_payload(module_dir, manifest)
+                payload["key"] = f"__private__{uid}__{module_dir.name}"
+                payload["app_type"] = "private"
+                payload["required_permission"] = f"private:{uid}"
+                rows.append(payload)
+            except Exception as exc:
+                logger.error("Skip bad private module manifest %s: %s", manifest_path, exc)
+                continue
+    return rows
+
+
 def load_app_manifests(modules_root: Path = MODULES_ROOT) -> list[dict]:
-    return [*_read_platform_app_manifests(), *_read_module_app_manifests(modules_root)]
+    return [
+        *_read_platform_app_manifests(),
+        *_read_module_app_manifests(modules_root),
+        *_read_private_module_app_manifests(),
+    ]
 
 
 async def sync_apps_from_manifest(db: AsyncSession) -> dict:

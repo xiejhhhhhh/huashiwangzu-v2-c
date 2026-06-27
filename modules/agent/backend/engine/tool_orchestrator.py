@@ -41,8 +41,6 @@ class ToolMetadata:
         destructive: True if the tool destroys data (delete, remove, etc.).
         requires_serial: True if the tool must run alone, not interleaved
             with other tools of the same batch.
-        retry_count: Number of retries on failure (0 = no retry).
-        timeout_seconds: Optional per-tool timeout.
     """
 
     name_pattern: str = ""
@@ -51,8 +49,6 @@ class ToolMetadata:
     write: bool = False
     destructive: bool = False
     requires_serial: bool = False
-    retry_count: int = 0
-    timeout_seconds: float | None = None
 
 
 # ── Explicit tool metadata registry (metadata-first) ────────────────────
@@ -473,47 +469,27 @@ class ToolOrchestrator:
         results: list[dict | None] = [None] * len(tools)
 
         async def _execute_safe(tool: dict, meta: ToolMetadata) -> dict:
-            """Execute one tool with retry, capture exceptions in result dict."""
+            """Execute one tool and capture exceptions in the result dict."""
             name = tool.get("name", "")
             tool_call_id = tool.get("tool_call_id", "")
-            max_retries = meta.retry_count
-            last_error: str | None = None
-
-            for attempt in range(max_retries + 1):
-                try:
-                    if attempt > 0:
-                        self._logger.info("Retry %d/%d for tool '%s'", attempt, max_retries, name)
-                    self._logger.debug("Executing tool '%s' (id=%s)", name, tool_call_id)
-                    result = await execute_fn(tool)
-                    return {
-                        "name": name,
-                        "tool_call_id": tool_call_id,
-                        "result": result,
-                    }
-                except asyncio.CancelledError:
-                    self._logger.warning("Tool '%s' cancelled", name)
-                    raise
-                except Exception as exc:
-                    last_error = str(exc)
-                    self._logger.warning(
-                        "Tool '%s' failed (attempt %d/%d): %s",
-                        name, attempt + 1, max_retries + 1, last_error[:500],
-                    )
-                    if attempt < max_retries:
-                        import asyncio as _asyncio
-                        await _asyncio.sleep(0.5 * (attempt + 1))
-
-            # All retries exhausted — emit signal and return error
             try:
-                from .signals import emit_signal as _emit_signal
-                _emit_signal("tool_failure_rate", 1.0, f"tool={name}:{last_error[:200] if last_error else 'unknown'}")
-            except Exception:
-                logger.warning("Failed to emit tool_failure_rate signal for %s", name)
-            return {
-                "name": name,
-                "tool_call_id": tool_call_id,
-                "error": last_error or "unknown error (all retries exhausted)",
-            }
+                self._logger.debug("Executing tool '%s' (id=%s)", name, tool_call_id)
+                result = await execute_fn(tool)
+                return {
+                    "name": name,
+                    "tool_call_id": tool_call_id,
+                    "result": result,
+                }
+            except asyncio.CancelledError:
+                self._logger.warning("Tool '%s' cancelled", name)
+                raise
+            except Exception as exc:
+                self._logger.warning("Tool '%s' failed: %s", name, str(exc)[:500])
+                return {
+                    "name": name,
+                    "tool_call_id": tool_call_id,
+                    "error": str(exc),
+                }
 
         async def _run_read_batch(read_batch: list[tuple[int, dict, ToolMetadata]]) -> None:
             if not read_batch:
@@ -590,16 +566,5 @@ class ToolOrchestrator:
                 })
             else:
                 final_results.append(r)
-
-        # 5. Compute batch-level diagnostics
-        total = len(final_results)
-        errors = [r for r in final_results if r.get("error")]
-        if errors:
-            try:
-                from .signals import emit_signal as _emit_signal_batch
-                error_rate = len(errors) / max(total, 1)
-                _emit_signal_batch("tool_failure_rate", error_rate, f"batch: {len(errors)}/{total} failures")
-            except Exception:
-                logger.warning("Failed to emit batch tool_failure_rate signal")
 
         return final_results

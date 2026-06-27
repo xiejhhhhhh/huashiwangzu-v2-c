@@ -72,21 +72,12 @@
 </template>
 
 <script setup lang="ts">
-import { onUnmounted } from 'vue'
 import FileVisualIcon from '@/shared/components/file-visual-icon.vue'
 import type { FileEntry } from '@/shared/api/types'
 import { startDrag } from '@/desktop/drag-drop/drag-state'
 
 let suppressNextClick = false
 let pendingDrag: { key: string; startX: number; startY: number } | null = null
-
-onUnmounted(() => {
-  if (pendingDrag) {
-    document.removeEventListener('mousemove', handlePendingDragMove)
-    document.removeEventListener('mouseup', clearPendingDrag)
-    pendingDrag = null
-  }
-})
 
 const props = defineProps<{
   items: FileEntry[]

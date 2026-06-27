@@ -1,9 +1,10 @@
 from .base import (
     ModelAdapter,
+    _build_stream_event,
+    _build_unified,
+    _extract_ollama_tool_calls,
     _extract_openai_choice,
     _extract_openai_tool_calls,
-    _build_unified,
-    _build_stream_event,
 )
 
 
@@ -14,6 +15,7 @@ class DeepSeekAdapter(ModelAdapter):
             return _build_unified(
                 content=msg.get("content", ""),
                 thinking=msg.get("reasoning_content", ""),
+                tool_calls=_extract_ollama_tool_calls(raw),
                 finish_reason=raw.get("done_reason", "stop"),
             )
         choice = _extract_openai_choice(raw)

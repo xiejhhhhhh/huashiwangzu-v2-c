@@ -1,9 +1,8 @@
 {
   "mcpServers": {
-    "project_toolkit": {
-      "command": "/Users/hekunhua/Library/FlyEnv/env/python/bin/python3.14",
-      "args": ["/Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/dev_toolkit/server.py"],
-      "cwd": "/Users/hekunhua/Documents/Agent/PHP/华世王镞_v2"
+    "项目工具台": {
+      "command": "python3.14",
+      "args": ["dev_toolkit/server.py"]
     }
   }
 }

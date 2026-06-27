@@ -58,16 +58,6 @@ async def delete_setting(db: AsyncSession, key: str) -> None:
     await db.commit()
 
 
-async def get_module_settings(db: AsyncSession) -> dict[str, str]:
-    settings = await get_all_settings(db)
-    result: dict[str, str] = {}
-    for s in settings:
-        if s.key.startswith("module:"):
-            module_key = s.key[len("module:"):]
-            result[module_key] = s.value
-    return result
-
-
 async def get_system_config_map(db: AsyncSession) -> dict[str, str]:
     settings = await get_all_settings(db)
     result = dict(DEFAULT_SETTINGS)

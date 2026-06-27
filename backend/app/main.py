@@ -36,26 +36,14 @@ async def lifespan(app: FastAPI):
     from app.database import AsyncSessionLocal
     from app.services.app_service import sync_apps_from_manifest
     from app.services.task_worker import start_worker, stop_worker
+    from app.services.private_module_service import set_app_instance
+
+    # Register private module service app reference
+    set_app_instance(app)
 
     async with AsyncSessionLocal() as db:
         result = await sync_apps_from_manifest(db)
         logging.getLogger(__name__).info("App manifest sync completed: %s", result)
-
-        # Cleanup expired chunked upload sessions
-        from app.models.file_upload_session import FileUploadSession
-        from sqlalchemy import delete as sa_delete
-        from datetime import datetime, timezone
-        expired_r = await db.execute(
-            sa_delete(FileUploadSession).where(
-                FileUploadSession.expires_at < datetime.now(timezone.utc),
-                FileUploadSession.status != "completed",
-            )
-        )
-        if expired_r.rowcount:
-            logging.getLogger(__name__).info(
-                "Cleaned %d expired upload session(s)", expired_r.rowcount
-            )
-        await db.commit()
 
     start_worker()
     logging.getLogger(__name__).info("Background task worker started")

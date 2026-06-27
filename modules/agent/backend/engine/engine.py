@@ -1,10 +1,8 @@
-"""engine编排壳：暴露装配上下文()等给 router。批4：compressor、fallback_chain接入。批5：工具编排、三层记忆、快照、skills注入。
-批6：信号总线、分段提示词装配审计、生命周期闭环。"""
+"""engine编排壳：暴露装配上下文()等给 router。批4：compressor、fallback_chain接入。批5：工具编排、三层记忆、快照、skills注入。"""
 import asyncio
 import json
 import logging
 import os
-import time
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..services import conversation_service as conv_svc
@@ -20,7 +18,6 @@ from .tool_orchestrator import ToolOrchestrator
 from .post_turn_hooks import PostTurnHooks
 from .skills_loader import find_skills as _find_skills, match_skills as _match_skills, format_skills_for_prompt as _format_skills, resolve_skill_priority as _resolve_skill_priority
 from .workflow_strategy import apply_workflow_injection as _apply_workflow_injection
-from .signals import get_signal_bus, emit_signal
 
 logger = logging.getLogger("v2.agent").getChild("engine.engine")
 
@@ -57,10 +54,9 @@ async def assemble_context(
         projected = []
         all_events = []
 
-    # ── 批6：分段提示词装配 + 注入审计 ─────────────────────────────
-    assembly_audit: list[dict] = []
+    # ── 批4：预算超限时调compressor ──────────────────────────────────────────
     try:
-        system_content = await _build_system_content(db, owner_id, agent_code, assembly_audit=assembly_audit)
+        system_content = await _build_system_content(db, owner_id, agent_code)
     except Exception as e:
         logger.warning("构建系统提示词失败: %s", e)
         system_content = "You are a helpful AI assistant."
@@ -72,11 +68,6 @@ async def assemble_context(
     system_tokens = max(len(system_content) // 2, 0)
     input_tokens = max(len(current_user_input) // 2, 0)
     estimated_total = system_tokens + input_tokens + projected_tokens + 4096
-
-    # ── 信号：预算压力 ─────────────────────────────────────────────
-    if budget is not None:
-        budget_pressure = min(1.0, estimated_total / budget)
-        emit_signal("budget_pressure", budget_pressure, f"est={estimated_total} budget={budget}")
 
     if budget is not None and estimated_total > budget + _COMPRESSION_TOKEN_HEADROOM and len(all_events) > 30:
         try:
@@ -93,9 +84,7 @@ async def assemble_context(
             except Exception as e2:
                 logger.warning("硬截断也失败: %s", e2)
 
-    # ── 批6：信号感知的skills注入 ──────────────────────────────────
-    signals = get_signal_bus()
-    memory_quality = signals.average("memory_recall_quality", n=3, default=0.5)
+    # ── 批5：skills注入（带scope优先级解析） ──────────────────────
     try:
         skill_base = os.environ.get("SKILLS_DIR", "data/skills")
         all_skills = _find_skills(skill_base, scope="global")
@@ -105,21 +94,14 @@ async def assemble_context(
             if os.path.isdir(workspace_skills_dir):
                 ws_skills = _find_skills(workspace_skills_dir, scope="workspace")
                 all_skills.extend(ws_skills)
+        # Deduplicate by priority (workspace > project > global, then explicit priority)
         all_skills = _resolve_skill_priority(all_skills)
         matched = _match_skills(all_skills, workspace_path)
-        # Signal-aware: reduce skill injection when memory quality is low (less distraction)
-        if memory_quality < 0.3:
-            matched = [s for s in matched if s.effort >= 3]
-            logger.info("Signal: low memory quality (%.2f), limiting skills to high-effort only", memory_quality)
         skill_injection = _format_skills(matched)
         if skill_injection and system_content:
             system_content += "\n\n---\n\n<available_skills>\n" + skill_injection + "\n</available_skills>"
-            assembly_audit.append({"segment": "skills", "count": len(matched), "signal_memory_quality": round(memory_quality, 3)})
-        else:
-            assembly_audit.append({"segment": "skills", "count": 0, "note": "skipped"})
     except Exception as e:
         logger.warning("skills注入失败（non-fatal）: %s", e)
-        assembly_audit.append({"segment": "skills", "error": str(e)})
 
     try:
         messages, diagnosis = _budget_assemble_context(projected, system_content, current_user_input, effective_profile_key)
@@ -130,60 +112,31 @@ async def assemble_context(
         diagnosis = {"error": str(e), "fallback": "原始投影截尾"}
     diagnosis["agent_code"] = agent_code
     diagnosis["effective_profile_key"] = effective_profile_key
-    diagnosis["assembly_audit"] = assembly_audit
 
-    # ── 三层记忆注入（批5+selector/fencing/snapshot）：稳定规则 + chunk + 语义记忆 ──
+    # ── 三层记忆注入（批5）：稳定规则 + chunk + 语义记忆 ──────────
     try:
-        # Check for frozen snapshot on long-running conversations
-        _frozen_key = None
-        if agent_cfg and agent_cfg.get("agent_code"):
-            # Long tasks reuse snapshot (key set manually by prior turn)
-            pass  # snapshot key management is per-task, not automatic yet
-        three_layer = await _three_layer_recall(
-            owner_id, current_user_input,
-            frozen_key=_frozen_key,
-        )
+        three_layer = await _three_layer_recall(owner_id, current_user_input)
         if three_layer.get("injection") and messages:
             for msg in messages:
                 if msg["role"] == "system":
                     msg["content"] += "\n\n---\n\n" + three_layer["injection"]
                     break
-            selection = three_layer.get("selection", {})
-            stable_count = len(three_layer.get("stable_rules", []))
-            chunk_count = len(three_layer.get("chunks", []))
-            semantic_count = len(three_layer.get("semantic", []))
-            dropped_count = selection.get("dropped_count", 0)
             diagnosis["three_layer_memory"] = {
-                "stable_rules": stable_count,
-                "chunks": chunk_count,
-                "semantic": semantic_count,
-                "selector_dropped": dropped_count,
-                "selection_reason": selection.get("reason", ""),
+                "stable_rules": len(three_layer.get("stable_rules", [])),
+                "chunks": len(three_layer.get("chunks", [])),
+                "semantic": len(three_layer.get("semantic", [])),
             }
-            assembly_audit.append({
-                "segment": "three_layer_memory",
-                "stable_rules": stable_count,
-                "chunks": chunk_count,
-                "semantic": semantic_count,
-                "selector_dropped": dropped_count,
-            })
-            quality_score = three_layer.get("quality_score", 1.0)
-            emit_signal("memory_recall_quality", quality_score, f"layer=three_layer sel_drop={dropped_count}")
-        else:
-            assembly_audit.append({"segment": "three_layer_memory", "injected": False})
     except Exception as e:
         logger.warning("三层记忆注入失败（non-fatal）: %s", e)
         diagnosis["three_layer_memory"] = f"降级: {e}"
-        assembly_audit.append({"segment": "three_layer_memory", "error": str(e)})
 
-    # ── 项目工作流约束注入（workflow_strategy） ──
+    # ── 项目工作流约束注入（workflow_strategy）：检测项目关键词，注入工作流指引 ──
     wf_diag = _apply_workflow_injection(current_user_input, messages)
     diagnosis["workflow_injected"] = wf_diag.get("workflow_injected", False)
     if wf_diag.get("workflow_label"):
         diagnosis["workflow_label"] = wf_diag["workflow_label"]
-        assembly_audit.append({"segment": "workflow_strategy", "label": wf_diag["workflow_label"]})
 
-    # ── 成功经验注入（批3） ──
+    # ── 成功经验注入（批3）：语义匹配当前输入，注入 known success path ──
     try:
         matched = await _experience_match(current_user_input, limit=2, caller=f"user:{owner_id}")
         injection = _experience_format(matched)
@@ -194,14 +147,11 @@ async def assemble_context(
                     break
             diagnosis["experience_injected"] = [e["id"] for e in matched if e.get("id")]
             diagnosis["experience_injection"] = "成功注入" if injection else "无命中"
-            assembly_audit.append({"segment": "experience_memory", "count": len(matched)})
         else:
             diagnosis["experience_injection"] = "无命中"
-            assembly_audit.append({"segment": "experience_memory", "count": 0})
     except Exception as e:
         logger.warning("经验注入失败（降级，不阻塞）: %s", e)
         diagnosis["experience_injection"] = f"降级: {e}"
-        assembly_audit.append({"segment": "experience_memory", "error": str(e)})
 
     return messages, diagnosis
 
@@ -249,67 +199,38 @@ async def read_agent_config(db: AsyncSession, agent_code: str) -> dict | None:
         return None
 
 
-async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str = "erp_chat", assembly_audit: list | None = None) -> str:
-    """分段装配系统提示词，每段标记来源以供审计回放。
-
-    Audit trail is appended to *assembly_audit* (if provided) as a list of
-    ``{"segment": str, "chars": int, ...}`` entries.
-    """
+async def _build_system_content(db: AsyncSession, owner_id: int, agent_code: str = "erp_chat") -> str:
     sys_prompt = await conv_svc.get_system_prompt(db)
     ent_prompt = await conv_svc.get_enterprise_prompt(db)
     profile_data = await conv_svc.get_active_user_profile(db, owner_id)
     profile_text = conv_svc._format_profile_text(profile_data)
-    layers: list[dict] = []
-    audit = assembly_audit if assembly_audit is not None else []
+    layers = []
 
     # Layer 0: Static file memory (zero-latency, deterministic)
     try:
         static_texts = _read_static_memory_files()
         static_injection = _format_static_memory(static_texts)
         if static_injection:
-            layers.append({"segment": "static_memory", "content": static_injection})
-            audit.append({"segment": "static_memory", "chars": len(static_injection)})
+            layers.append(static_injection)
     except Exception as e:
         logger.warning("Static memory read failed (non-fatal): %s", e)
-        audit.append({"segment": "static_memory", "error": str(e)})
 
     if sys_prompt:
-        layers.append({"segment": "system_prompt", "content": sys_prompt})
-        audit.append({"segment": "system_prompt", "chars": len(sys_prompt)})
-
+        layers.append(sys_prompt)
     if ent_prompt:
-        layers.append({"segment": "enterprise_prompt", "content": ent_prompt})
-        audit.append({"segment": "enterprise_prompt", "chars": len(ent_prompt)})
+        layers.append(ent_prompt)
 
-    # Agent config override: custom system_prompt
+    # Agent config override: if the agent has a custom system_prompt, append it
     try:
         agent_cfg = await read_agent_config(db, agent_code)
         if agent_cfg and agent_cfg.get("system_prompt"):
-            content = f"Agent 配置提示词：\n{agent_cfg['system_prompt']}"
-            layers.append({"segment": "agent_config_prompt", "content": content})
-            audit.append({"segment": "agent_config_prompt", "chars": len(content), "agent_code": agent_code})
+            layers.append(f"Agent 配置提示词：\n{agent_cfg['system_prompt']}")
     except Exception as e:
         logger.warning("Failed to read agent config prompt: %s", e)
-        audit.append({"segment": "agent_config_prompt", "error": str(e)})
 
     if profile_text:
-        layers.append({"segment": "user_profile", "content": profile_text})
-        audit.append({"segment": "user_profile", "chars": len(profile_text)})
-
-    # ── 默认开发工作流注入（全量，不依赖关键词匹配） ──
-    dev_workflow_injection = """
-<dev_workflow>
-你是执行 Agent，请对以下默认工作流有基本意识：
-- 查代码 → codegraph（首选）或 codemap
-- 验证 → probe / call_capability 打活系统
-- 收尾 → memory_write 落一条项目记忆
-</dev_workflow>"""
-    layers.append({"segment": "dev_workflow", "content": dev_workflow_injection})
-    audit.append({"segment": "dev_workflow", "chars": len(dev_workflow_injection)})
-
-    result = "\n\n---\n\n".join(l["content"] for l in layers)
-    audit.append({"segment": "_total", "chars": len(result), "layer_count": len(layers)})
-    return result
+        layers.append(profile_text)
+    return "\n\n---\n\n".join(layers)
 
 
 # ── 批5：模块级单例 ──────────────────────────────────────────────
@@ -447,11 +368,9 @@ async def trigger_dream(owner_id: int) -> None:
                 await db.commit()
         except Exception as e:
             logger.warning("dream enqueue failed (non-fatal): %s", e)
-            from .failure_diagnostics import record_failure
-            await record_failure("engine", "trigger_dream", type(e).__name__, str(e), owner_id=owner_id)
 
 
-# ── 批4 韧性：fallback_chain聊天（经 gateway service 调用） ─────────────────
+# ── 批4 韧性：fallback_chain聊天（供 router 替换裸 gateway_router.chat） ──────
 
 async def chat_with_degradation_chain(
     messages: list[dict],
@@ -494,7 +413,7 @@ async def distill_experience(
 ) -> None:
     """fire-and-forget：对话成功后，把成功路径蒸馏成一条经验存入经验库。
 
-    降级：失败不影响主对话，但记录到 failure_diagnostics。
+    降级：失败不影响主对话。
     """
     try:
         steps_str = json.dumps(steps, ensure_ascii=False)
@@ -508,8 +427,6 @@ async def distill_experience(
         )
     except Exception as e:
         logger.warning("蒸馏经验 failed (non-fatal): %s", e)
-        from .failure_diagnostics import record_failure
-        await record_failure("engine", "distill_experience", type(e).__name__, str(e), conversation_id=source_conversation_id, owner_id=owner_id)
 
 
 async def settle_experience(
@@ -520,7 +437,7 @@ async def settle_experience(
 ) -> None:
     """fire-and-forget：对话结束后，对用过的经验做成功/失败反馈。
 
-    降级：失败不影响主对话，但记录到 failure_diagnostics。
+    降级：失败不影响主对话。
     """
     try:
         await _experience_feedback(
@@ -531,5 +448,3 @@ async def settle_experience(
         )
     except Exception as e:
         logger.warning("经验结算 failed (non-fatal): %s", e)
-        from .failure_diagnostics import record_failure
-        await record_failure("engine", "settle_experience", type(e).__name__, str(e), owner_id=owner_id)

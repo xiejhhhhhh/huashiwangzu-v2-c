@@ -100,14 +100,14 @@ async def batch_delete(body: BatchRequest, db: AsyncSession = Depends(get_db), u
             deleted = await file_service.delete_to_trash(db, item.item_type, item.id, user.id)
             recycle_item = RecycleItem(origin_id=item.id, item_type=item.item_type, name=deleted.name, owner_id=user.id, deleted_at=datetime.now(timezone.utc))
             db.add(recycle_item)
-            await db.flush()
+            await db.commit()
             results.append({"id": item.id, "type": item.item_type, "success": True, "error": None})
             success_count += 1
             await create_log(db, "info", "file_system", "delete_to_trash", f"Batch deleted {item.item_type} {item.id}", user_id=user.id)
         except Exception as e:
+            await db.rollback()
             results.append({"id": item.id, "type": item.item_type, "success": False, "error": str(e)})
             failed_count += 1
-    await db.commit()
     return ApiResponse(data={"items": results, "success_count": success_count, "failed_count": failed_count})
 
 
@@ -123,9 +123,9 @@ async def batch_move(body: BatchRequest, db: AsyncSession = Depends(get_db), use
             success_count += 1
             await create_log(db, "info", "file_system", "move", f"Moved {item.item_type} {item.id} to folder {body.target_folder_id}", user_id=user.id)
         except Exception as e:
+            await db.rollback()
             results.append({"id": item.id, "type": item.item_type, "success": False, "error": str(e)})
             failed_count += 1
-    await db.commit()
     return ApiResponse(data={"items": results, "success_count": success_count, "failed_count": failed_count})
 
 

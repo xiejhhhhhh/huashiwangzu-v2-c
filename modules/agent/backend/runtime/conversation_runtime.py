@@ -36,7 +36,7 @@ logger = logging.getLogger("v2.agent").getChild("runtime.conversation")
 class ConversationRuntime:
     """Orchestrates a single conversation turn end-to-end.
 
-    Usage from ``chat.py``::
+    Usage from ``router.py``::
 
         runtime = ConversationRuntime()
         return await runtime.execute(payload, db, user)

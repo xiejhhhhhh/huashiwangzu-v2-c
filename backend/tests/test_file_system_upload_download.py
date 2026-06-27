@@ -1,13 +1,9 @@
 """Test file system: upload, download, preview."""
-import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 from app.main import app
 
 SEED_PASS = "admin123"
-
-def _uid():
-    return uuid.uuid4().hex[:8]
 
 async def _login(client: AsyncClient) -> str:
     resp = await client.post("/api/login", json={"username": "admin", "password": SEED_PASS})
@@ -22,35 +18,31 @@ async def _cleanup(client: AsyncClient, headers: dict, file_id: int):
 
 @pytest.mark.asyncio
 async def test_upload_txt_and_download() -> None:
-    uid = _uid()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         token = await _login(client)
         headers = {"Authorization": f"Bearer {token}"}
-        files = {"file": (f"test-{uid}.txt", b"hello world")}
+        files = {"file": ("test.txt", b"hello world")}
         resp = await client.post("/api/files/upload", files=files, headers=headers)
         data = resp.json()
         assert data["success"] is True
         file_id = data["data"]["id"]
-        try:
-            resp = await client.get(f"/api/files/download/{file_id}", headers=headers)
-            assert resp.status_code == 200
-            assert resp.content == b"hello world"
-            resp = await client.get(f"/api/files/preview/{file_id}", headers=headers)
-            data = resp.json()
-            assert data["success"] is True
-            assert "hello world" in data["data"]["content"]
-        finally:
-            await _cleanup(client, headers, file_id)
+        resp = await client.get(f"/api/files/download/{file_id}", headers=headers)
+        assert resp.status_code == 200
+        assert resp.content == b"hello world"
+        resp = await client.get(f"/api/files/preview/{file_id}", headers=headers)
+        data = resp.json()
+        assert data["success"] is True
+        assert "hello world" in data["data"]["content"]
+        await _cleanup(client, headers, file_id)
 
 @pytest.mark.asyncio
 async def test_upload_folder_not_found() -> None:
-    uid = _uid()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         token = await _login(client)
         headers = {"Authorization": f"Bearer {token}"}
-        resp = await client.post("/api/files/upload", files={"file": (f"test-{uid}.txt", b"x")}, data={"folder_id": 999999}, headers=headers)
+        resp = await client.post("/api/files/upload", files={"file": ("test.txt", b"x")}, data={"folder_id": 999999}, headers=headers)
         assert resp.status_code == 404
 
 @pytest.mark.asyncio

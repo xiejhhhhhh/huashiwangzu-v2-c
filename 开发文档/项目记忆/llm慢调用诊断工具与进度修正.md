@@ -1,22 +1,21 @@
 ---
 name: "LLM慢调用诊断工具与进度修正"
 type: task
-tags: ["gateway", "diagnostics", "knowledge", "progress", "llm"]
+tags: ["gateway", "diagnostics", "mcp", "knowledge", "performance"]
 created: 2026-06-26
 agent: opencode
 ---
 
-完成了4件事：
-1. Gateway diagnostics增强(trace_id/attempts/elapsed_ms/size/tokens) + JSONL持久化 + 查询端点
-2. MCP工具增强(llm_probe/gateway_trace/task_trace/log_errors增强)
-3. Knowledge progress不再pipeline未完成时显示done
-4. 22次慢调用复现矩阵, 确认provider本身慢(avg 12.8s, 最高49s), gateway非瓶颈
+审计确认：gateway diagnostics（trace_id/attempts/elapsed_ms/diagnostics field）、MCP工具（llm_probe/gateway_trace/task_trace/log_errors）、progress状态修正已在主分支完整实现。
 
-改动的文件:
-- backend/app/gateway/router.py (gateway diagnostics)
-- backend/app/routers/gateway.py (traces endpoint)
-- dev_toolkit/server.py (MCP tools)
-- modules/knowledge/backend/services/progress_service.py (progress fix)
+实际改动：
+- dev_toolkit/server.py: 修复_task_trace使用JSONB精确匹配 + 按表类型使用正确关联列名（kb_graph_nodes/edges需JOIN evidence, kb_file_relations需source/target_document_id）
+- modules/knowledge/backend/services/pipeline_service.py: import排序修复
 
-核心发现: provider(opencode deepseek-v4-flash)平均12.8秒, 最高49秒, 且91%一次成功无retry。
-建议: provider侧优化(缓存/更快的模型通道/本地fallback)。
+慢调用复现：8组测试矩阵覆盖plain/JSON/max_tokens对比
+- 基准：小文本6字符，deepseek-v4-flash，opencode.ai
+- 范围：3.8s ~ 48.7s，avg ~18s (plain) / ~7s (JSON)
+- 全部attempts=1，gateway overhead <50ms，reasoning_chars=0
+- 根因在opencode.ai服务端处理慢，非gateway层
+
+遗留问题：上游provider慢需后续用低推理profile或换provider解决。

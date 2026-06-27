@@ -15,7 +15,6 @@ from app.services.model_services import get_embedding
 from app.services.task_worker import register_task_handler
 
 from ..models import KbDocument, KbPageFusion, KbDocumentProfile
-from .llm_diagnostics import timed_llm_chat
 
 logger = logging.getLogger("v2.knowledge").getChild("profile")
 
@@ -70,22 +69,12 @@ async def generate_document_profile(
 
     # 2. LLM 提炼
     try:
-        messages = [
-            {"role": "system", "content": PROFILE_SYSTEM_PROMPT},
-            {"role": "user", "content": f"请分析以下文档内容，生成文件画像：\n\n{all_text[:12000]}"},
-        ]
-        result = await timed_llm_chat(
-            logger=logger,
-            stage="document_profile",
+        result = await gateway_router.chat(
+            messages=[
+                {"role": "system", "content": PROFILE_SYSTEM_PROMPT},
+                {"role": "user", "content": f"请分析以下文档内容，生成文件画像：\n\n{all_text[:12000]}"},
+            ],
             profile_key=profile_key,
-            messages=messages,
-            chat_func=gateway_router.chat,
-            document_id=document_id,
-            extra={
-                "pages": len(fusions),
-                "source_chars": len(all_text),
-                "prompt_text_chars": len(all_text[:12000]),
-            },
         )
         content = (result.get("content") or "").strip()
         if content.startswith("```"):

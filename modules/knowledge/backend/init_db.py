@@ -45,7 +45,6 @@ _INDEX_STATEMENTS = [
 
 # ALTER 列补齐语句（幂等，ADD COLUMN IF NOT EXISTS）
 _MIGRATION_STATEMENTS = [
-    "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS md5_hash VARCHAR(32)",
     "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS raw_status VARCHAR(32) DEFAULT 'pending'",
     "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS fusion_status VARCHAR(32) DEFAULT 'pending'",
     "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS page_summary TEXT",

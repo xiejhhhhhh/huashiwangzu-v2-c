@@ -1,0 +1,6 @@
+{
+  "mode": "sandbox",
+  "api_base_url": "/api",
+  "permissions": ["viewer", "editor", "admin"],
+  "module_settings": {}
+}

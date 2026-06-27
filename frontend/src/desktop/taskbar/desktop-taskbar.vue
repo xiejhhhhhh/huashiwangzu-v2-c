@@ -21,7 +21,6 @@
     </div>
     <div class="taskbar-right">
       <TrayLauncher v-if="trayApps?.length" :app-list="trayApps" @openApp="(id: string) => $emit('openTrayApp', id)" />
-      <TaskbarNotifications />
       <div class="taskbar-clock">{{ clockText }}</div>
     </div>
   </div>
@@ -34,7 +33,6 @@ import type { AppRegistryEntry } from '@/desktop/window-manager/window-types'
 import AppIcon from '@/desktop/components/app-icon.vue'
 
 const TrayLauncher = defineAsyncComponent(() => import('./tray-launcher.vue'))
-const TaskbarNotifications = defineAsyncComponent(() => import('./taskbar-notifications.vue'))
 const props = defineProps<{
   items: TaskbarItem[]
   launcherOpen?: boolean

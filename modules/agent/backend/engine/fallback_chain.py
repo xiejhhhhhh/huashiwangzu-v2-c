@@ -5,11 +5,12 @@
 import json
 import logging
 from typing import AsyncGenerator
-from app.gateway import service as gateway_service
+from app.gateway.router import gateway_router, MODEL_PROFILES, _load_models_config
 
 logger = logging.getLogger("v2.agent").getChild("engine.fallback_chain")
 
-FALLBACK_CHAIN: list[str] = gateway_service.get_fallback_chain()
+_config = _load_models_config()
+FALLBACK_CHAIN: list[str] = _config.get("model_types", {}).get("llm", {}).get("fallback_chain", [])
 
 # 用于记录 degradation 事件到 agent_events（无则跳过）
 _conversation_id: int | None = None
@@ -29,7 +30,7 @@ async def _record_degradation_event(conversation_id: int | None, from_profile: s
                 "reason": reason[:500],
             }, llm_response_id=None)
     except Exception:
-        logger.debug("Failed to record degradation event for %s → %s", from_profile, to_profile)
+        pass
 
 
 async def chat_with_fallback(
@@ -45,12 +46,12 @@ async def chat_with_fallback(
     for idx, key in enumerate(chain):
         if key in tried:
             continue
-        profile = gateway_service.get_model_profile_safe(key)
+        profile = MODEL_PROFILES.get(key)
         if not profile:
             logger.warning("fallback_chain: %s 在 models.json 中不存在，跳过", key)
             continue
         try:
-            result = await gateway_service.chat(messages=messages, profile_key=key, tools=tools)
+            result = await gateway_router.chat(messages=messages, profile_key=key, tools=tools)
             if result.get("error"):
                 exc_text = str(result.get("content", result.get("error", "")))
                 raise RuntimeError(exc_text)
@@ -78,7 +79,7 @@ def _extract_reason(exc: Exception) -> str:
             if body:
                 detail = f"{detail[:200]} | 响应体:{body[:500]}"
         except Exception:
-            logger.debug("Failed to extract response body from exception")
+            pass
     return detail[:300]
 
 
@@ -92,12 +93,12 @@ async def chat_stream_with_fallback(
     chain = [profile_key] + [k for k in FALLBACK_CHAIN if k != profile_key]
 
     for idx, key in enumerate(chain):
-        profile = gateway_service.get_model_profile_safe(key)
+        profile = MODEL_PROFILES.get(key)
         if not profile:
             continue
         try:
             is_first = idx == 0
-            async for event in gateway_service.chat_stream(messages=messages, profile_key=key, tools=tools):
+            async for event in gateway_router.chat_stream(messages=messages, profile_key=key, tools=tools):
                 if event.get("type") == "error":
                     raise RuntimeError(event.get("content", ""))
                 yield event

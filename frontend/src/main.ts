@@ -10,9 +10,7 @@ import './styles/layout.css'
 import './styles/common-components.css'
 import './styles/notice-panel.css'
 import './styles/desktop-shell.css'
-import './desktop/design-system/desktop-design-tokens.css'
 import './styles/login-page.css'
-import 'element-plus/dist/index.css'
 
 // 暴露 windowManager 到全局，供模块通过 runtime.openApp() 打开其他应用
 ;(window as unknown as Record<string, unknown>).__HSWZ_WINDOW_MANAGER__ = windowManager

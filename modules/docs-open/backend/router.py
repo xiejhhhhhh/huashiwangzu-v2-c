@@ -18,7 +18,6 @@ from app.models.user import User
 from app.models.file import File
 from app.schemas.common import ApiResponse
 from app.core.exceptions import NotFound, AppException, PermissionDenied
-from app.services.file_share_service import require_resource_permission
 from app.services.file_service import check_file_access as framework_check_file_access
 from app.config import get_settings
 

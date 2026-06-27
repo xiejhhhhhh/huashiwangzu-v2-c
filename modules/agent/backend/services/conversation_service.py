@@ -134,6 +134,36 @@ async def get_messages_with_meta(db: AsyncSession, owner_id: int, conversation_i
     return result
 
 
+async def rollback_conversation(db: AsyncSession, owner_id: int, conversation_id: int, message_id: int) -> bool:
+    """Rollback conversation to a specific user message.
+
+    Deletes all messages, meta, and events after the given message_id.
+    Returns False if the message doesn't belong to this user/conversation.
+    """
+    msg = await db.get(AgentMessage, message_id)
+    if not msg or msg.conversation_id != conversation_id or msg.owner_id != owner_id:
+        return False
+
+    from sqlalchemy import delete
+    from ..engine.event_store import delete_events_after
+
+    await db.execute(
+        delete(AgentMessageMeta).where(
+            AgentMessageMeta.conversation_id == conversation_id,
+            AgentMessageMeta.message_id > message_id,
+        )
+    )
+    await db.execute(
+        delete(AgentMessage).where(
+            AgentMessage.conversation_id == conversation_id,
+            AgentMessage.id > message_id,
+        )
+    )
+    await delete_events_after(db, conversation_id, msg.created_at)
+    await db.commit()
+    return True
+
+
 async def count_conversation_messages(db: AsyncSession, owner_id: int, conversation_id: int) -> int:
     """统计该对话的消息数（用于画像进化节流判断）。"""
     r = await db.execute(
@@ -265,7 +295,7 @@ async def update_enterprise_prompt(db: AsyncSession, content: str, updated_by: i
 
 async def get_user_profile(db: AsyncSession, owner_id: int) -> AgentUserProfile | None:
     """获取用户画像记录。"""
-    from ..init_db import ensure_user_profile
+    from init_db import ensure_user_profile
     return await ensure_user_profile(db, owner_id)
 
 
@@ -278,7 +308,7 @@ async def update_user_profile(
 ) -> AgentUserProfile:
     """更新用户画像（版本递增 + 时间戳）。"""
     from datetime import datetime, timezone
-    from ..init_db import ensure_user_profile
+    from init_db import ensure_user_profile
     profile = await ensure_user_profile(db, owner_id)
     profile.profile_data = json.dumps(profile_data, ensure_ascii=False)
     profile.version = (profile.version or 0) + 1
@@ -291,7 +321,7 @@ async def update_user_profile(
 
 async def increment_conversation_count(db: AsyncSession, owner_id: int) -> None:
     """对话完成时递增画像会话计数。"""
-    from ..init_db import ensure_user_profile
+    from init_db import ensure_user_profile
     profile = await ensure_user_profile(db, owner_id)
     profile.conversation_count = (profile.conversation_count or 0) + 1
     await db.commit()

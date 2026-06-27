@@ -94,8 +94,8 @@ def _resolve_user_id(caller: str) -> int:
         if prefix == "user":
             return int(raw_id)
     except (TypeError, ValueError):
-        logger.debug("Failed to resolve user_id from caller: %s", caller)
-        raise PermissionDenied("Invalid caller")
+        pass
+    raise PermissionDenied("Invalid caller")
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ async def _generate(params: dict, caller: str) -> dict:
                     width = int(height * ar_w / ar_h)
                     width = max(512, min(2048, width))
             except (ValueError, IndexError):
-                logger.debug("Failed to parse aspect_ratio: %s", aspect_ratio)
+                pass
 
     try:
         provider, template_cfg, is_placeholder = resolve_provider(template_key)

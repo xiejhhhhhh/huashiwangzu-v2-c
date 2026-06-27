@@ -13,8 +13,6 @@ from app.gateway.router import gateway_router
 from app.database import AsyncSessionLocal
 from app.services.task_worker import register_task_handler
 
-from .llm_diagnostics import timed_llm_chat
-
 logger = logging.getLogger("v2.knowledge").getChild("entity")
 
 # 实体抽取提示词
@@ -51,13 +49,7 @@ PAGE_FUSION_PROMPT = """你是一个企业文档内容融合专家。请将以�
 """
 
 
-async def extract_entities_from_text(
-    text: str,
-    profile_key: str = "deepseek-v4-flash",
-    *,
-    document_id: int | None = None,
-    page: int | None = None,
-) -> dict:
+async def extract_entities_from_text(text: str, profile_key: str = "deepseek-v4-flash") -> dict:
     """用大模型从文本中提取实体和关系。返回 {"entities": [...], "relationships": [...]}。"""
     if not text.strip():
         return {"entities": [], "relationships": []}
@@ -67,16 +59,7 @@ async def extract_entities_from_text(
             {"role": "system", "content": ENTITY_EXTRACTION_PROMPT},
             {"role": "user", "content": f"请提取以下内容的实体和关系：\n\n{text[:6000]}"},
         ]
-        resp = await timed_llm_chat(
-            logger=logger,
-            stage="graph_entity_extract",
-            profile_key=profile_key,
-            messages=messages,
-            chat_func=gateway_router.chat,
-            document_id=document_id,
-            page=page,
-            extra={"source_chars": len(text), "prompt_text_chars": len(text[:6000])},
-        )
+        resp = await gateway_router.chat(messages, profile_key=profile_key)
         content = resp.get("content", "")
         if not content:
             return {"entities": [], "relationships": []}
@@ -102,13 +85,7 @@ async def extract_entities_from_text(
         return {"entities": [], "relationships": []}
 
 
-async def fuse_page_text(
-    text: str,
-    profile_key: str = "deepseek-v4-flash",
-    *,
-    document_id: int | None = None,
-    page: int | None = None,
-) -> str:
+async def fuse_page_text(text: str, profile_key: str = "deepseek-v4-flash") -> str:
     """用大模型融合页级文本。"""
     if not text.strip():
         return text
@@ -118,16 +95,7 @@ async def fuse_page_text(
             {"role": "system", "content": PAGE_FUSION_PROMPT},
             {"role": "user", "content": f"请融合以下分块内容：\n\n{text[:8000]}"},
         ]
-        resp = await timed_llm_chat(
-            logger=logger,
-            stage="legacy_page_fusion",
-            profile_key=profile_key,
-            messages=messages,
-            chat_func=gateway_router.chat,
-            document_id=document_id,
-            page=page,
-            extra={"source_chars": len(text), "prompt_text_chars": len(text[:8000])},
-        )
+        resp = await gateway_router.chat(messages, profile_key=profile_key)
         result = resp.get("content", "")
         return result.strip() if result else text
     except Exception as e:
@@ -172,11 +140,7 @@ async def process_document_entities(
             continue
 
         # 每页抽取一次实体
-        result = await extract_entities_from_text(
-            combined,
-            document_id=document_id,
-            page=page,
-        )
+        result = await extract_entities_from_text(combined)
         all_entities.extend(result.get("entities", []))
         all_relationships.extend(result.get("relationships", []))
         processed_pages += 1
@@ -420,11 +384,7 @@ async def process_document_entities_from_fusions(
         if len(text) < 20:
             continue
 
-        result = await extract_entities_from_text(
-            text,
-            document_id=document_id,
-            page=pf.page,
-        )
+        result = await extract_entities_from_text(text)
         all_entities.extend(result.get("entities", []))
         all_relationships.extend(result.get("relationships", []))
         processed_pages += 1
@@ -627,49 +587,6 @@ async def get_graph_context(db: AsyncSession, owner_id: int, entity_id: int) -> 
             for n in nodes
         ],
     }
-
-
-async def get_evidence_graph_context(
-    db: AsyncSession, owner_id: int, document_ids: list[int], max_nodes: int = 5,
-) -> list[dict]:
-    """Get graph context relevant to the given documents for the evidence packet.
-
-    Returns a list of edge summaries showing entity relationships within
-    the document set.
-    """
-    from ..models import KbGraphNode, KbGraphEdge, KbEntityDictionary
-
-    # Find entities linked to these documents
-    entity_r = await db.execute(
-        select(KbGraphNode).where(
-            KbGraphNode.owner_id == owner_id,
-        ).limit(max_nodes * 2)
-    )
-    nodes = entity_r.scalars().all()
-    if not nodes:
-        return []
-
-    node_ids = [n.id for n in nodes]
-    edge_r = await db.execute(
-        select(KbGraphEdge).where(
-            (KbGraphEdge.source_node_id.in_(node_ids) | KbGraphEdge.target_node_id.in_(node_ids)),
-            KbGraphEdge.owner_id == owner_id,
-        ).limit(max_nodes * 2)
-    )
-    edges = edge_r.scalars().all()
-    node_map = {n.id: n.label for n in nodes}
-
-    results = []
-    for e in edges:
-        source_label = node_map.get(e.source_node_id, f"node_{e.source_node_id}")
-        target_label = node_map.get(e.target_node_id, f"node_{e.target_node_id}")
-        results.append({
-            "source": source_label,
-            "relation": e.relation,
-            "target": target_label,
-            "weight": e.weight,
-        })
-    return results
 
 
 async def get_page_fusion(db: AsyncSession, document_id: int, page: int) -> dict | None:

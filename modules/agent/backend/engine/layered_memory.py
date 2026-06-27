@@ -10,27 +10,27 @@
 静态记忆层（Layer 0）从 ``data/static-memory/`` 目录读取 markdown 文件，
 每轮上下文装配时直接注入 system prompt，零延迟、零依赖。
 """
+import json
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select, desc, func as sa_func
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.services.module_registry import call_capability
-from ..models import AgentRecallQuality as RecallQualityModel
 
 logger = logging.getLogger("v2.agent").getChild("engine.layered_memory")
 
 MEMORY_FUSE_BUDGET_THRESHOLD = 2000  # token, 召回多条且预算紧时触发融合
 MEMORY_RECALL_DEFAULT_LIMIT = 5
 
-# ── Recall quality governance (persisted via DB) ─────────────────────
 
-_RECALL_QUALITY_MAX_ENTRIES = 200
+# ── Recall quality governance (persisted via atomic file writes) ─────
+
+_RECALL_QUALITY_FILE = "data/agent/recall_quality.json"
+_RECALL_QUALITY_MAX_ENTRIES = 1000
 
 
 @dataclass
@@ -53,6 +53,7 @@ class RecallQualityRecord:
 
     def to_dict(self) -> dict:
         return {
+            "timestamp": self.timestamp,
             "query": self.query[:200],
             "layer": self.layer,
             "limit": self.limit,
@@ -65,116 +66,56 @@ class RecallQualityRecord:
         }
 
 
-async def _append_recall_quality(
-    db: AsyncSession, owner_id: int, conversation_id: int | None, record: RecallQualityRecord,
-) -> None:
-    d = record.to_dict()
-    db.add(RecallQualityModel(
-        owner_id=owner_id,
-        conversation_id=conversation_id,
-        query=d["query"],
-        layer=d["layer"],
-        limit_val=d["limit"],
-        total_results=d["total_results"],
-        avg_similarity=d["avg_similarity"],
-        avg_confidence=d["avg_confidence"],
-        result_ids=d["result_ids"],
-        source_types=d["source_types"],
-        duration_ms=d["duration_ms"],
-    ))
-    await db.commit()
-
-
-def record_recall_quality(
-    owner_id: int, record: RecallQualityRecord, conversation_id: int | None = None,
-) -> None:
-    """Record a recall quality metric for governance (persisted via DB, sync wrapper)."""
-    import asyncio
-    from app.database import AsyncSessionLocal
-
-    async def _do():
-        async with AsyncSessionLocal() as db:
-            await _append_recall_quality(db, owner_id, conversation_id, record)
-
-    def _log_task_failure(task: asyncio.Task) -> None:
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            return
-        if exc is None:
-            return
-
-        async def _record() -> None:
-            from .failure_diagnostics import record_failure
-            await record_failure(
-                "memory",
-                "record_recall_quality",
-                type(exc).__name__,
-                str(exc),
-                conversation_id=conversation_id,
-                owner_id=owner_id,
-            )
-
-        try:
-            asyncio.create_task(_record())
-        except RuntimeError:
-            logger.warning("Recall quality write failed and diagnostic loop is unavailable: %s", exc)
-
+def _read_recall_quality_file() -> list[dict]:
+    """Read all records from the persisted quality file."""
+    path = Path(_RECALL_QUALITY_FILE)
+    if not path.exists():
+        return []
     try:
-        task = asyncio.create_task(_do())
-        task.add_done_callback(_log_task_failure)
-    except RuntimeError:
-        # No running event loop — spawn in a new one
-        import threading
-        def _run():
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(_do())
-            except Exception as exc:
-                logger.warning("Recall quality write failed in fallback thread: %s", exc)
-                from .failure_diagnostics import record_failure
-                try:
-                    loop.run_until_complete(
-                        record_failure(
-                            "memory",
-                            "record_recall_quality_thread_fallback",
-                            type(exc).__name__,
-                            str(exc),
-                            conversation_id=conversation_id,
-                            owner_id=owner_id,
-                        )
-                    )
-                except Exception as diag_exc:
-                    logger.warning("Failed to record recall quality fallback diagnostic: %s", diag_exc)
-            finally:
-                loop.close()
-        threading.Thread(target=_run, daemon=True).start()
+        raw = path.read_text(encoding="utf-8")
+        if not raw.strip():
+            return []
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data[-_RECALL_QUALITY_MAX_ENTRIES:]
+        return []
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to read recall quality file: %s", exc)
+        return []
 
 
-async def get_recall_quality_summary(
-    db: AsyncSession, owner_id: int | None = None,
-) -> dict:
+def _write_recall_quality_file(records: list[dict]) -> None:
+    """Atomically write records to the quality file (temp+rename)."""
+    path = Path(_RECALL_QUALITY_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd, tmp_path_str = tempfile.mkstemp(
+            suffix=".json", prefix="recall_quality_", dir=str(path.parent),
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False)
+        os.replace(tmp_path_str, str(path))
+    except OSError as exc:
+        logger.warning("Failed to write recall quality file: %s", exc)
+
+
+def record_recall_quality(record: RecallQualityRecord) -> None:
+    """Record a recall quality metric for governance (persisted)."""
+    records = _read_recall_quality_file()
+    records.append(record.to_dict())
+    if len(records) > _RECALL_QUALITY_MAX_ENTRIES:
+        records = records[-_RECALL_QUALITY_MAX_ENTRIES:]
+    _write_recall_quality_file(records)
+
+
+def get_recall_quality_summary() -> dict:
     """Aggregate recall quality metrics for governance dashboard.
 
-    Reads from DB (cross-worker safe).
+    Reads from persisted file (cross-worker safe).
     Returns dict with keys:
         total_recalls, per_layer stats, avg_hit_rate, avg_noise_estimate
     """
-    q = select(RecallQualityModel)
-    if owner_id is not None and owner_id > 0:
-        q = q.where(RecallQualityModel.owner_id == owner_id)
-    q = q.order_by(desc(RecallQualityModel.created_at)).limit(_RECALL_QUALITY_MAX_ENTRIES)
-    r = await db.execute(q)
-    history = [
-        {
-            "layer": row.layer,
-            "total_results": row.total_results,
-            "avg_similarity": row.avg_similarity,
-            "avg_confidence": row.avg_confidence,
-        }
-        for row in r.scalars().all()
-    ]
-
+    history = _read_recall_quality_file()
     if not history:
         return {
             "total_recalls": 0,
@@ -224,8 +165,8 @@ async def get_recall_quality_summary(
 
 
 STATIC_MEMORY_DIR = "data/static-memory"
-_STATIC_MEMORY_CACHE: dict[str, tuple[float, list[str], dict[str, float]]] = {}
-_STATIC_MEMORY_CACHE_TTL = 300.0  # 5 minutes (fallback if mtime is unsupported)
+_STATIC_MEMORY_CACHE: dict[str, tuple[float, list[str]]] = {}
+_STATIC_MEMORY_CACHE_TTL = 60.0
 
 
 def invalidate_static_memory_cache() -> None:
@@ -234,25 +175,12 @@ def invalidate_static_memory_cache() -> None:
     _STATIC_MEMORY_CACHE = {}
 
 
-def _check_cache_mtime(cached_mtimes: dict[str, float]) -> bool:
-    """Check if any cached file's mtime has changed. Returns True if cache is still valid."""
-    for fpath, cached_mtime in cached_mtimes.items():
-        try:
-            current_mtime = os.path.getmtime(fpath)
-        except OSError:
-            return False
-        if current_mtime != cached_mtime:
-            return False
-    return True
-
-
 def read_static_memory_files(base_dir: str | None = None) -> list[str]:
     """Read all markdown files from the static memory directory.
 
     Returns a list of content strings, one per file.  Files are sorted by
     name for deterministic ordering.  Cache is valid for ``_STATIC_MEMORY_CACHE_TTL``
-    seconds, and additionally validates file mtime on each access so that
-    content changes (without path changes) are detected immediately.
+    seconds.
 
     This is Layer 0 of the memory system — no DB, no embedding, no network.
     Pure file read, pure string injection.
@@ -265,42 +193,25 @@ def read_static_memory_files(base_dir: str | None = None) -> list[str]:
     now = time.time()
     cached = _STATIC_MEMORY_CACHE.get(cache_key)
     if cached is not None:
-        loaded_at, contents, file_mtimes = cached
-        ttl_valid = (now - loaded_at) < _STATIC_MEMORY_CACHE_TTL
-        mtime_valid = _check_cache_mtime(file_mtimes)
-        if ttl_valid and mtime_valid:
-            logger.debug("Static memory cache HIT: TTL+mtime valid for %s (%d files, %.1fs old)",
-                         resolve_dir, len(file_mtimes), now - loaded_at)
+        loaded_at, contents = cached
+        if (now - loaded_at) < _STATIC_MEMORY_CACHE_TTL:
             return list(contents)
-        if not mtime_valid:
-            logger.debug("Static memory cache invalidated by mtime change for %s", resolve_dir)
-        else:
-            logger.debug("Static memory cache expired (TTL) for %s, re-reading", resolve_dir)
 
     dir_path = Path(resolve_dir)
     if not dir_path.is_dir():
-        _STATIC_MEMORY_CACHE[cache_key] = (now, [], {})
+        _STATIC_MEMORY_CACHE[cache_key] = (now, [])
         return []
 
     contents: list[str] = []
-    file_mtimes: dict[str, float] = {}
-    try:
-        md_files = sorted(dir_path.glob("*.md"))
-    except (PermissionError, OSError) as exc:
-        logger.warning("Failed to list static memory directory %s: %s", resolve_dir, exc)
-        _STATIC_MEMORY_CACHE[cache_key] = (now, [], {})
-        return []
-    for md_path in md_files:
+    for md_path in sorted(dir_path.glob("*.md")):
         try:
             text = md_path.read_text(encoding="utf-8")
             if text.strip():
                 contents.append(text.strip())
-            file_mtimes[str(md_path)] = md_path.stat().st_mtime
         except Exception as exc:
             logger.warning("Failed to read static memory file %s: %s", md_path, exc)
 
-    _STATIC_MEMORY_CACHE[cache_key] = (now, contents, file_mtimes)
-    logger.debug("Static memory cache LOADED %d files from %s", len(contents), resolve_dir)
+    _STATIC_MEMORY_CACHE[cache_key] = (now, contents)
     return contents
 
 
@@ -368,7 +279,7 @@ async def recall(
             _t1 = time.time()
             sims = [r.get("similarity", 0) or 0 for r in items]
             confs = [r.get("confidence", 0) or 0 for r in items]
-            record_recall_quality(owner_id, RecallQualityRecord(
+            record_recall_quality(RecallQualityRecord(
                 timestamp=_t0, query=query[:100],
                 layer="semantic", limit=limit,
                 total_results=len(items),
@@ -430,214 +341,6 @@ async def trigger_dream(
         return {}
 
 
-# ── Memory Selector (recall-time relevance filtering) ─────────────────
-
-
-MIN_RELEVANCE_SCORE = 0.35
-MAX_MEMORY_SEGMENTS = 12
-ALLOW_SEMANTIC_WHEN_BUDGET_HIGH = True
-STABLE_RULES_HARD_CAP = 20
-CHUNK_VS_SEMANTIC_RATIO = 0.6
-
-
-@dataclass
-class MemorySelectionResult:
-    """Result of memory selection — what was kept and why."""
-    raw_rules: int
-    raw_chunks: int
-    raw_semantic: int
-    kept_rules: int
-    kept_chunks: int
-    kept_semantic: int
-    dropped_rules: list[str]
-    dropped_chunks: list[str]
-    dropped_semantic: list[str]
-    selection_reason: str
-
-
-def select_memory_segments(
-    rules: list[dict],
-    chunks: list[dict],
-    semantic: list[dict],
-    query: str | None = None,
-    max_segments: int = MAX_MEMORY_SEGMENTS,
-    min_relevance: float = MIN_RELEVANCE_SCORE,
-) -> tuple[MemorySelectionResult, list[dict], list[dict], list[dict]]:
-    """Selector: post-recall relevance filter that trims noisy/low-value entries.
-
-    Keeps the highest-value entries from each layer while respecting
-    ``max_segments`` and a minimum relevance threshold.  Rules are always
-    kept (they are deterministic constraints), but the cap is enforced.
-    """
-    result = MemorySelectionResult(
-        raw_rules=len(rules),
-        raw_chunks=len(chunks),
-        raw_semantic=len(semantic),
-        kept_rules=0,
-        kept_chunks=0,
-        kept_semantic=0,
-        dropped_rules=[],
-        dropped_chunks=[],
-        dropped_semantic=[],
-        selection_reason="",
-    )
-
-    # ── Stable rules: keep all (they are constraints), cap only ──────
-    kept_rules = sorted(rules, key=lambda r: r.get("priority", 0), reverse=True)
-    if len(kept_rules) > STABLE_RULES_HARD_CAP:
-        dropped_count = len(kept_rules) - STABLE_RULES_HARD_CAP
-        result.dropped_rules = [
-            r.get("content", "")[:80] for r in kept_rules[STABLE_RULES_HARD_CAP:]
-        ]
-        kept_rules = kept_rules[:STABLE_RULES_HARD_CAP]
-    else:
-        result.dropped_rules = []
-    result.kept_rules = len(kept_rules)
-
-    # ── Chunks: score by similarity + provenance quality ─────────────
-    scored_chunks = []
-    for c in chunks:
-        sim = c.get("similarity", c.get("score", 0)) or 0
-        if sim >= min_relevance:
-            provenance_boost = 1.0 if c.get("provenance") else 0.8
-            scored_chunks.append((c, sim * provenance_boost))
-    scored_chunks.sort(key=lambda x: -x[1])
-    dropped_chunks = [c.get("text", "")[:60] for c, _ in scored_chunks[max_segments // 2:]]
-    kept_chunks = [c for c, _ in scored_chunks[:max_segments // 2]]
-    result.kept_chunks = len(kept_chunks)
-    result.dropped_chunks = dropped_chunks
-
-    # ── Semantic: score by similarity, trim to remaining budget ──────
-    remaining = max_segments - result.kept_rules - result.kept_chunks
-    semantic_budget = max(0, min(remaining, max_segments // 3))
-
-    scored_semantic = [(s, s.get("similarity", 0) or 0) for s in semantic]
-    scored_semantic.sort(key=lambda x: -x[1])
-    dropped_semantic = [s.get("text", s.get("summary", ""))[:60] for s, _ in scored_semantic[semantic_budget:]]
-    kept_semantic = [s for s, _ in scored_semantic[:semantic_budget] if _ >= min_relevance]
-    result.kept_semantic = len(kept_semantic)
-    result.dropped_semantic = dropped_semantic
-
-    total_dropped = len(result.dropped_rules) + len(result.dropped_chunks) + len(result.dropped_semantic)
-    result.selection_reason = f"kept {result.kept_rules}r+{result.kept_chunks}c+{result.kept_semantic}s (dropped {total_dropped})"
-
-    return result, kept_rules, kept_chunks, kept_semantic
-
-
-# ── Memory Fencing ──────────────────────────────────────────────────────
-
-
-@dataclass
-class MemoryFence:
-    """Fencing policy — controls which memory layers are injected and when."""
-    inject_stable_rules: bool = True
-    inject_chunks: bool = True
-    inject_semantic: bool = True
-    inject_experience: bool = True
-    stable_rules_max_char: int = 2000
-    chunks_max_char: int = 3000
-    semantic_max_char: int = 2000
-    experience_max_char: int = 1500
-
-
-DEFAULT_MEMORY_FENCE = MemoryFence()
-
-
-def apply_fencing(
-    injection_parts: dict[str, str],
-    fence: MemoryFence | None = None,
-) -> str:
-    """Apply fencing policy — enforce per-layer char caps and layer toggles.
-
-    Args:
-        injection_parts: ``{"stable_rules": ..., "chunks": ..., "semantic": ...}``
-        fence: The fencing policy. Uses ``DEFAULT_MEMORY_FENCE`` if ``None``.
-
-    Returns:
-        The assembled injection string with caps enforced per layer.
-    """
-    f = fence or DEFAULT_MEMORY_FENCE
-    segments: list[str] = []
-
-    if f.inject_stable_rules and injection_parts.get("stable_rules"):
-        segments.append(injection_parts["stable_rules"][:f.stable_rules_max_char])
-    if f.inject_chunks and injection_parts.get("chunks"):
-        segments.append(injection_parts["chunks"][:f.chunks_max_char])
-    if f.inject_semantic and injection_parts.get("semantic"):
-        segments.append(injection_parts["semantic"][:f.semantic_max_char])
-
-    result = "\n\n".join(segments)
-    return result
-
-
-# ── Frozen Snapshot ─────────────────────────────────────────────────────
-# Long-running conversations can freeze a memory snapshot at a given point
-# so that subsequent turns reuse the same snapshot instead of re-recall.
-# This reduces noise from early conversation context drifting away.
-
-
-@dataclass
-class FrozenSnapshot:
-    """A frozen memory snapshot captured at a point in time."""
-    snapshot_type: str  # "conversation_start", "mid_turn", "manual"
-    captured_at: float
-    owner_id: int
-    conversation_id: int | None
-    stable_rules: list[dict]
-    chunks: list[dict]
-    semantic: list[dict]
-    token_estimate: int
-    turn_count: int
-    label: str = ""
-
-
-_SNAPSHOT_CACHE: dict[str, FrozenSnapshot] = {}
-
-
-def freeze_memory_snapshot(
-    owner_id: int,
-    conversation_id: int | None,
-    stable_rules: list[dict],
-    chunks: list[dict],
-    semantic: list[dict],
-    token_estimate: int = 0,
-    turn_count: int = 0,
-    label: str = "",
-) -> str:
-    """Freeze a memory snapshot and return its cache key.
-
-    The snapshot is stored in-process (cross-worker with DB would use
-    ``agent_context_snapshots`` table).  The key format is
-    ``frozen:{owner_id}:{conversation_id}:{label}`` so long tasks can
-    reuse the same snapshot across turns.
-    """
-    import time
-    key = f"frozen:{owner_id}:{conversation_id or 0}:{label}"
-    _SNAPSHOT_CACHE[key] = FrozenSnapshot(
-        snapshot_type="conversation_start" if not label else label,
-        captured_at=time.time(),
-        owner_id=owner_id,
-        conversation_id=conversation_id,
-        stable_rules=list(stable_rules),
-        chunks=list(chunks),
-        semantic=list(semantic),
-        token_estimate=token_estimate,
-        turn_count=turn_count,
-        label=label,
-    )
-    return key
-
-
-def get_frozen_snapshot(key: str) -> FrozenSnapshot | None:
-    """Retrieve a frozen snapshot by its cache key."""
-    return _SNAPSHOT_CACHE.get(key)
-
-
-def invalidate_frozen_snapshot(key: str) -> None:
-    """Remove a frozen snapshot from cache."""
-    _SNAPSHOT_CACHE.pop(key, None)
-
-
 # ── Three-layer memory helpers ──────────────────────────────────────────
 
 
@@ -668,7 +371,7 @@ async def recall_stable_rules(
             items = result["data"]
             _t1 = time.time()
             confs = [r.get("priority", 0) / 100 for r in items if r.get("priority")]
-            record_recall_quality(owner_id, RecallQualityRecord(
+            record_recall_quality(RecallQualityRecord(
                 timestamp=_t0, query=f"stable_rules:{rule_types or 'all'}",
                 layer="stable_rules", limit=100,
                 total_results=len(items),
@@ -717,7 +420,7 @@ async def recall_chunk(
             _t1 = time.time()
             sims = [r.get("similarity", 0) or 0 for r in items]
             confs = [r.get("confidence", 0) or 0 for r in items]
-            record_recall_quality(owner_id, RecallQualityRecord(
+            record_recall_quality(RecallQualityRecord(
                 timestamp=_t0, query=query[:100],
                 layer="chunk", limit=limit,
                 total_results=len(items),
@@ -779,8 +482,6 @@ async def save_stable_rule(
 async def three_layer_recall(
     owner_id: int,
     query: str,
-    fence: MemoryFence | None = None,
-    frozen_key: str | None = None,
 ) -> dict[str, Any]:
     """Combined recall from all three memory layers in one call.
 
@@ -793,40 +494,15 @@ async def three_layer_recall(
     Args:
         owner_id: The user to recall for.
         query: Natural-language query driving semantic searches (chunks + semantic).
-        fence: Optional fencing policy. Uses ``DEFAULT_MEMORY_FENCE`` if ``None``.
-        frozen_key: If provided, returns the frozen snapshot instead of re-recall.
 
     Returns:
         Dict with keys:
-            ``stable_rules`` — selected stable rules for this user
-            ``chunks``       — selected chunk-level recall results
-            ``semantic``     — selected semantic recall results
-            ``injection``    — formatted prompt injection string
-            ``selection``    — ``MemorySelectionResult`` dict
-            ``frozen_key``   — snapshot key if frozen was used/created
-            ``quality_score`` — estimated quality (0-1)
+            ``stable_rules`` — all active stable rules for this user
+            ``chunks``       — chunk-level recall results
+            ``semantic``     — existing semantic recall results
+            ``injection``    — formatted prompt injection string combining all three layers
     """
     import asyncio
-
-    # ── Use frozen snapshot if available ─────────────────────────────
-    if frozen_key:
-        snapshot = get_frozen_snapshot(frozen_key)
-        if snapshot:
-            inj_parts = {
-                "stable_rules": _format_rules_injection(snapshot.stable_rules),
-                "chunks": _format_chunks_injection(snapshot.chunks),
-                "semantic": _format_semantic_injection(snapshot.semantic),
-            }
-            injection = apply_fencing(inj_parts, fence)
-            return {
-                "stable_rules": snapshot.stable_rules,
-                "chunks": snapshot.chunks,
-                "semantic": snapshot.semantic,
-                "injection": injection,
-                "frozen_key": frozen_key,
-                "quality_score": 1.0,
-                "selection": {"from_snapshot": True, "label": snapshot.label},
-            }
 
     async def _safe_stable():
         try:
@@ -853,80 +529,60 @@ async def three_layer_recall(
         _safe_stable(), _safe_chunk(), _safe_semantic(),
     )
 
-    # ── Apply Selector ───────────────────────────────────────────────
-    selection, kept_rules, kept_chunks, kept_semantic = select_memory_segments(
-        stable_rules, chunks, semantic, query=query,
-    )
-
-    # ── Format each layer ────────────────────────────────────────────
-    inj_parts = {
-        "stable_rules": _format_rules_injection(kept_rules),
-        "chunks": _format_chunks_injection(kept_chunks),
-        "semantic": _format_semantic_injection(kept_semantic),
-    }
-
-    # ── Apply Fencing ────────────────────────────────────────────────
-    injection = apply_fencing(inj_parts, fence)
-
-    # ── Quality estimate ─────────────────────────────────────────────
-    total_raw = selection.raw_rules + selection.raw_chunks + selection.raw_semantic
-    total_kept = selection.kept_rules + selection.kept_chunks + selection.kept_semantic
-    quality_score = min(1.0, (total_kept / max(total_raw, 1)) * 0.7 + 0.3) if total_raw > 0 else 0.5
+    injection = _format_three_layer_injection(stable_rules, chunks, semantic)
 
     return {
-        "stable_rules": kept_rules,
-        "chunks": kept_chunks,
-        "semantic": kept_semantic,
+        "stable_rules": stable_rules,
+        "chunks": chunks,
+        "semantic": semantic,
         "injection": injection,
-        "selection": {
-            "raw_rules": selection.raw_rules,
-            "raw_chunks": selection.raw_chunks,
-            "raw_semantic": selection.raw_semantic,
-            "kept_rules": selection.kept_rules,
-            "kept_chunks": selection.kept_chunks,
-            "kept_semantic": selection.kept_semantic,
-            "dropped_count": len(selection.dropped_rules) + len(selection.dropped_chunks) + len(selection.dropped_semantic),
-            "reason": selection.selection_reason,
-        },
-        "frozen_key": None,
-        "quality_score": round(quality_score, 3),
     }
 
 
-def _format_rules_injection(rules: list[dict]) -> str:
-    """Format stable rules into a prompt injection block."""
-    if not rules:
-        return ""
-    rules_sorted = sorted(rules, key=lambda r: r.get("priority", 0), reverse=True)
-    rule_lines = [f"  [{r.get('rule_type', 'general')}] {r.get('content', '')}" for r in rules_sorted]
-    return "<stable_rules>\n" + "\n".join(rule_lines) + "\n</stable_rules>"
+def _format_three_layer_injection(
+    rules: list[dict],
+    chunks: list[dict],
+    semantic: list[dict],
+) -> str:
+    """Format the three memory layers into a single structured prompt injection string.
 
+    The output is designed to be prepended to the system prompt so the LLM
+    sees all relevant context organised by memory tier.
+    """
+    parts: list[str] = []
 
-def _format_chunks_injection(chunks: list[dict]) -> str:
-    """Format chunk-level memories into a prompt injection block."""
-    if not chunks:
-        return ""
-    chunk_lines = []
-    for i, c in enumerate(chunks, 1):
-        text = c.get("text", "")
-        provenance = c.get("provenance", "")
-        if provenance:
-            chunk_lines.append(f"  [{i}] {text}  (source: {provenance})")
-        else:
-            chunk_lines.append(f"  [{i}] {text}")
-    return "<chunks>\n" + "\n".join(chunk_lines) + "\n</chunks>"
+    # ── Layer 1: Stable rules ────────────────────────────────────────
+    if rules:
+        rules_sorted = sorted(rules, key=lambda r: r.get("priority", 0), reverse=True)
+        rule_lines: list[str] = []
+        for r in rules_sorted:
+            rule_type = r.get("rule_type", "general")
+            content = r.get("content", "")
+            rule_lines.append(f"  [{rule_type}] {content}")
+        parts.append("<stable_rules>\n" + "\n".join(rule_lines) + "\n</stable_rules>")
 
+    # ── Layer 2: Chunks ──────────────────────────────────────────────
+    if chunks:
+        chunk_lines: list[str] = []
+        for i, c in enumerate(chunks, 1):
+            text = c.get("text", "")
+            provenance = c.get("provenance", "")
+            if provenance:
+                chunk_lines.append(f"  [{i}] {text}  (source: {provenance})")
+            else:
+                chunk_lines.append(f"  [{i}] {text}")
+        parts.append("<chunks>\n" + "\n".join(chunk_lines) + "\n</chunks>")
 
-def _format_semantic_injection(semantic: list[dict]) -> str:
-    """Format semantic memories into a prompt injection block."""
-    if not semantic:
-        return ""
-    sem_lines = []
-    for i, s in enumerate(semantic, 1):
-        text = s.get("text") or s.get("summary", "")
-        similarity = s.get("similarity", "")
-        if similarity:
-            sem_lines.append(f"  [{i}] {text}  (relevance: {similarity})")
-        else:
-            sem_lines.append(f"  [{i}] {text}")
-    return "<semantic_memories>\n" + "\n".join(sem_lines) + "\n</semantic_memories>"
+    # ── Layer 3: Semantic ────────────────────────────────────────────
+    if semantic:
+        sem_lines: list[str] = []
+        for i, s in enumerate(semantic, 1):
+            text = s.get("text") or s.get("summary", "")
+            similarity = s.get("similarity", "")
+            if similarity:
+                sem_lines.append(f"  [{i}] {text}  (relevance: {similarity})")
+            else:
+                sem_lines.append(f"  [{i}] {text}")
+        parts.append("<semantic_memories>\n" + "\n".join(sem_lines) + "\n</semantic_memories>")
+
+    return "\n\n".join(parts)

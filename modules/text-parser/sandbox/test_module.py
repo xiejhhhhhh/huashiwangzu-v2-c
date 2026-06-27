@@ -1,23 +1,16 @@
 """Sandbox test for text-parser module."""
-import logging
 import sys
 from pathlib import Path
 SDIR = Path(__file__).resolve().parent / "samples"
 ALLOWED_ENCS = ["utf-8","utf-8-sig","gbk","gb2312","latin-1"]
-
-logger = logging.getLogger("v2.text-parser.sandbox")
 
 
 def parse_text(path):
     raw = path.read_bytes()
     content = None
     for enc in ALLOWED_ENCS:
-        try:
-            content = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            logger.debug("Failed to decode with %s, trying next encoding", enc)
-            continue
+        try: content = raw.decode(enc); break
+        except: continue
     if content is None: content = raw.decode("utf-8", errors="replace")
     content = content.replace("\r\n","\n").replace("\r","\n")
     lines = content.splitlines(keepends=False)

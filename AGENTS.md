@@ -60,7 +60,6 @@ backend/    Desktop shell backend / platform service layer
 23. **模块读框架文件必须走 `check_file_access`，禁止裸 `db.get(File)` 后直接读盘。** 任何按 `file_id` 取文件内容的端点（parser/解析/预览/发布），都要先用框架 `check_file_access(db, file_id, user_id)` 校验 owner/share，再读盘——否则任何登录用户凭 id 越权读他人文件（曾是 P0）。owner 从 caller（`user:{id}`）解析，不得写死。
 24. **改/查代码前先用 codemap 查影响面，别埋头逐文件翻——省 token、更准。** 后端起着时：`PORT=$(cat backend/logs/.backend.port 2>/dev/null||echo 33000)`；`POST /api/codemap/impact {"path":"<要改的文件>"}` 拿"波及哪些文件/模块/能力"，`POST /api/codemap/get-file {"path":...}` 拿直接依赖。**看返回的 `confidence`(0-100，解析覆盖率) 和 `stale`(索引是否最新) 判断可信度**：confidence 低或 `stale:true` 时以实读为准。返回的 `empirical_accuracy` 是实战命中率（基于历史反馈），优先参考。**命中关联文件后，改之前必实读该文件做验证，不盲信 codemap 结论**。**实读验证后若发现 codemap 给的关联/影响面不准，调 `report_inaccuracy` 反馈一条（path + codemap说的 + 实际 + 原因），让信任分和维修记录积累起来。** codemap 不可用（health 非 200）才回退逐文件查，别卡住。这是默认工作流，能用就用。
 25. **首选 codegraph 查代码/查影响面，再回退 codemap/grep——省 token。** 本仓已 `codegraph init`（`.codegraph/` 本地索引，文件改动自动同步）。改代码或答"X 怎么工作/在哪/谁调用/改了影响啥"之前，**先调 codegraph**：`codegraph_explore`（PRIMARY，传符号名或自然语言问题，一次返回相关符号的逐行源码+调用关系+影响面+有无测试覆盖，等价已 Read，别再开这些文件）；`codegraph_node`（单符号/读整文件带依赖者）；`codegraph_callers`/`codegraph_impact`（谁调用/改动波及面）。**改前看 blast radius 再下手**。MCP 工具不可用时用 CLI：`codegraph explore "<符号/问题>"`、`codegraph node <符号或文件>`。codegraph 与 codemap 重叠时优先 codegraph（全局、自动同步、跨 agent）；两者都不可用才 grep/逐文件读。
-26. **桌面壳禁用全局快捷键（键盘热键）。** 本系统是跑在真实电脑浏览器里的 Web 应用，**绝不抢占键盘快捷键**——不做 Alt+Tab 切窗、Win+方向键分屏、Ctrl+Shift+P 命令面板这类全局热键绑定，因为会和用户的操作系统/浏览器/其它软件快捷键冲突，体验很恶心。所有交互入口走**鼠标可点的可见控件**（任务栏、启动器、右键菜单、按钮、磁吸拖拽）。命令/功能可以做统一注册中心供菜单和可见入口调用，但**不绑全局快捷键触发**。调研或方案里凡涉及"快捷键/热键/keybinding"的交互，一律不采纳。（仅限输入框内的常规编辑键如 Enter 提交、Esc 关弹窗这类局部、不抢全局的除外。）
 
 ## TypeScript Rules
 
@@ -75,7 +74,6 @@ backend/    Desktop shell backend / platform service layer
 3. **查代码优先 codegraph**: `code_explore`/`code_node`/`code_impact` 或直接 `codegraph` CLI。
 4. **读网页用 `web_read`**(不截图)。
 5. **测试直接用 `probe` / `call_capability` 打活系统** + `tail_log` 看错, 别写测试脚本搭场景。
-6. **★产物验证铁律(报"通过"前必做)**: 凡涉及**后台/异步/hook/事件/落库**的功能(如 review fork、stuck 检测、知识库入库、画像演进),做完真实触发后**必须两查**:① `log_errors(module)` 扫有没有被 try/except 吞掉的异常(命中=功能其实没跑通,**禁止报通过**);② `sql`/`db_schema` 查**产物表真有行**(不是只看"任务建了/表存在")。**"任务建了 ≠ 产物出来了"**。栽过两次:stuck 漏 owner_id 插入崩、review fork 错参全程不产 proposal——都是异常被吞成 WARNING、产物表 0 行,只查"表在"就漏了。
 
 ## 测试铁律
 

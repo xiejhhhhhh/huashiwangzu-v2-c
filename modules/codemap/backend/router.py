@@ -333,7 +333,7 @@ async def _cap_get_file(params: dict, caller: str) -> dict:
                 result["reliability_note"] = note
             await _increment_query_count(db)
     except Exception:
-        logger.debug("Failed to load path feedback for %s", path)
+        pass
     return {"success": True, "data": result}
 
 
@@ -352,7 +352,7 @@ async def _cap_impact(params: dict, caller: str) -> dict:
                 result["reliability_note"] = note
             await _increment_query_count(db)
     except Exception:
-        logger.debug("Failed to load impact path feedback for %s", path)
+        pass
     return {"success": True, "data": result}
 
 
@@ -395,7 +395,7 @@ async def _cap_stats(params: dict, caller: str) -> dict:
             stats["feedback_count"] = feedback_count
             stats["empirical_accuracy"] = max(0, 100 - int(feedback_count * 100 / max(qc, 1))) if qc > 0 else 100
     except Exception:
-        logger.debug("Failed to load feedback count for stats")
+        pass
     return {"success": True, "data": stats}
 
 

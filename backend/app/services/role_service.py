@@ -7,45 +7,9 @@ from app.core.exceptions import NotFound, ValidationError
 logger = logging.getLogger("v2.role")
 
 DEFAULT_MATRIX = [
-    {
-        "role_key": "admin",
-        "display_name": "管理员",
-        "permissions": {
-            "user_management": True,
-            "system_config": True,
-            "role_matrix": True,
-            "can_share": True,
-            "can_publish": True,
-            "can_reshare": True,
-            "can_collab": True,
-        },
-    },
-    {
-        "role_key": "editor",
-        "display_name": "编辑者",
-        "permissions": {
-            "user_management": False,
-            "system_config": False,
-            "role_matrix": False,
-            "can_share": True,
-            "can_publish": False,
-            "can_reshare": False,
-            "can_collab": True,
-        },
-    },
-    {
-        "role_key": "viewer",
-        "display_name": "查看者",
-        "permissions": {
-            "user_management": False,
-            "system_config": False,
-            "role_matrix": False,
-            "can_share": False,
-            "can_publish": False,
-            "can_reshare": False,
-            "can_collab": False,
-        },
-    },
+    {"role_key": "admin", "display_name": "管理员", "permissions": {"user_management": True, "system_config": True, "role_matrix": True}},
+    {"role_key": "editor", "display_name": "编辑者", "permissions": {"user_management": False, "system_config": False, "role_matrix": False}},
+    {"role_key": "viewer", "display_name": "查看者", "permissions": {"user_management": False, "system_config": False, "role_matrix": False}},
 ]
 
 VALID_ROLES = ["admin", "editor", "viewer"]
@@ -56,17 +20,10 @@ async def get_role_matrix(db: AsyncSession) -> list[dict]:
     rows = result.scalars().all()
     if not rows:
         return _seed_default_matrix(db, DEFAULT_MATRIX)
-
-    # Merge default collab permission bits into existing rows (backward compat)
-    default_perms_by_role = {m["role_key"]: m["permissions"] for m in DEFAULT_MATRIX}
-    output = []
-    for r in rows:
-        perms = dict(r.permissions or {})
-        defaults = default_perms_by_role.get(r.role_key, {})
-        for k, v in defaults.items():
-            perms.setdefault(k, v)
-        output.append({"role_key": r.role_key, "display_name": r.display_name, "permissions": perms})
-    return output
+    return [
+        {"role_key": r.role_key, "display_name": r.display_name, "permissions": r.permissions}
+        for r in rows
+    ]
 
 
 async def update_role_matrix(db: AsyncSession, matrix: list[dict]) -> list[dict]:

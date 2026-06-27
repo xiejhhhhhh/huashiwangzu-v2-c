@@ -13,16 +13,6 @@ let nextZIndex = 100
 let nextId = 1
 const desktopContainerSize = reactive({ width: window.innerWidth, height: window.innerHeight })
 
-function getTaskbarHeight(): number {
-  if (typeof document === 'undefined') return 40
-  const cssVar = getComputedStyle(document.documentElement).getPropertyValue('--taskbar-height').trim()
-  if (cssVar) {
-    const parsed = parseInt(cssVar, 10)
-    if (!isNaN(parsed)) return parsed
-  }
-  return 40
-}
-
 function generateId(): string { return `win_${Date.now()}_${nextId++}` }
 
 function generateZIndex(): number { return nextZIndex++ }
@@ -126,7 +116,7 @@ function toggleMaximized(id: string) {
     w.preMaximizeState = { x: w.x, y: w.y, width: w.width, height: w.height }
     w.x = 0; w.y = 0
     w.width = desktopContainerSize.width
-    w.height = desktopContainerSize.height - getTaskbarHeight()
+    w.height = desktopContainerSize.height - 48
     w.maximized = true
   }
 }

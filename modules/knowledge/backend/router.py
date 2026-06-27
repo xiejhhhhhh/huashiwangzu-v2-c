@@ -19,7 +19,7 @@ from .services.document_service import (
     parse_and_index_document, resolve_user_id,
 )
 from .services.embedding_service import get_chunk_by_id
-from .services.search_service import hybrid_search, get_document_chunks, evidence_oriented_search
+from .services.search_service import hybrid_search, get_document_chunks
 from .services.entity_service import get_entity_dictionary, get_graph_context, get_page_fusion, process_document_entities_from_fusions
 from .services.governance_service import (
     list_governance_candidates, approve_candidate, reject_candidate,
@@ -434,36 +434,6 @@ async def api_search(
     result = await hybrid_search(db, payload.query, user.id, payload.top_k, payload.use_rerank)
     return ApiResponse(data={"query": payload.query, "results": result})
 
-
-class EvidenceSearchRequest(BaseModel):
-    query: str
-    top_k: int = 10
-    use_rerank: bool = False
-    enable_rewrite: bool = True
-    enable_answerability: bool = True
-    include_fusion: bool = True
-    include_graph: bool = True
-
-
-@router.post("/evidence-search")
-async def api_evidence_search(
-    payload: EvidenceSearchRequest,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("viewer")),
-):
-    """Evidence-oriented search: returns a structured evidence packet with
-    answerability judgment, citations, fusion context, and graph context."""
-    result = await evidence_oriented_search(
-        db, payload.query, user.id,
-        top_k=payload.top_k,
-        use_rerank=payload.use_rerank,
-        enable_rewrite=payload.enable_rewrite,
-        enable_answerability=payload.enable_answerability,
-        include_fusion=payload.include_fusion,
-        include_graph=payload.include_graph,
-    )
-    return ApiResponse(data=result)
-
 @router.get("/documents/{document_id}/chunks")
 async def api_document_chunks(
     document_id: int,
@@ -641,18 +611,7 @@ async def _cap_search(params: dict, caller: str) -> dict:
                 doc_cache[doc_id] = doc.filename if doc else ""
             r["document_name"] = doc_cache.get(doc_id, "")
             enriched.append(r)
-
-        # Evidence metadata for agent consumption: answerability + citation count
-        answerable = "yes" if enriched and enriched[0].get("rrf_score", 0) > 0.5 else "weak" if enriched else "no"
-        return {
-            "query": query,
-            "results": enriched,
-            "evidence_meta": {
-                "answerable": answerable,
-                "citation_count": len(enriched),
-                "hint": "use evidence_search for full evidence packet (answerability, fusion, graph)",
-            },
-        }
+        return {"query": query, "results": enriched}
 
 async def _cap_get_block(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
@@ -701,39 +660,6 @@ async def _cap_get_evidence_detail(params: dict, caller: str) -> dict:
     async with AsyncSessionLocal() as db:
         result = await get_evidence_detail(db, owner_id, entity_id)
         return {"evidence": result}
-
-async def _cap_evidence_search(params: dict, caller: str) -> dict:
-    """Evidence-oriented search capability for agent consumption.
-
-    Returns a structured evidence packet with:
-    - ``answerable``: "yes" | "weak" | "no"
-    - ``answerability_reason``: explanation
-    - ``citations``: list of chunk citations with provenance
-    - ``fusion_context``: page-level fusion content
-    - ``graph_context``: entity relationship summaries
-    - ``rewritten_query``: if query was rewritten
-    """
-    owner_id = resolve_user_id(caller)
-    query = str(params.get("query", "")).strip()
-    top_k = int(params.get("top_k", 10) or 10)
-    enable_rewrite = bool(params.get("enable_rewrite", True))
-    enable_answerability = bool(params.get("enable_answerability", True))
-    include_fusion = bool(params.get("include_fusion", True))
-    include_graph = bool(params.get("include_graph", True))
-    if not query:
-        raise ValueError("query is required")
-    async with AsyncSessionLocal() as db:
-        result = await evidence_oriented_search(
-            db, query, owner_id,
-            top_k=top_k,
-            use_rerank=False,
-            enable_rewrite=enable_rewrite,
-            enable_answerability=enable_answerability,
-            include_fusion=include_fusion,
-            include_graph=include_graph,
-        )
-        return result
-
 
 # 注册对外能力：Agent 会通过 list_capabilities 自动发现 knowledge__search 等工具。
 register_capability(
@@ -791,20 +717,6 @@ register_capability(
     parameters={"entity_id": {"type": "integer", "description": "Entity ID"}},
     min_role="viewer",
 )
-register_capability(
-    "knowledge", "evidence_search", _cap_evidence_search,
-    description="Search knowledge base with evidence-oriented results: returns answerability judgment, citations, fusion context, and graph context in a unified evidence packet",
-    brief="知识库证据检索",
-    parameters={
-        "query": {"type": "string", "description": "Search query"},
-        "top_k": {"type": "integer", "description": "Number of results, default 10"},
-        "enable_rewrite": {"type": "boolean", "description": "Enable query rewriting, default true"},
-        "enable_answerability": {"type": "boolean", "description": "Enable answerability judgment, default true"},
-        "include_fusion": {"type": "boolean", "description": "Include page fusion context, default true"},
-        "include_graph": {"type": "boolean", "description": "Include graph context, default true"},
-    },
-    min_role="viewer",
-)
 
 async def _cap_get_ocr_words(params: dict, caller: str) -> dict:
     """返回 PDF 某页 OCR 词坐标（供 pdf-viewer 叠文字层）。"""
@@ -859,58 +771,6 @@ async def _cap_ingest(params: dict, caller: str) -> dict:
             logger.info("ingest skipped: unsupported extension '%s' for file_id=%d", ext, file_id)
             return {"skipped": True, "reason": f"unsupported extension '{ext}'"}
 
-        # ── MD5 内容级去重：全局查同内容是否已入库（有有效 chunks 才算） ──
-        if file.md5_hash:
-            from .models import KbChunk
-            from sqlalchemy import delete as sa_delete, func as sa_func, text as sa_text
-            from datetime import datetime, timezone, timedelta
-            content_r = await db.execute(
-                select(KbDocument).where(
-                    KbDocument.md5_hash == file.md5_hash,
-                    KbDocument.deleted == False,
-                ).limit(1)
-            )
-            content_existing = content_r.scalar_one_or_none()
-            if content_existing:
-                chunk_cnt = await db.execute(
-                    select(sa_func.count()).select_from(KbChunk).where(
-                        KbChunk.document_id == content_existing.id
-                    )
-                )
-                if (chunk_cnt.scalar() or 0) > 0:
-                    return {"document_id": content_existing.id, "enqueued": False, "reason": "content already indexed"}
-                # chunks=0：判断是真孤儿还是正在入库中
-                # 真孤儿：任一状态已是终态(done/error/failed)，说明管线已走过 chunk 产出阶段但没产出
-                # 入库中：所有状态均为 pending/processing
-                now = datetime.now(timezone.utc)
-                age = now - (content_existing.created_at or now)
-                in_flight_statuses = {"pending", "parsing", "collecting", "running", "indexing"}
-                is_all_inflight = (
-                    content_existing.parse_status in in_flight_statuses
-                    and content_existing.raw_status in in_flight_statuses
-                    and content_existing.fusion_status in in_flight_statuses
-                    and content_existing.vector_status in in_flight_statuses
-                )
-                is_old_enough = age > timedelta(minutes=30)
-                if not is_all_inflight or is_old_enough:
-                    logger.info(
-                        "Cleaning orphan document_id=%d (md5 match, zero chunks, status=%s/%s/%s/%s, age=%ds)",
-                        content_existing.id, content_existing.parse_status, content_existing.raw_status,
-                        content_existing.fusion_status, content_existing.vector_status, int(age.total_seconds()),
-                    )
-                    for tbl in ["kb_raw_data", "kb_page_fusions", "kb_chunk_entities",
-                                "kb_evidence", "kb_document_profiles", "kb_governance_candidates"]:
-                        await db.execute(sa_text(f"DELETE FROM {tbl} WHERE document_id = :did"), {"did": content_existing.id})
-                    await db.execute(sa_delete(KbDocument).where(KbDocument.id == content_existing.id))
-                    await db.commit()
-                else:
-                    logger.info(
-                        "Skipping orphan cleanup for document_id=%d (in-flight: %s/%s/%s, age=%ds)",
-                        content_existing.id, content_existing.parse_status, content_existing.raw_status,
-                        content_existing.fusion_status, int(age.total_seconds()),
-                    )
-                    return {"document_id": content_existing.id, "enqueued": False, "reason": "in-flight, skipping"}
-
         # 已存在则返回现有记录
         existing_r = await db.execute(
             select(KbDocument).where(
@@ -935,67 +795,15 @@ register_capability(
     min_role="editor",
 )
 
-# ── Event handler: file.uploaded (upload → orchestration entry) ─────
-
-PARSER_EXTENSIONS = {
-    "txt", "md", "html", "csv",
-    "docx", "pptx", "xlsx", "pdf",
-}
-
-# Format families for future IR projection dispatch
-_FORMAT_FAMILIES = {
-    "txt": "text", "md": "markdown", "html": "html",
-    "docx": "ooxml", "pptx": "ooxml", "xlsx": "ooxml",
-    "pdf": "pdf",
-}
-
+# ── Event handler: file.uploaded ──────────────────────────────────
 
 async def _on_file_uploaded(payload: dict, caller: str, caller_role: str) -> dict:
-    """Handle file.uploaded event: orchestration entry for upload → parser/IR → KB pipeline.
+    """Handle file.uploaded event: register file into knowledge base.
 
-    Processing chain:
-      1. Permission & type guard (reuses _cap_ingest logic)
-      2. MD5 content-level dedup
-      3. If parseable → reserved for parser → IR generation (A11 integration point)
-      4. If KB-suitable → register document + enqueue kb_pipeline
-
+    Reuses _cap_ingest logic (type whitelist, idempotent, permission check).
     This is best-effort: failures are logged but do not block the upload flow.
     """
-    owner_id = resolve_user_id(caller)
-    file_id = int(payload.get("file_id", 0) or 0)
-    if file_id <= 0:
-        return {"skipped": True, "reason": "invalid file_id"}
-
-    async with AsyncSessionLocal() as db:
-        from app.services.file_service import check_file_access
-        from app.core.exceptions import NotFound, PermissionDenied
-        try:
-            file = await check_file_access(db, file_id, owner_id)
-        except (NotFound, PermissionDenied):
-            return {"skipped": True, "reason": "file not found or access denied"}
-
-        ext = (file.extension or "").lower().strip(".")
-
-        # ── Parseable files: reserved for parser → IR generation ──
-        # A11 integration point: call parser capability, generate Document IR,
-        # then optionally route to KB ingestion.
-        if ext in PARSER_EXTENSIONS:
-            _format_family = _FORMAT_FAMILIES.get(ext, "unknown")
-            logger.info(
-                "file.uploaded: parseable file_id=%d ext=%s family=%s",
-                file_id, ext, _format_family,
-            )
-
-        # ── KB ingestion (with MD5 dedup) ──
-        if ext in INGEST_EXTENSIONS:
-            result = await _cap_ingest({"file_id": file_id}, caller)
-            logger.info(
-                "file.uploaded -> kb: file_id=%d result=%s", file_id, result
-            )
-            return result
-
-        logger.info("file.uploaded: no handler for file_id=%d ext=%s", file_id, ext)
-        return {"skipped": True, "reason": f"unsupported extension '{ext}'"}
+    return await _cap_ingest(payload, caller)
 
 from app.services.module_events import register_module_event_handler
 register_module_event_handler("file.uploaded", _on_file_uploaded, "knowledge")

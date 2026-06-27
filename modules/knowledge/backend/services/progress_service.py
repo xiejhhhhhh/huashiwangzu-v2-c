@@ -1,5 +1,3 @@
-import json
-
 """知识库分析进度聚合服务。
 
 从各层真实表实时算出每阶段细颗粒进度(截图 3/10 这种),供前端轮询。
@@ -8,47 +6,15 @@ import json
 """
 import logging
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
-    KbDocument,
-    KbDocumentProfile,
-    KbFileRelation,
-    KbGovernanceCandidate,
-    KbPageFusion,
-    KbRawData,
+    KbDocument, KbRawData, KbPageFusion, KbDocumentProfile,
+    KbGovernanceCandidate, KbFileRelation,
 )
 
 logger = logging.getLogger("v2.knowledge").getChild("progress")
-
-
-async def _has_pipeline_task(document_id: int) -> str | None:
-    """Check if there is a running/pending kb_pipeline task for this document.
-
-    Uses JSONB extraction for exact document_id matching (not LIKE which
-    can match substrings). Returns the task status string if a live task
-    exists, None otherwise.
-    """
-    try:
-        from app.database import AsyncSessionLocal
-        from sqlalchemy import text
-        async with AsyncSessionLocal() as db:
-            r = await db.execute(
-                text("""
-                    SELECT status FROM framework_system_task_queues
-                    WHERE task_type = 'kb_pipeline'
-                      AND (parameters::jsonb @> :param::jsonb)
-                      AND status IN ('pending', 'running')
-                    ORDER BY id DESC LIMIT 1
-                """),
-                {"param": json.dumps({"document_id": document_id})},
-            )
-            row = r.scalar_one_or_none()
-            return row if row else None
-    except Exception as e:
-        logger.warning("Failed to check pipeline task for doc_id=%d: %s", document_id, e)
-        return None
 
 
 def _stage(key: str, label: str, done: int, total: int, count: int | None = None) -> dict:
@@ -134,16 +100,11 @@ async def get_document_progress(db: AsyncSession, document_id: int, owner_id: in
         _stage("relation", "关联织网", 1 if relation_count > 0 else 0, 1, count=relation_count),
     ]
 
-    # 整体状态: raw_status / fusion_status 为权威态; 细分阶段算百分比
-    # 关键: 必须结合 kb_pipeline 任务状态, 不能在 graph/relation 还没结束时显示 done
+    # 整体状态:raw_status / fusion_status 为权威态;细分阶段算百分比
     raw_status = doc.raw_status or "pending"
     fusion_status = doc.fusion_status or "pending"
-    pipeline_task_status = await _has_pipeline_task(document_id)
     if raw_status == "failed" or fusion_status == "failed":
         overall_status = "failed"
-    elif pipeline_task_status:
-        # 仍有 pipeline 在跑, 不能显示 done
-        overall_status = pipeline_task_status  # "pending" or "running"
     elif profile_done > 0 and fusion_done >= tp and tp > 0:
         overall_status = "done"
     elif raw_status == "pending" and fusion_status == "pending":

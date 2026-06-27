@@ -2,7 +2,6 @@
 
 Registers the describe capability with the framework's cross-module registry.
 """
-import logging
 import os
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -13,8 +12,6 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.module_registry import register_capability
-
-logger = logging.getLogger("v2.image-vision")
 
 router = APIRouter(prefix="/api/image-vision", tags=["image-vision"])
 
@@ -31,8 +28,8 @@ def _resolve_user_id(caller: str) -> int:
         if prefix == "user":
             return int(raw_id)
     except (TypeError, ValueError):
-        logger.debug("Failed to resolve user_id from caller: %s", caller)
-        raise PermissionDenied("Invalid caller")
+        pass
+    raise PermissionDenied("Invalid caller")
 
 
 async def _describe(params: dict, caller: str) -> dict:

@@ -39,7 +39,7 @@
         <template v-for="(m, i) in messages" :key="`${m.id}-${i}`">
           <ToolCallCard v-if="m.eventType === 'tool_call' || m.eventType === 'tool_result'" :message="m" />
           <ThinkingCard v-else-if="m.eventType === 'thinking'" :content="m.content" :running="m.running" :collapsed="m.collapsed" />
-          <MessageBubble v-else :message="m" />
+          <MessageBubble v-else :message="m" :editingId="editingMessageId" @edit="handleStartEdit" @submitEdit="handleSubmitEdit" />
         </template>
 
         <!-- 流式输出指示器 -->
@@ -105,6 +105,7 @@ const props = defineProps<{
 const conversations = ref<ConvItem[]>([])
 const profiles = ref<ModelProfile[]>([])
 const tools = ref<unknown[]>([])
+const editingMessageId = ref<number | null>(null)
 const activeConvId = ref<number | null>(null)
 const messages = ref<MsgItem[]>([])
 const inputText = ref('')
@@ -132,6 +133,29 @@ const allReferences = computed<RefItem[]>(() => {
   }
   return result
 })
+
+// ── Edit / Inline Editing ──
+function handleStartEdit(messageId: number, _content: string) {
+  editingMessageId.value = messageId || null
+}
+
+async function handleSubmitEdit(messageId: number, newContent: string) {
+  if (!activeConvId.value || !newContent.trim()) return
+  editingMessageId.value = null
+  try {
+    const resp = await apiFetch<{ rolled_back: boolean }>(`/agent/conversations/${activeConvId.value}/rollback`, {
+      method: 'POST',
+      body: JSON.stringify({ message_id: messageId }),
+      headers: { 'Content-Type': 'application/json' },
+    })
+    if (!resp.rolled_back) { error.value = '回退失败'; return }
+    await selectConversation(activeConvId.value)
+    inputText.value = newContent
+    nextTick(() => inputAreaRef.value?.focus())
+  } catch (e: unknown) {
+    error.value = '编辑失败: ' + String((e as Error).message || e)
+  }
+}
 
 // ── Conv operations ──
 async function loadConversations() {

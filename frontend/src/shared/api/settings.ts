@@ -135,11 +135,6 @@ export async function toggleUserEnabled(userId: number) {
   return { message: data?.message || 'Status updated' as string }
 }
 
-export async function fetchModuleSettings(): Promise<Record<string, string>> {
-  const data = await api.get<unknown, Record<string, string>>('/settings/module-settings')
-  return data
-}
-
 export async function fetchSystemConfig(): Promise<SystemConfig> {
   const data = await api.get<unknown, SystemConfig | null>('/settings/system-config')
   return data ?? { project_name: '', system_version: '', login_page_title: '', default_role: 'viewer' }

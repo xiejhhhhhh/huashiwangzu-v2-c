@@ -182,7 +182,7 @@ async function init() {
 
 async function tryGetFilePayload(): Promise<{ fileId: number; fileName: string } | null> {
   try {
-    const payload = (window as Window).__MODULE_OPEN_FILE_PAYLOAD__
+    const payload = (window as any).__MODULE_OPEN_FILE_PAYLOAD__
     if (payload?.fileId) {
       return { fileId: payload.fileId, fileName: payload.fileName || '' }
     }
@@ -563,7 +563,7 @@ function formatTime(isoStr: string): string {
 }
 
 // Watch for file open payload
-watch(() => (window as Window).__MODULE_OPEN_FILE_PAYLOAD__, (payload) => {
+watch(() => (window as any).__MODULE_OPEN_FILE_PAYLOAD__, (payload) => {
   if (payload?.fileId) {
     openFile(payload.fileId, payload.fileName || '')
   }

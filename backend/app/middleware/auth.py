@@ -28,51 +28,17 @@ async def get_current_user(
     return user
 
 
-ROLE_LEVEL = {"admin": 3, "editor": 2, "viewer": 1}
-COLLAB_PERM_BITS = {"can_share", "can_publish", "can_reshare", "can_collab"}
-
-
 def require_permission(min_role: str = "viewer"):
     """Dependency that checks the user's role.
     Role hierarchy: admin > editor > viewer
     """
+    role_level = {"admin": 3, "editor": 2, "viewer": 1}
+
     async def check_role(user: User = Depends(get_current_user)) -> User:
-        if ROLE_LEVEL.get(user.role, 0) < ROLE_LEVEL.get(min_role, 0):
+        if role_level.get(user.role, 0) < role_level.get(min_role, 0):
             raise PermissionDenied(
                 f"Requires at least '{min_role}' role, got '{user.role}'"
             )
         return user
 
     return check_role
-
-
-async def check_collab_permission(
-    db: AsyncSession,
-    user: User,
-    perm_bit: str,
-) -> bool:
-    """Check if a user has a specific collaboration permission bit from the role matrix."""
-    if perm_bit not in COLLAB_PERM_BITS:
-        return False
-    from app.services.role_service import get_role_matrix
-    matrix = await get_role_matrix(db)
-    for entry in matrix:
-        if entry["role_key"] == user.role:
-            return bool(entry["permissions"].get(perm_bit, False))
-    return False
-
-
-def require_collab_permission(perm_bit: str):
-    """Dependency that checks a collaboration-specific permission bit."""
-    if perm_bit not in COLLAB_PERM_BITS:
-        raise ValueError(f"Unknown collaboration permission bit: {perm_bit}")
-
-    async def check(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> User:
-        has_perm = await check_collab_permission(db, user, perm_bit)
-        if not has_perm:
-            raise PermissionDenied(
-                f"User role '{user.role}' lacks collaboration permission '{perm_bit}'"
-            )
-        return user
-
-    return check

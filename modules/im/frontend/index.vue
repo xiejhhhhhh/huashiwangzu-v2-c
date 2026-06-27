@@ -44,18 +44,19 @@
       <div v-else class="im-no-conv">选择左侧会话开始聊天</div>
     </div>
 
-    <el-dialog :visible="showUserPicker" title="选择联系人" width="400px" @close="showUserPicker = false" append-to-body>
-      <div class="im-user-picker-list">
-        <div v-for="u in availableUsers" :key="u.id" class="im-user-item" @click="startChat(u.id)">
-          <div class="im-user-avatar">{{ (u.display_name || u.username)[0] }}</div>
-          <span>{{ u.display_name || u.username }}</span>
+    <div v-if="showUserPicker" class="im-user-picker-overlay" @click.self="showUserPicker = false">
+      <div class="im-user-picker">
+        <div class="im-user-picker-header">选择联系人</div>
+        <div class="im-user-picker-list">
+          <div v-for="u in availableUsers" :key="u.id" class="im-user-item" @click="startChat(u.id)">
+            <div class="im-user-avatar">{{ (u.display_name || u.username)[0] }}</div>
+            <span>{{ u.display_name || u.username }}</span>
+          </div>
+          <div v-if="!availableUsers.length" class="im-loading">加载中...</div>
         </div>
-        <div v-if="!availableUsers.length" class="im-loading">加载中...</div>
+        <button class="im-user-picker-close" @click="showUserPicker = false">取消</button>
       </div>
-      <template #footer>
-        <el-button @click="showUserPicker = false">取消</el-button>
-      </template>
-    </el-dialog>
+    </div>
   </section>
 </template>
 
@@ -331,6 +332,12 @@ onUnmounted(() => {
 .im-no-conv { display: flex; align-items: center; justify-content: center; height: 100%; color: #ccc; font-size: 16px; }
 .im-loading { text-align: center; color: #ccc; padding: 20px; font-size: 14px; }
 
+.im-user-picker-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.3);
+  display: flex; align-items: center; justify-content: center; z-index: 9999;
+}
+.im-user-picker { background: #fff; border-radius: 12px; width: 380px; max-height: 500px; display: flex; flex-direction: column; box-shadow: 0 8px 30px rgba(0,0,0,.15); }
+.im-user-picker-header { padding: 16px 20px; font-size: 16px; font-weight: 600; color: #2395bc; border-bottom: 1px solid #e8e8e8; }
 .im-user-picker-list { flex: 1; overflow-y: auto; padding: 8px 0; }
 .im-user-item {
   display: flex; align-items: center; gap: 12px;
@@ -342,4 +349,6 @@ onUnmounted(() => {
   background: #31A1C6; color: #fff; display: flex; align-items: center;
   justify-content: center; font-size: 14px; font-weight: 600;
 }
+.im-user-picker-close { margin: 12px 16px; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; color: #666; font-size: 14px; text-align: center; }
+.im-user-picker-close:hover { background: #f5f5f5; }
 </style>

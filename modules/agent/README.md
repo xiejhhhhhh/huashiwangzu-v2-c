@@ -62,7 +62,7 @@ Agent 对外能力通过 manifest 暴露，子 Agent 使用 `agent:spawn_subagen
 
 ## 工具调用结论
 
-`deepseek-v4-flash` 经 opencode-go 返回标准 OpenAI-compatible `choices[0].message.tool_calls`，`arguments` 是 JSON 字符串。工具决策走非流式 `gateway_router.chat`；最终回复走 `gateway_router.chat_stream`。流式 delta 当前不可靠承载工具调用，所以保留正文解析兜底但不作为主路径。
+`deepseek-v4-flash` 经 opencode-go 返回标准 OpenAI-compatible `choices[0].message.tool_calls`，`arguments` 是 JSON 字符串。`/api/agent/chat` 统一进入 `ConversationRuntime -> ToolLoopRuntime` 主链，工具决策走非流式 `gateway_router.chat`；最终回复走 `gateway_router.chat_stream`。流式 delta 当前不可靠承载工具调用，所以保留正文解析兜底但不作为主路径。
 
 ## 边界
 

@@ -1,9 +1,8 @@
-import pytest
 from app.gateway.adapters import (
     DeepSeekAdapter,
     GemmaAdapter,
-    QwenAdapter,
     OpenAICompatAdapter,
+    QwenAdapter,
     get_adapter,
     list_adapters,
 )
@@ -44,7 +43,25 @@ class TestDeepSeekAdapter:
         assert result["content"] == "答案是14"
         assert result["thinking"] == "3的平方=9, 9+5=14"
 
-    def test_adapt_stream_chunk_openai_token(self):
+    def test_adapt_response_ollama_with_tool_calls(self):
+        raw = {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_ollama",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "北京"}'},
+                }],
+            },
+            "done_reason": "tool_calls",
+            "done": True,
+        }
+        result = self.adapter.adapt_response(raw, provider="ollama")
+        assert len(result["tool_calls"]) == 1
+        assert result["tool_calls"][0]["function"]["arguments"] == {"city": "北京"}
+        assert result["finish_reason"] == "tool_calls"
+
         chunk = {"choices": [{"delta": {"content": "14"}}]}
         event = self.adapter.adapt_stream_chunk(chunk, provider="opencode")
         assert event["type"] == "token"

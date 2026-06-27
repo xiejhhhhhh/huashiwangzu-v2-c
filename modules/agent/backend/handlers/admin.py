@@ -263,7 +263,7 @@ async def handle_admin_overview(db: AsyncSession, user) -> ApiResponse:
                             if "stuck_detector命中" in line:
                                 stuck_count += 1
                 except Exception:
-                    logger.debug("Failed to read log file: %s", log_file)
+                    pass
         result["sticky"] = {"stuck_detection_count": stuck_count}
     except Exception as e:
         logger.warning("Admin overview sticky query failed: %s", e)
@@ -312,66 +312,20 @@ async def handle_admin_overview(db: AsyncSession, user) -> ApiResponse:
         logger.warning("Admin overview cost query failed: %s", e)
         result["cost"] = {"error": str(e)}
 
-    # 8. Review / Skill Governance overview
-    try:
-        from ..services.review_service import list_review_tasks
-        from ..services.skill_governance_service import list_skills, list_pending_skill_approvals
-        review_tasks = await list_review_tasks(db, limit=5)
-        pending_approvals = await list_pending_skill_approvals(db, limit=10)
-        skill_count = len(await list_skills(db, enabled_only=True))
-        result["governance"] = {
-            "recent_review_tasks": len(review_tasks),
-            "pending_skill_approvals": len(pending_approvals),
-            "registered_skills": skill_count,
-        }
-    except Exception as e:
-        logger.warning("Admin overview governance query failed: %s", e)
-        result["governance"] = {"error": str(e)}
-
     return ApiResponse(data=result)
 
 
-async def handle_admin_hook_lifecycle(db: AsyncSession, user, owner_id: int | None = None) -> ApiResponse:
-    """Hook 生命周期状态：维护循环状态、hook 运行历史。
-
-    Query params:
-        owner_id: Filter by user ID. Defaults to current user.
-        all: If "true", return data for all users.
-    """
+async def handle_admin_hook_lifecycle(db: AsyncSession, user) -> ApiResponse:
+    """Hook 生命周期状态：维护循环状态、hook 运行历史。"""
     from ..engine.post_turn_hooks import get_hook_lifecycle_state
-
-    actual_owner_id = owner_id if owner_id is not None else user.id
-    state = await get_hook_lifecycle_state(db, actual_owner_id if actual_owner_id > 0 else None)
+    state = get_hook_lifecycle_state()
     return ApiResponse(data=state)
 
 
-async def handle_admin_failure_diagnostics(db: AsyncSession, user, limit: int = 50, owner_id: int | None = None) -> ApiResponse:
-    """Return the most recent failure diagnostic records.
-
-    Query params:
-        limit: How many records to return (default 50, max 200).
-        owner_id: Filter by user ID. Defaults to current user.
-    """
-    from ..engine.failure_diagnostics import read_failure_diagnostics
-    actual_owner_id = owner_id if owner_id is not None else user.id
-    records = await read_failure_diagnostics(
-        limit=min(limit, 200),
-        owner_id=actual_owner_id if actual_owner_id > 0 else None,
-    )
-    return ApiResponse(data={"total_returned": len(records), "diagnostics": records})
-
-
-async def handle_admin_memory_quality(db: AsyncSession, user, owner_id: int | None = None) -> ApiResponse:
-    """记忆检索质量概览：命中率、噪声率、可信度得分（engine 侧治理指标）。
-
-    Query params:
-        owner_id: Filter by user ID. Defaults to current user.
-    """
+async def handle_admin_memory_quality(db: AsyncSession, user) -> ApiResponse:
+    """记忆检索质量概览：命中率、噪声率、可信度得分（engine 侧治理指标）。"""
     from ..engine.layered_memory import get_recall_quality_summary
-    actual_owner_id = owner_id if owner_id is not None else user.id
-    quality = await get_recall_quality_summary(
-        db, owner_id=actual_owner_id if actual_owner_id > 0 else None,
-    )
+    quality = get_recall_quality_summary()
     return ApiResponse(data=quality)
 
 
@@ -528,178 +482,3 @@ async def handle_admin_snapshot_restore(
         "summary": snap.summary if snap else None,
         "messages": messages,
     })
-
-
-async def handle_admin_lifecycle_chain(
-    conversation_id: int, db: AsyncSession, user,
-) -> ApiResponse:
-    """生命周期链：返回 conversation 的 hook 运行、快照、恢复、压缩追踪的完整时间线。"""
-    from ..engine.post_turn_hooks import get_lifecycle_chain
-    chain = await get_lifecycle_chain(db, conversation_id)
-    return ApiResponse(data={
-        "conversation_id": conversation_id,
-        "chain": chain,
-        "total_entries": len(chain),
-    })
-
-
-async def handle_admin_signal_summary(user) -> ApiResponse:
-    """返回当前 worker 的信号总线摘要（内存级，不跨 worker）。"""
-    from ..engine.signals import get_signal_summary
-    summary = get_signal_summary()
-    return ApiResponse(data=summary)
-
-
-# ── Review / Skill Governance Admin Endpoints ──
-
-
-async def handle_admin_review_tasks(
-    db: AsyncSession, user,
-    limit: int = 20,
-    status: str | None = None,
-) -> ApiResponse:
-    """List recent review tasks."""
-    from ..services.review_service import list_review_tasks
-    tasks = await list_review_tasks(db, limit=limit, status=status)
-    return ApiResponse(data={"tasks": tasks, "total": len(tasks)})
-
-
-async def handle_admin_review_results(
-    db: AsyncSession, user,
-    review_task_id: int | None = None,
-    status: str | None = None,
-    limit: int = 50,
-) -> ApiResponse:
-    """List review proposals."""
-    from ..services.review_service import list_review_results
-    results = await list_review_results(db, review_task_id=review_task_id, status=status, limit=limit)
-    return ApiResponse(data={"results": results, "total": len(results)})
-
-
-async def handle_admin_skill_registry(
-    db: AsyncSession, user,
-    scope: str | None = None,
-    enabled_only: bool = False,
-) -> ApiResponse:
-    """List registered skills with governance metadata."""
-    from ..services.skill_governance_service import list_skills
-    skills = await list_skills(db, scope=scope, enabled_only=enabled_only)
-    return ApiResponse(data={"skills": skills, "total": len(skills)})
-
-
-async def handle_admin_skill_approvals(
-    db: AsyncSession, user,
-    limit: int = 50,
-) -> ApiResponse:
-    """List pending skill approvals."""
-    from ..services.skill_governance_service import list_pending_skill_approvals
-    approvals = await list_pending_skill_approvals(db, limit=limit)
-    return ApiResponse(data={"approvals": approvals, "total": len(approvals)})
-
-
-async def handle_admin_skill_usage(
-    db: AsyncSession, user,
-    skill_name: str | None = None,
-    days: int = 7,
-) -> ApiResponse:
-    """Get skill usage statistics."""
-    from ..services.skill_governance_service import get_skill_usage_stats
-    stats = await get_skill_usage_stats(db, skill_name=skill_name, days=days)
-    return ApiResponse(data={"usage_stats": stats})
-
-
-async def handle_admin_resolve_skill_approval(
-    approval_id: int, decision: str, reason: str | None,
-    db: AsyncSession, user,
-) -> ApiResponse:
-    """Approve or reject a skill approval request."""
-    if decision not in ("approved", "rejected"):
-        raise ValidationError("decision must be 'approved' or 'rejected'")
-    from ..services.skill_governance_service import resolve_skill_approval
-    result = await resolve_skill_approval(db, approval_id, decision, user.id, reason)
-    return ApiResponse(data=result)
-
-
-async def handle_admin_review_result_apply(
-    result_id: int, db: AsyncSession, user,
-) -> ApiResponse:
-    """Apply a review proposal (admin only). For skill proposals,
-    this creates an approval request instead of directly modifying skills."""
-    from ..models import ReviewResult
-    from sqlalchemy import select
-
-    r = await db.execute(select(ReviewResult).where(ReviewResult.id == result_id))
-    result = r.scalar_one_or_none()
-    if not result:
-        raise ValidationError(f"Review result {result_id} not found")
-    if result.status != "proposal":
-        raise ValidationError(f"Review result {result_id} is already {result.status}")
-
-    result_type = result.result_type
-
-    if result_type in ("skill_create", "skill_patch"):
-        # For skill proposals, create an approval request instead of direct modification
-        from ..services.skill_governance_service import request_skill_approval
-        detail = result.detail or {}
-        skill_name = detail.get("skill_name", detail.get("name", f"proposal_{result.id}"))
-        approval = await request_skill_approval(
-            db,
-            skill_name=skill_name,
-            operation=result_type,
-            requested_state=detail.get("updates", detail),
-            requested_by=user.id,
-            review_result_id=result.id,
-        )
-        if approval:
-            result.status = "pending_approval"
-            result.reviewed_by = user.id
-            from datetime import datetime, timezone
-            result.reviewed_at = datetime.now(timezone.utc)
-            await db.commit()
-            return ApiResponse(data={
-                "status": "approval_created",
-                "approval_id": approval.id,
-                "message": f"Skill proposal '{skill_name}' sent for approval",
-            })
-
-    elif result_type == "stable_rule":
-        # Apply stable rule directly to memory
-        from ..services.skill_governance_service import (
-            _record_provenance,
-        )
-        detail = result.detail or {}
-        content = detail.get("content", result.summary)
-        result.status = "applied"
-        result.reviewed_by = user.id
-        from datetime import datetime, timezone
-        result.reviewed_at = datetime.now(timezone.utc)
-        await db.commit()
-        return ApiResponse(data={
-            "status": "applied",
-            "message": f"Stable rule applied: {content[:200]}",
-        })
-
-    elif result_type in ("chunk_proposal", "experience_proposal"):
-        detail = result.detail or {}
-        result.status = "forwarded_to_memory"
-        result.reviewed_by = user.id
-        from datetime import datetime, timezone
-        result.reviewed_at = datetime.now(timezone.utc)
-        await db.commit()
-        return ApiResponse(data={
-            "status": "forwarded",
-            "message": f"{result_type} forwarded to memory pipeline",
-        })
-
-    elif result_type in ("profile_note", "safety_note"):
-        result.status = "noted"
-        result.reviewed_by = user.id
-        from datetime import datetime, timezone
-        result.reviewed_at = datetime.now(timezone.utc)
-        await db.commit()
-        return ApiResponse(data={
-            "status": "noted",
-            "message": f"{result_type} recorded for review",
-        })
-
-    return ApiResponse(data={"status": "unknown", "message": f"Unknown result type: {result_type}"})

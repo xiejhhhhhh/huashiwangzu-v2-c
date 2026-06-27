@@ -47,7 +47,6 @@
       <input
         class="fm-search-input"
         type="text"
-        name="fm-search"
         placeholder="搜索"
         :value="searchKeyword"
         @input="$emit('update:searchKeyword', ($event.target as HTMLInputElement).value)"

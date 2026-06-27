@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -19,6 +20,11 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+try:
+    from dev_toolkit.quick_fix import QuickFixError, quick_fix_patch, quick_fix_preview
+except ModuleNotFoundError:
+    from quick_fix import QuickFixError, quick_fix_patch, quick_fix_preview
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
@@ -821,7 +827,7 @@ server = Server("项目工具台")
 # ──────────────────── 工具 1: brief ──────────────────────────────────
 
 async def _brief() -> str:
-    """项目全景摘要, 取代手读主开发文档. 适合低上下文执行 agent."""
+    """项目全景摘要, 取代手读主开发文档."""
     parts = []
     # 主开发文档
     main_doc = REPO_ROOT / "开发文档" / "主开发文档.md"
@@ -909,67 +915,12 @@ async def _brief() -> str:
     except Exception:
         pass
 
-    # ── 默认工作流建议（适合低上下文执行 agent） ──
-    parts.append("""## 默认工作流建议
-你是执行 Agent，请按以下固定工作流操作：
-
-### 🅰 调研 / 查代码
-1. `code_explore(query)` / `code_node(symbol)` / `code_impact(path)` — codegraph 查符号/调用链/影响面
-2. codemap fallback — `POST /api/codemap/impact` — 当 codegraph 不可用时
-3. 实读验证 — 命中关联文件后实读确认，不盲信
-
-### 🅱 修复 / 开发
-4. 改前看 blast radius — `code_impact(path)` 先查改动影响
-5. 改后 lint — `lint(path)` ruff 静态检查
-
-### 🅲 验收
-6. `probe(method, path, body)` — 打后端接口验证
-7. `call_capability(module, action, params)` — 调模块能力验证
-
-### 🅳 收尾
-8. `memory_write(type, title, body, tags, agent="<你的标识>")` — 落一条项目记忆
-9. 标准五件套交付（回信到收件箱）
-
-### 🅴 codegraph 不准时
-- 调 `codemap report_inaccuracy` 反馈偏差
-- codemap 不可用则回退逐文件读
-
-> 效率的关键顺序：先 codegraph（秒级）→ codemap（秒级）→ 实读（需逐文件）。
-> 先 probe（不打日志）→ 再补测试脚本（持久化验证）。
-""")
-
     return "\n\n".join(parts)
-
-def _assess_evidence(result: dict) -> dict | None:
-    """对 probe/call_capability 结果做证据判定，适合低上下文执行 agent 快速理解。"""
-    sc = result.get("status_code", 0)
-    data = result.get("data", {})
-    if isinstance(data, dict):
-        success = data.get("success", sc == 200)
-        err = data.get("error")
-    else:
-        success = sc == 200
-        err = None
-    if not success and not err:
-        err = f"HTTP {sc}"
-    if success or sc == 200:
-        return {
-            "judgment": "PASS",
-            "summary": f"HTTP {sc}, 接口响应成功",
-            "suggestion": "此接口响应正常，可用于进一步验证。如需检查数据完整性，请继续调用具体查询端点。",
-        }
-    else:
-        return {
-            "judgment": "FAIL",
-            "summary": f"HTTP {sc}, 接口响应异常" + (f": {err}" if err else ""),
-            "suggestion": "请检查后端是否运行正常、参数是否正确、路径是否存在。然后重试。",
-        }
-
 
 # ──────────────────── 工具 2: probe ──────────────────────────────────
 
 async def _probe(method: str, path: str, body: str | None = None, role: str = "admin") -> str:
-    """打后端任意接口, 自动登录. 返回原始结果 + 证据判定."""
+    """打后端任意接口, 自动登录."""
     token = await _ensure_token(role)
     headers = {"Authorization": f"Bearer {token}"}
     url = f"{BACKEND_BASE}{path}"
@@ -986,18 +937,12 @@ async def _probe(method: str, path: str, body: str | None = None, role: str = "a
         except Exception:
             data = resp.text
         result = {"status_code": resp.status_code, "data": data}
-
-        # 证据判定：适合低上下文执行者
-        evidence = _assess_evidence(result)
-        if evidence:
-            result["_evidence_assessment"] = evidence
-
         return json.dumps(result, ensure_ascii=False, indent=2)
 
 # ──────────────────── 工具 3: call_capability ────────────────────────
 
 async def _call_capability(module: str, action: str, params: str = "{}", role: str = "admin") -> str:
-    """调模块能力(跨模块调用入口). 返回原始结果 + 证据判定."""
+    """调模块能力(跨模块调用入口)."""
     token = await _ensure_token(role)
     headers = {"Authorization": f"Bearer {token}"}
     body = {
@@ -1012,112 +957,7 @@ async def _call_capability(module: str, action: str, params: str = "{}", role: s
         except Exception:
             data = resp.text
         result = {"status_code": resp.status_code, "data": data}
-
-        # 证据判定：适合低上下文执行者
-        evidence = _assess_evidence(result)
-        if evidence:
-            result["_evidence_assessment"] = evidence
-
         return json.dumps(result, ensure_ascii=False, indent=2)
-
-# ──────────────────── 工具: maturity ───────────────────────────────────
-
-_MATURITY_SCORE = {
-    "agent_runtime": {
-        "label": "Agent runtime",
-        "coverage": 0.7,
-        "quality": 0.6,
-        "completeness": 0.55,
-        "note": "会话执行层已可跑，工具循环/stuck/diminishing/budget 齐全；三层记忆/技能注入/经验库完备。但无理解环、review fork、runtime policy 未收口。",
-    },
-    "backend_platform": {
-        "label": "backend platform",
-        "coverage": 0.8,
-        "quality": 0.7,
-        "completeness": 0.7,
-        "note": "FastAPI 层稳，鉴权/模块注册/事件总线/任务 worker/模型网关/文件服务齐全。模块治理属性仍轻。",
-    },
-    "desktop_shell": {
-        "label": "desktop shell",
-        "coverage": 0.75,
-        "quality": 0.7,
-        "completeness": 0.65,
-        "note": "Vue3 桌面壳完整：登录/窗口/任务栏/启动器/模块加载。模块通信仍需强化。",
-    },
-    "memory_knowledge": {
-        "label": "memory / knowledge",
-        "coverage": 0.7,
-        "quality": 0.6,
-        "completeness": 0.5,
-        "note": "三层记忆/经验库/语义召回已可跑。知识库有 keyword+vector+RRF+fusion+entity graph。但缺 evidence plan/answerability/packet，A3/A4 后提升。",
-    },
-    "files_office_parsers": {
-        "label": "files / office / parsers",
-        "coverage": 0.75,
-        "quality": 0.65,
-        "completeness": 0.6,
-        "note": "文件上传读取/分享/office 包链/docx&xlsx 解析/office-gen 生成都有。但文件仍是 file service 非 artifact system，parser 格式 schema 仍分叉。",
-    },
-    "scheduler_automation": {
-        "label": "scheduler / automation",
-        "coverage": 0.5,
-        "quality": 0.5,
-        "completeness": 0.4,
-        "note": "scheduler 模块有创建/列出/取消定时任务。但事件驱动/自动化链路/backpressure/粘滞恢复未成熟。",
-    },
-    "module_platform": {
-        "label": "module platform",
-        "coverage": 0.7,
-        "quality": 0.65,
-        "completeness": 0.6,
-        "note": "manifest/runtime/capability registry/跨模块 call 通路已跑通。但治理属性轻、trace/timeout/contract 未成熟。",
-    },
-    "security_permissions": {
-        "label": "security / permissions",
-        "coverage": 0.65,
-        "quality": 0.6,
-        "completeness": 0.5,
-        "note": "JWT+role(file access)已有。但权限仍 file 级二维模型，缺协作语义/expiry/audit/scope/share policy。",
-    },
-}
-
-
-def _maturity(area: str = "") -> str:
-    """成熟度评分卡：按 coverage / quality / completeness 打分 8 个维度。
-
-    无参数返回全景；传 area 只返回该维度。
-    """
-    if area and area in _MATURITY_SCORE:
-        return json.dumps(_MATURITY_SCORE[area], ensure_ascii=False, indent=2)
-
-    overall = {"average_coverage": 0.0, "average_quality": 0.0, "average_completeness": 0.0}
-    result = {"dimensions": _MATURITY_SCORE, "summary": ""}
-    n = len(_MATURITY_SCORE)
-    overall["average_coverage"] = round(sum(d["coverage"] for d in _MATURITY_SCORE.values()) / n, 3)
-    overall["average_quality"] = round(sum(d["quality"] for d in _MATURITY_SCORE.values()) / n, 3)
-    overall["average_completeness"] = round(sum(d["completeness"] for d in _MATURITY_SCORE.values()) / n, 3)
-    result["overall"] = overall
-
-    # 按总分排序
-    sorted_dims = sorted(
-        _MATURITY_SCORE.values(),
-        key=lambda d: d["coverage"] + d["quality"] + d["completeness"],
-        reverse=True,
-    )
-    result["sorted_by_total_score"] = [
-        {"label": d["label"], "total": round(d["coverage"] + d["quality"] + d["completeness"], 3)}
-        for d in sorted_dims
-    ]
-
-    result["summary"] = (
-        f"8个维度平均: coverage={overall['average_coverage']:.1%}, "
-        f"quality={overall['average_quality']:.1%}, "
-        f"completeness={overall['average_completeness']:.1%}。"
-        f"总分最高: {sorted_dims[0]['label'] if sorted_dims else 'N/A'}。"
-        f"总分最低: {sorted_dims[-1]['label'] if sorted_dims else 'N/A'}。"
-    )
-    return json.dumps(result, ensure_ascii=False, indent=2)
-
 
 # ──────────────────── 工具 4: tail_log ───────────────────────────────
 
@@ -1146,303 +986,6 @@ async def _tail_log(module: str = "backend", lines: int = 50) -> str:
         return _tail_file(main_log, lines)
 
     return f"[未找到模块日志] {module}"
-
-
-def _resolve_log_path(module: str) -> "Path | None":
-    module_log = LOG_DIR / f"modules/{module}.log"
-    if module_log.exists():
-        return module_log
-    log_file = _LOG_MAP.get(module)
-    if log_file and (LOG_DIR / log_file).exists():
-        return LOG_DIR / log_file
-    for p in LOG_DIR.rglob(f"{module}.log"):
-        return p
-    main_log = LOG_DIR / "uvicorn.out"
-    return main_log if main_log.exists() else None
-
-
-# 被 try/except 吞掉的异常签名——专抓"报告通过但活系统其实崩/不产物"那类
-_ERROR_PAT = re.compile(
-    r"Traceback|Exception|\bError\b|exception:|unexpected keyword|"
-    r"Violation|IntegrityError|does not exist|not-null|NoneType|"
-    r"\bfailed\b|\bcrash|未产出|0 row|got an unexpected",
-    re.IGNORECASE,
-)
-
-
-async def _log_errors(module: str = "backend", lines: int = 400,
-                      since_marker: str = "", time_range_hours: int = 0) -> str:
-    """扫模块日志里被吞掉的异常/报错(Traceback/Exception/violation/错参/failed)。
-
-    支持三种过滤:
-      - module: 模块名
-      - since_marker: 从某个 marker 字符串之后开始扫描
-      - time_range_hours: 只扫描最近 N 小时内的日志行
-
-    专治"执行 agent 报告通过、但异常被 try/except 吞成 WARNING、产物表 0 行"那类盲区。
-    后台/异步动作做完后调一次：有命中=功能其实没跑通，别报通过。
-    """
-    lines = min(lines, 2000)
-    path = _resolve_log_path(module)
-    if not path:
-        return f"[未找到模块日志] {module}"
-    text = _tail_file(path, lines)
-    log_lines = text.split("\n")
-
-    # 应用 marker 过滤
-    if since_marker:
-        marker_idx = next(
-            (i for i, ln in enumerate(log_lines) if since_marker in ln),
-            None,
-        )
-        if marker_idx is not None:
-            log_lines = log_lines[marker_idx + 1:]
-
-    # 应用 time range 过滤
-    if time_range_hours > 0:
-        import datetime as dt
-        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=time_range_hours)
-        filtered = []
-        for ln in log_lines:
-            # 尝试提取 ISO 时间戳
-            m = re.match(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})", ln)
-            if m:
-                try:
-                    ts = dt.datetime.fromisoformat(m.group(1))
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=dt.timezone.utc)
-                    if ts >= cutoff:
-                        filtered.append(ln)
-                except ValueError:
-                    filtered.append(ln)
-            else:
-                filtered.append(ln)
-        log_lines = filtered
-
-    # 统计每类错误计数
-    hits = [
-        ln for ln in log_lines
-        if _ERROR_PAT.search(ln) and "[DIAG]" not in ln and " INFO " not in ln
-    ]
-    if not hits:
-        return f"✅ {path.name} 最近 {lines} 行无异常/报错命中"
-
-    # Aggregated stats
-    from collections import Counter
-    error_types = Counter()
-    for h in hits:
-        for pat_name in ("Traceback", "Exception", "Error", "failed", "NoneType", "IntegrityError", "Violation"):
-            if pat_name in h:
-                error_types[pat_name] += 1
-
-    stats_summary = ", ".join(f"{k}={v}" for k, v in error_types.most_common(5))
-    return (
-        f"⚠️ {path.name} 命中 {len(hits)} 条疑似吞掉的异常/报错\n"
-        f"统计: {stats_summary}\n"
-        + "\n".join(hits[-40:])
-    )
-
-
-# ──────────────────── 工具: llm_probe ──────────────────────────────
-
-GATEWAY_TRACE_FILE = REPO_ROOT / "backend" / "data" / "runtime" / "gateway_traces.jsonl"
-
-
-async def _llm_probe(
-    profile_key: str = "deepseek-v4-flash",
-    prompt: str = "测试文本: 请用一句话回复。",
-    mode: str = "plain",
-    max_tokens: int = 1024,
-    stream: bool = False,
-    repeat: int = 3,
-    direct_provider: bool = False,
-) -> str:
-    """调用 LLM 并返回详细诊断信息，用于慢调用定位。
-
-    支持 plain/json 两种 prompt 模式、stream/non-stream、重复多次取均值。
-    direct_provider=True 则绕过 gateway 直接调 provider（需有效 api_url）。
-    """
-    results = []
-    for i in range(repeat):
-        token = await _ensure_token()
-        headers = {"Authorization": f"Bearer {token}"}
-        messages = [{"role": "user", "content": prompt}]
-        if mode == "json":
-            messages.append({"role": "user", "content": "请以 JSON 格式回复：{\"answer\": \"...\"}"})
-
-        payload = {
-            "messages": messages,
-            "profile_key": profile_key,
-            "max_tokens": max_tokens,
-            "tools": None,
-        }
-
-        total_start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(
-                    f"{BACKEND_BASE}/api/gateway/chat",
-                    json=payload,
-                    headers=headers,
-                )
-                elapsed = (time.time() - total_start) * 1000
-                data = resp.json()
-                data_data = data.get("data", data) if isinstance(data, dict) else data
-                diag = data_data.get("diagnostics", {}) if isinstance(data_data, dict) else {}
-                content = data_data.get("content", "") if isinstance(data_data, dict) else str(data_data)
-                results.append({
-                    "run": i + 1,
-                    "status_code": resp.status_code,
-                    "total_elapsed_ms": round(elapsed, 1),
-                    "diagnostics": diag,
-                    "content_length": len(str(content)),
-                    "content_preview": str(content)[:200],
-                })
-        except Exception as exc:
-            results.append({
-                "run": i + 1,
-                "status_code": 0,
-                "error": str(exc),
-            })
-
-    # 聚合统计
-    successful = [r for r in results if r.get("status_code") == 200]
-    if successful:
-        elapsed_vals = [r.get("total_elapsed_ms", 0) for r in successful]
-        stats = {
-            "attempts": repeat,
-            "successful": len(successful),
-            "elapsed_ms_avg": round(sum(elapsed_vals) / len(elapsed_vals), 1),
-            "elapsed_ms_min": round(min(elapsed_vals), 1),
-            "elapsed_ms_max": round(max(elapsed_vals), 1),
-            "diag_samples": [r.get("diagnostics", {}) for r in successful[:3]],
-        }
-    else:
-        stats = {"attempts": repeat, "successful": 0, "errors": [r.get("error") for r in results]}
-
-    return json.dumps({
-        "profile_key": profile_key,
-        "mode": mode,
-        "max_tokens": max_tokens,
-        "stream": stream,
-        "results": results,
-        "stats": stats,
-    }, ensure_ascii=False, indent=2)
-
-
-async def _gateway_trace(limit: int = 20, profile_key: str = "") -> str:
-    """查询最近 gateway 调用 trace 记录。"""
-    if not GATEWAY_TRACE_FILE.exists():
-        return json.dumps({"traces": [], "total": 0}, ensure_ascii=False, indent=2)
-    try:
-        lines = GATEWAY_TRACE_FILE.read_text(encoding="utf-8").strip().split("\n")
-        traces = []
-        for line in reversed(lines):
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if profile_key and entry.get("profile_key") != profile_key:
-                continue
-            traces.append(entry)
-            if len(traces) >= limit:
-                break
-        return json.dumps({"traces": traces, "total": len(traces)}, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        return json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2)
-
-
-async def _task_trace(document_id: int) -> str:
-    """查询知识库文档的完整任务溯源: pipeline 状态 + 每步产物 + 日志。"""
-    from collections import OrderedDict
-
-    # 1. 查 pipeline task
-    pipeline_info = {}
-    try:
-        rows = await _execute_sql(f"""
-            SELECT id, task_type, status, started_at, completed_at, result, error_message, parameters
-            FROM framework_system_task_queues
-            WHERE task_type = 'kb_pipeline' AND parameters LIKE '%{document_id}%'
-            ORDER BY id DESC LIMIT 1
-        """)
-        if rows:
-            r = rows[0]
-            pipeline_info = {
-                "task_id": r.get("col0"),
-                "task_type": r.get("col1"),
-                "status": r.get("col2"),
-                "started_at": r.get("col3"),
-                "completed_at": r.get("col4"),
-                "result": r.get("col5", "")[:500] if r.get("col5") else None,
-                "error": r.get("col6"),
-            }
-    except Exception as exc:
-        pipeline_info = {"error": str(exc)}
-
-    # 2. 查各步子任务
-    sub_tasks = []
-    try:
-        rows = await _execute_sql(f"""
-            SELECT id, task_type, status, started_at, completed_at, result, error_message
-            FROM framework_system_task_queues
-            WHERE task_type IN ('kb_profile', 'kb_graph', 'kb_relation')
-              AND parameters LIKE '%{document_id}%'
-            ORDER BY id
-        """)
-        for r in rows:
-            sub_tasks.append({
-                "task_id": r.get("col0"),
-                "type": r.get("col1"),
-                "status": r.get("col2"),
-                "started_at": r.get("col3"),
-                "completed_at": r.get("col4"),
-                "error": r.get("col6"),
-            })
-    except Exception as exc:
-        sub_tasks.append({"error": str(exc)})
-
-    # 3. DB 产物数量
-    tables = [
-        "kb_raw_data", "kb_page_fusions", "kb_document_profiles",
-        "kb_evidence", "kb_graph_nodes", "kb_graph_edges", "kb_file_relations",
-    ]
-    counts = OrderedDict()
-    for table in tables:
-        try:
-            rows = await _execute_sql(f"""
-                SELECT count(*) FROM {table} t
-                WHERE EXISTS (
-                    SELECT 1 FROM kb_documents d WHERE d.id = {document_id}
-                    AND (t.document_id = d.id OR t.owner_id = d.owner_id)
-                )
-            """)
-            counts[table] = int(rows[0].get("col0", 0)) if rows else 0
-        except Exception:
-            counts[table] = -1
-
-    # 4. 日志片段
-    log_fragment = ""
-    try:
-        log_path = LOG_DIR / "modules" / "knowledge.log"
-        if log_path.exists():
-            out = subprocess.run(
-                ["grep", "-i", str(document_id), str(log_path)],
-                capture_output=True, text=True, timeout=5,
-            )
-            log_lines = out.stdout.strip().split("\n")
-            log_fragment = "\n".join(log_lines[-30:]) if log_lines else ""
-    except Exception:
-        pass
-
-    return json.dumps({
-        "document_id": document_id,
-        "pipeline": pipeline_info,
-        "sub_tasks": sub_tasks,
-        "table_counts": counts,
-        "log_fragment": log_fragment[:2000],
-    }, ensure_ascii=False, indent=2, default=str)
 
 # ──────────────────── 工具 5: sql ────────────────────────────────────
 
@@ -1645,12 +1188,12 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="brief",
-            description="项目全景摘要: 主开发文档概览 + 最近变更 + 投递箱待处理 + 最近项目记忆 + 默认工作流建议. 适合低上下文执行 agent 开工首选.",
+            description="项目全景摘要: 主开发文档概览 + 最近变更 + 投递箱待处理 + 最近项目记忆",
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="probe",
-            description="自动登录后打后端任意 HTTP 接口. 返回 {status_code, data, _evidence_assessment}. 证据判定含 PASS/FAIL + 建议, 适合低上下文执行 agent.",
+            description="自动登录后打后端任意 HTTP 接口. 返回 {status_code, data}.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1664,7 +1207,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="call_capability",
-            description="调模块能力(跨模块调用). 自动登录后打 /api/modules/call. 返回含 _evidence_assessment 证据判定.",
+            description="调模块能力(跨模块调用). 自动登录后打 /api/modules/call.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1685,57 +1228,6 @@ async def list_tools() -> list[Tool]:
                     "module": {"type": "string", "description": "模块名", "default": "backend"},
                     "lines": {"type": "number", "description": "行数", "default": 50},
                 },
-            },
-        ),
-        Tool(
-            name="log_errors",
-            description="扫模块日志里被try/except吞掉的异常/报错(Traceback/Exception/violation/错参/failed). 支持模块/时间/标记过滤. 有命中=功能其实没跑通.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "module": {"type": "string", "description": "模块名(backend/agent/knowledge...)", "default": "backend"},
-                    "lines": {"type": "number", "description": "扫描最近行数", "default": 400},
-                    "since_marker": {"type": "string", "description": "从某个 marker 字符串之后开始扫描", "default": ""},
-                    "time_range_hours": {"type": "number", "description": "只扫描最近 N 小时的日志行", "default": 0},
-                },
-            },
-        ),
-        Tool(
-            name="llm_probe",
-            description="调用 LLM 并返回详细诊断信息(attempts/elapsed/size/tokens), 用于慢调用定位. 支持 plain/json 模式、repeat、max_tokens 对比.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "profile_key": {"type": "string", "description": "模型 profile key", "default": "deepseek-v4-flash"},
-                    "prompt": {"type": "string", "description": "提示文本", "default": "测试文本: 请用一句话回复。"},
-                    "mode": {"type": "string", "description": "plain 或 json", "default": "plain"},
-                    "max_tokens": {"type": "number", "description": "最大 token 数", "default": 1024},
-                    "stream": {"type": "boolean", "description": "是否流式(暂不支持)", "default": False},
-                    "repeat": {"type": "number", "description": "重复次数", "default": 3},
-                    "direct_provider": {"type": "boolean", "description": "是否直接调 provider(绕过 gateway)", "default": False},
-                },
-            },
-        ),
-        Tool(
-            name="gateway_trace",
-            description="查询最近 gateway 调用 trace 记录(trace_id/attempts/elapsed/size).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "number", "description": "返回条数", "default": 20},
-                    "profile_key": {"type": "string", "description": "按 profile 过滤", "default": ""},
-                },
-            },
-        ),
-        Tool(
-            name="task_trace",
-            description="查询知识库文档的完整任务溯源: pipeline 状态、各步状态、产物数量、相关日志片段.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "document_id": {"type": "number", "description": "文档 ID"},
-                },
-                "required": ["document_id"],
             },
         ),
         Tool(
@@ -1831,17 +1323,53 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="maturity",
-            description="成熟度评分卡: 按coverage/quality/completeness打分8个维度(agent_runtime/backend_platform/desktop_shell/memory_knowledge/files_office_parsers/scheduler_automation/module_platform/security_permissions). 无参数返回全景, 传area返回单维度.",
+            name="quick_fix_preview",
+            description=(
+                "预览精准补丁: path + old_text + new_text 精确替换, "
+                "可带 start_line/end_line 和 old_text sha256 防漂移; 不写盘."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "area": {"type": "string", "description": "维度key: agent_runtime / backend_platform / desktop_shell / memory_knowledge / files_office_parsers / scheduler_automation / module_platform / security_permissions", "default": ""},
+                    "path": {"type": "string", "description": "仓库内文件路径(绝对或相对仓库根)"},
+                    "old_text": {"type": "string", "description": "必须唯一命中的原文块"},
+                    "new_text": {"type": "string", "description": "替换后的文本块"},
+                    "start_line": {"type": "number", "description": "可选: CodeGraph 定位起始行"},
+                    "end_line": {"type": "number", "description": "可选: CodeGraph 定位结束行"},
+                    "expected_old_text_sha256": {
+                        "type": "string",
+                        "description": "可选: old_text 的 sha256, 防止调用方传错块",
+                        "default": "",
+                    },
                 },
+                "required": ["path", "old_text", "new_text"],
             },
         ),
         Tool(
-            name="smoke_all",
+            name="quick_fix_patch",
+            description=(
+                "应用精准补丁: 与 quick_fix_preview 同校验, 仅 old_text 唯一命中时原子写盘; "
+                "适合 CodeGraph 定位后的快速修复."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "仓库内文件路径(绝对或相对仓库根)"},
+                    "old_text": {"type": "string", "description": "必须唯一命中的原文块"},
+                    "new_text": {"type": "string", "description": "替换后的文本块"},
+                    "start_line": {"type": "number", "description": "可选: CodeGraph 定位起始行"},
+                    "end_line": {"type": "number", "description": "可选: CodeGraph 定位结束行"},
+                    "expected_old_text_sha256": {
+                        "type": "string",
+                        "description": "可选: old_text 的 sha256, 防止调用方传错块",
+                        "default": "",
+                    },
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        ),
+        Tool(
+            name=    "smoke_all",
             description="一键全回归: 后端集测(probe/call_capability) + 前端UI(Playwright) + 红绿矩阵.",
             inputSchema={
                 "type": "object",
@@ -1972,13 +1500,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 module=arguments.get("module", "backend"),
                 lines=arguments.get("lines", 50),
             )
-        elif name == "log_errors":
-            result = await _log_errors(
-                module=arguments.get("module", "backend"),
-                lines=arguments.get("lines", 400),
-                since_marker=arguments.get("since_marker", ""),
-                time_range_hours=arguments.get("time_range_hours", 0),
-            )
         elif name == "sql":
             result = await _sql(query=arguments["query"])
         elif name == "web_read":
@@ -2004,8 +1525,34 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _code_node(symbol=arguments["symbol"])
         elif name == "code_impact":
             result = await _code_impact(path=arguments["path"])
-        elif name == "maturity":
-            result = _maturity(area=arguments.get("area", ""))
+        elif name == "quick_fix_preview":
+            result = json.dumps(
+                quick_fix_preview(
+                    repo_root=REPO_ROOT,
+                    path=arguments["path"],
+                    old_text=arguments["old_text"],
+                    new_text=arguments["new_text"],
+                    start_line=arguments.get("start_line"),
+                    end_line=arguments.get("end_line"),
+                    expected_old_text_sha256=arguments.get("expected_old_text_sha256", ""),
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        elif name == "quick_fix_patch":
+            result = json.dumps(
+                quick_fix_patch(
+                    repo_root=REPO_ROOT,
+                    path=arguments["path"],
+                    old_text=arguments["old_text"],
+                    new_text=arguments["new_text"],
+                    start_line=arguments.get("start_line"),
+                    end_line=arguments.get("end_line"),
+                    expected_old_text_sha256=arguments.get("expected_old_text_sha256", ""),
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
         elif name == "smoke_all":
             skip_ui = arguments.get("skip_ui", False)
             proc = await asyncio.create_subprocess_exec(
@@ -2034,25 +1581,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = json.dumps(_cleanup_knowledge_noise(), ensure_ascii=False, indent=2)
         elif name == "workspace_audit":
             result = json.dumps(await _workspace_audit(), ensure_ascii=False, indent=2)
-        elif name == "llm_probe":
-            result = await _llm_probe(
-                profile_key=arguments.get("profile_key", "deepseek-v4-flash"),
-                prompt=arguments.get("prompt", "测试文本: 请用一句话回复。"),
-                mode=arguments.get("mode", "plain"),
-                max_tokens=arguments.get("max_tokens", 1024),
-                stream=arguments.get("stream", False),
-                repeat=arguments.get("repeat", 3),
-                direct_provider=arguments.get("direct_provider", False),
-            )
-        elif name == "gateway_trace":
-            result = await _gateway_trace(
-                limit=arguments.get("limit", 20),
-                profile_key=arguments.get("profile_key", ""),
-            )
-        elif name == "task_trace":
-            result = await _task_trace(
-                document_id=int(arguments["document_id"]),
-            )
         elif name == "workspace_reset":
             result = json.dumps(
                 await _workspace_reset(
@@ -2071,6 +1599,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             result = json.dumps({"error": f"未知工具: {name}"})
         return [TextContent(type="text", text=result)]
+    except QuickFixError as e:
+        return [TextContent(type="text", text=json.dumps({"error": str(e), "rejected": True}, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False))]
 
