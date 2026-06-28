@@ -15,9 +15,9 @@ import asyncio
 import json
 import logging
 
+from app.database import AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import AsyncSessionLocal
 from .._utils import references_from_tool_events
 from ..engine.engine import get_hooks
 from ..engine.event_store import record_event as _record_event
@@ -63,6 +63,12 @@ class RuntimeTaskSink:
             return None
 
         clean_content = final_clean_content("".join(full_content))
+        if not clean_content:
+            logger.warning(
+                "persist_assistant skipped — content cleared to empty by final_clean_content "
+                "(conv=%d)", self.conversation_id,
+            )
+            return None
         msg = await conv_svc.add_message(
             db, self.owner_id, self.conversation_id,
             "assistant", clean_content,
@@ -162,12 +168,12 @@ class RuntimeTaskSink:
         skip_file_ids: set[int] | None = None,
     ) -> list[int]:
         """Scan tool results for file_id outputs and create asset records.
-        
+
         Each tool result dict should have keys:
             name: str         — tool name (e.g. "office-gen__docx")
             result: dict      — tool result, may contain "file_id"
             tool_call_id: str — unique tool call identifier
-        
+
         Returns list of created asset IDs.
         """
         if not tool_results:

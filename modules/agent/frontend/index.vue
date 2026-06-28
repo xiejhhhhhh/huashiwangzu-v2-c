@@ -282,6 +282,9 @@ function expandTimeline(msgs: MsgItem[]): MsgItem[] {
     const content = textBuf.trim() || m.content
     if (content) {
       out.push({ id: m.id, role: m.role, content, created_at: m.created_at, thinking: '', tool_events: [], references: m.references, usage: m.usage } as MsgItem)
+    } else if (items.length > 0) {
+      // 工作组之后无有效内容 → 占位提示（重试后仍空回复）
+      out.push({ id: m.id, role: m.role, content: '（模型未能生成回复）', created_at: m.created_at, thinking: '', tool_events: [], references: m.references, usage: null } as MsgItem)
     }
   }
   return out
