@@ -1,9 +1,12 @@
 """事件溯源基座：append-only 事件日志 + 投影成消息。"""
 import json
 import logging
-from sqlalchemy import select, text
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..models import AgentEvent
+
 logger = logging.getLogger("v2.agent").getChild("engine.event_store")
 MAX_PAYLOAD_CONTENT_LENGTH = 50000
 
@@ -34,6 +37,24 @@ def _normalize_message_content(content: object) -> str:
         return json.dumps(content, ensure_ascii=False, default=str)
     except Exception:
         return str(content)
+
+
+def _collect_complete_tool_results(visible: list[object], start: int, tc_ids: set[str]) -> tuple[list[object], int, bool]:
+    """Collect contiguous matching tool_result events and validate completeness."""
+    k = start
+    tool_results: list[object] = []
+    found_tool_ids: set[str] = set()
+    while k < len(visible):
+        event = visible[k]
+        if event.event_type != "tool_result":
+            break
+        tool_call_id = event.payload.get("tool_call_id", "")
+        if tool_call_id not in tc_ids:
+            break
+        tool_results.append(event)
+        found_tool_ids.add(tool_call_id)
+        k += 1
+    return tool_results, k, bool(tc_ids) and found_tool_ids == tc_ids
 
 
 async def record_event(
@@ -125,18 +146,17 @@ async def project_to_messages(
                     })
                     j += 1
                 # Match tool_result events by tool_call_id (not llm_response_id,
-                # because tool_result events store llm_response_id=None).
-                k = j
-                found_any = False
-                while k < len(visible) and visible[k].event_type == "tool_result" and visible[k].payload.get("tool_call_id", "") in tc_ids:
-                    k += 1
-                    found_any = True
-                if found_any:
+                # because tool_result events store llm_response_id=None).  The
+                # model API requires every assistant tool_call to be followed by
+                # a matching tool message; one missing result invalidates the
+                # whole historical tool round.
+                tool_results, k, has_complete_results = _collect_complete_tool_results(visible, j, tc_ids)
+                if has_complete_results:
                     msg = {"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))}
                     msg["tool_calls"] = tool_calls
                     messages.append(msg)
-                    for idx in range(j, k):
-                        tr_payload = visible[idx].payload
+                    for tr_event in tool_results:
+                        tr_payload = tr_event.payload
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tr_payload.get("tool_call_id", ""),
@@ -144,8 +164,7 @@ async def project_to_messages(
                         })
                     i = k
                 else:
-                    # Orphaned tool_calls (e.g. from diminishing_stop):
-                    # emit assistant message without tool_calls
+                    # Orphaned or partial tool_calls: emit assistant text only.
                     messages.append({"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))})
                     i = j
             else:
@@ -230,6 +249,7 @@ async def run_event_migration(db: AsyncSession) -> None:
 async def delete_events_after(db: AsyncSession, conversation_id: int, after_created_at: object, inclusive: bool = False) -> None:
     """Delete events for *conversation_id* with created_at >= (or >) *after_created_at*."""
     from sqlalchemy import delete
+
     from ..models import AgentEvent
     condition = AgentEvent.created_at >= after_created_at if inclusive else AgentEvent.created_at > after_created_at
     await db.execute(

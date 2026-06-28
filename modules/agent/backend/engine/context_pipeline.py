@@ -10,6 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..services import conversation_service as conv_svc
+from ..prompt_seeds import (
+    CONTEXT_CITATION_RULES_KEY,
+    CONTEXT_TOOL_GUIDANCE_KEY,
+    ENTERPRISE_PROMPT_KEY,
+    SYSTEM_BASE_PROMPT_KEY,
+)
+from ..services.runtime_prompt_provider import RuntimePromptProvider
 from .budget_allocator import assemble_context as _budget_assemble_context
 from .budget_allocator import estimate_tokens, get_context_budget
 from .compressor import compress_middle_with_snapshot as _compress_with_snapshot
@@ -157,7 +164,31 @@ async def _build_system_content(
 
     layers: list[str] = []
     total_chars = 0
-    MAX_CHARS = 6000
+    MAX_CHARS = 10000
+    prompt_provider = RuntimePromptProvider(db)
+
+    for key in (SYSTEM_BASE_PROMPT_KEY, ENTERPRISE_PROMPT_KEY):
+        prompt_text = (await prompt_provider.get_system_prompt(key)).strip()
+        if prompt_text and total_chars < MAX_CHARS:
+            layers.append(prompt_text)
+            total_chars += len(prompt_text)
+
+    user_prompts = await prompt_provider.get_user_prompts(owner_id)
+    if user_prompts and total_chars < MAX_CHARS:
+        user_section = "\n\n".join(
+            f"### {item.title}\n{item.content.strip()}"
+            for item in user_prompts[:5]
+            if item.content and item.content.strip()
+        )
+        if user_section:
+            layers.append("## 用户自定义提示词\n" + user_section)
+            total_chars += len(layers[-1])
+
+    profile_data = await conv_svc.get_active_user_profile(db, owner_id)
+    profile_text = conv_svc._format_profile_text(profile_data)
+    if profile_text and total_chars < MAX_CHARS:
+        layers.append(profile_text)
+        total_chars += len(profile_text)
 
     if _profile and _profile.system_prompt:
         layers.append(_profile.system_prompt.strip())
@@ -177,35 +208,17 @@ async def _build_system_content(
     # ── 工具调用指引（按 profile 差异化） ──────────────────────────
     if _profile and _profile.tool_usage_guide:
         guide = _profile.tool_usage_guide.strip()
-        if guide and total_chars < MAX_CHARS:
-            layers.append(
-                "\n## 工具调用指引\n" + guide
-            )
-            total_chars += len(layers[-1])
     else:
-        default_guide = (
-            "请优先使用 skill (技能) 来满足用户的需求。"
-            "技能是封装好的能力，输入参数即可完成复杂任务。"
-        )
-        if total_chars < MAX_CHARS:
-            layers.append(
-                "\n## 工具调用指引\n" + default_guide
-            )
-            total_chars += len(layers[-1])
+        guide = (await prompt_provider.get_system_prompt(CONTEXT_TOOL_GUIDANCE_KEY)).strip()
+    if guide and total_chars < MAX_CHARS:
+        layers.append("\n## 工具调用指引\n" + guide)
+        total_chars += len(layers[-1])
 
     # ── 引用规范提示（减少幻觉，放末尾以增加模型注意力） ────
-    _cite_prompt = (
-        "\n## 引用强制规则（必须遵守）\n"
-        "当你的回答引用了网络搜索结果时，优先把被引用的页面名、平台功能名或关键结论词直接写成 Markdown 链接：`[关键词或来源标题](完整URL)`。\n"
-        "同一个来源首次出现时加链接即可，后文可不重复；不要只写裸 URL，也不要只在末尾写泛泛的“来源”。\n"
-        "当你的回答引用了本地文件时，必须在相关句子中标注文件名；有页码时标注页码。\n"
-        "不允许在没有注明来源的情况下直接输出搜索结果或文件内容。\n"
-        "例如：正确 → \"可以在巨量千川后台的[创意灵感](https://example.com)里查看对标视频。\"\n"
-        "错误 → \"可以在创意灵感里查看。\"（缺少链接）"
-    )
-    if total_chars < MAX_CHARS:
-        layers.append(_cite_prompt)
-        total_chars += len(_cite_prompt)
+    cite_prompt = (await prompt_provider.get_system_prompt(CONTEXT_CITATION_RULES_KEY)).strip()
+    if cite_prompt and total_chars < MAX_CHARS:
+        layers.append("\n## 引用强制规则（必须遵守）\n" + cite_prompt)
+        total_chars += len(layers[-1])
 
     return "\n\n".join(layers).strip()
 

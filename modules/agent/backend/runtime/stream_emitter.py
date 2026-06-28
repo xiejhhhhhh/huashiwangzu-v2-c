@@ -17,7 +17,7 @@ import time
 
 from ..engine.engine import chat_stream_with_degradation_chain
 from ..engine.failure_diagnostics import record_failure
-from .content_gate import TOOL_INTENT_RETRY_MESSAGE, looks_like_unfinished_tool_intent
+from .content_gate import TOOL_INTENT_RETRY_MESSAGE, looks_like_unfinished_tool_intent, user_safe_error_message
 
 logger = logging.getLogger("v2.agent").getChild("runtime.stream_emitter")
 
@@ -102,7 +102,8 @@ class StreamEmitter:
                     self.usage_data = usage_data
                     usage_event = self._sse("usage", json.dumps(usage_data, ensure_ascii=False))
                 elif event_type == "error" and content:
-                    yield self._sse("error", content)
+                    logger.warning("StreamEmitter upstream model error: %s", content)
+                    yield self._sse("error", user_safe_error_message(content))
                 elif event_type == "done":
                     # DONE 可能携带 usage（DeepSeek adapter 嵌入在 DONE 中）
                     done_usage = event.get("usage")
@@ -163,7 +164,7 @@ class StreamEmitter:
                 conversation_id, owner_id,
             )
             yield self._sse(
-                "error", f"(stream error: {exc})",
+                "error", user_safe_error_message(exc),
             )
 
     @staticmethod

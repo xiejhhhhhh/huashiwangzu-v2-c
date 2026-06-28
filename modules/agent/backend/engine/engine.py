@@ -6,6 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..services import conversation_service as conv_svc
+from ..prompt_seeds import CONTEXT_TOOL_GUIDANCE_KEY
+from ..services.runtime_prompt_provider import get_system_prompt as get_runtime_system_prompt
 from .budget_allocator import DiminishingBudgetTracker
 from .compressor import compress_middle_with_snapshot as _compress_with_snapshot
 from .compressor import hard_truncate_tail as _hard_truncate_tail
@@ -111,12 +113,17 @@ _DEFAULT_TOOL_CALL_GUIDANCE = (
 )
 
 
-def _get_tool_call_guidance(profile_key: str) -> str:
-    """Resolve model-specific tool call guidance by profile key prefix."""
+async def _get_tool_call_guidance(db: AsyncSession, profile_key: str) -> str:
+    """Resolve model-specific tool call guidance from DB prompt plus model hint."""
+    base = await get_runtime_system_prompt(db, CONTEXT_TOOL_GUIDANCE_KEY)
+    model_hint = ""
     for prefix, guidance in _TOOL_CALL_GUIDANCE.items():
         if profile_key.startswith(prefix):
-            return guidance
-    return _DEFAULT_TOOL_CALL_GUIDANCE
+            model_hint = guidance
+            break
+    if not model_hint:
+        model_hint = _DEFAULT_TOOL_CALL_GUIDANCE
+    return "\n".join(part for part in (base, model_hint) if part)
 
 
 async def _build_system_content(db: AsyncSession, owner_id: int, conversation_id: int, agent_code: str = "erp_chat", profile_key: str = "") -> str:
@@ -185,7 +192,7 @@ async def _build_system_content(db: AsyncSession, owner_id: int, conversation_id
         logger.debug("Context vars injection failed (non-fatal): %s", e)
 
     # ── 工具调用指引（按 profile 差异化） ──────────────────────────
-    tool_guidance = _get_tool_call_guidance(profile_key)
+    tool_guidance = await _get_tool_call_guidance(db, profile_key)
     if tool_guidance:
         layers.append(tool_guidance)
 

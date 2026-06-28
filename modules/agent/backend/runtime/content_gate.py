@@ -106,6 +106,99 @@ def _strip_tool_call_containers(content: str) -> str:
     )
 
 
+def _strip_internal_success_sections(content: str) -> str:
+    """Remove internal learning snippets that should not be user-visible."""
+    cleaned = re.sub(
+        r'<p>\s*<strong>\s*最佳路径总结[:：]\s*</strong>[\s\S]*?</p>',
+        '',
+        content,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r'(?:^|\n)\s*(?:\*\*)?最佳路径总结[:：](?:\*\*)?[\s\S]*?(?=\n\s*📎\s*来源[:：]|\n\s*#{1,6}\s|\Z)',
+        '\n',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned
+
+
+def extract_success_path(content: str) -> str | None:
+    """Extract internal best-path summary for experience storage."""
+    if not content:
+        return None
+    html_match = re.search(
+        r'<p>\s*<strong>\s*最佳路径总结[:：]\s*</strong>\s*(?:<br\s*/?>)?([\s\S]*?)</p>',
+        content,
+        flags=re.IGNORECASE,
+    )
+    if html_match:
+        text = re.sub(r'<br\s*/?>', '\n', html_match.group(1), flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', '', text).strip()
+        return text or None
+    md_match = re.search(
+        r'(?:^|\n)\s*(?:\*\*)?最佳路径总结[:：](?:\*\*)?\s*([\s\S]*?)(?=\n\s*📎\s*来源[:：]|\n\s*#{1,6}\s|\Z)',
+        content,
+        flags=re.IGNORECASE,
+    )
+    if md_match:
+        text = re.sub(r'[*_`]+', '', md_match.group(1)).strip()
+        return text or None
+    return None
+
+
+def _extract_source_block(content: str) -> tuple[str, str]:
+    """Return content without source block plus the extracted source block."""
+    html_match = re.search(
+        r'<p>\s*📎\s*来源[:：]?\s*</p>\s*<ul>([\s\S]*?)</ul>',
+        content,
+        flags=re.IGNORECASE,
+    )
+    if html_match:
+        return (content[:html_match.start()] + content[html_match.end():]).strip(), html_match.group(1)
+    md_match = re.search(r'(?:^|\n)\s*📎\s*来源[:：]?\s*\n?([\s\S]*)$', content)
+    if md_match:
+        return content[:md_match.start()].strip(), md_match.group(1)
+    return content, ""
+
+
+def extract_inline_references(content: str) -> list[dict]:
+    """Extract model-written source list for message footer references."""
+    _, source_block = _extract_source_block(content)
+    if not source_block:
+        return []
+    refs: list[dict] = []
+    seen: set[str] = set()
+    link_re = re.compile(
+        r'\[([^\]]+)\]\((https?://[^\s)]+)\)|<a\s+[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>',
+        flags=re.IGNORECASE,
+    )
+    for match in link_re.finditer(source_block):
+        title = re.sub(r'<[^>]+>', '', match.group(1) or match.group(4) or '').strip()
+        url = (match.group(2) or match.group(3) or '').strip()
+        key = url or title
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        refs.append({"type": "web", "title": title or url, "source": title or url, "excerpt": "", "url": url or None})
+    if refs:
+        return refs
+    plain = re.sub(r'<[^>]+>', '\n', source_block)
+    for line in plain.splitlines():
+        title = re.sub(r'^\s*[-*\d.)、]+\s*', '', line).strip()
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        refs.append({"type": "source", "title": title, "source": title, "excerpt": ""})
+    return refs[:6]
+
+
+def strip_inline_source_block(content: str) -> str:
+    """Remove model-written source block from user-visible content."""
+    clean, _ = _extract_source_block(content)
+    return clean
+
+
 def _looks_like_unfinished_tool_intent(content: str) -> bool:
     """Detect if content makes a search/fetch promise without actual tool calls."""
     if not content:
@@ -180,6 +273,8 @@ def process(content: str) -> ContentGateResult:
         '', clean, flags=re.IGNORECASE | re.DOTALL,
     )
     clean = _strip_tool_call_containers(clean)
+    clean = _strip_internal_success_sections(clean)
+    clean = strip_inline_source_block(clean)
     clean = re.sub(r'\n{3,}', '\n\n', clean).strip()
 
     result.clean_text = clean
@@ -218,6 +313,39 @@ def final_clean_content(content: str) -> str:
     """Backward-compatible wrapper: return only clean_text."""
     r = process(content)
     return r.clean_text
+
+
+_MODEL_ERROR_MARKERS = (
+    "model error",
+    "all connection attempts failed",
+    "connection refused",
+    "connection reset",
+    "connect timeout",
+    "read timeout",
+    "timeout",
+    "httpx",
+    "openai",
+    "api key",
+    "provider",
+    "upstream",
+    "stream error",
+)
+
+
+MODEL_UNAVAILABLE_MESSAGE = "模型服务暂时连接失败，请稍后重试。"
+
+
+def user_safe_error_message(error: object) -> str:
+    """Convert internal model/provider errors to a user-safe message."""
+    text = str(error or "").strip()
+    if not text:
+        return "AI 助手暂时无法完成回复，请稍后重试。"
+    lowered = text.lower()
+    if any(marker in lowered for marker in _MODEL_ERROR_MARKERS):
+        return MODEL_UNAVAILABLE_MESSAGE
+    if len(text) > 120:
+        return "AI 助手暂时无法完成回复，请稍后重试。"
+    return text
 
 
 def looks_like_unfinished_tool_intent(content: str) -> bool:

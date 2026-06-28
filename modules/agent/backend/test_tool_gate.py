@@ -31,6 +31,30 @@ def test_valid_tool_passes():
     assert len(invalid) == 0
 
 
+def test_registered_tool_passes_even_when_not_exposed():
+    tools = [
+        {"function": {"name": "skill_use"}},
+    ]
+    parsed = [
+        {"name": "knowledge__search", "tool_call_id": "1", "args": {}, "slow_name": None},
+    ]
+    valid, invalid = validate_tool_calls(parsed, tools, registered_tool_names={"knowledge__search"})
+    assert len(valid) == 1
+    assert len(invalid) == 0
+
+
+def test_unregistered_tool_rejected_when_not_exposed():
+    tools = [
+        {"function": {"name": "skill_use"}},
+    ]
+    parsed = [
+        {"name": "unknown__search", "tool_call_id": "1", "args": {}, "slow_name": None},
+    ]
+    valid, invalid = validate_tool_calls(parsed, tools, registered_tool_names={"knowledge__search"})
+    assert len(valid) == 0
+    assert invalid == ["unknown__search"]
+
+
 def test_invalid_tool_rejected():
     tools = [
         {"function": {"name": "knowledge__search"}},

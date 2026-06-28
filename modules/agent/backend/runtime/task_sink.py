@@ -22,7 +22,11 @@ from .._utils import references_from_tool_events
 from ..engine.engine import get_hooks
 from ..engine.event_store import record_event as _record_event
 from ..engine.failure_diagnostics import record_failure as _record_failure
-from ..runtime.content_gate import final_clean_content
+from ..runtime.content_gate import (
+    extract_inline_references,
+    extract_success_path,
+    final_clean_content,
+)
 from ..services import conversation_service as conv_svc
 
 logger = logging.getLogger("v2.agent").getChild("runtime.task_sink")
@@ -63,6 +67,19 @@ class RuntimeTaskSink:
             return None
 
         clean_content = final_clean_content("".join(full_content))
+        inline_references = extract_inline_references("".join(full_content))
+        success_path = extract_success_path("".join(full_content))
+        if success_path:
+            try:
+                from ..engine.experience_memory import save_experience
+                await save_experience(
+                    trigger_condition=clean_content[:300] or "assistant_success_path",
+                    steps=success_path,
+                    source_conversation_id=self.conversation_id,
+                    caller=f"user:{self.owner_id}" if self.owner_id else "system:agent",
+                )
+            except Exception as exc:
+                logger.warning("success path extraction save failed (non-fatal): %s", exc)
         if not clean_content:
             logger.warning(
                 "persist_assistant skipped — content cleared to empty by final_clean_content "
@@ -75,13 +92,14 @@ class RuntimeTaskSink:
         )
         safe_events = json.loads(json.dumps(tool_events, default=str))
         safe_timeline = json.loads(json.dumps(timeline, default=str))
+        footer_references = inline_references or references_from_tool_events(tool_events)
         await conv_svc.add_message_meta(
             db,
             owner_id=self.owner_id,
             conversation_id=self.conversation_id,
             message_id=msg.id,
             thinking="\n".join(thinking_parts) if thinking_parts else "",
-            references=references_from_tool_events(tool_events),
+            references=footer_references,
             tool_events=safe_events,
             timeline=safe_timeline,
             usage=usage,

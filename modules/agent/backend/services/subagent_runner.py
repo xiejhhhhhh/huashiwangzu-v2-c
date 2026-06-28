@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 import logging
 
+from app.database import AsyncSessionLocal
 from app.gateway.router import gateway_router
 
+from ..prompt_seeds import SUBAGENT_SYSTEM_KEY
 from ..services import tool_discovery
+from ..services.runtime_prompt_provider import render_system_prompt
 from .model_client import final_clean_content, parse_inline_tool_calls
 
 logger = logging.getLogger("v2.agent").getChild("subagent_runner")
@@ -53,30 +56,26 @@ def _tool_calls_for_history(tool_calls: list[dict]) -> list[dict]:
     return normalized
 
 
-def _build_system_prompt(
+async def _build_system_prompt(
     task_desc: str,
     combined_context: str = "",
     task_write_enabled: bool = False,
     max_rounds: int = SUBAGENT_MAX_ROUNDS,
 ) -> str:
     """构建子 Agent system prompt。"""
-    parts = [
-        "你是一个子 Agent，专注于完成一项具体任务。\n\n"
-        f"任务：{task_desc}\n\n",
-    ]
-    if combined_context:
-        parts.append(f"参考上下文：\n{combined_context[:2000]}\n\n")
-    if not task_write_enabled:
-        parts.append("注意：你只能使用读/检索类工具，不能修改或写入数据。\n")
-    parts.append(
-        "规则：\n"
-        "1. 先 skill_list 查可用技能，再用 skill_describe 了解参数，最后 skill_use 调用。\n"
-        "2. 不要闲聊，直接完成任务。\n"
-        f"3. 最多 {max_rounds} 轮工具调用。\n"
-        "4. 完成后，清晰总结结论。\n"
-        "5. 用中文回答。"
-    )
-    return "\n".join(parts)
+    context_section = f"参考上下文：\n{combined_context[:2000]}\n\n" if combined_context else ""
+    write_guard_section = "" if task_write_enabled else "注意：你只能使用读/检索类工具，不能修改或写入数据。\n"
+    async with AsyncSessionLocal() as db:
+        return await render_system_prompt(
+            db,
+            SUBAGENT_SYSTEM_KEY,
+            {
+                "task_desc": task_desc,
+                "context_section": context_section,
+                "write_guard_section": write_guard_section,
+                "max_rounds": max_rounds,
+            },
+        )
 
 
 async def run_single_task(
@@ -101,7 +100,7 @@ async def run_single_task(
         if extra_context and task_context
         else (task_context or extra_context or "")
     )
-    system_prompt = _build_system_prompt(
+    system_prompt = await _build_system_prompt(
         task_desc, combined, task_write_enabled, max_rounds,
     )
 

@@ -19,6 +19,8 @@ from ..models import (
     AgentSystemPrompt,
     AgentUserProfile,
 )
+from ..prompt_seeds import ENTERPRISE_PROMPT_KEY, SYSTEM_BASE_PROMPT_KEY
+from .runtime_prompt_provider import get_system_prompt as get_runtime_system_prompt
 
 logger = logging.getLogger("v2.agent").getChild("conversation_service")
 
@@ -304,20 +306,26 @@ async def edit_and_resubmit(
 
 async def get_system_prompt(db: AsyncSession) -> str:
     """获取当前生效的系统提示词。"""
+    prompt = await get_runtime_system_prompt(db, SYSTEM_BASE_PROMPT_KEY)
+    if prompt:
+        return prompt
     r = await db.execute(
         select(AgentSystemPrompt).order_by(desc(AgentSystemPrompt.id)).limit(1)
     )
-    prompt = r.scalar_one_or_none()
-    return prompt.content if prompt else ""
+    legacy = r.scalar_one_or_none()
+    return legacy.content if legacy else ""
 
 
 async def get_enterprise_prompt(db: AsyncSession) -> str:
     """获取当前生效的企业提示词。"""
+    prompt = await get_runtime_system_prompt(db, ENTERPRISE_PROMPT_KEY)
+    if prompt:
+        return prompt
     r = await db.execute(
         select(AgentEnterprisePrompt).order_by(desc(AgentEnterprisePrompt.id)).limit(1)
     )
-    prompt = r.scalar_one_or_none()
-    return prompt.content if prompt else ""
+    legacy = r.scalar_one_or_none()
+    return legacy.content if legacy else ""
 
 
 async def get_active_user_profile(db: AsyncSession, owner_id: int) -> dict:

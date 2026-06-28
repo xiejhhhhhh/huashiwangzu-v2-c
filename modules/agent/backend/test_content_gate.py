@@ -27,6 +27,8 @@ process = gate.process
 parse_inline_tool_calls = gate.parse_inline_tool_calls
 final_clean_content = gate.final_clean_content
 looks_like_unfinished_tool_intent = gate.looks_like_unfinished_tool_intent
+user_safe_error_message = gate.user_safe_error_message
+MODEL_UNAVAILABLE_MESSAGE = gate.MODEL_UNAVAILABLE_MESSAGE
 
 
 def test_plain_text_passthrough():
@@ -134,3 +136,44 @@ def test_string_false_converts_number():
     args = r.inline_tool_calls[0]["function"]["arguments"]
     assert args["val"] == 42
     assert isinstance(args["val"], int)
+
+
+def test_user_safe_error_hides_model_connection_details():
+    assert user_safe_error_message("Model error: All connection attempts failed") == MODEL_UNAVAILABLE_MESSAGE
+    assert user_safe_error_message("(stream error: ConnectTimeout)") == MODEL_UNAVAILABLE_MESSAGE
+
+
+def test_user_safe_error_keeps_short_business_message():
+    assert user_safe_error_message("模型表示需要查询资料，但连续没有发起工具调用。") == "模型表示需要查询资料，但连续没有发起工具调用。"
+
+
+def test_best_path_summary_removed_from_visible_content():
+    raw = (
+        "答案正文。\n\n"
+        "最佳路径总结：\n"
+        "在巨量千川后台 → 工具 → 素材分析，选择对应类目和时间范围。\n\n"
+        "📎 来源：\n"
+        "- [素材分析产品介绍](https://example.com/a)"
+    )
+    assert "最佳路径总结" not in final_clean_content(raw)
+    assert "📎 来源" not in final_clean_content(raw)
+    assert final_clean_content(raw) == "答案正文。"
+
+
+def test_extracts_success_path_and_inline_references():
+    raw = (
+        "<p><strong>最佳路径总结：</strong><br>在巨量千川后台 → <strong>工具</strong> → <strong>素材分析</strong>。</p>"
+        "<p>📎 来源：</p>"
+        "<ul><li><a href=\"https://www.zhihu.com/question/548102282\">巨量千川怎么查看同行的跑量素材创意？ - 知乎</a></li>"
+        "<li><a href=\"https://qianchuan.jinritemai.com/support/content/127803\">素材分析产品介绍 - 巨量千川规则中心</a></li></ul>"
+    )
+    assert gate.extract_success_path(raw) == "在巨量千川后台 → 工具 → 素材分析。"
+    refs = gate.extract_inline_references(raw)
+    assert [ref["title"] for ref in refs] == [
+        "巨量千川怎么查看同行的跑量素材创意？ - 知乎",
+        "素材分析产品介绍 - 巨量千川规则中心",
+    ]
+    assert [ref["url"] for ref in refs] == [
+        "https://www.zhihu.com/question/548102282",
+        "https://qianchuan.jinritemai.com/support/content/127803",
+    ]

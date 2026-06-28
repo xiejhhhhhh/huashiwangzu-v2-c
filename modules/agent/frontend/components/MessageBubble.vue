@@ -9,19 +9,7 @@
       </svg>
     </div>
     <div class="msg-card">
-      <!-- 思维过程（在气泡上方） -->
-      <div v-if="message.thinking" class="inline-thinking">
-        <button class="inline-th-toggle" @click="showThinking = !showThinking">
-          <span class="th-indicator"></span>
-          <span>思维过程</span>
-          <svg :class="{ rotated: showThinking }" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10">
-            <path d="M4 3l4 3-4 3"/>
-          </svg>
-        </button>
-        <div v-show="showThinking" class="inline-th-body">{{ normalizedThinking }}</div>
-      </div>
-
-      <!-- 工具记录（思考之后、气泡之前） -->
+      <!-- 工具记录（历史消息兼容，新的 thinking/tool 展示走 timeline 工作组） -->
       <div v-if="message.tool_events?.length" class="inline-tools">
         <button class="inline-tools-toggle" @click="showTools = !showTools">
           <span class="tools-dot"></span>
@@ -78,6 +66,9 @@
           <button v-if="message.role === 'user' && message.id && editingId !== message.id" class="msg-action-btn" title="编辑" @click="$emit('edit', message.id, message.content)">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M11.5 2.5a1.5 1.5 0 012 2L5 13l-3 1 1-3 8.5-8.5z"/><path d="M9.5 4.5l2 2"/></svg>
           </button>
+          <button v-if="message.role === 'user' && message.id && editingId !== message.id" class="msg-action-btn" title="回退到此处" @click="$emit('rollback', message.id)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M5 4L2 7l3 3"/><path d="M2 7h7a4 4 0 010 8H6"/></svg>
+          </button>
         </span>
       </div>
       <div v-if="showSources && sourceLinks.length && message.role === 'assistant'" class="msg-source-popover">
@@ -122,7 +113,11 @@ interface MsgItem {
 }
 	
 const props = defineProps<{ message: MsgItem; editingId?: number | null }>()
-const emit = defineEmits<{ edit: [messageId: number, content: string]; submitEdit: [messageId: number, content: string] }>()
+const emit = defineEmits<{
+  edit: [messageId: number, content: string]
+  submitEdit: [messageId: number, content: string]
+  rollback: [messageId: number]
+}>()
 
 const isEditing = computed(() => props.message.role === 'user' && props.message.id === props.editingId && !!props.editingId)
 const editText = ref('')
@@ -167,15 +162,8 @@ function copyContent() {
   })
 }
 
-const showThinking = ref(false)
 const showTools = ref(false)
 const showSources = ref(false)
-
-/** 去掉换行符，压缩连续空格，与 ThinkingCard 保持一致 */
-const normalizedThinking = computed(() => {
-  if (!props.message.thinking) return ''
-  return props.message.thinking.replace(/[\n\r]+/g, '').replace(/[ \t]{2,}/g, ' ').trim()
-})
 
 function formatToolResult(r: unknown): string {
   if (typeof r === 'string') return r

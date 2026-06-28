@@ -19,6 +19,14 @@ from app.database import AsyncSessionLocal
 from app.gateway import service as gateway_service
 from app.gateway.service import resolve_role_template
 
+from ..prompt_seeds import (
+    UNDERSTANDING_CONCERN_KEY,
+    UNDERSTANDING_INTENT_KEY,
+    UNDERSTANDING_PLAN_KEY,
+    UNDERSTANDING_RETRIEVAL_KEY,
+)
+from ..services.runtime_prompt_provider import RuntimePromptProvider
+
 logger = logging.getLogger("v2.agent").getChild("runtime.understanding")
 
 UNDERSTANDING_MAX_ROUNDS = 2
@@ -44,58 +52,11 @@ UNDERSTANDING_ROLES = [
     "retrieval_evidence",
 ]
 
-# Role → system prompt template for the understanding model call
-ROLE_PROMPTS: dict[str, str] = {
-    "intent_clarifier": (
-        "你是一个意图澄清专家。你的任务是从用户输入中识别出核心意图和关键目标。\n\n"
-        "请分析以下用户输入，输出JSON格式：\n"
-        "{{\n"
-        '  "core_intent": "用户想做什么的一句话总结",\n'
-        '  "task_type": "chat/plan/analyze/generate/code/other",\n'
-        '  "complexity": "simple/medium/complex",\n'
-        '  "ambiguity_level": "low/medium/high",\n'
-        '  "needs_tools": true/false,\n'
-        '  "potential_goals": ["目标1", "目标2"]\n'
-        "}}\n\n"
-        "只输出JSON，不要多余的解释。"
-    ),
-    "concern_miner": (
-        "你是一个关注点挖掘专家。你的任务是从用户输入中发现潜在的风险点、边界条件和隐含需求。\n\n"
-        "请分析以下用户输入，输出JSON格式：\n"
-        "{{\n"
-        '  "concerns": [\n'
-        '    {{"concern": "关注点描述", "severity": "low/medium/high", "dimension": "quality/security/feasibility/cost/time"}}\n'
-        "  ],\n"
-        '  "boundary_conditions": ["条件1", "条件2"],\n'
-        '  "implicit_needs": ["隐含需求1", "隐含需求2"]\n'
-        "}}\n\n"
-        "只输出JSON，不要多余的解释。"
-    ),
-    "plan_critic": (
-        "你是一个计划评审专家。你的任务是从执行角度评估用户请求的可行性和完整性。\n\n"
-        "请分析以下用户输入，输出JSON格式：\n"
-        "{{\n"
-        '  "feasibility": "high/medium/low",\n'
-        '  "missing_info": ["缺少的信息1", "缺少的信息2"],\n'
-        '  "risks": [{{"risk": "风险描述", "mitigation": "缓解措施"}}],\n'
-        '  "estimated_steps": ["步骤1", "步骤2"],\n'
-        '  "suggested_approach": "建议的执行方案"\n'
-        "}}\n\n"
-        "只输出JSON，不要多余的解释。"
-    ),
-    "retrieval_evidence": (
-        "你是一个检索证据评估专家。你的任务是指出用户需要哪些信息和证据来完成任务。\n\n"
-        "请分析以下用户输入，输出JSON格式：\n"
-        "{{\n"
-        '  "needs_external_knowledge": true/false,\n'
-        '  "search_queries": [\n'
-        '    {{"query": "搜索词", "purpose": "搜索目的", "priority": "high/medium/low"}}\n'
-        "  ],\n"
-        '  "knowledge_domains": ["领域1", "领域2"],\n'
-        '  "evidence_required": true/false\n'
-        "}}\n\n"
-        "只输出JSON，不要多余的解释。"
-    ),
+ROLE_PROMPT_KEYS: dict[str, str] = {
+    "intent_clarifier": UNDERSTANDING_INTENT_KEY,
+    "concern_miner": UNDERSTANDING_CONCERN_KEY,
+    "plan_critic": UNDERSTANDING_PLAN_KEY,
+    "retrieval_evidence": UNDERSTANDING_RETRIEVAL_KEY,
 }
 
 
@@ -181,10 +142,17 @@ class UnderstandingLoopOrchestrator:
         packet["resolved_profile_key"] = understanding_profile
         packet["resolved_template"] = resolved.name
 
+        async with AsyncSessionLocal() as prompt_db:
+            prompt_provider = RuntimePromptProvider(prompt_db)
+            role_prompts = {
+                role: await prompt_provider.get_system_prompt(key)
+                for role, key in ROLE_PROMPT_KEYS.items()
+            }
+
         for round_i in range(UNDERSTANDING_MAX_ROUNDS):
             self.rounds_used = round_i + 1
             for role in UNDERSTANDING_ROLES:
-                system_prompt = ROLE_PROMPTS.get(role, "")
+                system_prompt = role_prompts.get(role, "")
                 if not system_prompt:
                     continue
                 messages = [

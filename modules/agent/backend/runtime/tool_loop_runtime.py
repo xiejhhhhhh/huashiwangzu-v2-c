@@ -30,9 +30,12 @@ from ..engine.engine import (
 from ..engine.stuck_detector import detect_stuck
 from ..engine.stuck_detector import reset as reset_stuck
 from ..services import tool_discovery
+from ..prompt_seeds import FINAL_SUMMARY_KEY, STOP_DECISION_KEY
 from ..services.action_policy import check_action_allowed
 from ..services.model_client import final_clean_content, parse_inline_tool_calls, recover_tool_calls
+from ..services.runtime_prompt_provider import get_system_prompt as get_runtime_system_prompt
 from .checkpointer import PostgresCheckpointSaver
+from .content_gate import user_safe_error_message
 from .runtime_policy import RuntimePolicy
 from .stream_emitter import StreamEmitter
 from .task_sink import RuntimeTaskSink
@@ -142,17 +145,20 @@ class ToolLoopRuntime:
                 )
 
                 # ── Non-streaming model call for tool decisions ─────
+                _decision_t0 = time.monotonic()
                 result = await chat_with_degradation_chain(
                     messages,
                     self.profile_key,
                     tools,
                     conversation_id=self.conversation_id,
                 )
+                _decision_ms = round((time.monotonic() - _decision_t0) * 1000)
                 logger.info(
-                    "[DIAG] ToolLoopRuntime chat returned tool_calls=%s profile=%s error=%s",
+                    "[DIAG] ToolLoopRuntime chat returned tool_calls=%s profile=%s error=%s decision_ms=%d",
                     len(result.get("tool_calls") or []),
                     self.profile_key,
                     bool(result.get("error")),
+                    _decision_ms,
                 )
 
                 # ── Accumulate usage from each non-streaming call ──
@@ -164,7 +170,8 @@ class ToolLoopRuntime:
 
                 if result.get("error"):
                     error_msg = str(result["error"])
-                    yield self._sse("error", error_msg)
+                    logger.warning("ToolLoopRuntime model error: %s", error_msg)
+                    yield self._sse("error", user_safe_error_message(error_msg))
                     break
 
                 if result.get("thinking") and not self.suppress_thinking:
@@ -337,12 +344,47 @@ class ToolLoopRuntime:
 
                 # ── ToolGate: validate tool names before execution ──
                 from .tool_gate import format_retry_message, validate_tool_calls
-                _valid_tools, _invalid_names = validate_tool_calls(parsed_tools, tools)
+                _valid_tools, _invalid_names = validate_tool_calls(parsed_tools, tools, role=self.user_role)
                 if _invalid_names:
                     logger.warning(
                         "[ToolGate] %d invalid tool(s) rejected: %s",
                         len(_invalid_names), _invalid_names,
                     )
+                    invalid_tools = [tool for tool in parsed_tools if tool not in _valid_tools]
+                    for tool in invalid_tools:
+                        tool_result = {
+                            "error": "invalid_tool_name",
+                            "tool_name": tool.get("name", ""),
+                            "message": format_retry_message(_invalid_names),
+                        }
+                        result_event = {
+                            "type": "tool_result",
+                            "name": tool.get("name", ""),
+                            "result": tool_result,
+                            "started_at": time.time(),
+                            "duration_ms": round((time.time() - _tool_call_times.get(tool.get("tool_call_id", ""), time.time())) * 1000),
+                        }
+                        tool_events.append(result_event)
+                        timeline.append(result_event)
+                        yield self._j_sse(result_event)
+                        tool_message = {
+                            "role": "tool",
+                            "name": tool.get("name", ""),
+                            "content": _j(tool_result),
+                        }
+                        if tool.get("tool_call_id"):
+                            tool_message["tool_call_id"] = tool["tool_call_id"]
+                        messages.append(tool_message)
+                        pending_events.append({
+                            "event_type": "tool_result",
+                            "payload": {
+                                "tool_call_id": tool.get("tool_call_id", ""),
+                                "name": tool.get("name", ""),
+                                "result": tool_result,
+                                "duration_ms": result_event["duration_ms"],
+                            },
+                            "llm_response_id": None,
+                        })
                     messages.append({
                         "role": "user",
                         "content": format_retry_message(_invalid_names),
@@ -474,8 +516,14 @@ class ToolLoopRuntime:
                         }
                         for t in fast_tools
                     ]
+                    _tool_batch_t0 = time.monotonic()
                     orchestrated_results = await orchestrator.execute_batch(
                         orchestrator_tools, _tool_execute_fn,
+                    )
+                    logger.info(
+                        "[DIAG] ToolLoopRuntime fast tool batch count=%d duration_ms=%d",
+                        len(orchestrator_tools),
+                        round((time.monotonic() - _tool_batch_t0) * 1000),
                     )
                     for outcome in orchestrated_results:
                         result_data = (
@@ -640,7 +688,7 @@ class ToolLoopRuntime:
                     type(exc).__name__, str(exc),
                 )
                 try:
-                    yield self._sse("error", str(exc))
+                    yield self._sse("error", user_safe_error_message(exc))
                 except GeneratorExit:
                     _disconnected = True
 
@@ -786,8 +834,10 @@ class ToolLoopRuntime:
             if content:
                 context_lines.append(f"[{role}] {content}")
         context_str = "\n".join(context_lines[-15:])
+        async with AsyncSessionLocal() as prompt_db:
+            stop_prompt = await get_runtime_system_prompt(prompt_db, STOP_DECISION_KEY)
         prompt = [
-            {"role": "system", "content": "You are a conversation router. Based on the tool execution results below, decide what to do next. Reply with JSON: {\"action\": \"continue\" | \"stop\"}. continue = still need more tool calls to complete the user's request. stop = tools have done enough, stop and reply to the user."},
+            {"role": "system", "content": stop_prompt},
             {"role": "user", "content": f"Recent conversation:\n{context_str}\n\nDecision (JSON):"},
         ]
         try:
@@ -815,16 +865,22 @@ class ToolLoopRuntime:
         if not self.policy.allow_final_summary_fallback:
             return
         logger.info("[DIAG] Generating final summary fallback (streaming)")
+        _summary_t0 = time.monotonic()
+        async with AsyncSessionLocal() as prompt_db:
+            final_summary_prompt = await get_runtime_system_prompt(prompt_db, FINAL_SUMMARY_KEY)
+        summary_messages = messages + [{
+            "role": "user",
+            "content": final_summary_prompt,
+        }]
+        summary_parts: list[str] = []
         async for event in chat_stream_with_degradation_chain(
-            messages, self.profile_key, tools=None,
+            summary_messages, self.profile_key, tools=None,
             conversation_id=self.conversation_id,
         ):
             event_type = event.get("type")
             content = str(event.get("content") or "")
             if event_type in ("token", "content") and content:
-                full.append(content)
-                timeline.append({"type": "text", "content": content})
-                yield self._sse("token", content)
+                summary_parts.append(content)
             elif event_type == "thinking" and content:
                 from ..services.model_client import parse_inline_tool_calls
                 clean, _ = parse_inline_tool_calls(content)
@@ -834,19 +890,56 @@ class ToolLoopRuntime:
                 yield self._sse("error", content)
             elif event_type == "done":
                 break
+        logger.info(
+            "[DIAG] Final summary completed duration_ms=%d parts=%d",
+            round((time.monotonic() - _summary_t0) * 1000),
+            len(summary_parts),
+        )
 
-        # ── Clean inline XML from final summary content ────────────
-        if full:
+        # ── Clean inline XML from final summary content before display ──
+        if summary_parts:
             from ..services.model_client import parse_inline_tool_calls
-            raw = "".join(full)
-            clean, _ = parse_inline_tool_calls(raw)
+            raw = "".join(summary_parts)
+            clean, inline_calls = parse_inline_tool_calls(raw)
             if clean != raw:
-                full.clear()
-                full.append(clean)
                 logger.info(
                     "[DIAG] Final summary cleaned: %d chars → %d chars",
                     len(raw), len(clean),
                 )
+            final_text = clean.strip()
+            if not final_text and inline_calls:
+                final_text = self._fallback_answer_from_tool_events(tool_events)
+            if final_text:
+                full.append(final_text)
+                timeline.append({"type": "text", "content": final_text})
+                yield self._sse("token", final_text)
+
+    def _fallback_answer_from_tool_events(self, tool_events: list[dict]) -> str:
+        """Build a minimal user-visible answer when final summary emits only tool calls."""
+        snippets: list[str] = []
+        for event in reversed(tool_events):
+            if event.get("type") != "tool_result":
+                continue
+            result = event.get("result")
+            if not isinstance(result, dict):
+                continue
+            candidates = []
+            if isinstance(result.get("results"), list):
+                candidates = result.get("results") or []
+            elif isinstance(result.get("data"), dict) and isinstance(result["data"].get("results"), list):
+                candidates = result["data"].get("results") or []
+            for item in candidates[:3]:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("snippet") or item.get("text") or item.get("title") or ""
+                if text:
+                    snippets.append(str(text).strip())
+            if snippets:
+                break
+        if not snippets:
+            return "已完成检索，但模型未能生成最终摘要。请稍后重试。"
+        joined = "\n".join(f"- {s}" for s in snippets[:3])
+        return "根据已检索到的结果，相关信息如下：\n" + joined
 
     @staticmethod
     def _sse(event_type: str, content: str) -> bytes:

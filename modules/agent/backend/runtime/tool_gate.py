@@ -14,6 +14,24 @@ import logging
 
 logger = logging.getLogger("v2.agent").getChild("runtime.tool_gate")
 
+
+def _load_registered_tool_names(role: str) -> set[str]:
+    """Load registered module__action names available to the current role."""
+    try:
+        from app.services.module_registry import list_capabilities
+
+        from ..services.tool_discovery import SEP
+
+        return {
+            f"{cap['module']}{SEP}{cap['action']}"
+            for cap in list_capabilities(role=role)
+            if cap.get("module") and cap.get("action")
+        }
+    except Exception as exc:
+        logger.warning("[ToolGate] failed to load registered tool names: %s", exc)
+        return set()
+
+
 RETRY_MESSAGE = (
     "The previous tool call used an unregistered or invalid tool name. "
     "Use only tools from the provided tool list. If you need to search, "
@@ -26,8 +44,10 @@ RETRY_MESSAGE = (
 def validate_tool_calls(
     parsed_tools: list[dict],
     tools_spec: list[dict],
+    registered_tool_names: set[str] | None = None,
+    role: str = "viewer",
 ) -> tuple[list[dict], list[str]]:
-    """Validate parsed tool calls against the tool specification list.
+    """Validate parsed tool calls against exposed tools and registered skills.
 
     Returns:
         (valid_calls, invalid_names)
@@ -35,13 +55,16 @@ def validate_tool_calls(
     valid: list[dict] = []
     invalid_names: list[str] = []
 
-    # Build lookup: all valid tool names from the spec
+    # Build lookup: exposed meta tools plus registered module__action skills.
     valid_tool_names: set[str] = set()
     for spec in tools_spec or []:
         fn = spec.get("function") or spec
         name = fn.get("name", "")
         if name:
             valid_tool_names.add(name)
+    if registered_tool_names is None:
+        registered_tool_names = _load_registered_tool_names(role)
+    valid_tool_names.update(registered_tool_names)
 
     for tool in parsed_tools:
         name = tool.get("name", "")

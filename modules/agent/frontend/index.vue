@@ -40,7 +40,7 @@
           <WorkTraceGroup v-if="m.eventType === 'work_group'" :message="m" />
           <ToolCallCard v-else-if="m.eventType === 'tool_call' || m.eventType === 'tool_result'" :message="m" />
           <ThinkingCard v-else-if="m.eventType === 'thinking'" :content="m.content" :running="m.running" :collapsed="m.collapsed" :durationMs="m.durationMs" />
-          <MessageBubble v-else :message="m" :editingId="editingMessageId" @edit="handleStartEdit" @submitEdit="handleSubmitEdit" />
+          <MessageBubble v-else :message="m" :editingId="editingMessageId" @edit="handleStartEdit" @submitEdit="handleSubmitEdit" @rollback="handleRollback" />
         </template>
 
         <!-- 流式输出指示器 -->
@@ -108,6 +108,15 @@ interface MsgItem {
   items?: MsgItem[]
 }
 
+interface SanitizedMessage {
+  content: string
+  references: RefItem[]
+}
+
+interface DesktopEventWindow extends Window {
+  __DESKTOP_EVENT_BUS__?: { emit: (name: string, payload: Record<string, unknown>) => void }
+}
+
 // ── Props（外部模块传入的预填上下文） ──
 const props = defineProps<{
   prefill?: { documentId?: number; documentName?: string; question?: string }
@@ -156,9 +165,11 @@ async function handleSubmitEdit(messageId: number, newContent: string) {
   }
   if (abortController) { abortController.abort() }
   abortController = new AbortController()
-	  clearIdleTimer()
-	  sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
-	  // 编辑重发也立刻创建工作组
+		clearIdleTimer()
+		sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
+		_pendingReferences = []
+		// 编辑重发也立刻创建工作组
+
 	  currentWorkGroup.value = null
 	  _lastThinkingStart = 0
 	  ensureWorkGroup()
@@ -180,6 +191,28 @@ async function handleSubmitEdit(messageId: number, newContent: string) {
     sending.value = false; streaming.value = false
     abortController = null
     // Do NOT focus the bottom input — the edit is in-place, not a new message
+  }
+}
+
+async function handleRollback(messageId: number) {
+  if (!activeConvId.value || !messageId) return
+  const ok = window.confirm('确定回退到这条消息吗？这条消息之后的对话会被移除。')
+  if (!ok) return
+  error.value = ''
+  try {
+    const result = await apiFetch<{ rolled_back: boolean }>(`/agent/conversations/${activeConvId.value}/rollback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message_id: messageId }),
+    })
+    if (!result.rolled_back) {
+      error.value = '回退失败：消息不存在或无权限。'
+      return
+    }
+    await reloadMessages(activeConvId.value)
+  } catch (e: unknown) {
+    console.error('[Agent] rollback failed:', e)
+    error.value = '回退失败：' + String((e as Error).message || e)
   }
 }
 
@@ -317,6 +350,7 @@ function normalizeThinking(text: string): string {
 /** 关闭上一张思考卡并设置耗时，新建时记录开始时间 */
 let _lastThinkingStart = 0
 let _lastRoundUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null
+let _pendingReferences: RefItem[] = []
 function applyThinkingEvent(content: string, messages: MsgItem[], opts?: { isRestore?: boolean; durationMs?: number }) {
   const c = normalizeThinking(content)
   if (!c) return
@@ -402,11 +436,13 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 		  closeLastThinking()
 		  const wg = currentWorkGroup.value
 		  if (wg) { wg.running = false; wg.collapsed = true }
-		  if (abortController) { abortController.abort(); abortController = null }
-		  sending.value = false
-		  streaming.value = false
-		  streamingText.value = ''
-		}
+				  if (abortController) { abortController.abort(); abortController = null }
+				  sending.value = false
+				  streaming.value = false
+				  streamingText.value = ''
+				  _pendingReferences = []
+				}
+
 
 		function stopWorkTimer() {
 		  if (workLiveTimer.value) { clearInterval(workLiveTimer.value); workLiveTimer.value = null }
@@ -428,29 +464,76 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 			    if (m.eventType === 'thinking') { m.collapsed = true; m.running = false }
 			  }
 			  const finalText = streamingText.value.trim()
-			  streamingText.value = ''
-			  commitAssistantMessage({ content: finalText, usage: _lastRoundUsage })
+				  streamingText.value = ''
+				  commitAssistantMessage({ content: finalText, usage: _lastRoundUsage })
+
 			  _lastRoundUsage = null
 			  triggerDesktopRefresh()
 			  scrollToBottom()
 			}
 
-			/** 统一 assistant 消息提交：清洗内容、判空、挂 usage */
-			function commitAssistantMessage(opts: { content: string; usage?: UsageData | null; references?: RefItem[]; createdAt?: string }) {
-			  const cleanText = cleanXmlContent(opts.content)
-			  if (!cleanText) return
-			  const msg: MsgItem = {
-			    id: 0,
-			    role: 'assistant',
-			    content: cleanText,
-			    created_at: opts.createdAt || new Date().toISOString(),
-			  }
-			  if (opts.usage) { msg.usage = opts.usage }
-			  if (opts.references?.length) { msg.references = opts.references }
-			  messages.value.push(msg)
-			}
+				/** 统一 assistant 消息提交：清洗内容、判空、挂 usage */
+				function commitAssistantMessage(opts: { content: string; usage?: UsageData | null; references?: RefItem[]; createdAt?: string }) {
+				  const sanitized = sanitizeAssistantMessage(opts.content)
+				  if (!sanitized.content) return
+				  const refs = uniqueRefs([..._pendingReferences, ...(opts.references || []), ...sanitized.references])
+				  const msg: MsgItem = {
+				    id: 0,
+				    role: 'assistant',
+				    content: sanitized.content,
+				    created_at: opts.createdAt || new Date().toISOString(),
+				  }
+				  if (opts.usage) { msg.usage = opts.usage }
+				  if (refs.length) { msg.references = refs }
+				  _pendingReferences = []
+				  messages.value.push(msg)
+				}
 
-			/** 兜底清洗：移除内容中残留的工具调用标记 */
+				function normalizeRefTitle(title: string): string {
+				  return title.replace(/^\d+[.)、]\s*/, '').trim()
+				}
+
+				function uniqueRefs(refs: RefItem[]): RefItem[] {
+				  const seen = new Set<string>()
+				  const out: RefItem[] = []
+				  for (const ref of refs) {
+				    const key = ref.url || `${ref.type}:${ref.title || ref.source || ''}`
+				    if (!key || seen.has(key)) continue
+				    seen.add(key)
+				    out.push(ref)
+				  }
+				  return out
+				}
+
+				function sanitizeAssistantMessage(text: string): SanitizedMessage {
+				  let content = cleanXmlContent(text)
+				  content = content.replace(/<p>\s*<strong>\s*最佳路径总结[:：]\s*<\/strong>[\s\S]*?<\/p>/gi, '')
+				  content = content.replace(/(?:^|\n)\s*(?:\*\*)?最佳路径总结[:：](?:\*\*)?[\s\S]*?(?=\n\s*📎\s*来源[:：]|\n\s*#{1,6}\s|\n\s*[-*]\s|$)/gi, '\n')
+				  const references: RefItem[] = []
+				  const htmlSourceMatch = content.match(/<p>\s*📎\s*来源[:：]?\s*<\/p>\s*<ul>([\s\S]*?)<\/ul>/i)
+				  const markdownSourceMatch = content.match(/(?:^|\n)\s*📎\s*来源[:：]?\s*\n?([\s\S]*)$/)
+				  const sourceBlock = htmlSourceMatch?.[1] || markdownSourceMatch?.[1] || ''
+				  if (sourceBlock) {
+				    const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|<a\s+[^>]*href=["'](https?:\/\/[^"']+)["'][^>]*>(.*?)<\/a>/gi
+				    let m: RegExpExecArray | null
+				    while ((m = linkRe.exec(sourceBlock)) !== null) {
+				      const title = normalizeRefTitle((m[1] || m[4] || m[2] || m[3] || '').replace(/<[^>]+>/g, ''))
+				      const url = m[2] || m[3]
+				      if (title || url) references.push({ type: 'web', title: title || url, source: title || url, excerpt: '', url })
+				    }
+				    if (references.length) {
+				      if (htmlSourceMatch?.[0]) {
+				        content = content.replace(htmlSourceMatch[0], '').trim()
+				      } else if (markdownSourceMatch) {
+				        content = content.slice(0, markdownSourceMatch.index).trim()
+				      }
+				    }
+				  }
+				  return { content: content.trim(), references: uniqueRefs(references) }
+				}
+
+				/** 兜底清洗：移除内容中残留的工具调用标记 */
+
 				function cleanXmlContent(text: string): string {
 				  const normalized = text
 				    .replace(/<｜｜DSML｜｜/g, '<')
@@ -463,18 +546,19 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 				}
 
 
-			/** 通知桌面 Shell 刷新文件列表 */
-			function triggerDesktopRefresh() {
-			  try {
-			    const w = window as any
-			    // 通过 mitt event bus 发射刷新事件
-			    if (w.__DESKTOP_EVENT_BUS__) {
-			      w.__DESKTOP_EVENT_BUS__.emit('refresh:file-list', {})
-			    }
-			    // 备用：手动触发 custom event
-			    window.dispatchEvent(new CustomEvent('desktop:refresh-files'))
-			  } catch { /* 非关键 */ }
-			}
+				/** 通知桌面 Shell 刷新文件列表 */
+				function triggerDesktopRefresh() {
+				  try {
+				    const eventWindow = window as DesktopEventWindow
+				    // 通过 mitt event bus 发射刷新事件
+				    if (eventWindow.__DESKTOP_EVENT_BUS__) {
+				      eventWindow.__DESKTOP_EVENT_BUS__.emit('refresh:file-list', {})
+				    }
+				    // 备用：手动触发 custom event
+				    window.dispatchEvent(new CustomEvent('desktop:refresh-files'))
+				  } catch { /* 非关键 */ }
+				}
+
 
 		/** 开始/获取当前工作组 */
 		function closeLastThinking() {
@@ -521,156 +605,203 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 		  }, 1000)
 		}
 
-		function finishWorkGroup(durationMs: number) {
-		  stopWorkTimer()
-		  // 关闭最后一张思考卡并算耗时
-		  closeLastThinking()
-		  const wg = currentWorkGroup.value
-		  if (wg) {
-		    // 计算未覆盖时间
-		    let accounted = 0
-		    if (wg.items) {
-		      for (const item of wg.items) {
-		        if (item.eventType === 'thinking' || item.eventType === 'tool_result') {
-		          accounted += item.durationMs || 0
-		        }
-		      }
-		    }
-		    const overhead = durationMs - accounted
-		    if (overhead > 500 && wg.items) {
-		      wg.items.unshift({
-		        id: 0, role: '', content: '',
-		        eventType: 'schedule_overhead',
-		        label: '响应等待',
-		        durationMs: overhead,
-		      } as MsgItem)
-		    }
-		    wg.running = false
-		    wg.collapsed = true
-		    wg.durationMs = durationMs
-		  }
-		  currentWorkGroup.value = null
-		}
-
-			/** 共享 SSE 流式处理核心：由 sendMessage 和 handleSubmitEdit 共用 */
-			async function processStreamResponse(resp: Response) {
-			  if (!resp.body) { error.value = '无响应体'; return }
-			  const reader = resp.body.getReader()
-			  const decoder = new TextDecoder()
-			  let finished = false
-
-			  resetIdleTimer(() => {
-			    if (abortController) { abortController.abort() }
-			    error.value = '响应超时，请重试'
-			  })
-
-			  while (!finished) {
-			    let done = false; let value: Uint8Array | undefined
-			    try { const r = await reader.read(); done = r.done; value = r.value } catch { break }
-			    if (done) {
-			      abortController = null
-			      streaming.value = false; sending.value = false
-			      flushStreamingAsMessage()
-			      finished = true
-			      break
+			function finishWorkGroup(durationMs: number) {
+			  stopWorkTimer()
+			  // 关闭最后一张思考卡并算耗时
+			  closeLastThinking()
+			  const wg = currentWorkGroup.value
+			  if (wg) {
+			    // 计算未覆盖时间
+			    let accounted = 0
+			    if (wg.items) {
+			      for (const item of wg.items) {
+			        if (item.eventType === 'thinking' || item.eventType === 'tool_result') {
+			          accounted += item.durationMs || 0
+			        }
+			      }
 			    }
-			    resetIdleTimer(() => {
-			      if (abortController) { abortController.abort() }
-			      error.value = '响应超时，请重试'
-			    })
-			    const chunk = decoder.decode(value!, { stream: true })
-			    for (const line of chunk.split('\n')) {
-			      const trimmed = line.trim()
-			      if (!trimmed.startsWith('data: ')) continue
-			      const payload = trimmed.slice(6)
-			      if (payload === '[DONE]') {
-			        abortController = null
-			        streaming.value = false; sending.value = false
-			        flushStreamingAsMessage()
-			        finished = true
-			        reader.cancel().catch(() => {})
-			        break
-			      }
-			      let evt: Record<string, unknown>
-			      try { evt = JSON.parse(payload) } catch { continue }
-			      const etype = evt.type as string | undefined
+			    const overhead = durationMs - accounted
+			    if (overhead > 500 && wg.items) {
+			      wg.items.unshift({
+			        id: 0, role: '', content: '',
+			        eventType: 'schedule_overhead',
+			        label: '响应等待',
+			        durationMs: overhead,
+			      } as MsgItem)
+			    }
+			    wg.running = false
+			    wg.collapsed = true
+			    wg.durationMs = durationMs
+			  }
+			  currentWorkGroup.value = null
+			}
 
-			      if (etype === 'content') {
-			        abortController = null
-			        streaming.value = false; sending.value = false
-			        const rawContent = (evt.content as string) || ''
-			        commitAssistantMessage({ content: rawContent, createdAt: new Date().toISOString() })
-			        finished = true
-			        reader.cancel().catch(() => {})
-			        break
-			      }
+			function finishWorkGroupOnError() {
+			  const wg = currentWorkGroup.value
+			  if (!wg) return
+			  const durationMs = wg.startedAt ? Date.now() - wg.startedAt : (wg.durationMs || 0)
+			  finishWorkGroup(durationMs)
+			}
 
-			      if (etype === 'work_start') {
-			        ensureWorkGroup()
-			      }
-			      else if (etype === 'work_done') {
-			        const durMs = (evt.duration_ms as number) || 0
-			        finishWorkGroup(durMs)
-			      }
-			      else if (etype === 'replace') {
-			        // 内联工具调用恢复：替换流式回复中的 XML
-			        let replaceContent = ''
-			        try {
-			          const rp = typeof evt.content === 'string' ? JSON.parse(evt.content) : evt
-			          replaceContent = (rp as Record<string, unknown>).content as string || ''
-			        } catch { replaceContent = (evt.content as string) || '' }
-			        streamingText.value = replaceContent  // 即使是空字符串也要覆盖清空
-			      }
-				      else if (etype === 'usage') {
-				        const wg = currentWorkGroup.value
-				        if (wg && evt.content) {
-				          try {
-				            const u = typeof evt.content === 'string' ? JSON.parse(evt.content) : evt
-				            const durMs = (u as Record<string, unknown>).work_duration_ms as number
-				            if (durMs) finishWorkGroup(durMs)
-				          } catch { /* ignore */ }
+			function userSafeStreamError(message: string): string {
+			  const text = (message || '').trim()
+			  const lowered = text.toLowerCase()
+			  if (
+			    lowered.includes('model error') ||
+			    lowered.includes('all connection attempts failed') ||
+			    lowered.includes('stream error') ||
+			    lowered.includes('connection refused') ||
+			    lowered.includes('connecttimeout') ||
+			    lowered.includes('timeout')
+			  ) {
+			    return '模型服务暂时连接失败，请稍后重试。'
+			  }
+			  return text || 'AI 助手暂时无法完成回复，请稍后重试。'
+			}
+
+
+				/** 共享 SSE 流式处理核心：由 sendMessage 和 handleSubmitEdit 共用 */
+				async function processStreamResponse(resp: Response) {
+				  if (!resp.body) { error.value = '无响应体'; return }
+				  const reader = resp.body.getReader()
+				  const decoder = new TextDecoder()
+				  let finished = false
+				  let sseBuffer = ''
+
+				  resetIdleTimer(() => {
+				    if (abortController) { abortController.abort() }
+				    error.value = '响应超时，请重试'
+				  })
+
+				  function handleSseBlock(block: string): boolean {
+				    const payloadLines: string[] = []
+				    for (const line of block.split('\n')) {
+				      const trimmed = line.trim()
+				      if (trimmed.startsWith('data: ')) payloadLines.push(trimmed.slice(6))
+				    }
+				    if (!payloadLines.length) return false
+				    const payload = payloadLines.join('\n')
+				    if (payload === '[DONE]') {
+				      abortController = null
+				      streaming.value = false; sending.value = false
+				      flushStreamingAsMessage()
+				      void reader.cancel().catch(() => {})
+				      return true
+				    }
+
+				    let evt: Record<string, unknown>
+				    try { evt = JSON.parse(payload) } catch { return false }
+				    const etype = evt.type as string | undefined
+
+				    if (etype === 'content') {
+				      abortController = null
+				      streaming.value = false; sending.value = false
+				      const rawContent = (evt.content as string) || ''
+				      commitAssistantMessage({ content: rawContent, createdAt: new Date().toISOString(), usage: _lastRoundUsage })
+				      _lastRoundUsage = null
+				      void reader.cancel().catch(() => {})
+				      return true
+				    }
+
+				    if (etype === 'work_start') {
+				      ensureWorkGroup()
+				    } else if (etype === 'work_done') {
+				      const durMs = (evt.duration_ms as number) || 0
+				      finishWorkGroup(durMs)
+				    } else if (etype === 'replace') {
+				      let replaceContent = ''
+				      try {
+				        const rp = typeof evt.content === 'string' ? JSON.parse(evt.content) as Record<string, unknown> : evt
+				        replaceContent = (rp.content as string) || ''
+				      } catch { replaceContent = (evt.content as string) || '' }
+				      streamingText.value = replaceContent
+				    } else if (etype === 'usage') {
+				      const wg = currentWorkGroup.value
+				      if (wg && evt.content) {
+				        try {
+				          const u = typeof evt.content === 'string' ? JSON.parse(evt.content) as Record<string, unknown> : evt
+				          const durMs = u.work_duration_ms as number
+				          if (durMs) finishWorkGroup(durMs)
+				        } catch { /* ignore */ }
+				      }
+				    } else if (etype === 'round_usage') {
+				      const pt = Number(evt.prompt_tokens) || 0
+				      const ct = Number(evt.completion_tokens) || 0
+				      const tt = Number(evt.total_tokens) || 0
+				      if (pt || ct || tt) {
+				        _lastRoundUsage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: tt }
+				      }
+								    } else if (etype === 'references') {
+				      const refs = Array.isArray(evt.references) ? evt.references as RefItem[] : []
+				      if (refs.length) {
+				        let attached = false
+				        for (let i = messages.value.length - 1; i >= 0; i--) {
+				          if (messages.value[i].role === 'assistant') {
+				            messages.value[i].references = uniqueRefs([...(messages.value[i].references || []), ...refs])
+				            attached = true
+				            break
+				          }
+				        }
+				        if (!attached) {
+				          _pendingReferences = uniqueRefs([..._pendingReferences, ...refs])
 				        }
 				      }
-					      else if (etype === 'round_usage') {
-					        // 整轮累积 token 数：存到最近一条 assistant 消息的 usage 字段
-					        const u = evt as Record<string, unknown>
-					        const pt = Number(u.prompt_tokens) || 0
-					        const ct = Number(u.completion_tokens) || 0
-					        const tt = Number(u.total_tokens) || 0
-					        if (pt || ct || tt) {
-					          _lastRoundUsage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: tt }
-					        }
-					      }
-					      else if (etype === 'references') {
-					        const refs = Array.isArray(evt.references) ? evt.references as RefItem[] : []
-					        if (refs.length) {
-					          for (let i = messages.value.length - 1; i >= 0; i--) {
-					            if (messages.value[i].role === 'assistant') {
-					              messages.value[i].references = refs
-					              break
-					            }
-					          }
-					        }
-					      }
-			      else if (etype === 'thinking') {
 
-			        ensureWorkGroup()
-			        applyThinkingEvent(evt.content as string || '', currentWorkGroup.value?.items ?? messages.value, { isRestore: false })
-			      }
-			      else if (etype === 'tool_call') {
-			        ensureWorkGroup()
-			        applyToolCallEvent(evt.name as string || 'unknown', currentWorkGroup.value?.items ?? messages.value)
-			      }
-			      else if (etype === 'tool_result') {
-			        ensureWorkGroup()
-			        applyToolResultEvent(evt.name as string || 'unknown', evt.result, currentWorkGroup.value?.items ?? messages.value, evt.duration_ms as number | undefined)
-			      }
-			      else if (etype === 'token') { streamingText.value += evt.content as string || '' }
-			      else if (etype === 'error') { streaming.value = false; sending.value = false; error.value = (evt.content as string) || '流式错误'; finished = true; reader.cancel().catch(() => {}); break }
-			      scrollToBottom()
-			    }
-			  }
-			}
+				    } else if (etype === 'thinking') {
+				      ensureWorkGroup()
+				      applyThinkingEvent(evt.content as string || '', currentWorkGroup.value?.items ?? messages.value, { isRestore: false })
+				    } else if (etype === 'tool_call') {
+				      ensureWorkGroup()
+				      applyToolCallEvent(evt.name as string || 'unknown', currentWorkGroup.value?.items ?? messages.value)
+				    } else if (etype === 'tool_result') {
+				      ensureWorkGroup()
+				      applyToolResultEvent(evt.name as string || 'unknown', evt.result, currentWorkGroup.value?.items ?? messages.value, evt.duration_ms as number | undefined)
+				    } else if (etype === 'token') {
+				      streamingText.value += evt.content as string || ''
+				    } else if (etype === 'error') {
+				      streaming.value = false; sending.value = false
+				      finishWorkGroupOnError()
+				      error.value = userSafeStreamError((evt.content as string) || '')
+				      void reader.cancel().catch(() => {})
+				      return true
+				    }
+
+				    scrollToBottom()
+				    return false
+				  }
+
+				  while (!finished) {
+				    let done = false; let value: Uint8Array | undefined
+				    try { const r = await reader.read(); done = r.done; value = r.value } catch { break }
+				    if (done) {
+				      sseBuffer += decoder.decode()
+				      if (sseBuffer.trim()) {
+				        finished = handleSseBlock(sseBuffer)
+				      }
+				      if (!finished) {
+				        abortController = null
+				        streaming.value = false; sending.value = false
+				        flushStreamingAsMessage()
+				        finished = true
+				      }
+				      break
+				    }
+				    resetIdleTimer(() => {
+				      if (abortController) { abortController.abort() }
+				      error.value = '响应超时，请重试'
+				    })
+				    sseBuffer += decoder.decode(value, { stream: true })
+				    const blocks = sseBuffer.split(/\r?\n\r?\n/)
+				    sseBuffer = blocks.pop() ?? ''
+				    for (const block of blocks) {
+				      if (handleSseBlock(block)) {
+				        finished = true
+				        break
+				      }
+				    }
+				  }
+				}
+
 
 			async function sendMessage() {
 			  if (sending.value || !activeConvId.value) return
@@ -680,8 +811,10 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 			  abortController = new AbortController()
 			  clearIdleTimer()
 			  inputText.value = ''
-			  sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
-			  messages.value.push({ id: 0, role: 'user', content: text, created_at: new Date().toISOString() })
+				  sending.value = true; streaming.value = true; streamingText.value = ''; error.value = ''
+				  _pendingReferences = []
+				  messages.value.push({ id: 0, role: 'user', content: text, created_at: new Date().toISOString() })
+
 			  // 立刻创建工作组并开始计时——不等后端 work_start
 			  currentWorkGroup.value = null
 			  _lastThinkingStart = 0
