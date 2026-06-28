@@ -35,7 +35,7 @@ function missingComponentLoader(app: DesktopAppItem, componentKey: string): AppR
 
 function transformApiToEntry(app: DesktopAppItem): AppRegistryEntry {
   const entryKey: string = app.entry_component_key || ''
-  const componentLoader = app.window_type === WINDOW_TYPE_BACKGROUND_SERVICE
+  const componentLoader = app.window_type === WINDOW_TYPE_BACKGROUND_SERVICE || !entryKey
     ? backgroundServiceLoader()
     : componentKeyMap[entryKey]
   return {

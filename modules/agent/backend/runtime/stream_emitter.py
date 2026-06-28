@@ -20,6 +20,33 @@ from ..engine.failure_diagnostics import record_failure
 
 logger = logging.getLogger("v2.agent").getChild("runtime.stream_emitter")
 
+_SEARCH_INTENT_MARKERS = (
+    "我帮你联网查",
+    "我来联网查",
+    "我帮你搜索",
+    "我来搜索",
+    "我查一下",
+    "我搜一下",
+    "联网查一下",
+    "搜索一下最新",
+)
+
+TOOL_INTENT_RETRY_MESSAGE = (
+    "Your previous draft promised to search, browse, read files, or use a tool, "
+    "but it did not emit any tool call. Regenerate this turn now: if external "
+    "information is needed, emit the appropriate tool call; otherwise answer "
+    "directly without saying you will go search or check later."
+)
+
+
+def looks_like_unfinished_tool_intent(content: str) -> bool:
+    if not content:
+        return False
+    compact = "".join(content.split())
+    if len(compact) > 160:
+        return False
+    return any(marker in compact for marker in _SEARCH_INTENT_MARKERS)
+
 
 class StreamEmitter:
     """Emit final-content SSE events, with inline tool-call recovery.
@@ -131,6 +158,20 @@ class StreamEmitter:
                 # Tell frontend to replace streaming text with clean version
                 yield self._sse("replace", json.dumps({"content": clean_content}, ensure_ascii=False))
                 yield {"type": "_inline_tool_calls", "tool_calls": inline_calls}
+                return
+
+            if looks_like_unfinished_tool_intent(clean_content):
+                full.clear()
+                logger.warning(
+                    "StreamEmitter requested retry for unfinished tool-intent reply: %s",
+                    clean_content[:120],
+                )
+                yield self._sse("replace", json.dumps({"content": ""}, ensure_ascii=False))
+                yield {
+                    "type": "_retry_tool_intent_contract",
+                    "content": clean_content,
+                    "message": TOOL_INTENT_RETRY_MESSAGE,
+                }
                 return
 
             if usage_event:

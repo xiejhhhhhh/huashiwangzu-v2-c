@@ -19,7 +19,7 @@ import time
 from app.database import AsyncSessionLocal
 
 from .._utils import j as _j
-from .._utils import tool_calls_for_history
+from .._utils import references_from_tool_events, tool_calls_for_history
 from ..engine.budget_allocator import estimate_tokens
 from ..engine.engine import (
     chat_stream_with_degradation_chain,
@@ -128,6 +128,7 @@ class ToolLoopRuntime:
             budget_tracker.reset(_budget_session_key)
 
             _tool_round_tokens_before = 0
+            _tool_intent_retry_count = 0
             # Accumulate usage across all model calls in this turn
             _accumulated_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             emitter = StreamEmitter()
@@ -205,7 +206,7 @@ class ToolLoopRuntime:
 
                 # ── No tool calls → stream final content ────────────
                 if not tool_calls:
-                    inline_from_stream = None
+                    retry_tool_intent = None
                     async for chunk in emitter.yield_final_stream(
                         messages,
                         profile_key=self.profile_key,
@@ -219,8 +220,33 @@ class ToolLoopRuntime:
                     ):
                         if isinstance(chunk, dict) and chunk.get("type") == "_inline_tool_calls":
                             inline_from_stream = chunk.get("tool_calls", [])
+                        elif isinstance(chunk, dict) and chunk.get("type") == "_retry_tool_intent_contract":
+                            retry_tool_intent = chunk
                         else:
                             yield chunk
+                    if retry_tool_intent:
+                        if emitter.usage_data:
+                            for _k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                                _v = emitter.usage_data.get(_k, 0)
+                                if isinstance(_v, (int, float)):
+                                    _accumulated_usage[_k] = (_accumulated_usage.get(_k, 0) or 0) + int(_v)
+                        _tool_intent_retry_count += 1
+                        if _tool_intent_retry_count <= 1:
+                            messages.append({
+                                "role": "user",
+                                "content": retry_tool_intent.get("message") or "Regenerate with a real tool call or a direct answer.",
+                            })
+                            timeline.append({
+                                "type": "contract_retry",
+                                "content": retry_tool_intent.get("content", ""),
+                                "started_at": time.time(),
+                            })
+                            logger.info(
+                                "[DIAG] ToolLoopRuntime retrying unfinished tool-intent reply",
+                            )
+                            continue
+                        yield self._sse("error", "模型表示需要查询资料，但连续没有发起工具调用。")
+                        break
                     if inline_from_stream:
                         tool_calls = inline_from_stream
                         # ── Accumulate usage for inline case too ──
@@ -654,11 +680,15 @@ class ToolLoopRuntime:
                             "started_at": time.time(),
                         })
 
+                    _round_references = references_from_tool_events(tool_events)
                     msg_id = await sink.persist_assistant(
                         s2, "".join(full) if full else "",
                         thinking_parts, tool_events, timeline,
                         usage=_usage,
                     )
+                    if msg_id and _round_references:
+                        yield self._j_sse({"type": "references", "references": _round_references})
+
                     # Ensure assistant_msg event for final content
                     if msg_id and full:
                         clean_content = final_clean_content("".join(full))

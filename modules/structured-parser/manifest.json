@@ -15,7 +15,7 @@
   "show_on_desktop": false,
   "show_in_tray": false,
   "show_in_sidebar": false,
-  "window_type": "normal",
+  "window_type": "background-service",
   "allow_multiple": false,
   "supported_formats": [],
   "editable_formats": [],

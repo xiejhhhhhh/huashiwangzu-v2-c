@@ -18,12 +18,21 @@ logger = logging.getLogger("v2.agent").getChild("model_client")
 
 def _normalize_inline_markup(content: str) -> str:
     normalized = content
-    for tag in ("tool_call", "invoke", "parameter"):
+    normalized = normalized.replace("<｜｜DSML｜｜", "<")
+    normalized = normalized.replace("</｜｜DSML｜｜", "</")
+    for tag in ("tool_call", "tool_calls", "invoke", "parameter"):
         normalized = normalized.replace(f"<｜{tag}", f"<{tag}")
         normalized = normalized.replace(f"</｜{tag}", f"</{tag}")
         normalized = normalized.replace(f"｜{tag}", f"<{tag}")
         normalized = normalized.replace(f"</｜{tag}", f"</{tag}")
     return normalized
+
+
+def _strip_tool_call_containers(content: str) -> str:
+    return re.sub(
+        r'</?\w*:?tool_calls?\s*>',
+        '', content, flags=re.IGNORECASE | re.DOTALL,
+    )
 
 
 def _normalize_tool_calls(tool_calls: list[dict]) -> list[dict]:
@@ -52,7 +61,8 @@ def parse_inline_tool_calls(content: str) -> tuple[str, list[dict]]:
     兼容变体：
     - <invoke name="...">...</invoke>
     - <antml:invoke name="...">...</antml:invoke>
-    - <tool_call>...</tool_call> 容器内的 invoke
+    - <tool_call>...</tool_call> / <tool_calls>...</tool_calls> 容器内的 invoke
+    - <｜｜DSML｜｜tool_calls>...<｜｜DSML｜｜invoke>...</｜｜DSML｜｜invoke>...</｜｜DSML｜｜tool_calls>
     - ｜invoke name="...">...</｜invoke> （全角竖线前缀）
     - 大小写、多余空白、换行都容错
 
@@ -99,6 +109,7 @@ def parse_inline_tool_calls(content: str) -> tuple[str, list[dict]]:
         return content, tool_calls
 
     clean = invoke_re.sub('', content).strip()
+    clean = _strip_tool_call_containers(clean)
     clean = re.sub(r'\n{3,}', '\n\n', clean).strip()
     return clean, tool_calls
 
@@ -116,9 +127,10 @@ def final_clean_content(content: str) -> str:
         '', content, flags=re.IGNORECASE | re.DOTALL,
     )
     cleaned = re.sub(
-        r'<\w*:?tool_call\s*>.*?</\w*:?tool_call\s*>',
+        r'<\w*:?tool_calls?\s*>.*?</\w*:?tool_calls?\s*>',
         '', cleaned, flags=re.IGNORECASE | re.DOTALL,
     )
+    cleaned = _strip_tool_call_containers(cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
     return cleaned
 

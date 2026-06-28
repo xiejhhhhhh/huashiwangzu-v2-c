@@ -35,11 +35,6 @@
         </div>
       </div>
 
-      <!-- 工作耗时 -->
-      <div v-if="message.usage?.work_duration_sec && message.role === 'assistant'" class="work-duration">
-        已工作 {{ message.usage.work_duration_sec }} 秒
-      </div>
-
       <div class="msg-bubble" :class="message.role">
         <div v-if="isEditing" class="msg-edit-area">
           <textarea ref="editTextarea" v-model="editText" class="msg-edit-input" @keydown.escape="cancelEdit" @keydown.enter.ctrl="submitEdit"></textarea>
@@ -68,6 +63,14 @@
             {{ message.usage.total_tokens?.toLocaleString() }}
           </span>
         </span>
+        <span v-if="sourceLinks.length && message.role === 'assistant'" class="msg-footer-sources">
+          <button class="msg-source-toggle" @click="showSources = !showSources">
+            来源 {{ sourceLinks.length }}
+            <svg :class="{ rotated: showSources }" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="9" height="9">
+              <path d="M4 3l4 3-4 3"/>
+            </svg>
+          </button>
+        </span>
         <span class="msg-actions">
           <button class="msg-action-btn" title="复制" @click="copyContent">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><rect x="4" y="4" width="10" height="10" rx="1"/><path d="M12 4V3a1 1 0 00-1-1H3a1 1 0 00-1 1v8a1 1 0 001 1h1"/></svg>
@@ -76,6 +79,12 @@
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M11.5 2.5a1.5 1.5 0 012 2L5 13l-3 1 1-3 8.5-8.5z"/><path d="M9.5 4.5l2 2"/></svg>
           </button>
         </span>
+      </div>
+      <div v-if="showSources && sourceLinks.length && message.role === 'assistant'" class="msg-source-popover">
+        <template v-for="(source, idx) in sourceLinks" :key="source.key">
+          <a v-if="source.url" :href="source.url" target="_blank" rel="noopener" @click="onSourceClick">{{ idx + 1 }}. {{ source.title }}</a>
+          <span v-else>{{ idx + 1 }}. {{ source.title }}</span>
+        </template>
       </div>
     </div>
   </div>
@@ -87,6 +96,13 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js'
 
+interface RefItem {
+  type: string
+  title?: string
+  source?: string
+  excerpt?: string
+  url?: string
+}
 interface UsageInfo {
   prompt_tokens?: number
   completion_tokens?: number
@@ -101,6 +117,7 @@ interface MsgItem {
   created_at?: string | null
   thinking?: string
   tool_events?: unknown[]
+  references?: RefItem[]
   usage?: UsageInfo | null
 }
 	
@@ -152,6 +169,7 @@ function copyContent() {
 
 const showThinking = ref(false)
 const showTools = ref(false)
+const showSources = ref(false)
 
 /** 去掉换行符，压缩连续空格，与 ThinkingCard 保持一致 */
 const normalizedThinking = computed(() => {
@@ -190,6 +208,22 @@ marked.setOptions({
   gfm: true,
 })
 
+const sourceLinks = computed(() => {
+  const seen = new Set<string>()
+  const refs = props.message.references || []
+  const links: Array<{ key: string; title: string; url?: string }> = []
+  for (const refItem of refs) {
+    const url = refItem.url?.trim()
+    const title = (refItem.title || refItem.source || url || '').trim()
+    if (!title) continue
+    const key = url || `${refItem.type}:${title}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    links.push({ key, title, url })
+  }
+  return links.slice(0, 6)
+})
+
 const renderedContent = computed(() => {
   if (!props.message.content) return ''
   try {
@@ -201,11 +235,22 @@ const renderedContent = computed(() => {
   }
 })
 
+function openExternalLink(url: string) {
+  window.open(url, '_blank')
+}
+
+function onSourceClick(e: MouseEvent) {
+  const a = (e.target as HTMLElement)?.closest('a')
+  if (!a || !a.href) return
+  e.preventDefault()
+  openExternalLink(a.href)
+}
+
 function onMsgMdClick(e: MouseEvent) {
   const a = (e.target as HTMLElement)?.closest('a')
   if (!a || !a.href || a.href.startsWith('#')) return
   e.preventDefault()
-  window.open(a.href, '_blank')
+  openExternalLink(a.href)
 }
 
 function formatTime(iso?: string | null): string {
@@ -403,12 +448,6 @@ function formatTime(iso?: string | null): string {
   margin-top: var(--ag-space-xs);
 }
 
-/* Work duration */
-.work-duration {
-  font-size: var(--ag-font-size-sm);
-  color: var(--ag-text-tertiary);
-  margin-bottom: var(--ag-space-xs);
-}
 .inline-tools-toggle {
   display: flex; align-items: center; gap: 5px;
   border: none; background: none; cursor: pointer;
@@ -435,6 +474,46 @@ function formatTime(iso?: string | null): string {
   font-family: var(--ag-font-mono);
   color: var(--ag-text-secondary);
 }
+
+/* Sources */
+.msg-footer-sources {
+  display: inline-flex;
+  align-items: center;
+}
+.msg-source-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  background: none;
+  color: var(--ag-text-tertiary);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: var(--ag-font-size-xs);
+  line-height: 1.4;
+}
+.msg-source-toggle:hover { color: var(--ag-text-link); }
+.msg-source-toggle svg { transition: transform var(--ag-transition-base); }
+.msg-source-toggle svg.rotated { transform: rotate(90deg); }
+.msg-source-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 320px;
+  margin-top: 2px;
+  padding-left: 2px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ag-text-tertiary);
+}
+.msg-source-popover a {
+  color: var(--ag-text-link);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-source-popover a:hover { text-decoration: underline; }
 
 /* Footer: time + usage + actions */
 .msg-footer {

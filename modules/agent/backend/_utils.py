@@ -119,6 +119,16 @@ def _extract_file_refs(name: str, result: dict) -> list[dict]:
     return []
 
 
+def _unwrap_skill_result(name: str, result: dict) -> tuple[str, dict]:
+    if name != "skill_use" or not isinstance(result, dict):
+        return name, result
+    inner_name = result.get("name") or result.get("skill_name") or result.get("tool_name") or ""
+    inner_result = result.get("result") or result.get("data") or result.get("output") or {}
+    if isinstance(inner_result, dict) and inner_name:
+        return str(inner_name), inner_result
+    return name, result
+
+
 # ── Tool-to-extractor dispatch table ───────────────────────────────
 _TOOL_EXTRACTORS: dict[str, callable] = {
     "web-tools__search": _extract_web_search_refs,
@@ -134,6 +144,7 @@ def references_from_tool_events(events: list[dict]) -> list[dict]:
             continue
         name = event.get("name", "") or ""
         result = event.get("result", {}) or {}
+        name, result = _unwrap_skill_result(name, result)
 
         # Dispatch by tool name prefix
         extractor = _TOOL_EXTRACTORS.get(name)
@@ -157,11 +168,4 @@ def references_from_tool_events(events: list[dict]) -> list[dict]:
             refs.extend(knowledge_refs)
             continue
 
-        # Generic fallback
-        refs.append({
-            "type": "tool",
-            "title": name,
-            "source": name,
-            "excerpt": j(result)[:240],
-        })
     return refs

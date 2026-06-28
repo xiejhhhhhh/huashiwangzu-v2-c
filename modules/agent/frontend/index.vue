@@ -438,10 +438,18 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 				  scrollToBottom()
 				}
 
-			/** 兜底清洗：移除内容中残留的 <invoke> XML 标记 */
-			function cleanXmlContent(text: string): string {
-			  return text.replace(/<\w*:?invoke[\s\S]*?<\/\w*:?invoke\s*>/gi, '').replace(/\n{3,}/g, '\n\n').trim()
-			}
+				/** 兜底清洗：移除内容中残留的工具调用标记 */
+				function cleanXmlContent(text: string): string {
+				  const normalized = text
+				    .replace(/<｜｜DSML｜｜/g, '<')
+				    .replace(/<\/｜｜DSML｜｜/g, '</')
+				  return normalized
+				    .replace(/<\w*:?tool_calls?[\s\S]*?<\/\w*:?tool_calls?\s*>/gi, '')
+				    .replace(/<\w*:?invoke[\s\S]*?<\/\w*:?invoke\s*>/gi, '')
+				    .replace(/\n{3,}/g, '\n\n')
+				    .trim()
+				}
+
 
 			/** 通知桌面 Shell 刷新文件列表 */
 			function triggerDesktopRefresh() {
@@ -613,17 +621,29 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 				          } catch { /* ignore */ }
 				        }
 				      }
-				      else if (etype === 'round_usage') {
-				        // 整轮累积 token 数：存到最近一条 assistant 消息的 usage 字段
-				        const u = evt as Record<string, unknown>
-				        const pt = Number(u.prompt_tokens) || 0
-				        const ct = Number(u.completion_tokens) || 0
-				        const tt = Number(u.total_tokens) || 0
-				        if (pt || ct || tt) {
-				          _lastRoundUsage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: tt }
-				        }
-				      }
+					      else if (etype === 'round_usage') {
+					        // 整轮累积 token 数：存到最近一条 assistant 消息的 usage 字段
+					        const u = evt as Record<string, unknown>
+					        const pt = Number(u.prompt_tokens) || 0
+					        const ct = Number(u.completion_tokens) || 0
+					        const tt = Number(u.total_tokens) || 0
+					        if (pt || ct || tt) {
+					          _lastRoundUsage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: tt }
+					        }
+					      }
+					      else if (etype === 'references') {
+					        const refs = Array.isArray(evt.references) ? evt.references as RefItem[] : []
+					        if (refs.length) {
+					          for (let i = messages.value.length - 1; i >= 0; i--) {
+					            if (messages.value[i].role === 'assistant') {
+					              messages.value[i].references = refs
+					              break
+					            }
+					          }
+					        }
+					      }
 			      else if (etype === 'thinking') {
+
 			        ensureWorkGroup()
 			        applyThinkingEvent(evt.content as string || '', currentWorkGroup.value?.items ?? messages.value, { isRestore: false })
 			      }
