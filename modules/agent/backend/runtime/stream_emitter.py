@@ -103,6 +103,11 @@ class StreamEmitter:
                 elif event_type == "error" and content:
                     yield self._sse("error", content)
                 elif event_type == "done":
+                    # DONE 可能携带 usage（DeepSeek adapter 嵌入在 DONE 中）
+                    done_usage = event.get("usage")
+                    if done_usage:
+                        self.usage_data = done_usage
+                        usage_event = self._sse("usage", json.dumps(done_usage, ensure_ascii=False))
                     logger.info(
                         "[DIAG] StreamEmitter got done event — stream ending",
                     )
