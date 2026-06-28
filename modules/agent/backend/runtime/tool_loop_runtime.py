@@ -207,6 +207,7 @@ class ToolLoopRuntime:
                 # ── No tool calls → stream final content ────────────
                 if not tool_calls:
                     retry_tool_intent = None
+                    inline_from_stream = None
                     async for chunk in emitter.yield_final_stream(
                         messages,
                         profile_key=self.profile_key,
