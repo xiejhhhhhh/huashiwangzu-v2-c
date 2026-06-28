@@ -5,18 +5,16 @@ desktop:read_file, desktop:list_apps) that bridge framework file/app capabilitie
 to the Agent's tool discovery system. All queries are owner-isolated.
 """
 import os
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.database import get_db, AsyncSessionLocal
+from app.database import AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
-from app.services.module_registry import register_capability, call_capability
 from app.services.file_reader import resolve_caller_user_id
+from app.services.module_registry import call_capability, register_capability
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy import select
 
 router = APIRouter(prefix="/api/desktop-tools", tags=["desktop-tools"])
 
@@ -62,7 +60,7 @@ def _folder_to_item(folder) -> dict:
 # =====================================================================
 async def _list_files(params: dict, caller: str) -> dict:
     """List files in a folder (or root). Owner-isolated."""
-    from app.models.file import Folder, File
+    from app.models.file import File, Folder
 
     owner_id = resolve_caller_user_id(caller)
     folder_id = int(params.get("folder_id", 0))
@@ -231,8 +229,8 @@ async def _read_file(params: dict, caller: str) -> dict:
 
         # Direct read for pure-text formats
         from pathlib import Path
+
         from app.config import get_settings
-        from app.core.exceptions import AppException
 
         if not file.storage_path:
             return {"success": False, "error": "File storage path is empty", "file": file_info}
@@ -370,6 +368,114 @@ register_capability(
     "desktop-tools", "list_apps", _list_apps,
     description="List desktop applications available to the current user.",
     brief="列出可用桌面应用",
+    parameters={
+        "type": "object",
+        "properties": {},
+    },
+    min_role="viewer",
+)
+
+
+# =====================================================================
+# Capability: desktop:replace_file
+# =====================================================================
+async def _replace_file(params: dict, caller: str) -> dict:
+    """Replace an existing desktop file entry. Does NOT delete physical file.
+
+    Soft-deletes the old file entry and creates a new one.
+    Physical files stay on disk; old entry is marked deleted for later
+    cleanup (3-month retention policy).
+    """
+    import io as _io
+    from datetime import datetime, timezone
+
+    from app.services.file_service import check_file_access
+    from app.services.file_upload_service import upload_file
+
+    owner_id = resolve_caller_user_id(caller)
+    old_file_id = int(params.get("old_file_id", 0))
+    new_filename = params.get("new_filename", "")
+    new_content = params.get("new_content", "")  # text content
+    new_bytes_b64 = params.get("new_bytes_base64", "")  # binary content base64
+
+    if old_file_id <= 0:
+        raise ValueError("old_file_id must be a positive integer")
+
+    async with AsyncSessionLocal() as db:
+        # Verify access to old file
+        old_file = await check_file_access(db, old_file_id, owner_id)
+
+        # Soft-delete old entry
+        old_file.deleted = True
+        old_file.deleted_at = datetime.now(timezone.utc)
+
+        # Create new file entry
+        if new_content or new_bytes_b64:
+            ext = (new_filename.rsplit(".", 1)[-1] if "." in new_filename else old_file.extension or "").lower()
+            name_no_ext = new_filename.rsplit(".", 1)[0] if "." in new_filename else new_filename or old_file.name
+            if new_bytes_b64:
+                import base64
+                file_bytes = base64.b64decode(new_bytes_b64)
+            else:
+                file_bytes = new_content.encode("utf-8")
+
+            result = await upload_file(
+                db, _io.BytesIO(file_bytes), f"{name_no_ext}.{ext}",
+                owner_id, old_file.folder_id,
+            )
+        else:
+            # No new content: just re-enable old file with same name
+            old_file.deleted = False
+            old_file.deleted_at = None
+            result = {"id": old_file.id, "name": old_file.name, "extension": old_file.extension,
+                       "size": old_file.size, "mime_type": old_file.mime_type}
+
+        await db.commit()
+
+    return {
+        "old_file_id": old_file_id,
+        "new_file_id": result["id"],
+        "new_name": result["name"],
+        "new_extension": result.get("extension"),
+        "new_size": result.get("size"),
+        "old_file_retained_on_disk": True,
+    }
+
+
+# =====================================================================
+# Capability: desktop:refresh
+# =====================================================================
+async def _refresh_desktop(params: dict, caller: str) -> dict:
+    """Trigger desktop file list refresh.
+    
+    The frontend listens for this event and reloads the desktop file grid.
+    """
+    return {"refreshed": True}
+
+
+register_capability(
+    "desktop-tools", "replace_file", _replace_file,
+    brief="替换桌面文件",
+    description="Soft-delete old file entry and create new one. Physical file stays on disk. "
+                "Use this to update a previously generated file on the desktop.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "old_file_id": {"type": "integer", "description": "Existing file ID to replace"},
+            "new_filename": {"type": "string", "description": "New file name (with extension)", "default": ""},
+            "new_content": {"type": "string", "description": "New file content as plain text", "default": ""},
+            "new_bytes_base64": {"type": "string", "description": "New file content as base64-encoded bytes (for binary files)", "default": ""},
+        },
+        "required": ["old_file_id"],
+    },
+    min_role="editor",
+)
+
+register_capability(
+    "desktop-tools", "refresh", _refresh_desktop,
+    brief="刷新桌面",
+    description="Trigger desktop file list reload. Call this after generating or replacing files "
+                "to ensure the desktop shows the latest files.",
     parameters={
         "type": "object",
         "properties": {},

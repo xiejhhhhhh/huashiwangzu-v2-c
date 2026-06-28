@@ -430,27 +430,41 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
 		  if (workLiveTimer.value) { clearInterval(workLiveTimer.value); workLiveTimer.value = null }
 		}
 
-		/** 将 streamingText 落成 assistant 消息 + 折叠工作组 */
-			function flushStreamingAsMessage() {
-			  stopWorkTimer()
-			  closeLastThinking()
-			  const wg = currentWorkGroup.value
-			  if (wg) { wg.running = false; wg.collapsed = true }
-			  // 也折叠工作组内的思考和工具条目
-			  if (wg?.items) {
-			    for (const item of wg.items) {
-			      if (item.eventType === 'thinking') { item.collapsed = true; item.running = false }
+			/** 将 streamingText 落成 assistant 消息 + 折叠工作组 */
+				function flushStreamingAsMessage() {
+				  stopWorkTimer()
+				  closeLastThinking()
+				  const wg = currentWorkGroup.value
+				  if (wg) { wg.running = false; wg.collapsed = true }
+				  // 也折叠工作组内的思考和工具条目
+				  if (wg?.items) {
+				    for (const item of wg.items) {
+				      if (item.eventType === 'thinking') { item.collapsed = true; item.running = false }
+				    }
+				  }
+				  for (const m of messages.value) {
+				    if (m.eventType === 'thinking') { m.collapsed = true; m.running = false }
+				  }
+				  const finalText = streamingText.value.trim()
+				  streamingText.value = ''
+				  if (finalText) {
+				    messages.value.push({ id: 0, role: 'assistant', content: finalText, created_at: new Date().toISOString() })
+				  }
+				  triggerDesktopRefresh()
+				  scrollToBottom()
+				}
+
+			/** 通知桌面 Shell 刷新文件列表 */
+			function triggerDesktopRefresh() {
+			  try {
+			    const w = window as any
+			    // 通过 mitt event bus 发射刷新事件
+			    if (w.__DESKTOP_EVENT_BUS__) {
+			      w.__DESKTOP_EVENT_BUS__.emit('refresh:file-list', {})
 			    }
-			  }
-			  for (const m of messages.value) {
-			    if (m.eventType === 'thinking') { m.collapsed = true; m.running = false }
-			  }
-			  const finalText = streamingText.value.trim()
-			  streamingText.value = ''
-			  if (finalText) {
-			    messages.value.push({ id: 0, role: 'assistant', content: finalText, created_at: new Date().toISOString() })
-			  }
-			  scrollToBottom()
+			    // 备用：手动触发 custom event
+			    window.dispatchEvent(new CustomEvent('desktop:refresh-files'))
+			  } catch { /* 非关键 */ }
 			}
 
 		/** 开始/获取当前工作组 */

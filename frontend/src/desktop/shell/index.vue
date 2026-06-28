@@ -66,6 +66,10 @@ import { getApp } from '@/desktop/app-registry/app-registry'
 import { usePermission } from '@/shared/composables/use-permission'
 import { useUserStore } from '@/platform/stores/user'
 import { useDesktopEventBus } from '@/desktop/events/use-desktop-event-bus'
+import desktopEmitter from '@/desktop/events'
+
+// 暴露 event bus 到全局，供 agent 等模块触发桌面刷新
+;(window as any).__DESKTOP_EVENT_BUS__ = desktopEmitter
 import SelectionBox from '@/desktop/selection/SelectionBox.vue'
 import { useDesktopShellDropUpload } from './use-desktop-shell-drop-upload'
 import { useDesktopRootFiles } from './use-desktop-root-files'
