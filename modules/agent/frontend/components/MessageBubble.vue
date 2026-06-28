@@ -55,7 +55,9 @@
       <div class="msg-footer">
         <time class="msg-time">{{ formatTime(message.created_at) }}</time>
         <span v-if="message.usage" class="msg-usage">
-          <span>入{{ message.usage.prompt_tokens }} 出{{ message.usage.completion_tokens }} 总计{{ message.usage.total_tokens }}</span>
+          <span class="token-badge token-in" title="输入（完整上下文）">↓{{ message.usage.prompt_tokens?.toLocaleString() }}</span>
+          <span class="token-badge token-out" title="输出（模型回复）">↑{{ message.usage.completion_tokens?.toLocaleString() }}</span>
+          <span class="token-badge token-total" title="总计">∑{{ message.usage.total_tokens?.toLocaleString() }}</span>
         </span>
         <span class="msg-actions">
           <button class="msg-action-btn" title="复制" @click="copyContent">
@@ -435,8 +437,31 @@ function formatTime(iso?: string | null): string {
   color: var(--ag-text-tertiary);
 }
 .msg-usage {
-  color: var(--ag-text-tertiary);
-  opacity: 0.7;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.token-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 1.4;
+  font-family: var(--ag-font-mono);
+  white-space: nowrap;
+}
+.token-in {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.token-out {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+.token-total {
+  background: #fff3e0;
+  color: #e65100;
 }
 .msg-actions {
   margin-left: auto;
