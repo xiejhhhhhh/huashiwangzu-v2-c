@@ -55,9 +55,18 @@
       <div class="msg-footer">
         <time class="msg-time">{{ formatTime(message.created_at) }}</time>
         <span v-if="message.usage" class="msg-usage">
-          <span class="token-badge token-in" title="输入（完整上下文）">↓{{ message.usage.prompt_tokens?.toLocaleString() }}</span>
-          <span class="token-badge token-out" title="输出（模型回复）">↑{{ message.usage.completion_tokens?.toLocaleString() }}</span>
-          <span class="token-badge token-total" title="总计">∑{{ message.usage.total_tokens?.toLocaleString() }}</span>
+          <span class="token-badge token-in" title="输入（完整上下文）">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10"><path d="M8 2v8M4 7l4 4 4-4M2 13h12"/></svg>
+            {{ message.usage.prompt_tokens?.toLocaleString() }}
+          </span>
+          <span class="token-badge token-out" title="输出（模型回复）">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10"><path d="M8 14V6M4 9l4-4 4 4M2 3h12"/></svg>
+            {{ message.usage.completion_tokens?.toLocaleString() }}
+          </span>
+          <span class="token-badge token-total" title="总计">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10"><circle cx="8" cy="8" r="6"/><path d="M5 8h6M8 5v6"/></svg>
+            {{ message.usage.total_tokens?.toLocaleString() }}
+          </span>
         </span>
         <span class="msg-actions">
           <button class="msg-action-btn" title="复制" @click="copyContent">
