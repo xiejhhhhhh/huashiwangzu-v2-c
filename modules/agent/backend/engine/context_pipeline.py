@@ -177,7 +177,8 @@ async def _build_system_content(
     # ── 引用规范提示（减少幻觉） ──────────────────────────────
     _cite_prompt = (
         "\n## 回答规范\n"
-        "当你回答来自搜索、文件或知识库的内容时，请在末尾标注【来源：xxx】。"
+        "当你引用网络搜索、本地文件或知识库的内容时，请在回答正文中以 Markdown 链接格式标注出处。"
+        "例如：`[来源标题](来源URL)` 或 `[文件名.md]`。"
     )
     if total_chars < MAX_CHARS:
         layers.append(_cite_prompt)

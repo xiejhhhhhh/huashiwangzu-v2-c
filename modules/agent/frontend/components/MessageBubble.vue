@@ -57,21 +57,6 @@
         <span v-if="message.usage" class="msg-usage">
           <span>入{{ message.usage.prompt_tokens }} 出{{ message.usage.completion_tokens }} 总计{{ message.usage.total_tokens }}</span>
         </span>
-        <span v-if="message.references?.length" class="msg-inline-refs">
-          <template v-for="(r, idx) in message.references.slice(0, 5)" :key="idx">
-            <span v-if="idx > 0" class="msg-ref-sep"> · </span>
-            <a v-if="r.type === 'web' && r.url" :href="r.url" target="_blank" rel="noopener" class="msg-ref-link" :title="r.excerpt">
-              🔗 {{ r.title || r.source }}
-            </a>
-            <span v-else class="msg-ref-chip">
-              <template v-if="r.type === 'file'">📄</template>
-              <template v-else-if="r.type === 'knowledge'">📚</template>
-              <template v-else>🔧</template>
-              {{ r.title || r.source }}
-            </span>
-          </template>
-          <span v-if="message.references.length > 5" class="msg-ref-more">+{{ message.references.length - 5 }}</span>
-        </span>
         <span class="msg-actions">
           <button class="msg-action-btn" title="复制" @click="copyContent">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><rect x="4" y="4" width="10" height="10" rx="1"/><path d="M12 4V3a1 1 0 00-1-1H3a1 1 0 00-1 1v8a1 1 0 001 1h1"/></svg>
@@ -98,7 +83,6 @@ interface UsageInfo {
   work_duration_sec?: number
   work_duration_ms?: number
 }
-interface RefItem { type: string; title: string; source: string; excerpt: string; url?: string }
 interface MsgItem {
   id: number
   role: string
@@ -107,7 +91,6 @@ interface MsgItem {
   thinking?: string
   tool_events?: unknown[]
   usage?: UsageInfo | null
-  references?: RefItem[]
 }
 	
 const props = defineProps<{ message: MsgItem; editingId?: number | null }>()
@@ -495,37 +478,4 @@ function formatTime(iso?: string | null): string {
 }
 .msg-edit-ok:hover { color: var(--ag-primary); border-color: var(--ag-primary); }
 .msg-edit-cancel:hover { color: var(--ag-error); border-color: var(--ag-error); }
-
-.msg-inline-refs {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0;
-  font-size: var(--ag-font-size-xs);
-  color: var(--ag-text-tertiary);
-}
-.msg-ref-sep { opacity: 0.4; margin: 0 2px; }
-.msg-ref-link {
-  color: var(--ag-primary);
-  text-decoration: none;
-  white-space: nowrap;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: inline-block;
-  vertical-align: bottom;
-}
-.msg-ref-link:hover { text-decoration: underline; }
-.msg-ref-chip {
-  white-space: nowrap;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: inline-block;
-  vertical-align: bottom;
-}
-.msg-ref-more {
-  color: var(--ag-text-disabled);
-  margin-left: 2px;
-}
 </style>
