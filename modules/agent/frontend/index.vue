@@ -40,7 +40,7 @@
           <WorkTraceGroup v-if="m.eventType === 'work_group'" :message="m" />
           <ToolCallCard v-else-if="m.eventType === 'tool_call' || m.eventType === 'tool_result'" :message="m" />
           <ThinkingCard v-else-if="m.eventType === 'thinking'" :content="m.content" :running="m.running" :collapsed="m.collapsed" :durationMs="m.durationMs" />
-          <MessageBubble v-else :message="m" :editingId="editingMessageId" @edit="handleStartEdit" @submitEdit="handleSubmitEdit" @showReferences="(refs: RefItem[]) => focusReference(refs)" />
+          <MessageBubble v-else :message="m" :editingId="editingMessageId" @edit="handleStartEdit" @submitEdit="handleSubmitEdit" />
         </template>
 
         <!-- 流式输出指示器 -->
@@ -58,14 +58,6 @@
           </div>
         </div>
       </div>
-
-      <!-- 引用面板 -->
-      <ReferencePanel
-        v-if="showReferencePanel"
-        :references="allReferences"
-        :activeRef="activeReference"
-        @select="(r: RefItem) => activeReference = r"
-      />
 
       <InputArea ref="inputAreaRef" v-model="inputText" :sending="sending" @send="sendMessage" @stop="stopGeneration" />
 
@@ -85,7 +77,6 @@ import MessageBubble from './components/MessageBubble.vue'
 import ThinkingCard from './components/ThinkingCard.vue'
 import ToolCallCard from './components/ToolCallCard.vue'
 import WorkTraceGroup from './components/WorkTraceGroup.vue'
-import ReferencePanel from './components/ReferencePanel.vue'
 import EnginePanel from './admin/EnginePanel.vue'
 import AgentConfigPanel from './admin/AgentConfigPanel.vue'
 import ApprovalPanel from './admin/ApprovalPanel.vue'
@@ -138,8 +129,6 @@ const error = ref('')
 	const sidebarCollapsed = ref(false)
 	const currentWorkGroup = ref<MsgItem | null>(null)
 	const workLiveTimer = ref<ReturnType<typeof setInterval> | null>(null)
-	const showReferencePanel = ref(false)
-const activeReference = ref<RefItem | null>(null)
 const msgArea = ref<HTMLElement | null>(null)
 const inputAreaRef = ref<InstanceType<typeof InputArea> | null>(null)
 const profileKey = ref('deepseek-v4-flash')
@@ -147,15 +136,8 @@ const showAdminPanel = ref<string | false>(false)
 const isAdmin = ref(false)
 
 function toggleAdminPanel(panel: string) {
-  showAdminPanel.value = showAdminPanel.value === panel ? false : panel
+  sidebarCollapsed.value = false; showAdminPanel.value = showAdminPanel.value === panel ? false : panel
 }
-const allReferences = computed<RefItem[]>(() => {
-  const result: RefItem[] = []
-  for (const m of messages.value) {
-    if (m.references?.length) result.push(...m.references)
-  }
-  return result
-})
 
 // ── Edit / Inline Editing ──
 function handleStartEdit(messageId: number, _content: string) {
@@ -230,7 +212,7 @@ async function deleteConversation(item: ConvItem) {
 }
 
 async function selectConversation(id: number) {
-  activeConvId.value = id; messages.value = []; showReferencePanel.value = false; error.value = ''; showAdminPanel.value = false
+  activeConvId.value = id; messages.value = []; error.value = ''; showAdminPanel.value = false
   try {
     const raw = await apiFetch<MsgItem[]>(`/agent/conversations/${id}/messages`)
     messages.value = expandTimeline(raw)
@@ -241,15 +223,6 @@ async function selectConversation(id: number) {
 // ── Scroll ──
 function scrollToBottom() {
   nextTick(() => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight })
-}
-
-function focusReference(ref: RefItem | RefItem[]) {
-  if (Array.isArray(ref)) {
-    activeReference.value = ref[0] || null
-    showReferencePanel.value = true
-  } else {
-    activeReference.value = ref; showReferencePanel.value = true
-  }
 }
 
 /** 按 timeline 展开历史消息：还原思考↔工具↔回复的真实交错顺序，并用工作组包裹 */
