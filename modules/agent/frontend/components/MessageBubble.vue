@@ -48,7 +48,7 @@
             <button class="msg-edit-cancel" @click="cancelEdit">取消</button>
           </div>
         </div>
-        <div v-else-if="message.role === 'assistant'" class="msg-md" v-html="renderedContent"></div>
+        <div v-else-if="message.role === 'assistant'" class="msg-md" v-html="renderedContent" @click="onMsgMdClick"></div>
         <div v-else class="msg-text">{{ message.content }}</div>
       </div>
 
@@ -183,11 +183,19 @@ const renderedContent = computed(() => {
   if (!props.message.content) return ''
   try {
     const raw = marked.parse(props.message.content, { async: false }) as string
-    return DOMPurify.sanitize(raw)
+    // 保留 target="_blank" 和 rel 属性，避免壳拦截
+    return DOMPurify.sanitize(raw, { ADD_ATTR: ['target', 'rel'] })
   } catch {
     return props.message.content.replace(/</g, '&lt;').replace(/>/g, '&gt;')
   }
 })
+
+function onMsgMdClick(e: MouseEvent) {
+  const a = (e.target as HTMLElement)?.closest('a')
+  if (!a || !a.href || a.href.startsWith('#')) return
+  e.preventDefault()
+  window.open(a.href, '_blank')
+}
 
 function formatTime(iso?: string | null): string {
   if (!iso) return ''
