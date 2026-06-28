@@ -9,19 +9,7 @@
       </svg>
     </div>
     <div class="msg-card">
-      <!-- 思维过程（在气泡上方） -->
-      <div v-if="message.thinking" class="inline-thinking">
-        <button class="inline-th-toggle" @click="showThinking = !showThinking">
-          <span class="th-indicator"></span>
-          <span>思维过程</span>
-          <svg :class="{ rotated: showThinking }" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10">
-            <path d="M4 3l4 3-4 3"/>
-          </svg>
-        </button>
-        <div v-show="showThinking" class="inline-th-body">{{ normalizedThinking }}</div>
-      </div>
-
-      <!-- 工具记录（思考之后、气泡之前） -->
+      <!-- 工具记录（历史消息兼容，新的 thinking/tool 展示走 timeline 工作组） -->
       <div v-if="message.tool_events?.length" class="inline-tools">
         <button class="inline-tools-toggle" @click="showTools = !showTools">
           <span class="tools-dot"></span>
@@ -33,11 +21,6 @@
         <div v-show="showTools" class="inline-tools-body">
           <pre>{{ formatToolResult(message.tool_events) }}</pre>
         </div>
-      </div>
-
-      <!-- 工作耗时 -->
-      <div v-if="message.usage?.work_duration_sec && message.role === 'assistant'" class="work-duration">
-        已工作 {{ message.usage.work_duration_sec }} 秒
       </div>
 
       <div class="msg-bubble" :class="message.role">
@@ -54,7 +37,7 @@
 
       <div class="msg-footer">
         <time class="msg-time">{{ formatTime(message.created_at) }}</time>
-        <span v-if="message.usage" class="msg-usage">
+        <span v-if="message.usage && message.content.trim()" class="msg-usage">
           <span class="token-badge token-in" title="输入（完整上下文）">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="10" height="10"><path d="M8 2v8M4 7l4 4 4-4M2 13h12"/></svg>
             {{ message.usage.prompt_tokens?.toLocaleString() }}
@@ -68,6 +51,14 @@
             {{ message.usage.total_tokens?.toLocaleString() }}
           </span>
         </span>
+        <span v-if="sourceLinks.length && message.role === 'assistant'" class="msg-footer-sources">
+          <button class="msg-source-toggle" @click="showSources = !showSources">
+            来源 {{ sourceLinks.length }}
+            <svg :class="{ rotated: showSources }" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="9" height="9">
+              <path d="M4 3l4 3-4 3"/>
+            </svg>
+          </button>
+        </span>
         <span class="msg-actions">
           <button class="msg-action-btn" title="复制" @click="copyContent">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><rect x="4" y="4" width="10" height="10" rx="1"/><path d="M12 4V3a1 1 0 00-1-1H3a1 1 0 00-1 1v8a1 1 0 001 1h1"/></svg>
@@ -75,7 +66,16 @@
           <button v-if="message.role === 'user' && message.id && editingId !== message.id" class="msg-action-btn" title="编辑" @click="$emit('edit', message.id, message.content)">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M11.5 2.5a1.5 1.5 0 012 2L5 13l-3 1 1-3 8.5-8.5z"/><path d="M9.5 4.5l2 2"/></svg>
           </button>
+          <button v-if="message.role === 'user' && message.id && editingId !== message.id" class="msg-action-btn" title="回退到此处" @click="$emit('rollback', message.id)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M5 4L2 7l3 3"/><path d="M2 7h7a4 4 0 010 8H6"/></svg>
+          </button>
         </span>
+      </div>
+      <div v-if="showSources && sourceLinks.length && message.role === 'assistant'" class="msg-source-popover">
+        <template v-for="(source, idx) in sourceLinks" :key="source.key">
+          <a v-if="source.url" :href="source.url" target="_blank" rel="noopener" @click="onSourceClick">{{ idx + 1 }}. {{ source.title }}</a>
+          <span v-else>{{ idx + 1 }}. {{ source.title }}</span>
+        </template>
       </div>
     </div>
   </div>
@@ -87,6 +87,13 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js'
 
+interface RefItem {
+  type: string
+  title?: string
+  source?: string
+  excerpt?: string
+  url?: string
+}
 interface UsageInfo {
   prompt_tokens?: number
   completion_tokens?: number
@@ -101,11 +108,16 @@ interface MsgItem {
   created_at?: string | null
   thinking?: string
   tool_events?: unknown[]
+  references?: RefItem[]
   usage?: UsageInfo | null
 }
 	
 const props = defineProps<{ message: MsgItem; editingId?: number | null }>()
-const emit = defineEmits<{ edit: [messageId: number, content: string]; submitEdit: [messageId: number, content: string] }>()
+const emit = defineEmits<{
+  edit: [messageId: number, content: string]
+  submitEdit: [messageId: number, content: string]
+  rollback: [messageId: number]
+}>()
 
 const isEditing = computed(() => props.message.role === 'user' && props.message.id === props.editingId && !!props.editingId)
 const editText = ref('')
@@ -150,14 +162,8 @@ function copyContent() {
   })
 }
 
-const showThinking = ref(false)
 const showTools = ref(false)
-
-/** 去掉换行符，压缩连续空格，与 ThinkingCard 保持一致 */
-const normalizedThinking = computed(() => {
-  if (!props.message.thinking) return ''
-  return props.message.thinking.replace(/[\n\r]+/g, '').replace(/[ \t]{2,}/g, ' ').trim()
-})
+const showSources = ref(false)
 
 function formatToolResult(r: unknown): string {
   if (typeof r === 'string') return r
@@ -190,6 +196,22 @@ marked.setOptions({
   gfm: true,
 })
 
+const sourceLinks = computed(() => {
+  const seen = new Set<string>()
+  const refs = props.message.references || []
+  const links: Array<{ key: string; title: string; url?: string }> = []
+  for (const refItem of refs) {
+    const url = refItem.url?.trim()
+    const title = (refItem.title || refItem.source || url || '').trim()
+    if (!title) continue
+    const key = url || `${refItem.type}:${title}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    links.push({ key, title, url })
+  }
+  return links.slice(0, 6)
+})
+
 const renderedContent = computed(() => {
   if (!props.message.content) return ''
   try {
@@ -201,11 +223,22 @@ const renderedContent = computed(() => {
   }
 })
 
+function openExternalLink(url: string) {
+  window.open(url, '_blank')
+}
+
+function onSourceClick(e: MouseEvent) {
+  const a = (e.target as HTMLElement)?.closest('a')
+  if (!a || !a.href) return
+  e.preventDefault()
+  openExternalLink(a.href)
+}
+
 function onMsgMdClick(e: MouseEvent) {
   const a = (e.target as HTMLElement)?.closest('a')
   if (!a || !a.href || a.href.startsWith('#')) return
   e.preventDefault()
-  window.open(a.href, '_blank')
+  openExternalLink(a.href)
 }
 
 function formatTime(iso?: string | null): string {
@@ -403,12 +436,6 @@ function formatTime(iso?: string | null): string {
   margin-top: var(--ag-space-xs);
 }
 
-/* Work duration */
-.work-duration {
-  font-size: var(--ag-font-size-sm);
-  color: var(--ag-text-tertiary);
-  margin-bottom: var(--ag-space-xs);
-}
 .inline-tools-toggle {
   display: flex; align-items: center; gap: 5px;
   border: none; background: none; cursor: pointer;
@@ -435,6 +462,46 @@ function formatTime(iso?: string | null): string {
   font-family: var(--ag-font-mono);
   color: var(--ag-text-secondary);
 }
+
+/* Sources */
+.msg-footer-sources {
+  display: inline-flex;
+  align-items: center;
+}
+.msg-source-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  background: none;
+  color: var(--ag-text-tertiary);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: var(--ag-font-size-xs);
+  line-height: 1.4;
+}
+.msg-source-toggle:hover { color: var(--ag-text-link); }
+.msg-source-toggle svg { transition: transform var(--ag-transition-base); }
+.msg-source-toggle svg.rotated { transform: rotate(90deg); }
+.msg-source-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 320px;
+  margin-top: 2px;
+  padding-left: 2px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ag-text-tertiary);
+}
+.msg-source-popover a {
+  color: var(--ag-text-link);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-source-popover a:hover { text-decoration: underline; }
 
 /* Footer: time + usage + actions */
 .msg-footer {

@@ -4,8 +4,10 @@
 流式：首包/探测失败可降级；已开始流式中途断，给清晰错误。"""
 import logging
 from typing import AsyncGenerator
-from app.gateway.router import gateway_router, MODEL_PROFILES
+
 from app.gateway.config import get_fallback_chain
+from app.gateway.protocol import is_protocol_error_text
+from app.gateway.router import MODEL_PROFILES, gateway_router
 
 logger = logging.getLogger("v2.agent").getChild("engine.fallback_chain")
 
@@ -20,8 +22,9 @@ async def _record_degradation_event(conversation_id: int | None, from_profile: s
     if conversation_id is None:
         return
     try:
-        from .event_store import record_event
         from app.database import AsyncSessionLocal
+
+        from .event_store import record_event
         async with AsyncSessionLocal() as _db:
             await record_event(_db, conversation_id, "degradation", {
                 "from": from_profile,
@@ -60,6 +63,9 @@ async def chat_with_fallback(
         except Exception as e:
             tried.append(key)
             reason = _extract_reason(e)
+            if is_protocol_error_text(reason):
+                logger.error("模型请求协议错误，停止降级: %s", reason)
+                return {"error": reason, "content": f"(模型请求格式错误：{reason})"}
             if idx < len(chain) - 1:
                 next_key = chain[idx + 1]
                 logger.warning("降级: %s → %s 原因:%s", key, next_key, reason)
@@ -106,6 +112,10 @@ async def chat_stream_with_fallback(
             return
         except Exception as e:
             reason = _extract_reason(e)
+            if is_protocol_error_text(reason):
+                logger.error("流式模型请求协议错误，停止降级: %s", reason)
+                yield {"type": "error", "content": f"模型请求格式错误：{reason}"}
+                return
             if idx < len(chain) - 1:
                 next_key = chain[idx + 1]
                 logger.warning("流式降级: %s → %s 原因:%s", key, next_key, reason)

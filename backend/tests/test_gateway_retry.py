@@ -23,6 +23,17 @@ class NonRetryableProvider:
         raise exc
 
 
+class ProtocolErrorProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages, model, temperature=0.7, max_tokens=4096, tools=None):
+        self.calls += 1
+        exc = RuntimeError("invalid_request_error: tool_calls must be followed by tool messages")
+        exc.status_code = 400
+        raise exc
+
+
 @pytest.mark.asyncio
 async def test_retryable_provider_is_retried_once() -> None:
     provider = RetryableProvider()
@@ -53,3 +64,20 @@ async def test_non_retryable_provider_returns_error_response() -> None:
     assert isinstance(result, ModelResponse)
     assert result.error is not None
     assert "invalid api key" in result.error
+
+
+@pytest.mark.asyncio
+async def test_protocol_error_is_not_retried() -> None:
+    provider = ProtocolErrorProvider()
+    result = await _call_with_unified_retry(
+        provider=provider,
+        req=ModelRequest(messages=[], temperature=0.7, max_tokens=1),
+        model="demo",
+        caller_module="test",
+        profile_key="demo",
+        provider_name="test",
+    )
+    assert isinstance(result, ModelResponse)
+    assert result.error is not None
+    assert "tool_calls must be followed" in result.error
+    assert provider.calls == 1

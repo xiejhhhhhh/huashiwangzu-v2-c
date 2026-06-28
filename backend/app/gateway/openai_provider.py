@@ -11,6 +11,7 @@ from app.config import get_settings
 from .adapters import get_adapter
 from .base import BaseProvider
 from .contract import StreamEventType, stream_event_to_dict
+from .protocol import normalize_openai_payload
 from .stream_parse import error_message, extract_stream_payload, format_error
 
 logger = logging.getLogger("v2.gateway.openai_compat")
@@ -34,9 +35,16 @@ class OpenAIProvider(BaseProvider):
         self, messages: list[dict], model: str, temperature: float,
         max_tokens: int, stream: bool, tools: list[dict] | None,
     ) -> dict:
-        data = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": stream}
-        if tools:
-            data["tools"] = tools
+        normalized_messages, normalized_tools = normalize_openai_payload(messages, tools)
+        data = {
+            "model": model,
+            "messages": normalized_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+        if normalized_tools:
+            data["tools"] = normalized_tools
         return data
 
     async def chat(

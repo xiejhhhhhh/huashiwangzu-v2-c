@@ -57,6 +57,7 @@ class ApprovalDecision(BaseModel):
 
 
 class PromptItemCreate(BaseModel):
+    key: str = ""
     title: str
     category: str
     content: str
@@ -65,6 +66,7 @@ class PromptItemCreate(BaseModel):
 
 
 class PromptItemUpdate(BaseModel):
+    key: str | None = None
     title: str | None = None
     category: str | None = None
     content: str | None = None
@@ -449,6 +451,7 @@ async def list_agent_prompts(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("viewer")),
 ):
+    await ensure_default_agent_prompts(db)
     data = await prompt_svc.list_prompts(db, user.id, category)
     return ApiResponse(data=data)
 
@@ -480,7 +483,13 @@ async def update_agent_prompt(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("viewer")),
 ):
-    data = await prompt_svc.update_prompt(db, user.id, prompt_id, body.model_dump(exclude_none=True))
+    data = await prompt_svc.update_prompt(
+        db,
+        user.id,
+        prompt_id,
+        body.model_dump(exclude_none=True),
+        is_admin=user.role == "admin",
+    )
     return ApiResponse(data=data)
 
 

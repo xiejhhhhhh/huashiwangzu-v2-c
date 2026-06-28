@@ -5,28 +5,24 @@ DeepSeekAdapter 正确提取并返回，本节函数降级为兜底/清理层：
 - parse_inline_tool_calls: 当工具调用标记（<invoke>...）泄漏到 content 正文时解析
 - final_clean_content: 持久化前清理残留标记
 - recover_tool_calls: 极端情况下 adapter 仍漏抽时的恢复手段（会额外消耗一次 API）
+
+核心清洗逻辑已移至 runtime.content_gate，这里保持向后兼容的重导出。
 """
 import json
 import logging
-import re
-import uuid
 
 from app.gateway.router import gateway_router
+
+from ..runtime.content_gate import (
+    final_clean_content,  # noqa: F401 — re-exported for backward compat
+    parse_inline_tool_calls,  # noqa: F401 — re-exported for backward compat
+)
 
 logger = logging.getLogger("v2.agent").getChild("model_client")
 
 
-def _normalize_inline_markup(content: str) -> str:
-    normalized = content
-    for tag in ("tool_call", "invoke", "parameter"):
-        normalized = normalized.replace(f"<｜{tag}", f"<{tag}")
-        normalized = normalized.replace(f"</｜{tag}", f"</{tag}")
-        normalized = normalized.replace(f"｜{tag}", f"<{tag}")
-        normalized = normalized.replace(f"</｜{tag}", f"</{tag}")
-    return normalized
-
-
 def _normalize_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    """Normalize raw tool_calls into standard OpenAI format."""
     normalized = []
     for item in tool_calls:
         fn = item.get("function") or item
@@ -44,83 +40,6 @@ def _normalize_tool_calls(tool_calls: list[dict]) -> list[dict]:
             "function": {"name": fn.get("name", ""), "arguments": args},
         })
     return normalized
-
-
-def parse_inline_tool_calls(content: str) -> tuple[str, list[dict]]:
-    """当模型把 XML 式工具调用写进 content 正文时，从中解析出标准 tool_calls。
-
-    兼容变体：
-    - <invoke name="...">...</invoke>
-    - <antml:invoke name="...">...</antml:invoke>
-    - <tool_call>...</tool_call> 容器内的 invoke
-    - ｜invoke name="...">...</｜invoke> （全角竖线前缀）
-    - 大小写、多余空白、换行都容错
-
-    Returns: (clean_content, tool_calls_list)
-    """
-    if not content:
-        return content, []
-
-    content = _normalize_inline_markup(content)
-
-    invoke_re = re.compile(
-        r'<\w*:?invoke\s+name=[\"\']([^\"\']+)[\"\']\s*>(.*?)</\w*:?invoke\s*>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    param_re = re.compile(
-        r'<\w*:?parameter\s+name=[\"\']([^\"\']+)[\"\']'
-        r'(?:\s+string=[\"\'](true|false)[\"\'])?\s*>(.*?)</\w*:?parameter\s*>',
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    tool_calls = []
-    for m in invoke_re.finditer(content):
-        tool_name = m.group(1).strip()
-        inner = m.group(2)
-        args = {}
-        for pm in param_re.finditer(inner):
-            pname = pm.group(1).strip()
-            raw_val = pm.group(3).strip()
-            string_hint = pm.group(2)
-            if string_hint and string_hint.lower() == "false":
-                try:
-                    args[pname] = json.loads(raw_val)
-                except (json.JSONDecodeError, TypeError):
-                    args[pname] = raw_val
-            else:
-                args[pname] = raw_val
-        tool_calls.append({
-            "id": f"call_inline_{uuid.uuid4().hex[:12]}",
-            "type": "function",
-            "function": {"name": tool_name, "arguments": args},
-        })
-
-    if not tool_calls:
-        return content, tool_calls
-
-    clean = invoke_re.sub('', content).strip()
-    clean = re.sub(r'\n{3,}', '\n\n', clean).strip()
-    return clean, tool_calls
-
-
-def final_clean_content(content: str) -> str:
-    """最终兜底清理：移除 content 中残留的 XML 式工具调用标记。
-
-    作为 parse_inline_tool_calls 的补充。
-    """
-    if not content:
-        return content
-    content = _normalize_inline_markup(content)
-    cleaned = re.sub(
-        r'<\w*:?invoke\s+name=.*?</\w*:?invoke\s*>',
-        '', content, flags=re.IGNORECASE | re.DOTALL,
-    )
-    cleaned = re.sub(
-        r'<\w*:?tool_call\s*>.*?</\w*:?tool_call\s*>',
-        '', cleaned, flags=re.IGNORECASE | re.DOTALL,
-    )
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-    return cleaned
 
 
 async def recover_tool_calls(messages: list[dict], profile_key: str, tools: list[dict]) -> dict:

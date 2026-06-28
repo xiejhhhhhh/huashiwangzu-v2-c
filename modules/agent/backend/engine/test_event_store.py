@@ -1,7 +1,52 @@
 """Tests for event_store.py — string arguments conversion."""
 import json
-import pytest
-from .event_store import _ensure_string_arguments
+import sys
+from pathlib import Path
+
+REPO_DIR = Path(__file__).resolve().parents[4]
+BACKEND_DIR = REPO_DIR / "backend"
+for path in (REPO_DIR, BACKEND_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from .event_store import _collect_complete_tool_results, _ensure_string_arguments
+
+
+class FakeEvent:
+    def __init__(self, event_type: str, payload: dict):
+        self.event_type = event_type
+        self.payload = payload
+
+
+class TestCollectCompleteToolResults:
+    def test_complete_results_for_all_tool_calls(self):
+        events = [
+            FakeEvent("tool_result", {"tool_call_id": "call_a", "result": {"ok": 1}}),
+            FakeEvent("tool_result", {"tool_call_id": "call_b", "result": {"ok": 2}}),
+        ]
+        results, next_index, complete = _collect_complete_tool_results(events, 0, {"call_a", "call_b"})
+        assert complete is True
+        assert next_index == 2
+        assert len(results) == 2
+
+    def test_partial_results_are_not_complete(self):
+        events = [
+            FakeEvent("tool_result", {"tool_call_id": "call_a", "result": {"ok": 1}}),
+        ]
+        results, next_index, complete = _collect_complete_tool_results(events, 0, {"call_a", "call_b"})
+        assert complete is False
+        assert next_index == 1
+        assert len(results) == 1
+
+    def test_unrelated_result_stops_collection(self):
+        events = [
+            FakeEvent("tool_result", {"tool_call_id": "call_a", "result": {"ok": 1}}),
+            FakeEvent("tool_result", {"tool_call_id": "other", "result": {"ok": 2}}),
+        ]
+        results, next_index, complete = _collect_complete_tool_results(events, 0, {"call_a", "call_b"})
+        assert complete is False
+        assert next_index == 1
+        assert len(results) == 1
 
 
 class TestEnsureStringArguments:

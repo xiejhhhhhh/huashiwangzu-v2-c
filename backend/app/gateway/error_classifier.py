@@ -9,6 +9,17 @@ logger = logging.getLogger("v2.gateway.error_classifier")
 _AUTH_BODY_KW = ["invalid_api_key", "unauthorized", "forbidden", "authentication", "auth"]
 _QUOTA_BODY_KW = ["insufficient_quota", "billing", "quota_exceeded", "exceeded your", "payment_required"]
 _RATE_LIMIT_BODY_KW = ["rate_limit", "rate limit", "too_many_requests"]
+_PROTOCOL_BODY_KW = [
+    "invalid_request_error",
+    "bad request",
+    "tool_calls must be followed",
+    "tool messages responding to each",
+    "insufficient tool messages",
+    "messages malformed",
+    "orphan tool message",
+    "missing matching tool results",
+    "tool_call_id",
+]
 
 
 class ErrorClassification:
@@ -71,6 +82,11 @@ def classify_error(
             body = _get_response_body(exception)
 
     body_lower = body.lower() if body else ""
+    if exception is not None:
+        body_lower = f"{body_lower}\n{exception}".lower()
+
+    if any(kw in body_lower for kw in _PROTOCOL_BODY_KW):
+        return ErrorClassification("protocol", False, message="Invalid model request payload")
 
     if status_code == 429:
         retry_after = _extract_retry_after(body)
@@ -83,6 +99,8 @@ def classify_error(
         return ErrorClassification("quota", False, message="Quota exhausted")
     if status_code == 400 and any(kw in body_lower for kw in _QUOTA_BODY_KW):
         return ErrorClassification("quota", False, message="Quota exhausted")
+    if status_code == 400:
+        return ErrorClassification("protocol", False, message="Invalid model request payload")
 
     if status_code and 500 <= status_code < 600:
         return ErrorClassification("server", True, message=f"Server error {status_code}")
@@ -105,6 +123,8 @@ def classify_error(
         if any(kw in body_lower for kw in _RATE_LIMIT_BODY_KW):
             retry_after = _extract_retry_after(body)
             return ErrorClassification("rate_limit", True, retry_after, "Rate limit detected in response")
+        if any(kw in body_lower for kw in _PROTOCOL_BODY_KW):
+            return ErrorClassification("protocol", False, message="Invalid model request payload")
 
     return ErrorClassification("unknown", True, message="Unknown error, retry once")
 

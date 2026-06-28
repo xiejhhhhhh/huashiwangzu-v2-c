@@ -209,12 +209,13 @@ async def compress_middle(
 
 
 async def _summarize_with_cheap_model(text: str, profile_key: str) -> str:
+    from app.database import AsyncSessionLocal
     from app.gateway.router import gateway_router
-    prompt = (
-        "请将以下对话历史压缩成一段连贯的摘要，保留关键事实、决策和上下文。"
-        "输出纯文本摘要，不要额外格式。\n\n"
-        f"{text}"
-    )
+    from ..prompt_seeds import COMPRESSION_SUMMARY_KEY
+    from ..services.runtime_prompt_provider import render_system_prompt
+
+    async with AsyncSessionLocal() as db:
+        prompt = await render_system_prompt(db, COMPRESSION_SUMMARY_KEY, {"text": text})
     messages = [{"role": "user", "content": prompt[:8000]}]
     result = await gateway_router.chat(messages=messages, profile_key=profile_key)
     if result.get("error"):
