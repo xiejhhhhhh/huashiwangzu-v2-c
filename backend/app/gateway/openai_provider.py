@@ -96,6 +96,13 @@ class OpenAIProvider(BaseProvider):
                         choice = choices[0] if choices else {}
                         delta = choice.get("delta") or {}
                         accumulator.add_delta_tool_calls(delta.get("tool_calls"))
+
+                        # 在 finish_reason / [DONE] 之前提取 usage，确保即使 tool_call
+                        # 导致下游提前 return，token 计数也不会丢失
+                        _usage_raw = data.get("usage")
+                        if _usage_raw:
+                            yield {"type": "usage", "usage": _usage_raw}
+
                         if choice.get("finish_reason") == "tool_calls" and accumulator.has_calls():
                             yield stream_event_to_dict(
                                 StreamEvent(

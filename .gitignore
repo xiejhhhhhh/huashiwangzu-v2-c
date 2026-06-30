@@ -59,6 +59,15 @@ take_screenshot.mjs
 # Dev toolkit memory (防误写)
 dev_toolkit/memory/
 
+# Auto-generated runtime diagnostics (never commit)
+backend/data/agent/*.json
+
+# Auto-generated memory embeddings cache
+dev_toolkit/memory_embeddings.json
+
+# Auto-generated memory index
+开发文档/项目记忆/_索引.md
+
 # Agent JSON file lock artifacts (runtime)
 *.json.lock
 

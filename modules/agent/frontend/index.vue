@@ -769,8 +769,15 @@ function commitAssistantStream(segmentId: string) {
                       if (payload === '[DONE]') {
                           abortController = null
                           streaming.value = false; sending.value = false
-                          if (activeAssistantStreamId.value) commitAssistantStream(activeAssistantStreamId.value)
-                          else flushStreamingAsMessage()
+                          if (activeAssistantStreamId.value) {
+                              commitAssistantStream(activeAssistantStreamId.value)
+                          } else {
+                              if (_lastRoundUsage) {
+                                  attachUsageToLatestAssistant(_lastRoundUsage)
+                                  _lastRoundUsage = null
+                              }
+                              flushStreamingAsMessage()
+                          }
                           void reader.cancel().catch(() => {})
                           return true
                         }
@@ -878,14 +885,21 @@ function commitAssistantStream(segmentId: string) {
 				      if (sseBuffer.trim()) {
 				        finished = handleSseBlock(sseBuffer)
 				      }
-				      if (!finished) {
+                  if (!finished) {
                         abortController = null
                         streaming.value = false; sending.value = false
-                        if (activeAssistantStreamId.value) commitAssistantStream(activeAssistantStreamId.value)
-                        else flushStreamingAsMessage()
+                        if (activeAssistantStreamId.value) {
+                            commitAssistantStream(activeAssistantStreamId.value)
+                        } else {
+                            if (_lastRoundUsage) {
+                                attachUsageToLatestAssistant(_lastRoundUsage)
+                                _lastRoundUsage = null
+                            }
+                            flushStreamingAsMessage()
+                        }
                         finished = true
 
-				      }
+                      }
 				      break
 				    }
 				    resetIdleTimer(() => {

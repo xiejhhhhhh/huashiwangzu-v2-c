@@ -74,6 +74,7 @@ class ConversationRuntime:
         """
         await run_init(db)
         await ensure_user_profile(db, user.id)
+        _exec_t0 = time.monotonic()
 
         profile_key = payload.profile_key or "deepseek-v4-flash"
 
@@ -120,11 +121,13 @@ class ConversationRuntime:
                 logger.warning("Record implicit thinking signal failed (non-fatal): %s", signal_exc)
 
             # ── Assemble context ────────────────────────────────────
+            _ctx_t0 = time.monotonic()
             agent_code = "erp_chat"
             messages, engine_diag = await assemble_context(
                 db, payload.conversation_id, payload.content,
                 profile_key, user.id, agent_code=agent_code,
             )
+            logger.info("[PREFLIGHT_TIMING] assemble_context: %dms", round((time.monotonic() - _ctx_t0) * 1000))
 
             # ── Record assembly diagnostic ──────────────────────────
             try:
@@ -150,6 +153,7 @@ class ConversationRuntime:
                 )
 
             # ── Understanding phase ─────────────────────────────────
+            _ul_t0 = time.monotonic()
             understanding_packet = None
             if self.policy.enable_understanding_loop and len(payload.content) >= self.policy.understanding_min_chars:
                 try:
@@ -183,6 +187,9 @@ class ConversationRuntime:
                         db, payload.conversation_id, "understanding_diag",
                         {"triggered": True, "error": str(uloop_exc)},
                     )
+            logger.info("[PREFLIGHT_TIMING] understanding loop: %dms, triggered=%s",
+                        round((time.monotonic() - _ul_t0) * 1000),
+                        understanding_packet is not None)
 
             try:
                 await record_thinking_feedback(
@@ -200,12 +207,16 @@ class ConversationRuntime:
             except Exception as feedback_exc:
                 logger.warning("Record thinking feedback failed (non-fatal): %s", feedback_exc)
 
+            _tools_t0 = time.monotonic()
             tools = tool_discovery.build_tools(user.role)
+            logger.info("[PREFLIGHT_TIMING] tool_discovery.build_tools: %dms",
+                        round((time.monotonic() - _tools_t0) * 1000))
 
         # ── Wire sub-runtimes lazily inside the SSE stream so preflight does not block the HTTP response ──
         async def _event_stream():
             stream_preflight = None
             if not channel_values and self.policy.intent_preflight_enabled:
+                _ip_t0 = time.monotonic()
                 async with AsyncSessionLocal() as stream_db:
                     stream_preflight = await self._run_intent_preflight(
                         db=stream_db,
@@ -216,6 +227,8 @@ class ConversationRuntime:
                         user_input=payload.content,
                         messages=messages,
                     )
+                logger.info("[PREFLIGHT_TIMING] intent preflight: %dms",
+                            round((time.monotonic() - _ip_t0) * 1000))
             sink = RuntimeTaskSink(
                 conversation_id=payload.conversation_id,
                 owner_id=user.id,
@@ -243,6 +256,10 @@ class ConversationRuntime:
             async for event in loop.run(messages, tools, sink, channel_values=channel_values):
                 yield event
 
+        logger.info("[PREFLIGHT_TIMING] execute() pre-stream total: %dms (conv=%d, resume=%s)",
+                    round((time.monotonic() - _exec_t0) * 1000),
+                    payload.conversation_id,
+                    bool(payload.resume_checkpoint_id))
         return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
     async def execute_edit_resubmit(
