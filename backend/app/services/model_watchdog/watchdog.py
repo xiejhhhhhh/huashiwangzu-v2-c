@@ -2,12 +2,12 @@ import logging
 
 import httpx
 
+from app.services.model_watchdog.launcher import launch_model
 from app.services.model_watchdog.registry import (
     ModelRecord,
     get_model,
     list_models,
 )
-from app.services.model_watchdog.launcher import launch_model
 
 logger = logging.getLogger("model_watchdog.watchdog")
 
@@ -17,7 +17,7 @@ _HEALTHY_CACHE: dict[str, bool] = {}
 def _check_health(record: ModelRecord) -> bool:
     health_url = record.health_url()
     try:
-        with httpx.Client(timeout=5) as client:
+        with httpx.Client(timeout=5, trust_env=False) as client:
             resp = client.get(health_url)
             if resp.status_code < 500:
                 return True

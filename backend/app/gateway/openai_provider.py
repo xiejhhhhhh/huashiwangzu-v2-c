@@ -53,7 +53,7 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int = 4096, tools: list[dict] | None = None,
     ) -> dict:
         payload = self._build_payload(messages, model, temperature, max_tokens, False, tools)
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             resp = await client.post(self.api_url, json=payload, headers=self._headers())
             if resp.status_code >= 400:
                 body_text = await _read_error_body(resp)
@@ -73,7 +73,7 @@ class OpenAIProvider(BaseProvider):
         accumulator = StreamingToolCallAccumulator()
         payload = self._build_payload(messages, model, temperature, max_tokens, True, tools)
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=300, trust_env=False) as client:
                 async with client.stream("POST", self.api_url, json=payload, headers=self._headers()) as resp:
                     if resp.status_code >= 400:
                         yield {"type": "error", "content": error_message(resp.status_code, await resp.aread())}
@@ -122,7 +122,7 @@ class OpenAIProvider(BaseProvider):
 
     async def check_health(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
                 resp = await client.get(self.api_url.replace("/chat/completions", "/models"), headers=self._headers())
                 return resp.status_code == 200
         except Exception as e:

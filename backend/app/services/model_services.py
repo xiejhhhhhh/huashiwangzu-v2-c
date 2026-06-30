@@ -47,7 +47,7 @@ async def get_embedding(text: str) -> list[float]:
     model = profile.get("model", "bge-m3")
     url = f"{server_url.rstrip('/')}/v1/embeddings"
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
         resp = await client.post(url, json={
             "model": model,
             "input": [text[:2048]],
@@ -68,7 +68,7 @@ async def rerank(
     top_k: int | None = None,
 ) -> list[dict]:
     """Rerank documents by relevance, using the configured endpoint (models.json).
-    
+
     Returns [{index, relevance_score}, ...] sorted by score descending.
     """
     if not documents:
@@ -91,7 +91,7 @@ async def rerank(
     if top_k is not None:
         payload["top_k"] = top_k
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
         resp = await client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()

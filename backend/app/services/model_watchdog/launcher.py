@@ -67,7 +67,7 @@ def _poll_until_healthy(
     health_url = record.health_url()
     deadline = time.time() + timeout
 
-    with httpx.Client(timeout=5) as client:
+    with httpx.Client(timeout=5, trust_env=False) as client:
         while time.time() < deadline:
             try:
                 resp = client.get(health_url)
