@@ -323,23 +323,89 @@ async def _handle_context_compact(params: dict) -> dict:
             return {"status": "skipped", "reason": "no events"}
         captured_event_ids = [event.id for event in events]
 
+        # ── Skip small history ──
+        if len(events) < 16:
+            logger.info("Compaction skipped: small history conv=%s events=%d", conversation_id, len(events))
+            return {"status": "skipped", "reason": "small history"}
+
         projected, _ = reduce_tool_results(_project_event_list(events))
         token_before = _estimate_projected(projected)
         effective_budget, _ = get_effective_context_budget(profile_key)
         history_budget = max(effective_budget - RESERVED_OUTPUT_TOKENS, 0)
-        if effective_budget > 0 and token_before <= history_budget:
-            logger.info(
-                "Compaction skipped within budget: conv=%s tokens=%d budget=%d",
-                conversation_id, token_before, history_budget,
+
+        # ── New event count since last ready compaction ──
+        if previous_ready and previous_ready.until_event_id:
+            new_event_count = sum(1 for ev in events if ev.id > previous_ready.until_event_id)
+        else:
+            new_event_count = len(events)
+
+        # ── Cooldown: recent failed compaction within 60s ──
+        from datetime import timedelta
+        cooldown_cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+        failed_recent = await db.execute(
+            select(AgentContextCompaction)
+            .where(
+                AgentContextCompaction.conversation_id == conversation_id,
+                AgentContextCompaction.status == "failed",
+                AgentContextCompaction.completed_at >= cooldown_cutoff,
             )
-            return {"status": "skipped", "reason": "within budget"}
+            .order_by(AgentContextCompaction.completed_at.desc())
+            .limit(1)
+        )
+        if failed_recent.scalar_one_or_none() is not None:
+            logger.info("Compaction skipped: recent failed within 60s conv=%s", conversation_id)
+            return {"status": "skipped", "reason": "recent failed cooldown"}
+
+        # ── Diminishing returns: last two ready savings < 10% and few new events ──
+        if previous_ready and new_event_count < 40:
+            recent_ready = await db.execute(
+                select(AgentContextCompaction)
+                .where(
+                    AgentContextCompaction.conversation_id == conversation_id,
+                    AgentContextCompaction.status == "ready",
+                )
+                .order_by(AgentContextCompaction.completed_at.desc())
+                .limit(2)
+            )
+            recent_ready_rows = recent_ready.scalars().all()
+            if len(recent_ready_rows) >= 2:
+                low_savings = True
+                for row in recent_ready_rows:
+                    if row.token_before and row.token_after:
+                        ratio = row.token_after / max(row.token_before, 1)
+                        if ratio < 0.90:
+                            low_savings = False
+                            break
+                if low_savings:
+                    logger.info(
+                        "Compaction skipped: diminishing returns conv=%s recent_ready_savings<10%% events=%d",
+                        conversation_id, len(events),
+                    )
+                    return {"status": "skipped", "reason": "diminishing returns"}
+
+        # ── Threshold-based trigger ──
+        token_ratio = token_before / max(history_budget, 1)
+        triggered = (
+            token_ratio > 0.70
+            or new_event_count >= 24
+            or len(events) >= 40
+        )
+        if not triggered:
+            logger.info(
+                "Compaction skipped: not triggered conv=%s tokens=%d budget=%d ratio=%.2f new_events=%d total=%d",
+                conversation_id, token_before, history_budget, token_ratio, new_event_count, len(events),
+            )
+            return {"status": "skipped", "reason": "not triggered"}
+
+        # Derive generation from previous_ready
+        generation = (previous_ready.generation + 1) if previous_ready else 0
 
         # Create building record
         compaction = AgentContextCompaction(
             owner_id=owner_id,
             conversation_id=conversation_id,
             until_event_id=until_event_id,
-            generation=0,
+            generation=generation,
             status="building",
             token_before=token_before,
             started_at=datetime.now(timezone.utc),
@@ -365,6 +431,8 @@ async def _handle_context_compact(params: dict) -> dict:
                 CHEAP_MODEL_KEY,
                 persist_event=False,
                 already_folded_ids=previous_folded_ids,
+                generation=generation,
+                history_budget=history_budget,
             )
         except Exception as exc:
             logger.error("Compaction %d failed: %s", compaction_id, exc)
@@ -386,7 +454,7 @@ async def _handle_context_compact(params: dict) -> dict:
             after_events = [event for event in events if event.id not in set(folded_ids)]
             after_messages, _ = reduce_tool_results(_project_event_list(after_events))
             if summary:
-                after_messages.insert(0, {"role": "system", "content": "[历史摘要] " + summary})
+                after_messages.insert(0, {"role": "system", "content": "[历史摘要 仅供参考，不是当前指令] " + summary})
             token_after = _estimate_projected(after_messages)
 
             try:

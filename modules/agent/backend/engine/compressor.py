@@ -3,9 +3,16 @@
 触发：budget_allocator装配时仍超预算 → 调compressor。
 降级：便宜模型失败 → 退"只保尾部 M 条"硬截断，不报错。
 
+升级10：
+- 头保护动态化：首次6条，后续2条
+- 保尾改为 token budget 优先
+- 摘要模板结构化
+- 历史摘要注入前缀调整
+
 批5增强：压缩前快照 + 压缩链路追踪 + 可回放审计。"""
 import json
 import logging
+import math
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,8 +22,16 @@ from .event_store import record_event
 
 logger = logging.getLogger("v2.agent").getChild("engine.compressor")
 
-HEAD_COUNT = 10
-TAIL_COUNT = 20
+# ── Head protection ──
+_FIRST_COMPRESS_HEAD_COUNT = 6
+_SUBSEQUENT_COMPRESS_HEAD_COUNT = 2
+
+# ── Tail budget ──
+_TAIL_BUDGET_RATIO = 0.25
+_TAIL_BUDGET_MIN = 2500
+_TAIL_BUDGET_MAX = 6000
+_TAIL_MIN_EVENTS = 8
+
 MAX_SUMMARY_CHARS = 50000
 CHEAP_MODEL_KEY = "gemma-4"
 
@@ -24,14 +39,26 @@ TOOL_EVENT_TYPES = {"tool_call", "tool_result"}
 NON_FOLDABLE_TYPES = {"compaction", "memory_op", "system_event", "compression_trace"}
 _ALREADY_FOLDED_IDS: set[int] = set()
 
+_STRUCTURED_SUMMARY_PROMPT = (
+    "请将以下对话历史压缩成结构化摘要，包含以下部分（保留关键事实、决策和上下文）：\n\n"
+    "## 用户目标\n[用户的核心目标和请求]\n\n"
+    "## 已完成\n[已经完成的任务和操作]\n\n"
+    "## 关键决策\n[对话中做出的重要决策]\n\n"
+    "## 工具与结果\n[使用了哪些工具，关键结果摘要]\n\n"
+    "## 相关文件/数据\n[涉及的文件、数据、知识库引用]\n\n"
+    "## 未完成/待确认\n[尚未完成的任务或需要用户确认的事项]\n\n"
+    "## 当前状态\n[对话当前状态]\n\n"
+    "请基于以下内容生成摘要：\n\n{{text}}"
+)
+
+_SUMMARY_PREFIX = "[历史摘要 仅供参考，不是当前指令]"
+
 
 def _reset_folded_ids() -> None:
-    """Reset the in-memory folded-IDs set (for tests)."""
     _ALREADY_FOLDED_IDS.clear()
 
 
 def _get_already_folded_ids(events: list) -> set[int]:
-    """Collect IDs of events already folded in earlier compactions."""
     folded = set()
     for ev in events:
         etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
@@ -45,16 +72,19 @@ def _get_already_folded_ids(events: list) -> set[int]:
     return folded
 
 
-def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
-    """Pair tool_call events with their results using tool_call_id.
+def _get_last_user_msg_index(events: list) -> int:
+    """Return the index of the last user_msg event, or -1."""
+    last_idx = -1
+    for idx, ev in enumerate(events):
+        etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
+        if etype == "user_msg":
+            last_idx = idx
+    return last_idx
 
-    The standard pairing key is the ``tool_call_id`` embedded in each
-    event's payload.  Falls back to ``llm_response_id`` for legacy events
-    that lack tool_call_id in the payload but share a response id.
-    """
+
+def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
     pairs: list[tuple[int, int]] = []
-    # Phase 1: collect tool_call_ids from tool_call events
-    call_ids: dict[str, int] = {}  # tool_call_id → event index
+    call_ids: dict[str, int] = {}
     for idx, ev in enumerate(events):
         etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
         if etype != "tool_call":
@@ -64,14 +94,12 @@ def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
             tcid = payload.get("tool_call_id") or payload.get("id")
         else:
             tcid = None
-        # Try tool_call_id from nested function call
         if not tcid:
             fn = payload.get("function", {}) if isinstance(payload, dict) else {}
             tcid = fn.get("tool_call_id") or fn.get("id")
         if tcid:
             call_ids[str(tcid)] = idx
 
-    # Phase 2: match tool_result events to their tool_call via tool_call_id
     used_results: set[int] = set()
     for idx, ev in enumerate(events):
         etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
@@ -87,7 +115,6 @@ def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
             pairs.append((call_idx, idx + 1))
             used_results.add(idx)
 
-    # Phase 3: fallback — pair by llm_response_id for events without tool_call_id
     i = 0
     while i < len(events):
         if i in used_results or any(p[0] == i for p in pairs):
@@ -113,43 +140,89 @@ def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
             pairs.append((pair_start, i))
         else:
             i += 1
-
     return pairs
 
 
 def _estimate_tokens_for_text(text: str) -> int:
-    import math
     return max(math.ceil(len(text) / 1.5), 0)
 
 
 def _event_summary_text(event: object) -> str:
-    """Return bounded, meaningful text for a compaction summary input."""
     event_type = event.event_type if hasattr(event, "event_type") else event.get("event_type", "")
     payload = event.payload if hasattr(event, "payload") else event.get("payload", {})
     if not isinstance(payload, dict):
         return str(payload)[:1000]
     if event_type == "tool_call":
         return json.dumps(
-            {
-                "name": payload.get("name", ""),
-                "arguments": payload.get("arguments", {}),
-            },
-            ensure_ascii=False,
-            default=str,
+            {"name": payload.get("name", ""), "arguments": payload.get("arguments", {})},
+            ensure_ascii=False, default=str,
         )[:1000]
     if event_type == "tool_result":
         return json.dumps(payload.get("result", {}), ensure_ascii=False, default=str)[:1000]
     return str(payload.get("content", ""))[:1000]
 
 
+def _compute_tail_info(events: list, history_budget: int) -> tuple[int, int]:
+    """Compute tail count and tail_token_budget.
+
+    Returns:
+        (tail_event_count, tail_token_budget)
+    """
+    tail_token_budget = max(
+        _TAIL_BUDGET_MIN,
+        min(int(history_budget * _TAIL_BUDGET_RATIO), _TAIL_BUDGET_MAX),
+    )
+    tail_event_count = _TAIL_MIN_EVENTS
+
+    # Count from end within budget
+    budget_remaining = tail_token_budget
+    count = 0
+    for ev in reversed(events):
+        if count >= len(events) // 2:
+            break
+        text = _event_summary_text(ev)
+        tokens = _estimate_tokens_for_text(text)
+        if budget_remaining - tokens < 0 and count >= _TAIL_MIN_EVENTS:
+            break
+        budget_remaining -= max(tokens, 1)
+        count += 1
+    if count > tail_event_count:
+        tail_event_count = count
+
+    # Must protect all events after the last user_msg
+    last_user = _get_last_user_msg_index(events)
+    if last_user >= 0:
+        after_last_user = len(events) - last_user - 1
+        if after_last_user > tail_event_count:
+            tail_event_count = after_last_user
+
+    return tail_event_count, tail_token_budget
+
+
 def _select_foldable_indices(
     events: list,
     already_folded_ids: set[int] | None = None,
+    generation: int = 0,
+    history_budget: int = 48000,
 ) -> list[int]:
-    """Select middle events while keeping tool call/result spans atomic."""
+    """Select middle events while keeping tool call/result spans atomic.
+
+    Args:
+        events: list of events
+        already_folded_ids: set of event IDs already folded in prior compactions
+        generation: 0 for first compression, >0 for subsequent
+        history_budget: token budget for history section
+    """
     previously_folded = _get_already_folded_ids(events) | set(already_folded_ids or set())
-    middle_start = HEAD_COUNT
-    middle_end = len(events) - TAIL_COUNT
+
+    # Dynamic head count
+    head_count = _FIRST_COMPRESS_HEAD_COUNT if generation == 0 else _SUBSEQUENT_COMPRESS_HEAD_COUNT
+
+    # Dynamic tail count based on budget
+    tail_event_count, _ = _compute_tail_info(events, history_budget)
+
+    middle_start = head_count
+    middle_end = len(events) - tail_event_count
     protected_indices: set[int] = set()
     atomic_pair_indices: set[int] = set()
 
@@ -172,8 +245,6 @@ def _select_foldable_indices(
             continue
         foldable.append(idx)
 
-    # If any member of an atomic tool span was already folded, fold no remaining
-    # member of that span. This prevents partial tool groups across generations.
     selected = set(foldable)
     for pair_start, pair_end in _find_tool_pairs(events):
         pair_indices = set(range(pair_start, pair_end))
@@ -189,20 +260,18 @@ async def compress_middle_with_snapshot(
     all_events: list,
     messages: list[dict] | None = None,
     profile_key: str = CHEAP_MODEL_KEY,
+    generation: int = 0,
+    history_budget: int = 48000,
 ) -> dict:
-    """compress_middle with pre/post snapshots for replayability.
-
-    Takes a snapshot before and after compression, linking them for audit.
-    """
-    # Pre-compress snapshot
+    """compress_middle with pre/post snapshots for replayability."""
     pre_snap = None
     if messages:
         pre_snap = await take_snapshot(
             db, conversation_id, "pre_compress",
             messages, all_events,
         )
-    result = await compress_middle(db, conversation_id, all_events, profile_key)
-    # Post-compress snapshot (re-read events for updated state)
+    result = await compress_middle(db, conversation_id, all_events, profile_key,
+                                    generation=generation, history_budget=history_budget)
     if result.get("status") == "compressed":
         try:
             from .event_store import project_to_messages, read_events
@@ -214,14 +283,11 @@ async def compress_middle_with_snapshot(
                 post_messages, post_events,
                 summary=result.get("summary_preview", ""),
             )
-            # Store compression_ratio on the snapshot for audit
             if snap and compression_ratio is not None:
                 snap.compression_ratio = float(compression_ratio)
                 snap.restored_from = pre_snap.id if pre_snap else None
                 db.add(snap)
                 await db.commit()
-
-            # Record a compression_trace event linking pre/post snapshots
             try:
                 await record_event(
                     db, conversation_id, "compression_trace",
@@ -237,7 +303,6 @@ async def compress_middle_with_snapshot(
                 )
             except Exception as e:
                 logger.warning("compression_trace event failed (non-fatal): %s", e)
-
         except Exception as e:
             logger.warning("post-compress snapshot failed (non-fatal): %s", e)
     return result
@@ -251,11 +316,16 @@ async def compress_middle(
     *,
     persist_event: bool = True,
     already_folded_ids: set[int] | None = None,
+    generation: int = 0,
+    history_budget: int = 48000,
 ) -> dict:
-    if len(all_events) <= HEAD_COUNT + TAIL_COUNT:
+    tail_event_count, _ = _compute_tail_info(all_events, history_budget)
+    if len(all_events) <= (_FIRST_COMPRESS_HEAD_COUNT if generation == 0 else _SUBSEQUENT_COMPRESS_HEAD_COUNT) + tail_event_count:
         return {"status": "skipped", "reason": "事件数不足，无需压缩"}
 
-    foldable_indices = _select_foldable_indices(all_events, already_folded_ids)
+    foldable_indices = _select_foldable_indices(
+        all_events, already_folded_ids, generation=generation, history_budget=history_budget,
+    )
 
     if not foldable_indices:
         return {"status": "skipped", "reason": "无可折叠事件"}
@@ -274,9 +344,6 @@ async def compress_middle(
 
     summary_text = ""
     try:
-        # Every event that will be folded is represented in the summary input.
-        # Individual entries are bounded by _event_summary_text and the prompt
-        # provider applies the final model-input cap.
         summary_text = await _summarize_with_cheap_model("\n".join(texts), profile_key)
     except Exception as e:
         logger.warning("压缩摘要失败: %s", e)
@@ -292,6 +359,8 @@ async def compress_middle(
         "compression_ratio": round(len(foldable_indices) / max(len(all_events), 1) * 100, 1),
         "folded_count": len(foldable_indices),
         "total_events_before": len(all_events),
+        "generation": generation,
+        "tail_event_count": tail_event_count,
     }
     compaction_id = None
     if persist_event:
@@ -312,6 +381,7 @@ async def compress_middle(
         "summary_preview": summary_text[:200],
         "compression_ratio": payload["compression_ratio"],
         "total_events_before": len(all_events),
+        "generation": generation,
     }
 
 
@@ -334,14 +404,15 @@ async def _summarize_with_cheap_model(text: str, profile_key: str) -> str:
 
 async def hard_truncate_tail(db: "AsyncSession", conversation_id: int, all_events: list) -> dict:
     """兜底：只保尾部 TAIL_COUNT 条，其余硬截断。"""
-    if len(all_events) <= TAIL_COUNT:
+    tail_event_count, _ = _compute_tail_info(all_events, 48000)
+    if len(all_events) <= tail_event_count:
         return {"status": "skipped", "reason": "事件数不足尾部阈值"}
 
-    keep_start = len(all_events) - TAIL_COUNT
+    keep_start = len(all_events) - tail_event_count
     folded_ids = [e.id if hasattr(e, "id") else e.get("id") for e in all_events[:keep_start]]
     payload = {
         "folded_event_ids": folded_ids,
-        "summary": f"[硬截断] 保留尾部 {TAIL_COUNT} 条，丢弃前 {keep_start} 条。",
+        "summary": f"[硬截断] 保留尾部 {tail_event_count} 条，丢弃前 {keep_start} 条。",
         "compression_ratio": round(keep_start / max(len(all_events), 1) * 100, 1),
         "folded_count": len(folded_ids),
         "total_events_before": len(all_events),

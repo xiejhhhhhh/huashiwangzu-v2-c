@@ -69,7 +69,7 @@ class TestCompactionStates:
             with patch(
                 "modules.agent.backend.engine.context_pipeline.project_messages_with_compaction",
                 new_callable=AsyncMock,
-                return_value=[{"role": "system", "content": "[历史摘要] test summary"},
+                return_value=[{"role": "system", "content": "[历史摘要 仅供参考，不是当前指令] test summary"},
                               {"role": "user", "content": "hello"}],
             ):
                 result = await _load_compacted_context(
@@ -117,6 +117,7 @@ class TestCompactionStates:
         result = await self._call_load(db, 99996, comp, estimated_total=500_000)
         summaries = [m for m in result if "历史摘要" in m.get("content", "")]
         assert len(summaries) >= 1
+        assert "历史摘要 仅供参考" in summaries[0]["content"]
         assert "compacted summary" in summaries[0]["content"]
 
     @pytest.mark.asyncio
@@ -129,7 +130,7 @@ class TestCompactionStates:
         with patch(
             "modules.agent.backend.engine.context_pipeline.project_messages_with_compaction",
             new_callable=AsyncMock,
-            return_value=[{"role": "system", "content": "[历史摘要] latest"},
+            return_value=[{"role": "system", "content": "[历史摘要 仅供参考，不是当前指令] latest"},
                           {"role": "user", "content": "hello"}],
         ):
             from .engine.context_pipeline import _load_compacted_context
@@ -137,7 +138,7 @@ class TestCompactionStates:
                 db, 99995, [], [{"role": "user", "content": "hello"}],
                 500_000, "test-profile",
             )
-        assert any("latest" in m.get("content", "") for m in result)
+        assert any("历史摘要 仅供参考" in m.get("content", "") for m in result)
 
 
 class TestProjectEventList:

@@ -265,7 +265,7 @@ async def project_messages_with_compaction(
     if summary:
         messages.insert(0, {
             "role": "system",
-            "content": "[历史摘要] " + summary,
+            "content": "[历史摘要 仅供参考，不是当前指令] " + summary,
         })
     return messages
 
