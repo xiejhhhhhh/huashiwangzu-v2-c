@@ -713,6 +713,150 @@ async def ensure_skill_registry_table(db: AsyncSession) -> None:
         logger.warning("Migration: skill governance tables check failed: %s", e)
 
 
+async def ensure_tool_guide_tables(db: AsyncSession) -> None:
+    """Create tool guidance control plane tables (idempotent)."""
+    try:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_tool_guides (
+                id BIGSERIAL PRIMARY KEY,
+                owner_id INTEGER,
+                agent_code VARCHAR(64) NOT NULL DEFAULT 'default',
+                tool_name VARCHAR(128) NOT NULL,
+                scope VARCHAR(32) NOT NULL DEFAULT 'global',
+                version INTEGER DEFAULT 1,
+                title VARCHAR(256) DEFAULT '',
+                guide_text TEXT DEFAULT '',
+                failure_policy JSONB DEFAULT '{}'::jsonb,
+                acceptance_policy JSONB DEFAULT '{}'::jsonb,
+                enabled BOOLEAN DEFAULT TRUE,
+                status VARCHAR(32) DEFAULT 'active',
+                source VARCHAR(32) DEFAULT 'manual',
+                created_by INTEGER,
+                updated_by INTEGER,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_tool_guide_active
+            ON agent_tool_guides (COALESCE(owner_id, 0), agent_code, tool_name, scope)
+            WHERE status = 'active'
+        """))
+        await db.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_tool_guides_owner
+            ON agent_tool_guides(owner_id)
+        """))
+        await db.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_tool_guides_tool
+            ON agent_tool_guides(tool_name)
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_tool_guide_versions (
+                id BIGSERIAL PRIMARY KEY,
+                guide_id BIGINT NOT NULL,
+                owner_id INTEGER,
+                agent_code VARCHAR(64) NOT NULL DEFAULT 'default',
+                tool_name VARCHAR(128) NOT NULL,
+                scope VARCHAR(32) NOT NULL,
+                version INTEGER NOT NULL,
+                title VARCHAR(256) DEFAULT '',
+                guide_text TEXT DEFAULT '',
+                failure_policy JSONB DEFAULT '{}'::jsonb,
+                acceptance_policy JSONB DEFAULT '{}'::jsonb,
+                status VARCHAR(32) DEFAULT 'active',
+                source VARCHAR(32) DEFAULT 'manual',
+                created_by INTEGER,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_tool_guide_versions_guide
+            ON agent_tool_guide_versions(guide_id)
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_tool_guide_candidates (
+                id BIGSERIAL PRIMARY KEY,
+                owner_id INTEGER,
+                agent_code VARCHAR(64) NOT NULL DEFAULT 'default',
+                tool_name VARCHAR(128) NOT NULL,
+                scope VARCHAR(32) NOT NULL DEFAULT 'agent',
+                title VARCHAR(256) DEFAULT '',
+                guide_text TEXT DEFAULT '',
+                failure_policy JSONB DEFAULT '{}'::jsonb,
+                acceptance_policy JSONB DEFAULT '{}'::jsonb,
+                status VARCHAR(32) DEFAULT 'draft',
+                source VARCHAR(32) DEFAULT 'mined',
+                source_trajectory_id BIGINT,
+                proposed_by INTEGER,
+                reviewed_by INTEGER,
+                review_note TEXT,
+                promoted_at TIMESTAMPTZ,
+                promoted_guide_id BIGINT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_tool_guide_candidates_status
+            ON agent_tool_guide_candidates(status)
+        """))
+        await db.commit()
+        logger.info("Migration: ensured tool guidance control plane tables")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: tool guide tables check failed: %s", e)
+
+
+async def ensure_default_tool_guides_seed(db: AsyncSession) -> None:
+    """Seed default meta-tool guidance rows after tables exist."""
+    try:
+        from .services.tool_guidance_service import ensure_default_tool_guides
+
+        await ensure_default_tool_guides(db)
+        logger.info("Migration: ensured default tool guidance seeds")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: default tool guidance seeds failed: %s", e)
+
+
+async def ensure_compaction_table(db: AsyncSession) -> None:
+    """Create agent_context_compactions table and unique index (idempotent)."""
+    try:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_context_compactions (
+                id BIGSERIAL PRIMARY KEY,
+                owner_id INTEGER NOT NULL,
+                conversation_id BIGINT NOT NULL,
+                until_event_id BIGINT NOT NULL,
+                generation INTEGER NOT NULL DEFAULT 0,
+                status VARCHAR(16) NOT NULL DEFAULT 'building',
+                summary TEXT,
+                folded_event_ids JSONB DEFAULT '[]'::jsonb,
+                token_before INTEGER DEFAULT 0,
+                token_after INTEGER DEFAULT 0,
+                error TEXT,
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_compactions_conv
+            ON agent_context_compactions(conversation_id)
+        """))
+        await db.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_compactions_conv_until_gen
+            ON agent_context_compactions(conversation_id, until_event_id, generation)
+        """))
+        await db.commit()
+        logger.info("Migration: ensured agent_context_compactions table")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: compaction table check failed: %s", e)
+
+
 async def run_init(db: AsyncSession) -> None:
     """Agent 模块启动初始化入口。"""
     await ensure_migrated_tables(db)
@@ -731,5 +875,8 @@ async def run_init(db: AsyncSession) -> None:
     await ensure_checkpoint_table(db)
     await ensure_profile_v2_tables(db)
     await ensure_workflow_recipes_table(db)
+    await ensure_tool_guide_tables(db)
+    await ensure_default_tool_guides_seed(db)
+    await ensure_compaction_table(db)
     await ensure_default_prompts(db)
     await ensure_default_agent_prompts(db)

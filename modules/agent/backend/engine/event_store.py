@@ -246,6 +246,140 @@ async def run_event_migration(db: AsyncSession) -> None:
         logger.warning("Migration: agent_events table check failed: %s", e)
 
 
+async def project_messages_with_compaction(
+    db: AsyncSession,
+    conversation_id: int,
+    folded_event_ids: list[int],
+    summary: str,
+    until_event_id: int,
+) -> list[dict]:
+    """Project events to messages, applying an async compaction record.
+
+    Events with ``id <= until_event_id`` that appear in ``folded_event_ids``
+    are excluded.  Events after ``until_event_id`` are included as raw tail.
+    The compaction ``summary`` is prepended as a system message.
+    """
+    r = await db.execute(
+        select(AgentEvent)
+        .where(AgentEvent.conversation_id == conversation_id)
+        .order_by(AgentEvent.id)
+    )
+    all_events = list(r.scalars().all())
+
+    folded_set = set(folded_event_ids)
+    visible = [
+        ev for ev in all_events
+        if ev.id not in folded_set
+    ]
+    messages = _project_event_list(visible)
+
+    if summary:
+        messages.insert(0, {
+            "role": "system",
+            "content": "[历史摘要] " + summary,
+        })
+    return messages
+
+
+def _project_event_list(events: list) -> list[dict]:
+    """Project a list of AgentEvent objects into OpenAI-format messages.
+
+    Mirrors the core logic of ``project_to_messages`` but operates on a
+    pre-filtered event list instead of querying the DB.
+    """
+    messages: list[dict] = []
+    i = 0
+    while i < len(events):
+        ev = events[i]
+        if ev.event_type == "user_msg":
+            messages.append({"role": "user", "content": ev.payload.get("content", "")})
+            i += 1
+        elif ev.event_type == "assistant_msg":
+            if ev.llm_response_id:
+                tool_calls = []
+                j = i + 1
+                tc_ids: set[str] = set()
+                while j < len(events) and events[j].llm_response_id == ev.llm_response_id and events[j].event_type == "tool_call":
+                    tc_payload = events[j].payload
+                    tc_id = tc_payload.get("id", f"call_{events[j].id}")
+                    tc_ids.add(tc_id)
+                    tool_calls.append({
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": tc_payload.get("name", ""),
+                            "arguments": _ensure_string_arguments(tc_payload.get("arguments", "{}")),
+                        },
+                    })
+                    j += 1
+                tool_results, k, has_complete_results = _collect_complete_tool_results(events, j, tc_ids)
+                if has_complete_results:
+                    msg = {"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))}
+                    msg["tool_calls"] = tool_calls
+                    messages.append(msg)
+                    for tr_event in tool_results:
+                        tr_payload = tr_event.payload
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr_payload.get("tool_call_id", ""),
+                            "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
+                        })
+                    i = k
+                else:
+                    messages.append({"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))})
+                    i = j
+            else:
+                messages.append({"role": "assistant", "content": _normalize_message_content(ev.payload.get("content", ""))})
+                i += 1
+        elif ev.event_type == "tool_call":
+            tc_payload = ev.payload
+            tc_id = tc_payload.get("id", f"call_{ev.id}")
+            j = i + 1
+            found_matching = False
+            while j < len(events) and events[j].event_type == "tool_result" and events[j].payload.get("tool_call_id", "") == tc_id:
+                found_matching = True
+                break
+            if found_matching:
+                tr_payload = events[j].payload
+                messages.append({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": tc_payload.get("name", ""),
+                            "arguments": _ensure_string_arguments(tc_payload.get("arguments", "{}")),
+                        },
+                    }],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tr_payload.get("tool_call_id", ""),
+                    "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
+                })
+                i = j + 1
+            else:
+                i += 1
+        elif ev.event_type == "tool_result":
+            prev = messages[-1] if messages else None
+            if prev and prev["role"] == "assistant" and not prev.get("tool_calls"):
+                tr_payload = ev.payload
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tr_payload.get("tool_call_id", ""),
+                    "content": json.dumps(tr_payload.get("result", {}), ensure_ascii=False),
+                })
+            i += 1
+        elif ev.event_type == "compaction":
+            i += 1
+        elif ev.event_type == "memory_op":
+            i += 1
+        else:
+            i += 1
+    return messages
+
+
 async def delete_events_after(db: AsyncSession, conversation_id: int, after_created_at: object, inclusive: bool = False) -> None:
     """Delete events for *conversation_id* with created_at >= (or >) *after_created_at*."""
     from sqlalchemy import delete

@@ -10,6 +10,7 @@ import time
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models import AgentContextCompaction
 from ..prompt_seeds import (
     COMPLETION_VERIFICATION_KEY,
     CONTEXT_CITATION_RULES_KEY,
@@ -21,9 +22,7 @@ from ..services import conversation_service as conv_svc
 from ..services.runtime_prompt_provider import RuntimePromptProvider
 from .budget_allocator import assemble_context as _budget_assemble_context
 from .budget_allocator import estimate_tokens, get_effective_context_budget
-from .compressor import compress_middle_with_snapshot as _compress_with_snapshot
-from .compressor import hard_truncate_tail as _hard_truncate_tail
-from .event_store import project_to_messages, read_events
+from .event_store import project_messages_with_compaction, project_to_messages, read_events
 from .skills_loader import find_skills as _find_skills
 from .skills_loader import format_skills_for_prompt as _format_skills
 from .skills_loader import match_skills as _match_skills
@@ -232,9 +231,9 @@ async def _build_system_content(
 
 
 # =====================================================================
-# Stage 5: Compress if budget exceeded
+# Stage 5: Load async compaction (read-only, no model calls)
 # =====================================================================
-async def _compress_context(
+async def _load_compacted_context(
     db: AsyncSession,
     conversation_id: int,
     all_events: list[dict],
@@ -242,39 +241,84 @@ async def _compress_context(
     estimated_total: int,
     effective_profile_key: str,
 ) -> list[dict]:
+    """Replace synchronous compression with read-only async compaction loading.
+
+    - If a ``ready`` compaction exists: project using its folded IDs + summary,
+      then append raw tail events (events after the compaction watermark).
+    - If ``building``/``failed``/no record: keep the original projected messages
+      (no wait, no blocking).
+    - If still over budget after compaction: do deterministic clipping only
+      (no model calls, no hard truncate that modifies events).
+    """
     effective_budget, budget_source = get_effective_context_budget(effective_profile_key)
     logger.info(
-        "[COMPRESS] effective_budget=%d source=%s estimated_total=%d events=%d projected=%d",
+        "[COMPACT] effective_budget=%d source=%s estimated_total=%d events=%d projected=%d",
         effective_budget, budget_source, estimated_total, len(all_events or []), len(projected or []),
     )
-    if (
-        effective_budget > 0
-        and estimated_total > effective_budget + _COMPRESSION_TOKEN_HEADROOM
-        and len(all_events) > 30
-    ):
-        try:
-            logger.info("预算超限(est=%d > budget=%d), 触发压缩(含快照)", estimated_total, effective_budget)
-            result = await _compress_with_snapshot(
-                db, conversation_id, all_events, projected, effective_profile_key
+
+    if effective_budget <= 0 or estimated_total <= effective_budget + _COMPRESSION_TOKEN_HEADROOM:
+        logger.info("[COMPACT] skipped: within budget est=%d budget=%d", estimated_total, effective_budget)
+        return projected
+
+    try:
+        r = await db.execute(
+            select(AgentContextCompaction)
+            .where(
+                AgentContextCompaction.conversation_id == conversation_id,
+                AgentContextCompaction.status == "ready",
             )
-            if result.get("status") == "compressed":
-                projected = await project_to_messages(db, conversation_id)
-                logger.info("压缩后投影完毕, 事件数=%d, 折叠数=%d",
-                            len(projected), result.get("folded_count", 0))
-        except Exception as e:
-            logger.warning("压缩失败（降级到硬截断）: %s", e)
-            try:
-                await _hard_truncate_tail(db, conversation_id, all_events)
-                projected = await project_to_messages(db, conversation_id)
-            except Exception as e2:
-                logger.warning("硬截断也失败: %s", e2)
-    else:
-        logger.info(
-            "[COMPRESS] skipped: effective_budget=%d trigger_threshold=%d events=%d estimated=%d",
-            effective_budget, effective_budget + _COMPRESSION_TOKEN_HEADROOM,
-            len(all_events or []), estimated_total,
+            .order_by(AgentContextCompaction.id.desc())
+            .limit(1)
         )
+        compaction = r.scalar_one_or_none()
+    except Exception as e:
+        logger.warning("[COMPACT] query failed: %s", e)
+        compaction = None
+
+    if compaction:
+        try:
+            projected = await project_messages_with_compaction(
+                db, conversation_id,
+                folded_event_ids=compaction.folded_event_ids or [],
+                summary=compaction.summary or "",
+                until_event_id=compaction.until_event_id,
+            )
+            logger.info(
+                "[COMPACT] applied ready compaction id=%d until=%d folded=%d projected=%d",
+                compaction.id, compaction.until_event_id,
+                len(compaction.folded_event_ids or []), len(projected),
+            )
+        except Exception as e:
+            logger.warning("[COMPACT] projection with compaction failed, using raw: %s", e)
+            projected = await project_to_messages(db, conversation_id)
+    else:
+        logger.info("[COMPACT] no ready compaction found — using raw events")
+
+    # Deterministic clipping only — no model calls
+    new_estimated = _estimate_message_tokens(projected)
+    if new_estimated > effective_budget + _COMPRESSION_TOKEN_HEADROOM:
+        logger.info(
+            "[COMPACT] still over budget after compaction (%d > %d), deterministic clip",
+            new_estimated, effective_budget,
+        )
+        max_tail = 30
+        if len(projected) > max_tail:
+            projected = projected[-max_tail:]
+
     return projected
+
+
+def _estimate_message_tokens(messages: list[dict]) -> int:
+    """Rough token estimate for a message list (no model call)."""
+    total = 0
+    for msg in messages:
+        if isinstance(msg.get("content"), str):
+            total += len(msg["content"]) // 2
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if isinstance(tc.get("function", {}).get("arguments"), str):
+                    total += len(tc["function"]["arguments"]) // 2
+    return total
 
 
 # =====================================================================
@@ -298,6 +342,43 @@ def _inject_skills(system_content: str) -> str:
     except Exception as e:
         logger.warning("skills注入失败（non-fatal）: %s", e)
     return system_content
+
+
+# =====================================================================
+# Stage 6b: Inject tool guidance control plane
+# =====================================================================
+async def _inject_tool_guidance(
+    db: AsyncSession,
+    system_content: str,
+    owner_id: int,
+    agent_code: str,
+) -> tuple[str, dict]:
+    """Inject guidance for currently exposed meta tools.
+
+    The Agent uses progressive tool discovery, so the model only sees the
+    three meta tools at first. Concrete business-tool guidance is attached
+    later by skill_describe for the selected tool.
+    """
+    try:
+        from ..services import tool_guidance_service as tgs
+
+        guidance = await tgs.render_tool_guidance(
+            db,
+            owner_id=owner_id,
+            agent_code=agent_code,
+            tool_names=["skill_list", "skill_describe", "skill_use"],
+            max_tokens=1024,
+        )
+        if not guidance:
+            return system_content, {"tool_guidance_injected": False, "tool_guidance_chars": 0}
+        section = "\n\n---\n\n<tool_guidance>\n" + guidance + "\n</tool_guidance>"
+        return system_content + section, {
+            "tool_guidance_injected": True,
+            "tool_guidance_chars": len(guidance),
+        }
+    except Exception as e:
+        logger.warning("tool guidance injection failed (non-fatal): %s", e)
+        return system_content, {"tool_guidance_injected": False, "tool_guidance_error": str(e)}
 
 
 # =====================================================================
@@ -429,15 +510,30 @@ async def run_pipeline(
     logger.info("[PIPELINE] Stage5: projected_tokens=%d system=%d input=%d estimated_total=%d",
                 projected_tokens, system_tokens, input_tokens, estimated_total)
 
-    projected = await _compress_context(
+    projected = await _load_compacted_context(
         db, conversation_id, all_events, projected, estimated_total, effective_profile_key,
     )
-    logger.info("[PIPELINE_TIMING] Stage 5 (compress): %dms", round((time.monotonic() - _t5) * 1000))
+    logger.info("[PIPELINE_TIMING] Stage 5 (compact load): %dms", round((time.monotonic() - _t5) * 1000))
 
     # Stage 6: Inject skills into system content
     _t6 = time.monotonic()
     system_content = _inject_skills(system_content)
     logger.info("[PIPELINE_TIMING] Stage 6 (inject skills): %dms", round((time.monotonic() - _t6) * 1000))
+
+    # Stage 6b: Inject tool guidance for visible meta tools
+    _t6b = time.monotonic()
+    system_content, tool_guidance_diag = await _inject_tool_guidance(
+        db,
+        system_content,
+        owner_id=owner_id,
+        agent_code=agent_code,
+    )
+    logger.info(
+        "[PIPELINE_TIMING] Stage 6b (tool guidance): %dms, injected=%s chars=%d",
+        round((time.monotonic() - _t6b) * 1000),
+        tool_guidance_diag.get("tool_guidance_injected", False),
+        tool_guidance_diag.get("tool_guidance_chars", 0),
+    )
 
     # Stage 7: Token budget assembly
     _t7 = time.monotonic()
@@ -445,6 +541,7 @@ async def run_pipeline(
     logger.info("[PIPELINE_TIMING] Stage 7 (budget assembly): %dms", round((time.monotonic() - _t7) * 1000))
     diagnosis.update(thinking_diag)
     diagnosis.update(reduce_diag)
+    diagnosis.update(tool_guidance_diag)
     diagnosis["agent_code"] = agent_code
     diagnosis["effective_profile_key"] = effective_profile_key
 

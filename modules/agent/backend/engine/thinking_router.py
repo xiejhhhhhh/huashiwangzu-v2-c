@@ -82,19 +82,10 @@ async def route_thinking_level(
     if history_result:
         return history_result
 
-    llm_result = await _ask_llm_once(db, text_input, profile_key=profile_key, agent_code=agent_code)
-    llm_result.reason = llm_result.reason or "llm fallback"
-    await _store_thinking_history(
-        db,
-        query_text=text_input,
-        level=llm_result.level,
-        confidence=llm_result.confidence,
-        owner_id=owner_id,
-        conversation_id=conversation_id,
-        source=llm_result.source,
-        reason=llm_result.reason,
+    return ThinkingRouteResult(
+        level="medium", source="fallback", confidence=0.0,
+        reason="rule/signal/history missed — default medium, no LLM call",
     )
-    return llm_result
 
 
 async def record_thinking_feedback(

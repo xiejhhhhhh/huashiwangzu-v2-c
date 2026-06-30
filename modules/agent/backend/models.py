@@ -433,4 +433,102 @@ class AgentProfileSignal(Base, TimestampMixin):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# ── Tool Guidance Models ────────────────────────────────────────────
+
+
+class AgentToolGuide(Base, TimestampMixin):
+    """Tool guidance control plane: per-owner per-agent per-tool guidance.
+
+    Each record defines how an agent should use a specific tool,
+    including usage guidance, failure policy, and acceptance policy.
+    Supports versioning, disable, rollback, and candidate promotion.
+    """
+    __tablename__ = "agent_tool_guides"
+    __table_args__ = {"extend_existing": True}
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    agent_code: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="global")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    guide_text: Mapped[str] = mapped_column(Text, default="")
+    failure_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    acceptance_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AgentToolGuideVersion(Base, TimestampMixin):
+    """Version history for tool guides."""
+    __tablename__ = "agent_tool_guide_versions"
+    __table_args__ = {"extend_existing": True}
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    guide_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent_code: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    guide_text: Mapped[str] = mapped_column(Text, default="")
+    failure_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    acceptance_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AgentToolGuideCandidate(Base, TimestampMixin):
+    """Candidate queue for tool guide proposals awaiting review/promotion."""
+    __tablename__ = "agent_tool_guide_candidates"
+    __table_args__ = {"extend_existing": True}
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent_code: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="agent")
+    title: Mapped[str] = mapped_column(String(256), default="")
+    guide_text: Mapped[str] = mapped_column(Text, default="")
+    failure_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    acceptance_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="draft")
+    source: Mapped[str] = mapped_column(String(32), default="mined")
+    source_trajectory_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    proposed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promoted_guide_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+
+class AgentContextCompaction(Base, TimestampMixin):
+    """Persisted context compaction for async, off-critical-path compression.
+
+    Each record represents one compaction run; only ``status='ready'`` is
+    visible to the request path.  The unique index on
+    ``(conversation_id, until_event_id, generation)`` (created in init_db)
+    ensures idempotency across multi-worker retries.
+    """
+    __tablename__ = "agent_context_compactions"
+    __table_args__ = {"extend_existing": True}
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    until_event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="building")
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    folded_event_ids: Mapped[list] = mapped_column(JSON, default=list)
+    token_before: Mapped[int] = mapped_column(Integer, default=0)
+    token_after: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 from .models_prompt import AgentPrompt as AgentPrompt

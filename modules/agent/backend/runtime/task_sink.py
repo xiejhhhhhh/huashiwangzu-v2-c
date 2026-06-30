@@ -352,11 +352,46 @@ class RuntimeTaskSink:
                      "trajectory_id": trajectory_id, "turn_index": turn_index},
                 )
 
+            await self._enqueue_context_compact()
+
             logger.info("Post-turn hooks submitted via SystemTaskQueue for conv=%d", self.conversation_id)
         except Exception as exc:
             logger.warning(
                 "post-turn hooks enqueue failed (non-fatal): %s", exc,
             )
+
+    async def _enqueue_context_compact(self) -> None:
+        """Enqueue async context compaction after reply persistence.
+
+        Reads the latest event watermark and submits a durable task.
+        Idempotency is handled by the unique constraint on
+        (conversation_id, until_event_id, generation) in the handler.
+        """
+        try:
+            from sqlalchemy import func, select
+
+            from ..models import AgentEvent
+            async with AsyncSessionLocal() as _s:
+                r = await _s.execute(
+                    select(func.max(AgentEvent.id)).where(
+                        AgentEvent.conversation_id == self.conversation_id,
+                    )
+                )
+                until_event_id = r.scalar_one_or_none()
+            if not until_event_id:
+                logger.debug("No events to compact for conv=%d", self.conversation_id)
+                return
+            await self.submit_background_task(
+                "agent_context_compact",
+                {
+                    "conversation_id": self.conversation_id,
+                    "owner_id": self.owner_id,
+                    "until_event_id": int(until_event_id),
+                    "profile_key": self.profile_key,
+                },
+            )
+        except Exception as exc:
+            logger.warning("context_compact enqueue failed (non-fatal): %s", exc)
 
     async def record_trajectory(
         self,

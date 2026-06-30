@@ -226,6 +226,147 @@ async def _handle_workflow_mine(params: dict) -> dict:
 register_task_handler("workflow_mine", _handle_workflow_mine)
 
 
+# ── Async context compaction ──
+
+async def _handle_context_compact(params: dict) -> dict:
+    """Background handler: compress events up to until_event_id.
+
+    Runs the LLM-based compressor in the background worker, then atomically
+    writes a ``ready`` compaction record.  The unique constraint on
+    ``(conversation_id, until_event_id, generation)`` ensures that only one
+    worker's result is accepted — retries that would produce a duplicate
+    silently skip.
+    """
+    conversation_id = params.get("conversation_id")
+    owner_id = params.get("owner_id")
+    until_event_id = params.get("until_event_id")
+    profile_key = params.get("profile_key", "gemma-4")
+
+    if not conversation_id or not owner_id or not until_event_id:
+        return {"error": "Missing required params"}
+
+    from datetime import datetime, timezone
+
+    from app.database import AsyncSessionLocal
+    from sqlalchemy import select
+
+    from ..engine.compressor import compress_middle
+    from ..models import AgentContextCompaction, AgentEvent
+
+    def _rough_token_estimate(events: list) -> int:
+        total = 0
+        for ev in events:
+            text = ev.payload.get("content", "") if isinstance(ev.payload, dict) else str(ev.payload)
+            total += len(text) // 2
+        return total
+
+    async with AsyncSessionLocal() as db:
+        # Check if a ready record already exists (retry idempotency)
+        existing = await db.execute(
+            select(AgentContextCompaction).where(
+                AgentContextCompaction.conversation_id == conversation_id,
+                AgentContextCompaction.until_event_id == until_event_id,
+                AgentContextCompaction.status == "ready",
+            ).limit(1)
+        )
+        if existing.scalar_one_or_none():
+            logger.info("Compaction already ready for conv=%s until=%s — skipping", conversation_id, until_event_id)
+            return {"status": "skipped", "reason": "already ready"}
+
+        # Read events up to watermark
+        r = await db.execute(
+            select(AgentEvent)
+            .where(
+                AgentEvent.conversation_id == conversation_id,
+                AgentEvent.id <= until_event_id,
+            )
+            .order_by(AgentEvent.id)
+        )
+        events = list(r.scalars().all())
+        if not events:
+            return {"status": "skipped", "reason": "no events"}
+
+        token_before = _rough_token_estimate(events)
+
+        # Create building record
+        compaction = AgentContextCompaction(
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            until_event_id=until_event_id,
+            generation=0,
+            status="building",
+            token_before=token_before,
+            started_at=datetime.now(timezone.utc),
+        )
+        db.add(compaction)
+        await db.commit()
+        await db.refresh(compaction)
+        compaction_id = compaction.id
+
+        # Run compression (this may call the LLM)
+        try:
+            result = await compress_middle(db, conversation_id, events, profile_key)
+        except Exception as exc:
+            logger.error("Compaction %d failed: %s", compaction_id, exc)
+            compaction.status = "failed"
+            compaction.error = str(exc)[:1000]
+            compaction.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            return {"error": str(exc)}
+
+        if result.get("status") == "compressed":
+            folded_ids = result.get("folded_event_ids") or result.get("folded_count", 0)
+            summary = result.get("summary_preview", "")
+            folded_ids_set = set(result.get("folded_event_ids") or [])
+            after_events = [e for e in events if not (hasattr(e, "id") and e.id in folded_ids_set)]
+            token_after = _rough_token_estimate(after_events)
+
+            # Atomically promote to ready — skip if another worker already did
+            try:
+                from sqlalchemy import update as sa_update
+
+                # Use a unique-condition update to prevent race
+                r2 = await db.execute(
+                    sa_update(AgentContextCompaction)
+                    .where(
+                        AgentContextCompaction.id == compaction_id,
+                        AgentContextCompaction.status == "building",
+                    )
+                    .values(
+                        status="ready",
+                        summary=summary,
+                        folded_event_ids=folded_ids,
+                        token_after=token_after,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
+                if r2.rowcount == 0:
+                    logger.info("Compaction %d race lost — another worker already wrote ready", compaction_id)
+                    return {"status": "skipped", "reason": "race lost"}
+                await db.commit()
+                logger.info(
+                    "Context compaction ready: conv=%s until=%s folded=%s before=%d after=%d",
+                    conversation_id, until_event_id, len(folded_ids), token_before, token_after,
+                )
+                return {"status": "ready", "compaction_id": compaction_id}
+            except Exception as exc:
+                await db.rollback()
+                compaction.status = "failed"
+                compaction.error = str(exc)[:1000]
+                compaction.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+                return {"error": str(exc)}
+        else:
+            compaction.status = "failed"
+            compaction.error = result.get("reason", "unknown")
+            compaction.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            return {"status": "failed", "reason": result.get("reason", "unknown")}
+
+
+register_task_handler("agent_context_compact", _handle_context_compact)
+
+
 async def _submit_memory_distill_task(
     conversation_id: int, owner_id: int,
     user_content: str, assistant_content: str,
