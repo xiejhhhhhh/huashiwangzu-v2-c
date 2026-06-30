@@ -199,9 +199,31 @@ class TestProjectEventList:
         pairs = _find_tool_pairs(events)
         assert len(pairs) >= 1
 
+    @pytest.mark.asyncio
+    async def test_raw_projection_ignores_legacy_compaction_events(self):
+        """Only ready table rows may fold history; legacy events are audit-only."""
+        from .engine.event_store import project_to_messages
+
+        events = [
+            MockEvent(1, "user_msg", {"content": "must remain visible"}),
+            MockEvent(2, "compaction", {"folded_event_ids": [1], "summary": "obsolete"}),
+            MockEvent(3, "assistant_msg", {"content": "also visible"}),
+        ]
+        db = AsyncMock()
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = events
+        db.execute.return_value = result
+
+        messages = await project_to_messages(db, 1)
+
+        assert messages == [
+            {"role": "user", "content": "must remain visible"},
+            {"role": "assistant", "content": "also visible"},
+        ]
+
 
 class TestBudgetClipping:
-    """Deterministic clipping is used when still over budget after compaction."""
+    """Stage 5 estimates only; Stage 7 owns atomic clipping."""
 
     def test_estimate_message_tokens_counts_content(self):
         """_estimate_message_tokens correctly estimates token count from message content."""
@@ -226,8 +248,8 @@ class TestBudgetClipping:
         assert tokens > 0
 
     @pytest.mark.asyncio
-    async def test_deterministic_clip_when_over_budget(self):
-        """When still over budget, only tail messages are kept."""
+    async def test_over_budget_history_is_not_sliced_by_message_count(self):
+        """Stage 5 must not orphan tool groups with a blind tail slice."""
         from unittest.mock import patch as _patch
 
         from .engine.context_pipeline import _load_compacted_context
@@ -242,7 +264,7 @@ class TestBudgetClipping:
             result = await _load_compacted_context(
                 db, 99990, [], many_msgs, 1_000_000, "test-low-budget",
             )
-        assert len(result) <= 40, f"Clipping expected at most 40, got {len(result)}"
+        assert result == many_msgs
 
 
 class TestThinkingRouterNoLLM:
@@ -283,11 +305,9 @@ class TestEditInvalidation:
     """Editing a message invalidates existing compaction records."""
 
     @pytest.mark.asyncio
-    async def test_edit_invalidates_ready_compactions(self):
-        """When a message is edited, ready compactions are marked failed."""
-        from sqlalchemy import update
-
-        from .models import AgentContextCompaction
+    async def test_history_mutation_invalidates_building_and_ready_compactions(self):
+        """Late background workers cannot publish snapshots of edited history."""
+        from .services.conversation_service import invalidate_context_compactions
 
         db = AsyncMock()
         db.execute = AsyncMock()
@@ -295,14 +315,12 @@ class TestEditInvalidation:
 
         conv_id = 88888
 
-        stmt = (
-            update(AgentContextCompaction)
-            .where(
-                AgentContextCompaction.conversation_id == conv_id,
-                AgentContextCompaction.status == "ready",
-            )
-            .values(status="failed", error="invalidated by edit")
+        await invalidate_context_compactions(db, conv_id, "invalidated by edit")
+        stmt = db.execute.await_args.args[0]
+        compiled_obj = stmt.compile()
+        assert conv_id in compiled_obj.params.values()
+        status_values = next(
+            value for value in compiled_obj.params.values()
+            if isinstance(value, (list, tuple)) and set(value) == {"building", "ready"}
         )
-        await db.execute(stmt)
-        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-        assert str(conv_id) in compiled
+        assert set(status_values) == {"building", "ready"}

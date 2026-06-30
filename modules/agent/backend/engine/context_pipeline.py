@@ -21,7 +21,8 @@ from ..prompt_seeds import (
 from ..services import conversation_service as conv_svc
 from ..services.runtime_prompt_provider import RuntimePromptProvider
 from .budget_allocator import assemble_context as _budget_assemble_context
-from .budget_allocator import estimate_tokens, get_effective_context_budget
+from .budget_allocator import estimate_one_message, estimate_tokens, get_effective_context_budget
+from .context_injectors.tool_result_reducer import reduce as reduce_tool_results
 from .event_store import project_messages_with_compaction, project_to_messages, read_events
 from .skills_loader import find_skills as _find_skills
 from .skills_loader import format_skills_for_prompt as _format_skills
@@ -247,8 +248,8 @@ async def _load_compacted_context(
       then append raw tail events (events after the compaction watermark).
     - If ``building``/``failed``/no record: keep the original projected messages
       (no wait, no blocking).
-    - If still over budget after compaction: do deterministic clipping only
-      (no model calls, no hard truncate that modifies events).
+    Final budget clipping remains in Stage 7, where tool call/result groups are
+    trimmed atomically. This stage never slices messages by count.
     """
     effective_budget, budget_source = get_effective_context_budget(effective_profile_key)
     logger.info(
@@ -267,7 +268,11 @@ async def _load_compacted_context(
                 AgentContextCompaction.conversation_id == conversation_id,
                 AgentContextCompaction.status == "ready",
             )
-            .order_by(AgentContextCompaction.id.desc())
+            .order_by(
+                AgentContextCompaction.until_event_id.desc(),
+                AgentContextCompaction.generation.desc(),
+                AgentContextCompaction.id.desc(),
+            )
             .limit(1)
         )
         compaction = r.scalar_one_or_none()
@@ -283,42 +288,34 @@ async def _load_compacted_context(
                 summary=compaction.summary or "",
                 until_event_id=compaction.until_event_id,
             )
+            projected, reduction_diag = reduce_tool_results(projected)
             logger.info(
-                "[COMPACT] applied ready compaction id=%d until=%d folded=%d projected=%d",
+                "[COMPACT] applied ready compaction id=%d until=%d folded=%d projected=%d reduced_tools=%d",
                 compaction.id, compaction.until_event_id,
                 len(compaction.folded_event_ids or []), len(projected),
+                reduction_diag.get("tool_results_compressed", 0),
             )
         except Exception as e:
             logger.warning("[COMPACT] projection with compaction failed, using raw: %s", e)
             projected = await project_to_messages(db, conversation_id)
+            projected, _ = reduce_tool_results(projected)
     else:
         logger.info("[COMPACT] no ready compaction found — using raw events")
 
-    # Deterministic clipping only — no model calls
+    # Stage 7 owns deterministic clipping and preserves tool groups atomically.
     new_estimated = _estimate_message_tokens(projected)
     if new_estimated > effective_budget + _COMPRESSION_TOKEN_HEADROOM:
         logger.info(
-            "[COMPACT] still over budget after compaction (%d > %d), deterministic clip",
+            "[COMPACT] still over budget after compaction (%d > %d); defer atomic clipping to budget assembly",
             new_estimated, effective_budget,
         )
-        max_tail = 30
-        if len(projected) > max_tail:
-            projected = projected[-max_tail:]
 
     return projected
 
 
 def _estimate_message_tokens(messages: list[dict]) -> int:
-    """Rough token estimate for a message list (no model call)."""
-    total = 0
-    for msg in messages:
-        if isinstance(msg.get("content"), str):
-            total += len(msg["content"]) // 2
-        if msg.get("tool_calls"):
-            for tc in msg["tool_calls"]:
-                if isinstance(tc.get("function", {}).get("arguments"), str):
-                    total += len(tc["function"]["arguments"]) // 2
-    return total
+    """Estimate a projected history using the canonical message estimator."""
+    return sum(estimate_one_message(message) for message in messages)
 
 
 # =====================================================================

@@ -18,14 +18,12 @@ from app.database import AsyncSessionLocal
 from app.models.user import User
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..engine.engine import assemble_context
 from ..engine.event_store import record_event
 from ..engine.thinking_router import record_implicit_thinking_signal, record_thinking_feedback
 from ..init_db import ensure_user_profile, run_init
-from ..models import AgentContextCompaction
 from ..schemas import ChatRequest
 from ..services import conversation_service as conv_svc
 from ..services import tool_discovery
@@ -289,22 +287,6 @@ class ConversationRuntime:
         )
         if not edited_msg:
             raise HTTPException(status_code=400, detail="Edit-resubmit validation failed")
-
-        # Invalidate compaction records — editing changes event history
-        try:
-            await db.execute(
-                update(AgentContextCompaction)
-                .where(
-                    AgentContextCompaction.conversation_id == conversation_id,
-                    AgentContextCompaction.status == "ready",
-                )
-                .values(status="failed", error="invalidated by edit")
-            )
-            await db.commit()
-            logger.info("Compaction records invalidated for conv=%d after edit", conversation_id)
-        except Exception as comp_exc:
-            await db.rollback()
-            logger.warning("Compaction invalidation failed (non-fatal): %s", comp_exc)
 
         # Assemble context — events before the edit point remain. The edited
         # content is passed as current_input for this immediate rerun.

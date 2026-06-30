@@ -8,10 +8,11 @@
 import json
 import logging
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
+    AgentContextCompaction,
     AgentConversation,
     AgentEnterprisePrompt,
     AgentMessage,
@@ -67,8 +68,25 @@ async def delete_conversation(db: AsyncSession, owner_id: int, conversation_id: 
     if not conv or conv.owner_id != owner_id or conv.status != "active":
         return False
     conv.status = "deleted"
+    await invalidate_context_compactions(db, conversation_id, "invalidated by conversation deletion")
     await db.commit()
     return True
+
+
+async def invalidate_context_compactions(
+    db: AsyncSession,
+    conversation_id: int,
+    reason: str,
+) -> None:
+    """Invalidate visible and in-flight snapshots after history mutation."""
+    await db.execute(
+        update(AgentContextCompaction)
+        .where(
+            AgentContextCompaction.conversation_id == conversation_id,
+            AgentContextCompaction.status.in_(("building", "ready")),
+        )
+        .values(status="failed", error=reason[:1000])
+    )
 
 
 # ── Messages ───────────────────────────────────────────────
@@ -186,6 +204,7 @@ async def rollback_conversation(db: AsyncSession, owner_id: int, conversation_id
         )
     )
     await delete_events_after(db, conversation_id, msg.created_at)
+    await invalidate_context_compactions(db, conversation_id, "invalidated by rollback")
     await db.commit()
     return True
 
@@ -284,6 +303,7 @@ async def edit_and_resubmit(
     # current_input passed by the runtime.
     from ..engine.event_store import delete_events_after
     await delete_events_after(db, conversation_id, msg.created_at, inclusive=True)
+    await invalidate_context_compactions(db, conversation_id, "invalidated by edit")
 
     # Delete message_meta for archived messages
     if archived_ids:

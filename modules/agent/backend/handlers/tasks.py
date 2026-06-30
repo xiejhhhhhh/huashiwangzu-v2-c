@@ -240,7 +240,7 @@ async def _handle_context_compact(params: dict) -> dict:
     conversation_id = params.get("conversation_id")
     owner_id = params.get("owner_id")
     until_event_id = params.get("until_event_id")
-    profile_key = params.get("profile_key", "gemma-4")
+    profile_key = params.get("profile_key", "deepseek-v4-flash")
 
     if not conversation_id or not owner_id or not until_event_id:
         return {"error": "Missing required params"}
@@ -249,27 +249,63 @@ async def _handle_context_compact(params: dict) -> dict:
 
     from app.database import AsyncSessionLocal
     from sqlalchemy import select
+    from sqlalchemy import update as sa_update
+    from sqlalchemy.exc import IntegrityError
 
-    from ..engine.compressor import compress_middle
-    from ..models import AgentContextCompaction, AgentEvent
+    from ..engine.budget_allocator import (
+        RESERVED_OUTPUT_TOKENS,
+        estimate_one_message,
+        get_effective_context_budget,
+    )
+    from ..engine.compressor import CHEAP_MODEL_KEY, MAX_SUMMARY_CHARS, compress_middle
+    from ..engine.context_injectors.tool_result_reducer import reduce as reduce_tool_results
+    from ..engine.event_store import _project_event_list
+    from ..models import AgentContextCompaction, AgentConversation, AgentEvent
 
-    def _rough_token_estimate(events: list) -> int:
-        total = 0
-        for ev in events:
-            text = ev.payload.get("content", "") if isinstance(ev.payload, dict) else str(ev.payload)
-            total += len(text) // 2
-        return total
+    def _estimate_projected(messages: list[dict]) -> int:
+        return sum(estimate_one_message(message) for message in messages)
+
+    def _combine_summaries(previous: str, current: str) -> str:
+        combined = "\n\n".join(part for part in (previous.strip(), current.strip()) if part)
+        if len(combined) <= MAX_SUMMARY_CHARS:
+            return combined
+        marker = "\n\n[摘要中间已截断]\n\n"
+        half = (MAX_SUMMARY_CHARS - len(marker)) // 2
+        return (combined[:half] + marker + combined[-half:])[:MAX_SUMMARY_CHARS]
+
+    async def _mark_failed(compaction_id: int, error: str) -> None:
+        await db.rollback()
+        await db.execute(
+            sa_update(AgentContextCompaction)
+            .where(
+                AgentContextCompaction.id == compaction_id,
+                AgentContextCompaction.status == "building",
+            )
+            .values(
+                status="failed",
+                error=error[:1000],
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+        await db.commit()
 
     async with AsyncSessionLocal() as db:
-        # Check if a ready record already exists (retry idempotency)
+        # Highest watermark wins even if an older task completes later.
         existing = await db.execute(
-            select(AgentContextCompaction).where(
+            select(AgentContextCompaction)
+            .where(
                 AgentContextCompaction.conversation_id == conversation_id,
-                AgentContextCompaction.until_event_id == until_event_id,
                 AgentContextCompaction.status == "ready",
-            ).limit(1)
+            )
+            .order_by(
+                AgentContextCompaction.until_event_id.desc(),
+                AgentContextCompaction.generation.desc(),
+                AgentContextCompaction.id.desc(),
+            )
+            .limit(1)
         )
-        if existing.scalar_one_or_none():
+        previous_ready = existing.scalar_one_or_none()
+        if previous_ready and previous_ready.until_event_id >= until_event_id:
             logger.info("Compaction already ready for conv=%s until=%s — skipping", conversation_id, until_event_id)
             return {"status": "skipped", "reason": "already ready"}
 
@@ -285,8 +321,18 @@ async def _handle_context_compact(params: dict) -> dict:
         events = list(r.scalars().all())
         if not events:
             return {"status": "skipped", "reason": "no events"}
+        captured_event_ids = [event.id for event in events]
 
-        token_before = _rough_token_estimate(events)
+        projected, _ = reduce_tool_results(_project_event_list(events))
+        token_before = _estimate_projected(projected)
+        effective_budget, _ = get_effective_context_budget(profile_key)
+        history_budget = max(effective_budget - RESERVED_OUTPUT_TOKENS, 0)
+        if effective_budget > 0 and token_before <= history_budget:
+            logger.info(
+                "Compaction skipped within budget: conv=%s tokens=%d budget=%d",
+                conversation_id, token_before, history_budget,
+            )
+            return {"status": "skipped", "reason": "within budget"}
 
         # Create building record
         compaction = AgentContextCompaction(
@@ -299,33 +345,75 @@ async def _handle_context_compact(params: dict) -> dict:
             started_at=datetime.now(timezone.utc),
         )
         db.add(compaction)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.info("Compaction duplicate claimed by another worker: conv=%s until=%s", conversation_id, until_event_id)
+            return {"status": "skipped", "reason": "duplicate task"}
         await db.refresh(compaction)
         compaction_id = compaction.id
 
-        # Run compression (this may call the LLM)
+        previous_folded_ids = set(previous_ready.folded_event_ids or []) if previous_ready else set()
         try:
-            result = await compress_middle(db, conversation_id, events, profile_key)
+            # The background path must never append a legacy compaction event:
+            # only the ready row is visible to request-time projection.
+            result = await compress_middle(
+                db,
+                conversation_id,
+                events,
+                CHEAP_MODEL_KEY,
+                persist_event=False,
+                already_folded_ids=previous_folded_ids,
+            )
         except Exception as exc:
             logger.error("Compaction %d failed: %s", compaction_id, exc)
-            compaction.status = "failed"
-            compaction.error = str(exc)[:1000]
-            compaction.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await _mark_failed(compaction_id, str(exc))
             return {"error": str(exc)}
 
         if result.get("status") == "compressed":
-            folded_ids = result.get("folded_event_ids") or result.get("folded_count", 0)
-            summary = result.get("summary_preview", "")
-            folded_ids_set = set(result.get("folded_event_ids") or [])
-            after_events = [e for e in events if not (hasattr(e, "id") and e.id in folded_ids_set)]
-            token_after = _rough_token_estimate(after_events)
+            new_folded_ids = result.get("folded_event_ids")
+            if not isinstance(new_folded_ids, list):
+                error = "compressor returned invalid folded_event_ids"
+                await _mark_failed(compaction_id, error)
+                return {"error": error}
 
-            # Atomically promote to ready — skip if another worker already did
+            folded_ids = sorted(previous_folded_ids | set(new_folded_ids))
+            summary = _combine_summaries(
+                previous_ready.summary or "" if previous_ready else "",
+                str(result.get("summary") or ""),
+            )
+            after_events = [event for event in events if event.id not in set(folded_ids)]
+            after_messages, _ = reduce_tool_results(_project_event_list(after_events))
+            if summary:
+                after_messages.insert(0, {"role": "system", "content": "[历史摘要] " + summary})
+            token_after = _estimate_projected(after_messages)
+
             try:
-                from sqlalchemy import update as sa_update
+                # Close any pre-LLM transaction, then verify that rollback/edit
+                # did not replace the history while this worker was summarizing.
+                await db.rollback()
+                current_ids_result = await db.execute(
+                    select(AgentEvent.id)
+                    .where(
+                        AgentEvent.conversation_id == conversation_id,
+                        AgentEvent.id <= until_event_id,
+                    )
+                    .order_by(AgentEvent.id)
+                )
+                current_event_ids = list(current_ids_result.scalars().all())
+                conversation_result = await db.execute(
+                    select(AgentConversation.status).where(
+                        AgentConversation.id == conversation_id,
+                        AgentConversation.owner_id == owner_id,
+                    )
+                )
+                conversation_status = conversation_result.scalar_one_or_none()
+                if current_event_ids != captured_event_ids or conversation_status != "active":
+                    reason = "history changed while compaction was building"
+                    await _mark_failed(compaction_id, reason)
+                    return {"status": "skipped", "reason": reason}
 
-                # Use a unique-condition update to prevent race
                 r2 = await db.execute(
                     sa_update(AgentContextCompaction)
                     .where(
@@ -341,7 +429,8 @@ async def _handle_context_compact(params: dict) -> dict:
                     )
                 )
                 if r2.rowcount == 0:
-                    logger.info("Compaction %d race lost — another worker already wrote ready", compaction_id)
+                    await db.rollback()
+                    logger.info("Compaction %d invalidated or race lost", compaction_id)
                     return {"status": "skipped", "reason": "race lost"}
                 await db.commit()
                 logger.info(
@@ -350,18 +439,12 @@ async def _handle_context_compact(params: dict) -> dict:
                 )
                 return {"status": "ready", "compaction_id": compaction_id}
             except Exception as exc:
-                await db.rollback()
-                compaction.status = "failed"
-                compaction.error = str(exc)[:1000]
-                compaction.completed_at = datetime.now(timezone.utc)
-                await db.commit()
+                await _mark_failed(compaction_id, str(exc))
                 return {"error": str(exc)}
         else:
-            compaction.status = "failed"
-            compaction.error = result.get("reason", "unknown")
-            compaction.completed_at = datetime.now(timezone.utc)
-            await db.commit()
-            return {"status": "failed", "reason": result.get("reason", "unknown")}
+            reason = str(result.get("reason", "unknown"))
+            await _mark_failed(compaction_id, reason)
+            return {"status": "failed", "reason": reason}
 
 
 register_task_handler("agent_context_compact", _handle_context_compact)

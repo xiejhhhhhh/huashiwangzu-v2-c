@@ -18,8 +18,6 @@ logger = logging.getLogger("v2.agent").getChild("engine.compressor")
 HEAD_COUNT = 10
 TAIL_COUNT = 20
 MAX_SUMMARY_CHARS = 50000
-MAX_COMPRESSION_ROUNDS = 5
-COMPRESSION_RATIOS = [0, 10, 20, 50, 100]
 CHEAP_MODEL_KEY = "gemma-4"
 
 TOOL_EVENT_TYPES = {"tool_call", "tool_result"}
@@ -42,8 +40,8 @@ def _get_already_folded_ids(events: list) -> set[int]:
         payload = ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
         if isinstance(payload, dict):
             for fid in (payload.get("folded_event_ids") or []):
-                if fid:
-                    folded.add(fid if isinstance(fid, int) else None)
+                if isinstance(fid, int):
+                    folded.add(fid)
     return folded
 
 
@@ -267,30 +265,21 @@ async def compress_middle(
         for ev in [all_events[i] for i in foldable_indices]
     ]
 
+    texts = []
+    for idx in foldable_indices:
+        event = all_events[idx]
+        event_type = event.event_type if hasattr(event, "event_type") else event.get("event_type", "")
+        label = {"user_msg": "用户", "assistant_msg": "助手"}.get(event_type, event_type)
+        texts.append(f"[{label}] {_event_summary_text(event)}")
+
     summary_text = ""
-
-    for round_idx in range(MAX_COMPRESSION_ROUNDS):
-        ratio = COMPRESSION_RATIOS[round_idx] if round_idx < len(COMPRESSION_RATIOS) else 100
-        if ratio == 0:
-            continue
-        sample_count = max(1, len(foldable_indices) * ratio // 100)
-        sample_events = [all_events[i] for i in foldable_indices[:sample_count]]
-
-        texts = []
-        for ev in sample_events:
-            etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
-            label = {"user_msg": "用户", "assistant_msg": "助手"}.get(etype, etype)
-            texts.append(f"[{label}] {_event_summary_text(ev)}")
-        combined = "\n".join(texts)
-
-        try:
-            summary_text = await _summarize_with_cheap_model(combined, profile_key)
-            if summary_text and len(summary_text) < MAX_SUMMARY_CHARS:
-                break
-        except Exception as e:
-            logger.warning("压缩第 %d 轮失败: %s", round_idx + 1, e)
-            if round_idx == 0:
-                summary_text = ""
+    try:
+        # Every event that will be folded is represented in the summary input.
+        # Individual entries are bounded by _event_summary_text and the prompt
+        # provider applies the final model-input cap.
+        summary_text = await _summarize_with_cheap_model("\n".join(texts), profile_key)
+    except Exception as e:
+        logger.warning("压缩摘要失败: %s", e)
     if not summary_text:
         summary_text = f"[压缩摘要] 共折叠 {len(foldable_ids)} 条中间事件，压缩失败，降级为硬截断。"
 

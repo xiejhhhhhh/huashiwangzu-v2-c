@@ -102,24 +102,15 @@ async def project_to_messages(
     conversation_id: int,
     until_event_id: int | None = None,
 ) -> list[dict]:
-    r = await db.execute(
-        select(AgentEvent)
-        .where(AgentEvent.conversation_id == conversation_id)
-        .order_by(AgentEvent.id)
-    )
+    query = select(AgentEvent).where(AgentEvent.conversation_id == conversation_id)
+    if until_event_id is not None:
+        query = query.where(AgentEvent.id <= until_event_id)
+    r = await db.execute(query.order_by(AgentEvent.id))
     all_events = list(r.scalars().all())
-    # Handle compaction: collect skipped event ids
-    skipped_ids: set[int] = set()
-    compaction_summaries: list[dict] = []
-    for ev in all_events:
-        if ev.event_type == "compaction":
-            folded_ids = ev.payload.get("folded_event_ids", [])
-            skipped_ids.update(folded_ids)
-            compaction_summaries.append({
-                "role": "system",
-                "content": "[历史摘要] " + ev.payload.get("summary", ""),
-            })
-    visible = [ev for ev in all_events if ev.id not in skipped_ids]
+    # Legacy compaction events are audit records only. Request-time folding is
+    # exclusively driven by a ready AgentContextCompaction row, so failed or
+    # obsolete legacy summaries can never mutate the raw fallback projection.
+    visible = all_events
     messages: list[dict] = []
     i = 0
     while i < len(visible):
@@ -217,8 +208,6 @@ async def project_to_messages(
             i += 1
         else:
             i += 1
-    if compaction_summaries:
-        messages = compaction_summaries + messages
     return messages
 
 
@@ -266,10 +255,10 @@ async def project_messages_with_compaction(
     )
     all_events = list(r.scalars().all())
 
-    folded_set = set(folded_event_ids)
+    skipped_ids = set(folded_event_ids)
     visible = [
         ev for ev in all_events
-        if ev.id not in folded_set
+        if not (ev.id <= until_event_id and ev.id in skipped_ids)
     ]
     messages = _project_event_list(visible)
 

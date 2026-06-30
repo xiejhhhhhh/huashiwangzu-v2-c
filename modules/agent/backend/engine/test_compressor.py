@@ -1,7 +1,10 @@
 """Tests for compressor.py — slide window compression + cheap model summarization."""
-import pytest
 from unittest.mock import AsyncMock, patch
-from .compressor import _find_tool_pairs
+
+import pytest
+
+from . import compressor as compressor_module
+from .compressor import _find_tool_pairs, _select_foldable_indices, compress_middle
 
 
 class MockEvent:
@@ -43,3 +46,42 @@ class TestFindToolPairs:
         ]
         pairs = _find_tool_pairs(events)
         assert len(pairs) == 2
+
+
+class TestAsyncCompactionPayload:
+    def test_middle_tool_pair_is_folded_atomically(self):
+        events = [MockEvent(i + 1, "user_msg", {"content": f"m{i}"}) for i in range(40)]
+        events[12] = MockEvent(13, "tool_call", {"id": "call_1", "name": "search", "arguments": {"q": "x"}})
+        events[13] = MockEvent(14, "tool_result", {"tool_call_id": "call_1", "result": {"ok": True}})
+
+        selected = set(_select_foldable_indices(events))
+
+        assert {12, 13}.issubset(selected)
+
+    @pytest.mark.asyncio
+    async def test_non_persistent_mode_returns_full_payload_without_event_write(self):
+        events = [MockEvent(i + 1, "user_msg", {"content": f"message-{i}"}) for i in range(35)]
+        db = AsyncMock()
+
+        with (
+            patch.object(
+                compressor_module,
+                "_summarize_with_cheap_model",
+                new_callable=AsyncMock,
+                return_value="complete summary",
+            ) as summarize,
+            patch.object(
+                compressor_module,
+                "record_event",
+                new_callable=AsyncMock,
+            ) as record,
+        ):
+            result = await compress_middle(db, 1, events, persist_event=False)
+
+        assert result["status"] == "compressed"
+        assert result["folded_event_ids"] == [11, 12, 13, 14, 15]
+        assert result["summary"] == "complete summary"
+        summary_input = summarize.await_args.args[0]
+        assert "message-10" in summary_input
+        assert "message-14" in summary_input
+        record.assert_not_awaited()
