@@ -15,9 +15,8 @@ import logging
 from app.services.module_registry import call_capability
 from app.services.task_worker import register_task_handler
 
-from ..services.profile_evolve import handle_profile_evolve
 from ..services import tool_discovery
-from ..services import conversation_service as conv_svc
+from ..services.profile_evolve import handle_profile_evolve
 
 logger = logging.getLogger("v2.agent").getChild("handlers.tasks")
 
@@ -79,7 +78,6 @@ async def _submit_slow_tool_task(
 
     Returns: task_id
     """
-    from datetime import datetime, timezone
     from app.database import AsyncSessionLocal
     from app.models.system import SystemTaskQueue
 
@@ -170,7 +168,7 @@ async def _handle_slow_tool(params: dict) -> dict:
                         "content": f"✅ 你的后台任务 [{tool_name}] 已完成，请到 AI 助手对话中查看结果。",
                         "title": "后台任务完成",
                     },
-                    caller=f"system:agent_worker",
+                    caller="system:agent_worker",
                     caller_role="admin",
                 )
                 logger.info("Slow tool notify result: %s", notify_result)
@@ -178,8 +176,9 @@ async def _handle_slow_tool(params: dict) -> dict:
                 logger.warning("Slow tool IM notify failed (non-fatal): %s", notify_exc)
 
             try:
-                from ..models import AgentConversation
                 from sqlalchemy import select
+
+                from ..models import AgentConversation
                 r = await db.execute(
                     select(AgentConversation).where(AgentConversation.id == conversation_id)
                 )
@@ -199,6 +198,34 @@ async def _handle_slow_tool(params: dict) -> dict:
 register_task_handler("agent_execute_slow_tool", _handle_slow_tool)
 
 
+# ── Workflow mining ──
+
+async def _handle_workflow_mine(params: dict) -> dict:
+    """Handle workflow_mine task from SystemTaskQueue."""
+    owner_id = params.get("owner_id")
+    if not owner_id:
+        return {"error": "Missing owner_id"}
+    try:
+        from app.database import AsyncSessionLocal
+
+        from ..engine.workflow_recipe_service import run_mining_job
+        async with AsyncSessionLocal() as db:
+            result = await run_mining_job(
+                db,
+                owner_id=owner_id,
+                trajectory_id=params.get("trajectory_id"),
+            )
+            if result.get("mined", 0) > 0:
+                logger.info("Workflow mining: mined %d recipes for owner %s", result["mined"], owner_id)
+            return result
+    except Exception as e:
+        logger.warning("Workflow mining handler failed: %s", e)
+        return {"error": str(e)}
+
+
+register_task_handler("workflow_mine", _handle_workflow_mine)
+
+
 async def _submit_memory_distill_task(
     conversation_id: int, owner_id: int,
     user_content: str, assistant_content: str,
@@ -208,7 +235,6 @@ async def _submit_memory_distill_task(
     fire-and-forget，不阻塞主流程。异常只记日志不抛出。
     """
     try:
-        from app.database import AsyncSessionLocal
         from app.gateway.router import gateway_router as _gw
 
         distill_messages = [
@@ -240,7 +266,7 @@ async def _submit_memory_distill_task(
         content = content.strip()
         if content.startswith("```"):
             lines = content.split("\n")
-            cleaned = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = [line for line in lines if not line.strip().startswith("```")]
             content = "\n".join(cleaned).strip()
         start = content.find("[")
         end = content.rfind("]")

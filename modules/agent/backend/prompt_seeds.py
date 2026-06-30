@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 PROMPT_SCOPE_SYSTEM = "system"
 PROMPT_SCOPE_USER = "user"
 
@@ -39,6 +38,7 @@ TOOL_STRATEGY_INJECTION_KEY = "agent.runtime.tool_strategy_injection"
 UNDERSTANDING_INTENT_KEY = "agent.understanding.intent_clarifier"
 UNDERSTANDING_CONCERN_KEY = "agent.understanding.concern_miner"
 UNDERSTANDING_PLAN_KEY = "agent.understanding.plan_critic"
+COMPLETION_VERIFICATION_KEY = "agent.runtime.completion_verification"
 UNDERSTANDING_RETRIEVAL_KEY = "agent.understanding.retrieval_evidence"
 
 SYSTEM_BASE_PROMPT = (
@@ -174,6 +174,25 @@ INTENT_VERIFIER_PROMPT = (
     "}\n"
 )
 
+COMPLETION_VERIFICATION_PROMPT = (
+    "## 完成验证规则（必须遵守）\n\n"
+    "当你执行写/生成/替换/更新等修改类操作时：\n"
+    "1. 执行操作前必须确认目标 artifact 或 file_id。不要用\"新建同名文件\"冒充更新。\n"
+    "2. 写操作完成后，如果有可用的读/查看/详情/列表/预览/检查能力，你必须先回读验证结果，"
+    "确认目标内容已正确更新，再向用户报告完成。\n"
+    "3. 如果没有回读验证的能力或权限，你只能说\"工具已返回成功/已生成\"，"
+    "不能说\"已核实更新完成\"或\"已确认更新\"。\n"
+    "4. 批量 URL、素材列表、业务清单等大段业务数据不应保存为 stable rule。"
+    "stable rule 只存行为偏好、硬约束和项目边界。\n\n"
+    "每次写操作后，内部记录以下完成证据：\n"
+    "- operation: 操作类型（create/update/replace/delete）\n"
+    "- artifact_ids: 目标文件/资源的 ID\n"
+    "- tool_reported_success: 工具是否返回成功\n"
+    "- read_back_verified: 是否通过回读确认结果\n"
+    "- errors: 过程中出现的错误（无则留空）\n"
+    "只有当 read_back_verified=true 时，你才能宣称\"已核实更新完成\"。"
+)
+
 TOOL_STRATEGY_INJECTION_PROMPT = (
     "\n\n---\n\n【本轮意图预检】\n"
     "以下 JSON 是内部决策契约，不要原样展示给用户。你必须据此选择证据与工具策略：\n"
@@ -250,6 +269,7 @@ AGENT_PROMPT_SEEDS: tuple[AgentPromptSeed, ...] = (
     AgentPromptSeed(STOP_DECISION_KEY, "工具轮次停止决策", "runtime", STOP_DECISION_PROMPT),
     AgentPromptSeed(INTENT_PREFLIGHT_KEY, "通用意图预检", "runtime", INTENT_PREFLIGHT_PROMPT),
     AgentPromptSeed(INTENT_VERIFIER_KEY, "通用意图风险复核", "runtime", INTENT_VERIFIER_PROMPT),
+    AgentPromptSeed(COMPLETION_VERIFICATION_KEY, "完成验证规则", "runtime", COMPLETION_VERIFICATION_PROMPT),
     AgentPromptSeed(TOOL_STRATEGY_INJECTION_KEY, "工具策略注入模板", "runtime", TOOL_STRATEGY_INJECTION_PROMPT),
     AgentPromptSeed(UNDERSTANDING_INTENT_KEY, "理解环：意图澄清", "understanding", UNDERSTANDING_PROMPTS[UNDERSTANDING_INTENT_KEY]),
     AgentPromptSeed(UNDERSTANDING_CONCERN_KEY, "理解环：关注点挖掘", "understanding", UNDERSTANDING_PROMPTS[UNDERSTANDING_CONCERN_KEY]),

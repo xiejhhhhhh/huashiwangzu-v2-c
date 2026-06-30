@@ -14,28 +14,39 @@ logger = logging.getLogger("v2.agent").getChild("bootstrap")
 
 def register_agent_tasks() -> None:
     """Register all background task handlers."""
+    from .handlers.tasks import _handle_memory_distill, _handle_memory_dream, _handle_slow_tool, _handle_workflow_mine
     from .services.profile_evolve import handle_profile_evolve
-    from .handlers.tasks import _handle_memory_dream, _handle_memory_distill, _handle_slow_tool
 
     register_task_handler("profile_evolve", handle_profile_evolve)
     register_task_handler("memory_dream", _handle_memory_dream)
     register_task_handler("memory_distill", _handle_memory_distill)
     register_task_handler("agent_execute_slow_tool", _handle_slow_tool)
-    logger.info("Agent task handlers registered (profile_evolve, memory_dream, memory_distill, agent_execute_slow_tool)")
+    register_task_handler("workflow_mine", _handle_workflow_mine)
+    logger.info("Agent task handlers registered (profile_evolve, memory_dream, memory_distill, agent_execute_slow_tool, workflow_mine)")
 
 
 def register_agent_capabilities() -> None:
     """Register all cross-module capabilities."""
     from .handlers.tool import (
-        _cap_get_system_prompt, _cap_update_system_prompt,
-        _cap_get_enterprise_prompt, _cap_update_enterprise_prompt,
-        _cap_get_my_profile, _cap_update_my_profile,
-        _cap_spawn_subagent, _cap_skill_manage,
-        _cap_get_role_profiles, _cap_get_role_profile, _cap_upsert_role_profile,
-        _cap_get_enterprise_profile, _cap_upsert_enterprise_profile,
-        _cap_list_market_profiles, _cap_upsert_market_profile,
-        _cap_record_profile_signal, _cap_list_profile_signals,
-        _cap_record_trajectory, _cap_list_trajectories,
+        _cap_get_enterprise_profile,
+        _cap_get_enterprise_prompt,
+        _cap_get_my_profile,
+        _cap_get_role_profile,
+        _cap_get_role_profiles,
+        _cap_get_system_prompt,
+        _cap_list_market_profiles,
+        _cap_list_profile_signals,
+        _cap_list_trajectories,
+        _cap_record_profile_signal,
+        _cap_record_trajectory,
+        _cap_skill_manage,
+        _cap_spawn_subagent,
+        _cap_update_enterprise_prompt,
+        _cap_update_my_profile,
+        _cap_update_system_prompt,
+        _cap_upsert_enterprise_profile,
+        _cap_upsert_market_profile,
+        _cap_upsert_role_profile,
     )
 
     capabilities = [

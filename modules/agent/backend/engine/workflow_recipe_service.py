@@ -211,6 +211,13 @@ async def upsert_recipe(
     existing_recipe = existing.scalar_one_or_none()
 
     if existing_recipe:
+        # Durable queue delivery is at-least-once. Reprocessing the same
+        # newest trajectory must not inflate recipe weight/version.
+        if (
+            source_trajectory_id is not None
+            and existing_recipe.source_trajectory_id == source_trajectory_id
+        ):
+            return existing_recipe.id
         existing_recipe.success_weight = (existing_recipe.success_weight or 0) + 1.0
         existing_recipe.fail_count = 0
         existing_recipe.avg_duration_ms = avg_duration_ms
@@ -219,6 +226,8 @@ async def upsert_recipe(
         existing_recipe.steps = steps
         existing_recipe.tools_used = tools_used
         existing_recipe.trigger_condition = trigger_condition
+        existing_recipe.source_conversation_id = source_conversation_id
+        existing_recipe.source_trajectory_id = source_trajectory_id
         existing_recipe.version = (existing_recipe.version or 1) + 1
         existing_recipe.status = "published"
         existing_recipe.confidence = compute_confidence(existing_recipe)
@@ -341,6 +350,18 @@ def format_recipe_for_injection(recipes: list[AgentWorkflowRecipe]) -> str:
 # Mining helpers
 # =====================================================================
 
+def _text_intent_similarity(text_a: str, text_b: str) -> float:
+    """Pure text-to-text intent similarity for grouping trajectories.
+
+    Uses keyword scoring + char n-gram Jaccard + intent alias overlap.
+    This is separate from ``recipe_match_score()`` which compares
+    input text to a ``AgentWorkflowRecipe`` model instance.
+    """
+    score = _keyword_score(text_a, text_b)
+    score = max(score, _intent_alias_score(text_a, text_b))
+    return round(min(score, 1.0), 4)
+
+
 async def run_mining_job(
     db: AsyncSession,
     owner_id: int,
@@ -356,7 +377,8 @@ async def run_mining_job(
     result = await db.execute(
         select(AgentTrajectoryRecord)
         .where(AgentTrajectoryRecord.owner_id == owner_id)
-        .where(not AgentTrajectoryRecord.error_occurred)
+        .where(AgentTrajectoryRecord.error_occurred == False)  # noqa: E712
+        .where(AgentTrajectoryRecord.user_correction.is_(None))
         .order_by(desc(AgentTrajectoryRecord.id))
         .limit(100)
     )
@@ -364,13 +386,25 @@ async def run_mining_job(
     if not trajectories:
         return {"mined": 0, "reason": "no_successful_trajectories"}
 
-    # Group by intent-label heuristics (first ~60 chars of user_input)
+    # Group by semantic intent similarity using keyword + alias scoring
+    # Note: we compare text-to-text here (not a TrajectoryRecord to a Recipe).
     groups: dict[str, list[AgentTrajectoryRecord]] = {}
+    _assigned: set[int] = set()
     for t in trajectories:
-        intent = t.user_input[:60]
-        if intent not in groups:
-            groups[intent] = []
-        groups[intent].append(t)
+        if t.id in _assigned:
+            continue
+        group = [t]
+        _assigned.add(t.id)
+        for t2 in trajectories:
+            if t2.id in _assigned:
+                continue
+            score = _text_intent_similarity(t.user_input or "", t2.user_input or "")
+            if score >= 0.3:
+                group.append(t2)
+                _assigned.add(t2.id)
+        # Use the most common phrasing as group key
+        key = max((t.user_input or "")[:80] for t in group)
+        groups[key] = group
 
     mined = 0
     for intent, trajs in groups.items():
@@ -406,8 +440,8 @@ async def run_mining_job(
                 trigger_condition=intent,
                 steps=all_steps[:10],
                 tools_used=list(dict.fromkeys(all_tools))[:10],
-                source_conversation_id=trajs[-1].conversation_id,
-                source_trajectory_id=trajs[-1].id,
+                source_conversation_id=trajs[0].conversation_id,
+                source_trajectory_id=trajs[0].id,
                 avg_duration_ms=avg_dur,
                 avg_tool_count=avg_tool_count,
             )

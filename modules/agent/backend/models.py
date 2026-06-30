@@ -304,7 +304,13 @@ class AgentCheckpoint(Base, TimestampMixin):
 class AgentTrajectoryRecord(Base, TimestampMixin):
     """Lightweight trajectory trace for research and analysis."""
     __tablename__ = "agent_trajectory_records"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        # Unique constraint enforced via uq_trajectory_conv_turn unique INDEX
+        # (created in init_db.ensure_trajectory_unique_constraint).
+        # UniqueConstraint is NOT used because PG17 does not support
+        # ADD CONSTRAINT IF NOT EXISTS, but CREATE UNIQUE INDEX IF NOT EXISTS works.
+        {"extend_existing": True},
+    )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)

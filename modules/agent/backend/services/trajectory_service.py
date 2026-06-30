@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy import desc, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import AgentTrajectoryRecord
@@ -38,29 +38,61 @@ async def record_turn(
     duration_ms: float | None = None,
     token_count: int | None = None,
 ) -> dict:
-    """Record a single turn trajectory entry."""
+    """Record a single turn trajectory entry (upsert by conversation_id+turn_index).
+
+    Uses PostgreSQL dialect insert() with on_conflict_do_update() for
+    typed JSONB bind parameters that asyncpg can handle. Idempotent:
+    replaying the same turn overwrites, never duplicates.
+    """
     try:
-        record = AgentTrajectoryRecord(
-            conversation_id=conversation_id,
-            owner_id=owner_id,
-            session_id=session_id,
-            turn_index=turn_index,
-            user_input=user_input[:2000],
-            tool_calls=tool_calls or [],
-            tool_results=tool_results or [],
-            assistant_response=assistant_response[:5000] if assistant_response else None,
-            user_correction=user_correction,
-            failure_recovery=failure_recovery,
-            thinking_level=thinking_level,
-            profile_signals=profile_signals or [],
-            error_occurred=error_occurred,
-            duration_ms=duration_ms,
-            token_count=token_count,
-        )
-        db.add(record)
+        now = datetime.now(timezone.utc)
+        values = {
+            "conversation_id": conversation_id,
+            "owner_id": owner_id,
+            "session_id": session_id,
+            "turn_index": turn_index,
+            "user_input": (user_input or "")[:2000],
+            "tool_calls": tool_calls or [],
+            "tool_results": tool_results or [],
+            "assistant_response": (assistant_response or "")[:5000] if assistant_response else None,
+            "user_correction": user_correction,
+            "failure_recovery": failure_recovery,
+            "thinking_level": thinking_level,
+            "profile_signals": profile_signals or [],
+            "error_occurred": error_occurred,
+            "duration_ms": duration_ms,
+            "token_count": token_count,
+            "created_at": now,
+            "updated_at": now,
+        }
+        stmt = pg_insert(AgentTrajectoryRecord).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["conversation_id", "turn_index"],
+            set_={
+                "owner_id": stmt.excluded.owner_id,
+                "session_id": stmt.excluded.session_id,
+                "user_input": stmt.excluded.user_input,
+                "tool_calls": stmt.excluded.tool_calls,
+                "tool_results": stmt.excluded.tool_results,
+                "assistant_response": stmt.excluded.assistant_response,
+                "user_correction": stmt.excluded.user_correction,
+                "failure_recovery": stmt.excluded.failure_recovery,
+                "thinking_level": stmt.excluded.thinking_level,
+                "profile_signals": stmt.excluded.profile_signals,
+                "error_occurred": stmt.excluded.error_occurred,
+                "duration_ms": stmt.excluded.duration_ms,
+                "token_count": stmt.excluded.token_count,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        ).returning(AgentTrajectoryRecord.id)
+        result = await db.execute(stmt)
         await db.commit()
-        return {"id": record.id, "turn_index": turn_index, "recorded": True}
+        row = result.one_or_none()
+        record_id = row[0] if row else None
+        logger.info("Trajectory recorded: conv=%d turn=%d id=%s", conversation_id, turn_index, record_id)
+        return {"id": record_id, "turn_index": turn_index, "recorded": True}
     except Exception as e:
+        await db.rollback()
         logger.warning("Failed to record trajectory turn: %s", e)
         return {"error": str(e), "recorded": False}
 

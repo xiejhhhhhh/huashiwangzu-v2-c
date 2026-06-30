@@ -4,14 +4,13 @@
 降级：便宜模型失败 → 退"只保尾部 M 条"硬截断，不报错。
 
 批5增强：压缩前快照 + 压缩链路追踪 + 可回放审计。"""
-import json
 import logging
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-from .event_store import record_event
 from .context_snapshot import take_snapshot
-from .budget_allocator import estimate_tokens as _estimate_tokens
+from .event_store import record_event
 
 logger = logging.getLogger("v2.agent").getChild("engine.compressor")
 
@@ -23,13 +22,78 @@ COMPRESSION_RATIOS = [0, 10, 20, 50, 100]
 CHEAP_MODEL_KEY = "gemma-4"
 
 TOOL_EVENT_TYPES = {"tool_call", "tool_result"}
-NON_FOLDABLE_TYPES = {"compaction", "memory_op", "system_event"}
+NON_FOLDABLE_TYPES = {"compaction", "memory_op", "system_event", "compression_trace"}
+_ALREADY_FOLDED_IDS: set[int] = set()
+
+
+def _reset_folded_ids() -> None:
+    """Reset the in-memory folded-IDs set (for tests)."""
+    _ALREADY_FOLDED_IDS.clear()
+
+
+def _get_already_folded_ids(events: list) -> set[int]:
+    """Collect IDs of events already folded in earlier compactions."""
+    folded = set()
+    for ev in events:
+        etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
+        if etype != "compaction":
+            continue
+        payload = ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
+        if isinstance(payload, dict):
+            for fid in (payload.get("folded_event_ids") or []):
+                if fid:
+                    folded.add(fid if isinstance(fid, int) else None)
+    return folded
 
 
 def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
+    """Pair tool_call events with their results using tool_call_id.
+
+    The standard pairing key is the ``tool_call_id`` embedded in each
+    event's payload.  Falls back to ``llm_response_id`` for legacy events
+    that lack tool_call_id in the payload but share a response id.
+    """
     pairs: list[tuple[int, int]] = []
+    # Phase 1: collect tool_call_ids from tool_call events
+    call_ids: dict[str, int] = {}  # tool_call_id → event index
+    for idx, ev in enumerate(events):
+        etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
+        if etype != "tool_call":
+            continue
+        payload = ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
+        if isinstance(payload, dict):
+            tcid = payload.get("tool_call_id") or payload.get("id")
+        else:
+            tcid = None
+        # Try tool_call_id from nested function call
+        if not tcid:
+            fn = payload.get("function", {}) if isinstance(payload, dict) else {}
+            tcid = fn.get("tool_call_id") or fn.get("id")
+        if tcid:
+            call_ids[str(tcid)] = idx
+
+    # Phase 2: match tool_result events to their tool_call via tool_call_id
+    used_results: set[int] = set()
+    for idx, ev in enumerate(events):
+        etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
+        if etype != "tool_result":
+            continue
+        payload = ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
+        if isinstance(payload, dict):
+            tcid = payload.get("tool_call_id") or payload.get("id")
+        else:
+            tcid = None
+        if tcid and str(tcid) in call_ids:
+            call_idx = call_ids[str(tcid)]
+            pairs.append((call_idx, idx + 1))
+            used_results.add(idx)
+
+    # Phase 3: fallback — pair by llm_response_id for events without tool_call_id
     i = 0
     while i < len(events):
+        if i in used_results or any(p[0] == i for p in pairs):
+            i += 1
+            continue
         ev = events[i]
         rid = getattr(ev, "llm_response_id", None)
         if rid is None and isinstance(ev, dict):
@@ -37,6 +101,7 @@ def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
         etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
         if rid and etype == "tool_call":
             pair_start = i
+            i += 1
             while i < len(events):
                 ev2 = events[i]
                 rid2 = getattr(ev2, "llm_response_id", None)
@@ -49,6 +114,7 @@ def _find_tool_pairs(events: list) -> list[tuple[int, int]]:
             pairs.append((pair_start, i))
         else:
             i += 1
+
     return pairs
 
 
@@ -79,7 +145,7 @@ async def compress_middle_with_snapshot(
     # Post-compress snapshot (re-read events for updated state)
     if result.get("status") == "compressed":
         try:
-            from .event_store import read_events, project_to_messages
+            from .event_store import project_to_messages, read_events
             post_events = await read_events(db, conversation_id)
             post_messages = await project_to_messages(db, conversation_id)
             compression_ratio = result.get("compression_ratio")
@@ -126,6 +192,9 @@ async def compress_middle(
     if len(all_events) <= HEAD_COUNT + TAIL_COUNT:
         return {"status": "skipped", "reason": "事件数不足，无需压缩"}
 
+    # Collect IDs already folded in previous compactions
+    previously_folded = _get_already_folded_ids(all_events)
+
     tool_pairs = _find_tool_pairs(all_events)
 
     freezable = set()
@@ -141,6 +210,10 @@ async def compress_middle(
         if idx in freezable:
             continue
         if idx < HEAD_COUNT or idx >= len(all_events) - TAIL_COUNT:
+            continue
+        # Skip events already folded by a previous compaction
+        ev_id = ev.id if hasattr(ev, "id") else ev.get("id")
+        if ev_id and ev_id in previously_folded:
             continue
         foldable_indices.append(idx)
 
@@ -211,6 +284,7 @@ async def compress_middle(
 async def _summarize_with_cheap_model(text: str, profile_key: str) -> str:
     from app.database import AsyncSessionLocal
     from app.gateway.router import gateway_router
+
     from ..prompt_seeds import COMPRESSION_SUMMARY_KEY
     from ..services.runtime_prompt_provider import render_system_prompt
 

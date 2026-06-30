@@ -9,7 +9,6 @@ from .models_prompt import AgentPrompt
 from .prompt_seeds import (
     AGENT_PROMPT_SEEDS,
     ENTERPRISE_PROMPT,
-    PROMPT_SCOPE_SYSTEM,
     SYSTEM_BASE_PROMPT,
 )
 
@@ -499,6 +498,35 @@ async def ensure_profile_v2_tables(db: AsyncSession) -> None:
         logger.warning("Migration: profile 2.0 tables check failed: %s", e)
 
 
+async def ensure_trajectory_unique_constraint(db: AsyncSession) -> None:
+    """Create unique index on agent_trajectory_records (conversation_id, turn_index).
+
+    PostgreSQL 17 does not support ``ADD CONSTRAINT IF NOT EXISTS``, so we
+    use a unique index (which supports ``IF NOT EXISTS``) as the durable
+    uniqueness enforcement. This also doubles as a query index for
+    trajectory lookups by conversation.
+    """
+    try:
+        # Drop any orphan constraint from the previous flawed migration
+        await db.execute(text(
+            "ALTER TABLE agent_trajectory_records "
+            "DROP CONSTRAINT IF EXISTS uq_trajectory_conv_turn"
+        ))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+    try:
+        await db.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_trajectory_conv_turn "
+            "ON agent_trajectory_records (conversation_id, turn_index)"
+        ))
+        await db.commit()
+        logger.info("Migration: ensured uq_trajectory_conv_turn unique index")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: uq_trajectory_conv_turn index failed: %s", e)
+
+
 async def ensure_checkpoint_table(db: AsyncSession) -> None:
     """Create agent_checkpoints table (idempotent)."""
     try:
@@ -699,6 +727,7 @@ async def run_init(db: AsyncSession) -> None:
     await ensure_message_status_column(db)
     await ensure_skill_registry_table(db)
     await ensure_trajectory_table(db)
+    await ensure_trajectory_unique_constraint(db)
     await ensure_checkpoint_table(db)
     await ensure_profile_v2_tables(db)
     await ensure_workflow_recipes_table(db)

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..prompt_seeds import (
+    COMPLETION_VERIFICATION_KEY,
     CONTEXT_CITATION_RULES_KEY,
     CONTEXT_TOOL_GUIDANCE_KEY,
     ENTERPRISE_PROMPT_KEY,
@@ -19,7 +20,7 @@ from ..prompt_seeds import (
 from ..services import conversation_service as conv_svc
 from ..services.runtime_prompt_provider import RuntimePromptProvider
 from .budget_allocator import assemble_context as _budget_assemble_context
-from .budget_allocator import estimate_tokens, get_context_budget
+from .budget_allocator import estimate_tokens, get_effective_context_budget
 from .compressor import compress_middle_with_snapshot as _compress_with_snapshot
 from .compressor import hard_truncate_tail as _hard_truncate_tail
 from .event_store import project_to_messages, read_events
@@ -215,6 +216,12 @@ async def _build_system_content(
         layers.append("\n## 工具调用指引\n" + guide)
         total_chars += len(layers[-1])
 
+    # ── 完成验证规则 ────────────────────────────────────────
+    verify_prompt = (await prompt_provider.get_system_prompt(COMPLETION_VERIFICATION_KEY)).strip()
+    if verify_prompt and total_chars < MAX_CHARS:
+        layers.append(verify_prompt)
+        total_chars += len(verify_prompt)
+
     # ── 引用规范提示（减少幻觉，放末尾以增加模型注意力） ────
     cite_prompt = (await prompt_provider.get_system_prompt(CONTEXT_CITATION_RULES_KEY)).strip()
     if cite_prompt and total_chars < MAX_CHARS:
@@ -235,20 +242,25 @@ async def _compress_context(
     estimated_total: int,
     effective_profile_key: str,
 ) -> list[dict]:
-    budget = get_context_budget(effective_profile_key)
+    effective_budget, budget_source = get_effective_context_budget(effective_profile_key)
+    logger.info(
+        "[COMPRESS] effective_budget=%d source=%s estimated_total=%d events=%d projected=%d",
+        effective_budget, budget_source, estimated_total, len(all_events or []), len(projected or []),
+    )
     if (
-        budget is not None
-        and estimated_total > budget + _COMPRESSION_TOKEN_HEADROOM
+        effective_budget > 0
+        and estimated_total > effective_budget + _COMPRESSION_TOKEN_HEADROOM
         and len(all_events) > 30
     ):
         try:
-            logger.info("预算超限(est=%d > budget=%d), 触发压缩(含快照)", estimated_total, budget)
+            logger.info("预算超限(est=%d > budget=%d), 触发压缩(含快照)", estimated_total, effective_budget)
             result = await _compress_with_snapshot(
                 db, conversation_id, all_events, projected, effective_profile_key
             )
             if result.get("status") == "compressed":
                 projected = await project_to_messages(db, conversation_id)
-                logger.info("压缩后投影完毕, 事件数=%d", len(projected))
+                logger.info("压缩后投影完毕, 事件数=%d, 折叠数=%d",
+                            len(projected), result.get("folded_count", 0))
         except Exception as e:
             logger.warning("压缩失败（降级到硬截断）: %s", e)
             try:
@@ -256,6 +268,12 @@ async def _compress_context(
                 projected = await project_to_messages(db, conversation_id)
             except Exception as e2:
                 logger.warning("硬截断也失败: %s", e2)
+    else:
+        logger.info(
+            "[COMPRESS] skipped: effective_budget=%d trigger_threshold=%d events=%d estimated=%d",
+            effective_budget, effective_budget + _COMPRESSION_TOKEN_HEADROOM,
+            len(all_events or []), estimated_total,
+        )
     return projected
 
 
@@ -401,13 +419,15 @@ async def run_pipeline(
     # Stage 5: Compress if budget exceeded
     _t5 = time.monotonic()
     projected_tokens = (
-        sum(max(estimate_tokens([m]), 0) for m in projected[-100:])
+        sum(max(estimate_tokens([m]), 0) for m in projected)
         if projected
         else 0
     )
     system_tokens = max(len(system_content) // 2, 0)
     input_tokens = max(len(current_user_input) // 2, 0)
     estimated_total = system_tokens + input_tokens + projected_tokens + 4096
+    logger.info("[PIPELINE] Stage5: projected_tokens=%d system=%d input=%d estimated_total=%d",
+                projected_tokens, system_tokens, input_tokens, estimated_total)
 
     projected = await _compress_context(
         db, conversation_id, all_events, projected, estimated_total, effective_profile_key,

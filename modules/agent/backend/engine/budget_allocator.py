@@ -11,6 +11,7 @@ from .file_state_lock import read_json_locked, update_json_locked
 
 logger = logging.getLogger("v2.agent").getChild("engine.budget_allocator")
 SAFETY_MAX_TOKENS = 120000
+AGENT_DEFAULT_SOFT_BUDGET = 48000
 RESERVED_OUTPUT_TOKENS = 4096
 
 # ── File-backed persistence for cross-worker consistency ──────────────
@@ -172,6 +173,23 @@ def get_context_budget(profile_key: str) -> int | None:
     return None
 
 
+def get_effective_context_budget(profile_key: str) -> tuple[int, str]:
+    """Return the effective context budget and its source.
+
+    Returns ``(budget, source)`` where source is ``"model"`` when the
+    model config provides a positive integer, or ``"agent_default"``
+    when the model config is ``null``/missing/invalid (falling back to
+    ``AGENT_DEFAULT_SOFT_BUDGET`` = 48,000).
+
+    This is the **single authority** — never read ``get_context_budget``
+    directly for the runtime budget.
+    """
+    configured = get_context_budget(profile_key)
+    if configured is not None and configured > 0:
+        return configured, "model"
+    return AGENT_DEFAULT_SOFT_BUDGET, "agent_default"
+
+
 def estimate_tokens(messages: list[dict]) -> int:
     text = ""
     for m in messages:
@@ -194,10 +212,39 @@ def estimate_tokens(messages: list[dict]) -> int:
 
 
 def estimate_one_message(msg: dict) -> int:
-    text = msg.get("content", "")
-    if isinstance(text, str):
-        return max(math.ceil(len(text) / 1.5), 0)
-    return 0
+    """Estimate tokens for a single message (content + tool_calls + role/name).
+
+    Unlike ``estimate_tokens()`` which sums over a list, this is the
+    single-message estimator used throughout the budget pipeline.
+    """
+    import math
+    text = ""
+    content = msg.get("content", "")
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text += part.get("text", "")
+            elif isinstance(part, str):
+                text += part
+    elif isinstance(content, str):
+        text += content
+
+    # Tool calls: function name + serialized arguments
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function", {})
+        text += fn.get("name", "") + tc.get("name", "")
+        args = fn.get("arguments", {})
+        if isinstance(args, dict):
+            text += str(args)
+        elif isinstance(args, str):
+            text += args
+        # tool_call_id
+        text += tc.get("id", "") or tc.get("tool_call_id", "") or ""
+
+    # Role/name overhead: ~4 tokens per message
+    text += msg.get("role", "") + msg.get("name", "") + "systemuserassistanttool"
+
+    return max(math.ceil(len(text) / 1.5), 0)
 
 
 def _group_projected_messages(projected_messages: list[dict]) -> list[list[dict]]:
@@ -238,15 +285,16 @@ def assemble_context(
     current_input: str,
     profile_key: str,
 ) -> tuple[list[dict], dict]:
-    budget = get_context_budget(profile_key)
+    effective_budget, budget_source = get_effective_context_budget(profile_key)
     diagnosis = {
-        "budget": budget,
+        "budget": effective_budget,
+        "configured_budget": get_context_budget(profile_key),
+        "budget_source": budget_source,
         "total_estimated": 0,
         "system_tokens": 0,
         "input_tokens": 0,
         "recent_tokens": 0,
         "dropped_recent_count": 0,
-        "is_unlimited": budget is None,
         "budget_exceeded": False,
     }
     system_msg = {"role": "system", "content": system_content}
@@ -257,11 +305,7 @@ def assemble_context(
     diagnosis["input_tokens"] = input_tokens
     required_tokens = system_tokens + input_tokens + RESERVED_OUTPUT_TOKENS
     messages: list[dict] = [system_msg]
-    if budget is None:
-        budget = SAFETY_MAX_TOKENS
-        diagnosis["is_unlimited"] = True
-        diagnosis["budget"] = budget
-    remaining = budget - required_tokens
+    remaining = effective_budget - required_tokens
     if remaining <= 0:
         messages.append(input_msg)
         total_recent = sum(estimate_one_message(m) for m in projected_messages)
@@ -269,26 +313,37 @@ def assemble_context(
         diagnosis["recent_tokens"] = total_recent
         diagnosis["budget_exceeded"] = True
         return messages, diagnosis
-    # Fill with recent dialog messages from the projected events
+
+    # Latest-first: iterate groups from tail, keep the most recent within budget.
+    # System/pinned-system roles are always kept; tool-call groups are atomic.
     recent: list[dict] = []
     recent_tokens = 0
     dropped = 0
-    for group in _group_projected_messages(projected_messages):
+    groups = _group_projected_messages(projected_messages)
+    for group in reversed(groups):
         group_tokens = sum(estimate_one_message(msg) for msg in group)
         if not group:
             continue
         if group[0]["role"] not in ("user", "assistant", "tool"):
             continue
         if recent_tokens + group_tokens <= remaining:
-            recent.extend(group)
             recent_tokens += group_tokens
+            recent.append(group)
         else:
             dropped += len(group)
+
+    # Restore time order (groups gathered latest-first, so reverse back)
+    recent.reverse()
+    # Flatten groups back into a message list
+    flat_recent: list[dict] = []
+    for g in recent:
+        flat_recent.extend(g)
+
     diagnosis["recent_tokens"] = recent_tokens
     diagnosis["dropped_recent_count"] = dropped
-    messages.extend(recent)
+    messages.extend(flat_recent)
     messages.append(input_msg)
     total_est = system_tokens + input_tokens + recent_tokens
     diagnosis["total_estimated"] = total_est
-    diagnosis["budget_exceeded"] = total_est > budget
+    diagnosis["budget_exceeded"] = total_est > effective_budget
     return messages, diagnosis

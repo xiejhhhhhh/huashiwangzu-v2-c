@@ -20,7 +20,13 @@ from app.database import AsyncSessionLocal
 
 from .._utils import j as _j
 from .._utils import references_from_tool_events, tool_calls_for_history
-from ..engine.budget_allocator import estimate_tokens
+from ..engine.budget_allocator import (
+    RESERVED_OUTPUT_TOKENS,
+    _group_projected_messages,
+    estimate_one_message,
+    estimate_tokens,
+    get_effective_context_budget,
+)
 from ..engine.engine import (
     chat_stream_with_degradation_chain,
     chat_with_degradation_chain,
@@ -152,9 +158,29 @@ class ToolLoopRuntime:
             _tool_round_tokens_before = 0
             _tool_intent_retry_count = 0
             # Accumulate usage across all model calls in this turn
-            _accumulated_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            _accumulated_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "model_call_count": 0}
+            _max_single_call_prompt_tokens = 0
             _merge_usage(_accumulated_usage, self.initial_usage)
             emitter = StreamEmitter()
+
+            _model_call_count = 0
+            # Stable turn identity: use the latest persisted user event id.
+            # Counts can be reused after rollback/edit flows; event ids cannot.
+            _turn_ordinal = 0
+            try:
+                from sqlalchemy import func as _sf
+                from sqlalchemy import select as _ss
+
+                from ..models import AgentEvent
+                async with AsyncSessionLocal() as _turn_db:
+                    _tr = await _turn_db.execute(
+                        _ss(_sf.max(AgentEvent.id)).select_from(AgentEvent)
+                        .where(AgentEvent.conversation_id == self.conversation_id,
+                               AgentEvent.event_type == "user_msg")
+                    )
+                    _turn_ordinal = _tr.scalar() or 0
+            except Exception:
+                logger.warning("Failed to compute turn ordinal, using 0")
 
             for _round in range(_resume_from_step, self.policy.max_tool_rounds):
                 # Y1: reset full each round to avoid cross-round accumulation
@@ -163,6 +189,55 @@ class ToolLoopRuntime:
                     "[DIAG] ToolLoopRuntime round %d/%d",
                     _round + 1, self.policy.max_tool_rounds,
                 )
+
+                # ── Round-level budget guard ───────────────────────────
+                _guard_t0 = time.monotonic()
+                _effective_budget, _budget_source = get_effective_context_budget(self.profile_key)
+                _messages_tokens = sum(estimate_one_message(m) for m in messages)
+                _input_budget = max(_effective_budget - RESERVED_OUTPUT_TOKENS - 1024, 0)
+                if _messages_tokens > _input_budget and len(messages) > 1:
+                    _before = len(messages)
+                    _system_messages = [m for m in messages if m.get("role") == "system"]
+                    _history_messages = [m for m in messages if m.get("role") != "system"]
+                    _tail_groups = _group_projected_messages(_history_messages)
+                    _system_tokens = sum(estimate_one_message(m) for m in _system_messages)
+                    _remaining = max(_input_budget - _system_tokens, 0)
+
+                    # Reserve the latest user goal before filling with recent
+                    # tool groups, otherwise a large result can evict the goal.
+                    _latest_user_idx = next(
+                        (idx for idx in range(len(_tail_groups) - 1, -1, -1)
+                         if any(m.get("role") == "user" for m in _tail_groups[idx])),
+                        None,
+                    )
+                    _selected: dict[int, list[dict]] = {}
+                    _used = 0
+                    if _latest_user_idx is not None:
+                        _pinned = _tail_groups[_latest_user_idx]
+                        _selected[_latest_user_idx] = _pinned
+                        _used += sum(estimate_one_message(m) for m in _pinned)
+
+                    for _idx in range(len(_tail_groups) - 1, -1, -1):
+                        if _idx in _selected:
+                            continue
+                        _g = _tail_groups[_idx]
+                        _gt = sum(estimate_one_message(m) for m in _g)
+                        if _used + _gt <= _remaining:
+                            _selected[_idx] = _g
+                            _used += _gt
+
+                    _kept = list(_system_messages)
+                    for _idx in sorted(_selected):
+                        _g = _selected[_idx]
+                        _kept.extend(_g)
+                    messages = _kept
+                    _after = len(messages)
+                    logger.info(
+                        "[BUDGET_GUARD] round=%d messages trimmed: %d→%d, tokens=%d, budget=%d",
+                        _round, _before, _after, _messages_tokens, _input_budget,
+                    )
+                logger.debug("[BUDGET_GUARD] round=%d guard done in %dms",
+                             _round, round((time.monotonic() - _guard_t0) * 1000))
 
                 # ── Streaming model call for tool decisions ─────────
                 _decision_t0 = time.monotonic()
@@ -197,7 +272,13 @@ class ToolLoopRuntime:
                 )
 
                 # ── Accumulate usage from each model call ─────────────
-                _merge_usage(_accumulated_usage, result.get("usage") or {})
+                _model_call_count += 1
+                _accumulated_usage["model_call_count"] = _model_call_count
+                _call_usage = result.get("usage") or {}
+                _merge_usage(_accumulated_usage, _call_usage)
+                _single_prompt = _call_usage.get("prompt_tokens", 0)
+                if _single_prompt > _max_single_call_prompt_tokens:
+                    _max_single_call_prompt_tokens = _single_prompt
 
                 if result.get("error"):
                     error_msg = str(result["error"])
@@ -370,7 +451,11 @@ class ToolLoopRuntime:
                         "slow_name": resolved_slow,
                     })
                     _tool_call_times[tool_call_id] = time.time()
-                    call_event = {"type": "tool_call", "name": name, "arguments": args, "started_at": time.time()}
+                    call_event = {
+                        "type": "tool_call", "name": name,
+                        "tool_call_id": tool_call_id,
+                        "arguments": args, "started_at": time.time(),
+                    }
                     tool_events.append(call_event)
                     timeline.append(call_event)
                     yield self._j_sse(call_event)
@@ -393,6 +478,7 @@ class ToolLoopRuntime:
                         result_event = {
                             "type": "tool_result",
                             "name": tool.get("name", ""),
+                            "tool_call_id": tool.get("tool_call_id", ""),
                             "result": tool_result,
                             "started_at": time.time(),
                             "duration_ms": round((time.time() - _tool_call_times.get(tool.get("tool_call_id", ""), time.time())) * 1000),
@@ -455,6 +541,7 @@ class ToolLoopRuntime:
                     result_event = {
                         "type": "tool_result",
                         "name": tool["name"],
+                        "tool_call_id": tool["tool_call_id"],
                         "result": tool_result,
                         "started_at": time.time(),
                         "duration_ms": round((time.time() - _tool_call_times.get(tool["tool_call_id"], time.time())) * 1000),
@@ -574,6 +661,7 @@ class ToolLoopRuntime:
                         result_event = {
                             "type": "tool_result",
                             "name": outcome["name"],
+                            "tool_call_id": outcome.get("tool_call_id", ""),
                             "result": result_data,
                             "started_at": time.time(),
                             "duration_ms": round((time.time() - _tool_call_times.get(outcome.get("tool_call_id", ""), time.time())) * 1000),
@@ -737,6 +825,8 @@ class ToolLoopRuntime:
                 logger.info("[DIAG] ToolLoopRuntime starting final persist")
                 async with AsyncSessionLocal() as s2:
                     _usage = dict(_accumulated_usage) if _has_token_usage(_accumulated_usage) else (dict(emitter.usage_data) if emitter.usage_data else {})
+                    _usage["model_call_count"] = _model_call_count
+                    _usage["max_single_call_prompt_tokens"] = _max_single_call_prompt_tokens
                     work_duration_ms = round((time.time() - _work_start_time) * 1000)
                     _usage["work_duration_ms"] = work_duration_ms
                     _usage["work_duration_sec"] = round(work_duration_ms / 1000)
@@ -819,8 +909,53 @@ class ToolLoopRuntime:
                     await sink.persist_pending_events(
                         s2, pending_events, persisted_event_count,
                     )
+
+                    # ── Completion evidence ──────────────────────
+                    try:
+                        _completion_evidence = await sink.generate_completion_evidence(
+                            tool_events,
+                            [tr for tr in tool_events if tr.get("type") == "tool_result"],
+                        )
+                        if _completion_evidence:
+                            await sink.record_event(
+                                s2, "completion_evidence",
+                                {"evidence": _completion_evidence, "turn": _turn_ordinal},
+                                llm_response_id=None,
+                            )
+                    except Exception as _ce_exc:
+                        logger.warning("Completion evidence failed (non-fatal): %s", _ce_exc)
+
+                    # ── Record trajectory (idempotent upsert) ────
+                    _turn_usage = _usage if isinstance(_usage, dict) else {}
+                    _thinking_lvl = None
+                    for _te in timeline or []:
+                        if _te.get("type") == "thinking_diag":
+                            _thinking_lvl = _te.get("level")
+                            break
+                    _tool_success = sink.check_tool_success(tool_events)
+                    _trajectory_result: dict = {}
+                    try:
+                        _trajectory_result = await sink.record_trajectory(
+                            s2,
+                            turn_index=_turn_ordinal,
+                            tool_calls=[tc for tc in tool_events if tc.get("type") == "tool_call"],
+                            tool_results=[tr for tr in tool_events if tr.get("type") == "tool_result"],
+                            assistant_response="".join(full) if full else "",
+                            thinking_level=_thinking_lvl,
+                            error_occurred=not _tool_success,
+                            duration_ms=work_duration_ms,
+                            token_count=_turn_usage.get("prompt_tokens", 0) + _turn_usage.get("completion_tokens", 0),
+                        )
+                    except Exception as _tr_exc:
+                        logger.warning("Trajectory recording failed (non-fatal): %s", _tr_exc)
+
                     await sink.run_post_turn_hooks(
                         s2, messages, tool_events, timeline,
+                        trajectory_id=(
+                            _trajectory_result.get("id")
+                            if _trajectory_result.get("recorded") else None
+                        ),
+                        turn_index=_turn_ordinal,
                     )
 
                     # ── 提炼上下文变量 ──────────────────────────
