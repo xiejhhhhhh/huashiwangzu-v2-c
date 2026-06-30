@@ -287,14 +287,15 @@ class ToolLoopRuntime:
                     break
 
                 if result.get("thinking") and not self.suppress_thinking:
-                    thinking = str(result["thinking"])
-                    # 清洗泄漏到思考中的 XML 工具调用标记
-                    clean_thinking, _ = parse_inline_tool_calls(thinking)
-                    thinking_parts.append(clean_thinking)
-                    timeline.append({"type": "thinking", "content": clean_thinking, "started_at": time.time()})
-                    # 拆为小块分帧发送，前端自然拼接产生流式效果（无延时、不限速）
-                    for i in range(0, len(clean_thinking), 10):
-                        yield self._sse("thinking", clean_thinking[i:i + 10])
+                    thinking_text = str(result["thinking"])
+                    clean_thinking, _ = parse_inline_tool_calls(thinking_text)
+                    # 流式模式：thinking 已在 _stream_until_tool_or_done 中逐 chunk
+                    # 追加到 thinking_parts 并发送 SSE，此处不做二次 emit。
+                    if not self.policy.enable_single_pass_streaming_tools:
+                        thinking_parts.append(clean_thinking)
+                        timeline.append({"type": "thinking", "content": clean_thinking, "started_at": time.time()})
+                        for i in range(0, len(clean_thinking), 10):
+                            yield self._sse("thinking", clean_thinking[i:i + 10])
                 elif self.suppress_thinking and (result.get("tool_calls") or result.get("finish_reason") == "tool_calls"):
                     # 思考被省略时，仍发一个占位提示，避免工作组空荡荡
                     placeholder = "（思考已省略）"
