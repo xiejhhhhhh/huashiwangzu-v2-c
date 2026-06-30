@@ -4,6 +4,7 @@
 降级：便宜模型失败 → 退"只保尾部 M 条"硬截断，不报错。
 
 批5增强：压缩前快照 + 压缩链路追踪 + 可回放审计。"""
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -123,6 +124,67 @@ def _estimate_tokens_for_text(text: str) -> int:
     return max(math.ceil(len(text) / 1.5), 0)
 
 
+def _event_summary_text(event: object) -> str:
+    """Return bounded, meaningful text for a compaction summary input."""
+    event_type = event.event_type if hasattr(event, "event_type") else event.get("event_type", "")
+    payload = event.payload if hasattr(event, "payload") else event.get("payload", {})
+    if not isinstance(payload, dict):
+        return str(payload)[:1000]
+    if event_type == "tool_call":
+        return json.dumps(
+            {
+                "name": payload.get("name", ""),
+                "arguments": payload.get("arguments", {}),
+            },
+            ensure_ascii=False,
+            default=str,
+        )[:1000]
+    if event_type == "tool_result":
+        return json.dumps(payload.get("result", {}), ensure_ascii=False, default=str)[:1000]
+    return str(payload.get("content", ""))[:1000]
+
+
+def _select_foldable_indices(
+    events: list,
+    already_folded_ids: set[int] | None = None,
+) -> list[int]:
+    """Select middle events while keeping tool call/result spans atomic."""
+    previously_folded = _get_already_folded_ids(events) | set(already_folded_ids or set())
+    middle_start = HEAD_COUNT
+    middle_end = len(events) - TAIL_COUNT
+    protected_indices: set[int] = set()
+    atomic_pair_indices: set[int] = set()
+
+    for pair_start, pair_end in _find_tool_pairs(events):
+        pair_indices = set(range(pair_start, pair_end))
+        if pair_start < middle_start or pair_end > middle_end:
+            protected_indices.update(pair_indices)
+        else:
+            atomic_pair_indices.update(pair_indices)
+
+    foldable: list[int] = []
+    for idx, event in enumerate(events):
+        if idx < middle_start or idx >= middle_end or idx in protected_indices:
+            continue
+        event_type = event.event_type if hasattr(event, "event_type") else event.get("event_type", "")
+        if event_type in NON_FOLDABLE_TYPES:
+            continue
+        event_id = event.id if hasattr(event, "id") else event.get("id")
+        if event_id and event_id in previously_folded:
+            continue
+        foldable.append(idx)
+
+    # If any member of an atomic tool span was already folded, fold no remaining
+    # member of that span. This prevents partial tool groups across generations.
+    selected = set(foldable)
+    for pair_start, pair_end in _find_tool_pairs(events):
+        pair_indices = set(range(pair_start, pair_end))
+        overlap = selected & pair_indices
+        if overlap and overlap != pair_indices:
+            selected.difference_update(pair_indices)
+    return sorted(selected)
+
+
 async def compress_middle_with_snapshot(
     db: "AsyncSession",
     conversation_id: int,
@@ -188,34 +250,14 @@ async def compress_middle(
     conversation_id: int,
     all_events: list,
     profile_key: str = CHEAP_MODEL_KEY,
+    *,
+    persist_event: bool = True,
+    already_folded_ids: set[int] | None = None,
 ) -> dict:
     if len(all_events) <= HEAD_COUNT + TAIL_COUNT:
         return {"status": "skipped", "reason": "事件数不足，无需压缩"}
 
-    # Collect IDs already folded in previous compactions
-    previously_folded = _get_already_folded_ids(all_events)
-
-    tool_pairs = _find_tool_pairs(all_events)
-
-    freezable = set()
-    for pair_start, pair_end in tool_pairs:
-        for idx in range(pair_start, pair_end):
-            freezable.add(idx)
-
-    foldable_indices: list[int] = []
-    for idx, ev in enumerate(all_events):
-        etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
-        if etype in NON_FOLDABLE_TYPES:
-            continue
-        if idx in freezable:
-            continue
-        if idx < HEAD_COUNT or idx >= len(all_events) - TAIL_COUNT:
-            continue
-        # Skip events already folded by a previous compaction
-        ev_id = ev.id if hasattr(ev, "id") else ev.get("id")
-        if ev_id and ev_id in previously_folded:
-            continue
-        foldable_indices.append(idx)
+    foldable_indices = _select_foldable_indices(all_events, already_folded_ids)
 
     if not foldable_indices:
         return {"status": "skipped", "reason": "无可折叠事件"}
@@ -237,10 +279,8 @@ async def compress_middle(
         texts = []
         for ev in sample_events:
             etype = ev.event_type if hasattr(ev, "event_type") else ev.get("event_type", "")
-            payload = ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
-            content = payload.get("content", "") if isinstance(payload, dict) else str(payload)
             label = {"user_msg": "用户", "assistant_msg": "助手"}.get(etype, etype)
-            texts.append(f"[{label}] {str(content)[:500]}")
+            texts.append(f"[{label}] {_event_summary_text(ev)}")
         combined = "\n".join(texts)
 
         try:
@@ -264,21 +304,26 @@ async def compress_middle(
         "folded_count": len(foldable_indices),
         "total_events_before": len(all_events),
     }
-    try:
-        ev = await record_event(db, conversation_id, "compaction", payload, llm_response_id=None)
-        logger.info("压缩完成: 折叠 %d 条事件, compaction_id=%s", len(foldable_ids), ev.id)
-        compression_ratio = round(len(foldable_indices) / max(len(all_events), 1) * 100, 1)
-        return {
-            "status": "compressed",
-            "compaction_id": ev.id,
-            "folded_count": len(foldable_ids),
-            "summary_preview": summary_text[:200],
-            "compression_ratio": compression_ratio,
-            "total_events_before": len(all_events),
-        }
-    except Exception as e:
-        logger.error("记录 compaction 事件失败: %s", e)
-        return {"status": "error", "error": str(e)}
+    compaction_id = None
+    if persist_event:
+        try:
+            event = await record_event(db, conversation_id, "compaction", payload, llm_response_id=None)
+            compaction_id = event.id
+            logger.info("压缩完成: 折叠 %d 条事件, compaction_id=%s", len(foldable_ids), event.id)
+        except Exception as e:
+            logger.error("记录 compaction 事件失败: %s", e)
+            return {"status": "error", "error": str(e)}
+
+    return {
+        "status": "compressed",
+        "compaction_id": compaction_id,
+        "folded_count": len(foldable_ids),
+        "folded_event_ids": folded_ids,
+        "summary": summary_text,
+        "summary_preview": summary_text[:200],
+        "compression_ratio": payload["compression_ratio"],
+        "total_events_before": len(all_events),
+    }
 
 
 async def _summarize_with_cheap_model(text: str, profile_key: str) -> str:
