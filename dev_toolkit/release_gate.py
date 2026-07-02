@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from typing import Any
 import httpx
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+BACKEND_PYTHON = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
 BACKEND_BASE = "http://127.0.0.1:33000"
 CONFIG_PATH = REPO_ROOT / "dev_toolkit" / "config.json"
 SEMANTIC_COMPLETED_SCAN_LIMIT = 500
@@ -87,7 +89,9 @@ async def fetch_task_queue_audit() -> dict[str, Any]:
     r = await probe("GET", "/api/tasks/worker/audit")
     if not isinstance(r, dict):
         raise TypeError(f"unexpected response type: {type(r)}")
-    d = r.get("data") if isinstance(r.get("data"), dict) else r
+    d = r
+    while isinstance(d, dict) and isinstance(d.get("data"), dict) and "summary" not in d:
+        d = d["data"]
     if not isinstance(d, dict):
         raise TypeError(f"unexpected audit payload type: {type(d)}")
     return d
@@ -126,14 +130,13 @@ def _decode_task_result(raw_result: Any) -> dict[str, Any] | None:
     return decoded if isinstance(decoded, dict) else None
 
 
-def find_semantic_failed_completed_tasks(limit: int = SEMANTIC_COMPLETED_SCAN_LIMIT) -> tuple[int, list[dict[str, Any]]]:
-    """Find completed queue rows whose result contract still says failed/error."""
+def _find_semantic_failed_completed_tasks_local(limit: int) -> tuple[int, list[dict[str, Any]]]:
     if not DB_DSN:
         raise RuntimeError("dev_toolkit config missing db_dsn")
     try:
         import psycopg2
     except ImportError as exc:
-        raise RuntimeError("psycopg2 is required for semantic task-result inspection") from exc
+        raise RuntimeError("psycopg2 is required in the active interpreter") from exc
 
     samples: list[dict[str, Any]] = []
     with psycopg2.connect(DB_DSN) as conn, conn.cursor() as cur:
@@ -165,6 +168,42 @@ def find_semantic_failed_completed_tasks(limit: int = SEMANTIC_COMPLETED_SCAN_LI
                 "completed_at": completed_at.isoformat() if completed_at else None,
             })
     return count, samples
+
+
+def _find_semantic_failed_completed_tasks_via_backend_python(limit: int) -> tuple[int, list[dict[str, Any]]]:
+    if not BACKEND_PYTHON.exists():
+        raise RuntimeError("backend venv python not found for semantic task-result inspection")
+    if Path(sys.executable).resolve() == BACKEND_PYTHON.resolve():
+        raise RuntimeError("psycopg2 is unavailable in backend venv")
+
+    proc = subprocess.run(
+        [str(BACKEND_PYTHON), str(Path(__file__).resolve()), "--semantic-scan-json", str(limit)],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()[:500]
+        raise RuntimeError(f"backend-python semantic scan failed: {detail}")
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"backend-python semantic scan returned invalid JSON: {proc.stdout[:500]}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("backend-python semantic scan returned non-object JSON")
+    return int(payload.get("count") or 0), list(payload.get("samples") or [])
+
+
+def find_semantic_failed_completed_tasks(limit: int = SEMANTIC_COMPLETED_SCAN_LIMIT) -> tuple[int, list[dict[str, Any]]]:
+    """Find completed queue rows whose result contract still says failed/error."""
+    try:
+        return _find_semantic_failed_completed_tasks_local(limit)
+    except RuntimeError as exc:
+        if "psycopg2 is required" not in str(exc):
+            raise
+        return _find_semantic_failed_completed_tasks_via_backend_python(limit)
 
 
 def classify_semantic_failed_completed(
@@ -526,4 +565,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--semantic-scan-json":
+        scan_count, scan_samples = find_semantic_failed_completed_tasks(int(sys.argv[2]))
+        print(json.dumps({"count": scan_count, "samples": scan_samples}, ensure_ascii=False))
+        raise SystemExit(0)
     asyncio.run(main())

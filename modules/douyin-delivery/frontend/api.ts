@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from '../runtime'
+import { apiDelete, apiGet, apiPost, apiPut } from '../runtime'
 
 export interface Product {
   id: number
@@ -104,8 +104,8 @@ const BASE = '/api/douyin-delivery'
 export const products = {
   list: () => apiGet<Product[]>(`${BASE}/products`),
   create: (data: Partial<Product>) => apiPost<Product>(`${BASE}/products`, data),
-  update: (id: number, data: Partial<Product>) => apiPost<Product>(`${BASE}/products/${id}`, data),
-  delete: (id: number) => apiPost<{ deleted: boolean }>(`${BASE}/products/${id}`, {}),
+  update: (id: number, data: Partial<Product>) => apiPut<Product>(`${BASE}/products/${id}`, data),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/products/${id}`),
 }
 
 export const scripts = {
@@ -115,8 +115,8 @@ export const scripts = {
     apiGet<Script[]>(`${BASE}/scripts${channel ? `?channel=${channel}` : ''}`),
   get: (id: number) => apiGet<Script>(`${BASE}/scripts/${id}`),
   create: (data: Partial<Script>) => apiPost<Script>(`${BASE}/scripts`, data),
-  update: (id: number, data: Partial<Script>) => apiPost<Script>(`${BASE}/scripts/${id}`, data),
-  delete: (id: number) => apiPost<{ deleted: boolean }>(`${BASE}/scripts/${id}`, {}),
+  update: (id: number, data: Partial<Script>) => apiPut<Script>(`${BASE}/scripts/${id}`, data),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/scripts/${id}`),
 }
 
 export const adCopies = {
@@ -125,15 +125,15 @@ export const adCopies = {
   list: (channel?: string) =>
     apiGet<AdCopy[]>(`${BASE}/ad-copies${channel ? `?channel=${channel}` : ''}`),
   create: (data: Partial<AdCopy>) => apiPost<AdCopy>(`${BASE}/ad-copies`, data),
-  update: (id: number, data: Partial<AdCopy>) => apiPost<AdCopy>(`${BASE}/ad-copies/${id}`, data),
-  delete: (id: number) => apiPost<{ deleted: boolean }>(`${BASE}/ad-copies/${id}`, {}),
+  update: (id: number, data: Partial<AdCopy>) => apiPut<AdCopy>(`${BASE}/ad-copies/${id}`, data),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/ad-copies/${id}`),
 }
 
 export const campaigns = {
   list: () => apiGet<Campaign[]>(`${BASE}/campaigns`),
   create: (data: Partial<Campaign>) => apiPost<Campaign>(`${BASE}/campaigns`, data),
-  update: (id: number, data: Partial<Campaign>) => apiPost<Campaign>(`${BASE}/campaigns/${id}`, data),
-  delete: (id: number) => apiPost<{ deleted: boolean }>(`${BASE}/campaigns/${id}`, {}),
+  update: (id: number, data: Partial<Campaign>) => apiPut<Campaign>(`${BASE}/campaigns/${id}`, data),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/campaigns/${id}`),
   analyze: (id: number) => apiPost<{ campaign: Campaign; analysis: string }>(`${BASE}/campaigns/${id}/analyze`),
 }
 
@@ -145,5 +145,5 @@ export const prompts = {
   list: (category?: string, channel?: string) =>
     apiGet<Prompt[]>(`${BASE}/prompts?${category ? `category=${category}&` : ''}${channel ? `channel=${channel}` : ''}`),
   save: (data: Partial<Prompt>) => apiPost<Prompt>(`${BASE}/prompts`, data),
-  delete: (id: number) => apiPost<{ deleted: boolean }>(`${BASE}/prompts/${id}`, {}),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/prompts/${id}`),
 }

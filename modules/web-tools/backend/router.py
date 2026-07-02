@@ -8,7 +8,7 @@ import logging
 import os
 import re as _re
 import urllib.parse
-from typing import Literal
+from typing import Any, Literal
 
 from app.core.exceptions import ValidationError
 from app.core.url_safety import validate_safe_url
@@ -29,14 +29,6 @@ _FETCH_TIMEOUT = 15
 _MAX_FETCH_CHARS = 8000
 _MAX_CONTENT_LENGTH = 5 * 1024 * 1024  # 5MB
 
-# SSRF block list — internal/private IP ranges
-_SSRF_BLOCKED = (
-    "localhost", "127.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
-    "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-    "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
-    "192.168.", "169.254.", "0.0.0.0", "::1", "fc00:", "fe80:",
-)
-
 # Proxy from env: WEB_TOOLS_PROXY=http://127.0.0.1:4780
 # Default to ClashX proxy on macOS (common local proxy)
 _PROXY_URL = os.environ.get("WEB_TOOLS_PROXY") or "http://127.0.0.1:4780"
@@ -53,26 +45,38 @@ _HEADERS = {
 }
 
 
-def _check_ssrf(url: str) -> str | None:
-    """Check URL for SSRF risks. Returns error message or None if safe."""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return "blocked non-http(s) protocol"
-    hostname = parsed.hostname or ""
-    hostname_lower = hostname.lower()
-    for prefix in _SSRF_BLOCKED:
-        if hostname_lower.startswith(prefix) or hostname_lower == prefix.rstrip("."):
-            return "blocked internal address"
-    return None
+def _ok(data: dict[str, Any]) -> dict[str, Any]:
+    return {"success": True, **data}
+
+
+def _err(data: dict[str, Any], message: str) -> dict[str, Any]:
+    return {"success": False, **data, "error": message}
+
+
+def _web_response(result: dict[str, Any]) -> ApiResponse[dict[str, Any]]:
+    if result.get("success") is False:
+        return ApiResponse(success=False, data=result, error=str(result.get("error") or "Web tool failed"))
+    return ApiResponse(data=result)
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int, name: str) -> tuple[int | None, str | None]:
+    if value is None:
+        return default, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, f"{name} must be an integer"
+    return max(minimum, min(parsed, maximum)), None
 
 
 async def _cap_search(params: dict, caller: str) -> dict:
     """Search the web via DuckDuckGo Search (no API key, uses ddgs)."""
     query = (params.get("query") or "").strip()
-    top_k = int(params.get("top_k", 8))
+    top_k, top_k_error = _bounded_int(params.get("top_k"), 8, 1, 20, "top_k")
+    if top_k_error:
+        return _err({"results": []}, top_k_error)
     if not query:
-        return {"results": [], "error": "query is required"}
-    top_k = max(1, min(top_k, 20))
+        return _err({"results": []}, "query is required")
 
     import asyncio
 
@@ -107,23 +111,25 @@ async def _cap_search(params: dict, caller: str) -> dict:
                 "url": r.get("href", ""),
                 "snippet": r.get("body", ""),
             })
-        return {"results": results, "error": None}
+        return _ok({"results": results, "error": None})
 
-    return {"results": [], "error": f"search failed: {last_error}"}
+    return _err({"results": []}, f"search failed: {last_error}")
 
 
 async def _cap_fetch(params: dict, caller: str) -> dict:
     """Fetch and extract text content from a web page (no API key)."""
     url = (params.get("url") or "").strip()
-    max_chars = int(params.get("max_chars", _MAX_FETCH_CHARS))
+    max_chars, max_chars_error = _bounded_int(params.get("max_chars"), _MAX_FETCH_CHARS, 1, _MAX_FETCH_CHARS, "max_chars")
+    if max_chars_error:
+        return _err({"url": url, "title": "", "text": "", "truncated": False}, max_chars_error)
     if not url:
-        return {"url": url, "title": "", "text": "", "truncated": False, "error": "url is required"}
+        return _err({"url": url, "title": "", "text": "", "truncated": False}, "url is required")
 
     # SSRF check via public helper
     try:
         url = validate_safe_url(url)
     except ValidationError as exc:
-        return {"url": url, "title": "", "text": "", "truncated": False, "error": exc.message}
+        return _err({"url": url, "title": "", "text": "", "truncated": False}, exc.message)
 
     import httpx
     from lxml import html as lxml_html
@@ -164,34 +170,32 @@ async def _cap_fetch(params: dict, caller: str) -> dict:
             ct = (head_resp.headers.get("content-type") or "").lower()
             cl = head_resp.headers.get("content-length")
             if cl and int(cl) > _MAX_CONTENT_LENGTH:
-                return {
-                    "url": url, "title": "", "text": "",
-                    "truncated": False,
-                    "error": f"content too large ({cl} bytes > 5MB)",
-                }
+                return _err(
+                    {"url": url, "title": "", "text": "", "truncated": False},
+                    f"content too large ({cl} bytes > 5MB)",
+                )
             if "text" not in ct and "html" not in ct and "json" not in ct and "xml" not in ct:
                 for bt in ("application/octet-stream", "application/pdf", "image/", "audio/", "video/"):
                     if bt in ct:
-                        return {
-                            "url": url, "title": "", "text": "",
-                            "truncated": False,
-                            "error": f"blocked binary content type: {ct}",
-                        }
+                        return _err(
+                            {"url": url, "title": "", "text": "", "truncated": False},
+                            f"blocked binary content type: {ct}",
+                        )
 
             resp = await _request_checked(client, "GET", url)
             resp.raise_for_status()
     except ValidationError as exc:
-        return {"url": url, "title": "", "text": "", "truncated": False, "error": exc.message}
+        return _err({"url": url, "title": "", "text": "", "truncated": False}, exc.message)
     except httpx.TimeoutException:
-        return {"url": url, "title": "", "text": "", "truncated": False, "error": "request timed out"}
+        return _err({"url": url, "title": "", "text": "", "truncated": False}, "request timed out")
     except Exception as exc:
-        return {"url": url, "title": "", "text": "", "truncated": False, "error": f"fetch failed: {exc}"}
+        return _err({"url": url, "title": "", "text": "", "truncated": False}, f"fetch failed: {exc}")
 
     # Parse HTML
     try:
         tree = lxml_html.fromstring(resp.content)
     except Exception as exc:
-        return {"url": url, "title": "", "text": "", "truncated": False, "error": f"parse failed: {exc}"}
+        return _err({"url": url, "title": "", "text": "", "truncated": False}, f"parse failed: {exc}")
 
     # Extract title
     title = ""
@@ -221,7 +225,7 @@ async def _cap_fetch(params: dict, caller: str) -> dict:
         text = text[:max_chars]
         truncated = True
 
-    return {"url": url, "title": title, "text": text, "truncated": truncated, "error": None}
+    return _ok({"url": url, "title": title, "text": text, "truncated": truncated, "error": None})
 
 
 # ── HTTP endpoints for direct testing ──────────────────────────────────
@@ -247,7 +251,7 @@ async def http_search(
     user: User = Depends(require_permission("viewer")),
 ):
     result = await _cap_search(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _web_response(result)
 
 
 @router.post("/fetch")
@@ -256,7 +260,7 @@ async def http_fetch(
     user: User = Depends(require_permission("viewer")),
 ):
     result = await _cap_fetch(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _web_response(result)
 
 
 # ── Register capabilities with framework ──────────────────────────────

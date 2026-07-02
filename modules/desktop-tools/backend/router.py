@@ -6,22 +6,24 @@ All queries are owner-isolated. No Agent should handle base64 or physical paths.
 import io
 import json
 import os
-from datetime import datetime, timezone
 
 from app.database import AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
-from app.services.file_reader import resolve_caller_user_id, get_file_content_bytes
-from app.services.file_service import check_file_access, delete_to_trash, rename_item
-from app.services.file_ops_service import copy_item
-from app.services.file_upload_service import upload_file, replace_file_content
 from app.services.artifact_service import (
-    create_artifact, get_artifact, replace_artifact_content,
-    list_artifact_versions, restore_artifact_version, publish_artifact,
-    replace_file_from_artifact as svc_replace_from_artifact,
-    list_artifacts,
+    get_artifact,
+    list_artifact_versions,
+    publish_artifact,
+    restore_artifact_version,
 )
+from app.services.artifact_service import (
+    replace_file_from_artifact as svc_replace_from_artifact,
+)
+from app.services.file_ops_service import copy_item
+from app.services.file_reader import get_file_content_bytes, resolve_caller_user_id
+from app.services.file_service import check_file_access, delete_to_trash, rename_item
+from app.services.file_upload_service import replace_file_content, upload_file
 from app.services.module_registry import call_capability, register_capability
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -83,7 +85,7 @@ async def _list_files(params: dict, caller: str) -> dict:
             select(Folder).where(
                 Folder.parent_id == (None if folder_id == 0 else folder_id),
                 Folder.owner_id == owner_id,
-                Folder.deleted == False,
+                Folder.deleted.is_(False),
             ).order_by(Folder.name)
         )
         folders = folders_result.scalars().all()
@@ -92,7 +94,7 @@ async def _list_files(params: dict, caller: str) -> dict:
             select(File).where(
                 File.folder_id.is_(None) if folder_id == 0 else File.folder_id == folder_id,
                 File.owner_id == owner_id,
-                File.deleted == False,
+                File.deleted.is_(False),
             ).order_by(File.created_at.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -125,7 +127,7 @@ async def _search_files(params: dict, caller: str) -> dict:
     page_size = int(params.get("page_size", 50))
 
     async with AsyncSessionLocal() as db:
-        conds = [File.owner_id == owner_id, File.deleted == False]
+        conds = [File.owner_id == owner_id, File.deleted.is_(False)]
         if keyword:
             conds.append(File.name.ilike(f"%{keyword}%"))
         if extension:
@@ -293,18 +295,15 @@ async def _list_apps(params: dict, caller: str) -> dict:
             return {"apps": []}
 
         result = await db.execute(
-            select(App).where(App.enabled == True).order_by(App.sort_order, App.name)
+            select(App).where(App.enabled.is_(True)).order_by(App.sort_order, App.name)
         )
         apps = result.scalars().all()
 
         accessible = []
         for app in apps:
             if can_user_access_app(app, user):
-                manifest_actions = []
-                if app.backend_config:
-                    public_actions = app.backend_config.get("public_actions")
-                    if public_actions:
-                        manifest_actions = public_actions
+                public_actions = app.public_actions or []
+                manifest_actions = public_actions if isinstance(public_actions, list) else []
 
                 accessible.append({
                     "id": app.id,
@@ -327,72 +326,10 @@ async def _list_apps(params: dict, caller: str) -> dict:
 
 
 # =====================================================================
-# Register capabilities with framework
-# =====================================================================
-
-register_capability(
-    "desktop-tools", "list_files", _list_files,
-    description="List files in a folder (or root). Returns file name, type, size, and id.",
-    brief="列出桌面文件",
-    parameters={
-        "type": "object",
-        "properties": {
-            "folder_id": {"type": "integer", "description": "Folder ID (0 or omit for root)", "default": 0},
-            "page": {"type": "integer", "description": "Page number", "default": 1},
-            "page_size": {"type": "integer", "description": "Items per page", "default": 50},
-        },
-    },
-    min_role="viewer",
-)
-
-register_capability(
-    "desktop-tools", "search_files", _search_files,
-    description="Search files by keyword and/or extension. Returns matching file metadata.",
-    brief="搜索桌面文件",
-    parameters={
-        "type": "object",
-        "properties": {
-            "keyword": {"type": "string", "description": "Search keyword (file name contains)", "default": ""},
-            "extension": {"type": "string", "description": "Filter by extension (e.g. pdf, txt)", "default": None},
-            "page": {"type": "integer", "description": "Page number", "default": 1},
-            "page_size": {"type": "integer", "description": "Items per page", "default": 50},
-        },
-    },
-    min_role="viewer",
-)
-
-register_capability(
-    "desktop-tools", "read_file", _read_file,
-    description="Read file content by file_id. Automatically routes to the correct parser for PDF, DOCX, XLSX, PPTX, TXT, MD. Returns the file's text content.",
-    brief="读取文件内容",
-    parameters={
-        "type": "object",
-        "properties": {
-            "file_id": {"type": "integer", "description": "File ID in the file storage system"},
-        },
-        "required": ["file_id"],
-    },
-    min_role="viewer",
-)
-
-register_capability(
-    "desktop-tools", "list_apps", _list_apps,
-    description="List desktop applications available to the current user.",
-    brief="列出可用桌面应用",
-    parameters={
-        "type": "object",
-        "properties": {},
-    },
-    min_role="viewer",
-)
-
-
-# =====================================================================
 # Capability: desktop:get_file
 # =====================================================================
 async def _get_file(params: dict, caller: str) -> dict:
     """Get a single file's metadata by file_id."""
-    from app.models.file import File
 
     owner_id = resolve_caller_user_id(caller)
     file_id = int(params.get("file_id", 0))
@@ -453,20 +390,18 @@ async def _create_file(params: dict, caller: str) -> dict:
 async def _replace_file(params: dict, caller: str) -> dict:
     """Replace an existing file's content. No base64 needed for binary files
     — use source_artifact_id or source_file_id instead.
-    Conflict policy: create_version (default) / overwrite / fail / auto_rename.
     """
     owner_id = resolve_caller_user_id(caller)
     old_file_id = int(params.get("old_file_id", 0))
     new_content = params.get("new_content", "")
     source_artifact_id = params.get("source_artifact_id")
     source_file_id = params.get("source_file_id")
-    conflict_policy = params.get("conflict_policy", "create_version")
 
     if old_file_id <= 0:
         raise ValueError("old_file_id must be a positive integer")
 
     async with AsyncSessionLocal() as db:
-        old_file = await check_file_access(db, old_file_id, owner_id)
+        await check_file_access(db, old_file_id, owner_id)
 
         if source_artifact_id:
             artifact = await get_artifact(db, int(source_artifact_id), owner_id)
@@ -718,7 +653,6 @@ register_capability(
             "new_content": {"type": "string", "description": "New file content as plain text", "default": ""},
             "source_artifact_id": {"type": "integer", "description": "Source artifact ID", "default": None},
             "source_file_id": {"type": "integer", "description": "Source file ID to copy content from", "default": None},
-            "conflict_policy": {"type": "string", "description": "create_version / overwrite / fail / auto_rename", "default": "create_version"},
         },
         "required": ["old_file_id"],
     },

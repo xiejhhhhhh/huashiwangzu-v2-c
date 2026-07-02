@@ -20,6 +20,10 @@
         @action="onToolbarAction"
         @style-change="onStyleChange" />
 
+      <div v-if="operationError" class="operation-error">
+        {{ operationError }}
+      </div>
+
       <!-- Sheet tabs -->
       <div class="sheet-bar">
         <button
@@ -87,6 +91,7 @@ import ContextMenu from './components/ContextMenu.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import * as api from './components/api-service'
 import type { EditResult, SheetData, HistoryItem } from './components/api-service'
+import type { FileOpenPayload } from '../runtime'
 
 // ── Props（桌面 Shell 通过 v-bind 传入） ──
 const props = defineProps<{
@@ -96,10 +101,15 @@ const props = defineProps<{
   mode?: string
 }>()
 
+function getGlobalOpenPayload(): FileOpenPayload | undefined {
+  return (window as unknown as { __MODULE_OPEN_FILE_PAYLOAD__?: FileOpenPayload }).__MODULE_OPEN_FILE_PAYLOAD__
+}
+
 // ── State ──
 const loading = ref(true)
 const errorMsg = ref('')
 const retryable = ref(false)
+const operationError = ref('')
 const stateKey = ref('')
 const cells = ref<Record<string, string>>({})
 const cellStyles = ref<Record<string, Record<string, unknown>>>({})
@@ -146,6 +156,16 @@ const activeStyles = computed(() => {
   return cellStyles.value[addr] || {}
 })
 
+function errorText(e: unknown, fallback: string): string {
+  return e instanceof Error && e.message ? e.message : fallback
+}
+
+function showOperationError(e: unknown, fallback: string) {
+  const message = errorText(e, fallback)
+  operationError.value = message
+  console.error(message, e)
+}
+
 // ── Initialization ──
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
@@ -161,6 +181,7 @@ onUnmounted(() => {
 async function init() {
   loading.value = true
   errorMsg.value = ''
+  operationError.value = ''
   retryable.value = false
 
   try {
@@ -181,7 +202,7 @@ async function init() {
       }
     }
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : String(e)
+    errorMsg.value = errorText(e, '加载 Excel 数据失败')
     retryable.value = true
   } finally {
     loading.value = false
@@ -194,26 +215,33 @@ async function tryGetFilePayload(): Promise<{ fileId: number; fileName: string }
     return { fileId: props.fileId, fileName: props.fileName || '' }
   }
   // 其次读全局变量（旧协议兼容）
-  try {
-    const payload = (window as any).__MODULE_OPEN_FILE_PAYLOAD__
-    if (payload?.fileId) {
-      return { fileId: payload.fileId, fileName: payload.fileName || '' }
-    }
-  } catch {}
+  const payload = getGlobalOpenPayload()
+  if (payload?.fileId) {
+    return { fileId: payload.fileId, fileName: payload.fileName || '' }
+  }
   return null
 }
 
 async function openFile(fileId: number, fileName: string) {
   stateKey.value = `knowledge_${fileId}`
+  operationError.value = ''
+  let openError: unknown = null
   try {
     const json = await api.openFile(fileId)
     applyState(json)
     return
-  } catch {}
+  } catch (e: unknown) {
+    openError = e
+  }
   try {
     const data = await api.parseFile(fileId)
     applyParseResult(data)
-  } catch {}
+    return
+  } catch (e: unknown) {
+    const parseMessage = errorText(e, '解析文件失败')
+    const openMessage = openError ? `打开已有状态失败：${errorText(openError, '未知错误')}` : ''
+    throw new Error(openMessage ? `${parseMessage}；${openMessage}` : parseMessage)
+  }
 }
 
 function applyState(data: EditResult & { all_sheets?: string[]; sheet_set?: Record<string, unknown>; state_key?: string }) {
@@ -377,24 +405,33 @@ async function onStyleChange(method: string, params: Record<string, unknown>) {
 async function sendEdit(method: string, addr: string, value: string) {
   if (!stateKey.value) return
   try {
+    operationError.value = ''
     await api.editCell({ state_key: stateKey.value, sheet: currentSheetName.value, address: addr, method, value })
-  } catch {}
+  } catch (e: unknown) {
+    showOperationError(e, '单元格保存失败')
+  }
 }
 
 async function sendStyleAction(method: string) {
   if (!stateKey.value || selectedRange.value.length === 0) return
   try {
+    operationError.value = ''
     await api.editStyle({ state_key: stateKey.value, sheet: currentSheetName.value, address_list: selectedRange.value, method, params: {} })
-  } catch {}
+  } catch (e: unknown) {
+    showOperationError(e, '样式保存失败')
+  }
 }
 
 async function sendStateOp(method: string) {
   if (!stateKey.value) return
   try {
+    operationError.value = ''
     const data = await api.stateOp({ module: 'state', method, params: {}, state_key: stateKey.value, sheet: currentSheetName.value })
     if (data.cells) cells.value = data.cells
     if (data.styles) cellStyles.value = data.styles
-  } catch {}
+  } catch (e: unknown) {
+    showOperationError(e, '状态操作失败')
+  }
 }
 
 async function sendSave() {
@@ -539,21 +576,27 @@ function toggleHistory() {
 async function loadHistory() {
   if (!stateKey.value) return
   try {
+    operationError.value = ''
     const data = await api.stateOp({ module: 'state', method: 'history_list', params: {}, state_key: stateKey.value, sheet: currentSheetName.value })
     historyList.value = data.history || []
-  } catch {}
+  } catch (e: unknown) {
+    showOperationError(e, '历史记录加载失败')
+  }
 }
 
 async function previewHistory(historyId: number) {
   if (!stateKey.value) return
   try {
+    operationError.value = ''
     const data = await api.stateOp({ module: 'state', method: 'history_preview', params: { history_id: historyId }, state_key: stateKey.value, sheet: currentSheetName.value })
     if (data.cells) cells.value = data.cells
     if (data.styles) cellStyles.value = data.styles
     if (data.merges) merges.value = data.merges
     if (data.total_rows) totalRows.value = data.total_rows
     if (data.total_cols) totalCols.value = data.total_cols
-  } catch {}
+  } catch (e: unknown) {
+    showOperationError(e, '历史版本预览失败')
+  }
 }
 
 function historyIcon(action: string): string {
@@ -581,7 +624,7 @@ watch(() => props.fileId, (fid) => {
     openFile(fid, props.fileName || '')
   }
 })
-watch(() => (window as any).__MODULE_OPEN_FILE_PAYLOAD__, (payload) => {
+watch(() => getGlobalOpenPayload(), (payload) => {
   if (payload?.fileId) {
     openFile(payload.fileId, payload.fileName || '')
   }
@@ -649,6 +692,16 @@ watch(() => (window as any).__MODULE_OPEN_FILE_PAYLOAD__, (payload) => {
   color: #f56c6c;
   font-size: 14px;
   margin: 0;
+}
+
+.operation-error {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid #fbc4c4;
+  background: #fef0f0;
+  color: #c45656;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 /* Sheet tabs */

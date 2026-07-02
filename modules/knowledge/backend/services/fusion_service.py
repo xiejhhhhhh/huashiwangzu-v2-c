@@ -7,6 +7,7 @@
 """
 import json
 import logging
+from time import perf_counter
 
 from app.database import AsyncSessionLocal
 from app.gateway.router import gateway_router
@@ -84,6 +85,7 @@ def _fallback_fusion(round_texts: dict[int, str], conflicts: list[dict] | None =
         "tags": [],
         "conflicts": conflicts or [],
         "confidence": _compute_confidence(round_texts, conflicts or []),
+        "_diagnostic_fallback": True,
     }
 
 
@@ -137,6 +139,7 @@ async def _llm_fuse(db: AsyncSession | None, round_texts: dict[int, str]) -> dic
             return fallback
         if not (parsed.get("page_summary") or "").strip():
             parsed["page_summary"] = str(parsed.get("fused_text") or "")[:120]
+        parsed["_diagnostic_fallback"] = False
         return parsed
     except Exception as e:
         logger.warning("LLM fusion failed, using heuristic fallback: %s", e)
@@ -153,6 +156,7 @@ async def fuse_page(
 
     返回融合结果 dict，包含 fused_text / confidence / conflicts 等。
     """
+    started = perf_counter()
     # 1. 读取该页三轮原始数据
     r = await db.execute(
         select(KbRawData)
@@ -170,7 +174,14 @@ async def fuse_page(
 
     if not round_texts:
         logger.warning("No raw data for document_id=%d page=%d", document_id, page)
-        return {"fused_text": "", "confidence": 0.0, "conflicts": [], "page": page, "status": "degraded"}
+        return {
+            "fused_text": "",
+            "confidence": 0.0,
+            "conflicts": [],
+            "page": page,
+            "status": "degraded",
+            "diagnostics": {"reason": "no_raw_data", "raw_rounds": 0},
+        }
 
     # 2. 启发式冲突检测
     simple_conflicts = _detect_simple_conflicts(round_texts)
@@ -187,6 +198,13 @@ async def fuse_page(
     all_conflicts = fusion_result.get("conflicts", []) + simple_conflicts
     fused_text = (fusion_result.get("fused_text") or "").strip()
     page_status = "done" if fused_text else "degraded"
+    duration_ms = round((perf_counter() - started) * 1000)
+    diagnostics = {
+        "raw_rounds": len(round_texts),
+        "valid_raw_rounds": sum(1 for value in round_texts.values() if value and value.strip()),
+        "conflict_count": len(all_conflicts),
+        "fallback_used": bool(fusion_result.get("_diagnostic_fallback")),
+    }
 
     # 6. 写入 kb_page_fusions
     from sqlalchemy import delete as sa_delete
@@ -213,6 +231,9 @@ async def fuse_page(
         fusion_version=1,
         fusion_status=page_status,
         confidence=final_confidence,
+        diagnostics_json=diagnostics,
+        error_message=None if page_status == "done" else "empty_fused_text",
+        duration_ms=duration_ms,
     )
     db.add(pf)
     await db.flush()
@@ -230,6 +251,8 @@ async def fuse_page(
         "confidence": final_confidence,
         "fusion_version": pf.fusion_version,
         "status": page_status,
+        "diagnostics": diagnostics,
+        "duration_ms": duration_ms,
     }
 
 
@@ -442,5 +465,8 @@ async def get_page_fusion_detail(
         "confidence": pf.confidence,
         "fusion_version": pf.fusion_version,
         "fusion_status": pf.fusion_status,
+        "diagnostics": getattr(pf, "diagnostics_json", None),
+        "error_message": getattr(pf, "error_message", None),
+        "duration_ms": getattr(pf, "duration_ms", None),
         "created_at": pf.created_at.isoformat() if pf.created_at else None,
     }

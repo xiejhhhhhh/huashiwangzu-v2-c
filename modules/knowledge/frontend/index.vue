@@ -482,7 +482,7 @@ async function autoRegisterUnregistered() {
     const results = await Promise.allSettled(
       batch.map(n =>
         apiPost<KnowledgeDocument>('/knowledge/documents', { file_id: n.id })
-          .then(doc => ({ node: n, doc }))
+          .then((doc: KnowledgeDocument) => ({ node: n, doc }))
       )
     )
     for (const r of results) {
@@ -553,7 +553,7 @@ async function retryPendingDocuments() {
     await Promise.allSettled(
       batch.map(docId =>
         apiPost('/knowledge/documents/full-pipeline', { document_id: docId })
-          .catch(e => console.warn(`[kb] Retry failed for doc_id=${docId}:`, e))
+          .catch((e: unknown) => console.warn(`[kb] Retry failed for doc_id=${docId}:`, e))
       )
     )
     if (i + BATCH_SIZE < toRetry.length) {

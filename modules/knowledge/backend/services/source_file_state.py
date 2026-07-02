@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from app.core.exceptions import NotFound
 from app.models.file import File
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -26,7 +27,12 @@ async def get_source_file_availability(
     file_id: int,
 ) -> SourceFileAvailability:
     """Classify lifecycle absence without reading file contents from disk."""
-    file = await db.get(File, file_id)
+    result = await db.execute(
+        select(File)
+        .where(File.id == file_id)
+        .execution_options(populate_existing=True)
+    )
+    file = result.scalar_one_or_none()
     if not file:
         return SourceFileAvailability(False, "source_file_missing")
     if file.deleted:

@@ -1,4 +1,12 @@
-import { getApiUrl } from '../runtime'
+import {
+  apiDelete as runtimeApiDelete,
+  apiGet as runtimeApiGet,
+  apiPost as runtimeApiPost,
+} from '../runtime'
+
+export const apiGet = runtimeApiGet
+export const apiPost = runtimeApiPost
+export const apiDelete = runtimeApiDelete
 
 export interface KnowledgeDocument {
   id: number
@@ -137,50 +145,6 @@ export interface GovernanceCandidate {
   excerpt: string
   confidence: number
   audit_status: string
-}
-
-let __redirecting = false
-function _handle401(status: number): boolean {
-  if (status !== 401) return false
-  localStorage.removeItem('v2_auth_token')
-  if (!__redirecting) {
-    __redirecting = true
-    window.location.replace('/')
-  }
-  return true
-}
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem('v2_auth_token')
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
-
-export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(getApiUrl(path), { headers: authHeaders() })
-  if (_handle401(response.status)) throw new Error('登录已失效，请重新登录')
-  const body = await response.json()
-  if (!response.ok || !body.success) throw new Error(body.error || `HTTP ${response.status}`)
-  return body.data as T
-}
-
-export async function apiPost<T>(path: string, payload?: unknown): Promise<T> {
-  const response = await fetch(getApiUrl(path), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: payload ? JSON.stringify(payload) : undefined,
-  })
-  if (_handle401(response.status)) throw new Error('登录已失效，请重新登录')
-  const body = await response.json()
-  if (!response.ok || !body.success) throw new Error(body.error || `HTTP ${response.status}`)
-  return body.data as T
-}
-
-export async function apiDelete<T>(path: string): Promise<T> {
-  const response = await fetch(getApiUrl(path), { method: 'DELETE', headers: authHeaders() })
-  if (_handle401(response.status)) throw new Error('登录已失效，请重新登录')
-  const body = await response.json()
-  if (!response.ok || !body.success) throw new Error(body.error || `HTTP ${response.status}`)
-  return body.data as T
 }
 
 // ── 五层链路专用接口 ──────────────────────────────

@@ -462,6 +462,18 @@ def _legacy_result_to_api(result: dict) -> ApiResponse:
     return ApiResponse(data=result)
 
 
+async def _sync_sheet_data(db: AsyncSession, sheet_id: int, sheet_data: dict) -> None:
+    await sync_cells(
+        db,
+        sheet_id,
+        sheet_data.get('cells', {}),
+        sheet_data.get('styles', {}),
+        sheet_data.get('merges', {}),
+    )
+    await sync_col_widths(db, sheet_id, sheet_data.get('col_widths', {}))
+    await sync_row_heights(db, sheet_id, sheet_data.get('row_heights', {}))
+
+
 # ── API Endpoints ──
 
 @router.get("/health")
@@ -542,7 +554,7 @@ async def open_xlsx(payload: OpenRequest, db: AsyncSession = Depends(get_db),
             sheet_rec = await find_or_create_sheet(
                 db, wb['id'], s_name, s_data.get('total_rows', DEFAULT_TOTAL_ROWS), s_data.get('total_cols', DEFAULT_TOTAL_COLS)
             )
-            await sync_cells(db, sheet_rec['id'], s_data.get('cells', {}), s_data.get('styles', {}), s_data.get('merges', {}))
+            await _sync_sheet_data(db, sheet_rec['id'], s_data)
 
     # Read back
     state = await read_state_full(db, state_key, sheet_name, owner_id=state_owner_id)
@@ -813,8 +825,7 @@ async def _import_file_to_workbook_capability(params: dict, caller: str) -> dict
                     s_data.get('total_rows', DEFAULT_TOTAL_ROWS),
                     s_data.get('total_cols', DEFAULT_TOTAL_COLS),
                 )
-                await sync_cells(db, sheet_rec['id'], s_data.get('cells', {}),
-                                 s_data.get('styles', {}), s_data.get('merges', {}))
+                await _sync_sheet_data(db, sheet_rec['id'], s_data)
 
         state = await read_state_full(db, state_key, owner_id=state_owner_id)
 

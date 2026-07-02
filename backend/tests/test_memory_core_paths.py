@@ -12,12 +12,16 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 MEMORY_BACKEND = BACKEND_ROOT.parent / "modules" / "memory" / "backend"
+MEMORY_ROUTER_PATH = MEMORY_BACKEND / "router.py"
 MEMORY_SERVICE_PATH = MEMORY_BACKEND / "services" / "memory_service.py"
 MEMORY_CAPABILITIES_PATH = MEMORY_BACKEND / "services" / "capabilities.py"
 MEMORY_MODELS_PATH = MEMORY_BACKEND / "models.py"
+MEMORY_MANIFEST_PATH = BACKEND_ROOT.parent / "modules" / "memory" / "manifest.json"
 
+ROUTER_SRC = MEMORY_ROUTER_PATH.read_text("utf-8")
 MEMORY_SRC = MEMORY_SERVICE_PATH.read_text("utf-8")
 CAP_SRC = MEMORY_CAPABILITIES_PATH.read_text("utf-8")
+MANIFEST = json.loads(MEMORY_MANIFEST_PATH.read_text("utf-8"))
 
 
 class TestMemorySavePath:
@@ -58,7 +62,7 @@ class TestChunkRebuild:
 
     def _get_split_memory_chunks(self):
         """Extract and compile _split_memory_chunks in isolation.
-        
+
         The function depends only on MEMORY_CHUNK_MAX_CHARS and
         MEMORY_CHUNK_OVERLAP_CHARS which are defined in the same module.
         We extract it with its dependencies to avoid importing
@@ -66,19 +70,18 @@ class TestChunkRebuild:
         """
         if hasattr(self, "_cached_chunk_func"):
             return self._cached_chunk_func
-        
-        import textwrap
+
         # Extract constants
         max_chars = 900
         overlap = 120
-        
+
         source = MEMORY_SRC
-        
+
         # Find the function body
         func_start = source.find("def _split_memory_chunks(content: str)")
         if func_start == -1:
             return None
-        
+
         # Get the lines of memory_service.py and extract just the function
         lines = source.splitlines()
         func_lines = []
@@ -93,12 +96,12 @@ class TestChunkRebuild:
                         # Reached next top-level construct
                         func_lines.pop()
                         break
-        
+
         func_code = "\n".join(func_lines)
         # Replace the constant references with literals
         func_code = func_code.replace("MEMORY_CHUNK_MAX_CHARS", str(max_chars))
         func_code = func_code.replace("MEMORY_CHUNK_OVERLAP_CHARS", str(overlap))
-        
+
         local_ns = {}
         exec(func_code, local_ns)
         self._cached_chunk_func = local_ns.get("_split_memory_chunks")
@@ -244,6 +247,25 @@ class TestRethinkReplaceInsert:
         assert rethink_found
         assert replace_found
         assert insert_found
+
+    def test_http_edit_paths_update_embedding(self):
+        """HTTP rethink/replace/insert must keep the main record embedding fresh."""
+        _, rethink_after = ROUTER_SRC.split("async def http_rethink", 1)
+        rethink_body, replace_after = rethink_after.split("async def http_replace", 1)
+        replace_body, insert_after = replace_after.split("async def http_insert", 1)
+        insert_body = insert_after.split("# ── Task Handler Registration", 1)[0]
+
+        assert "await memory_service._update_embedding(memory.id, req.text)" in rethink_body
+        assert "await memory_service._update_embedding(memory.id, new_memory_text)" in replace_body
+        assert "await memory_service._update_embedding(memory.id, new_memory_text)" in insert_body
+
+    def test_insert_manifest_matches_runtime_contract(self):
+        """Manifest public action for insert must match router/capability contract."""
+        action = next(item for item in MANIFEST["public_actions"] if item["action"] == "insert")
+        params = action["parameters"]
+        assert set(params) == {"id", "text"}
+        assert params["id"]["type"] == "integer"
+        assert params["text"]["type"] == "string"
 
     def test_rethink_source_in_post_save(self):
         """rethink's enqueue must pass 'rethink' as source."""

@@ -51,12 +51,22 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { apiDelete, apiGet } from '../runtime'
 
-const emit = defineEmits<{ 'edit-draft': [draft: any] }>()
+interface Draft {
+  id: number
+  title?: string
+  content?: string
+  status?: string
+  version?: number
+  updated_at?: string
+}
+
+const emit = defineEmits<{ 'edit-draft': [draft: Draft] }>()
 const loading = ref(false)
-const drafts = ref<any[]>([])
+const drafts = ref<Draft[]>([])
 const viewDialog = ref(false)
-const currentDraft = ref<any>(null)
+const currentDraft = ref<Draft>({ id: 0, content: '' })
 
 onMounted(() => loadDrafts())
 
@@ -73,39 +83,33 @@ function toast(msg: string, type: 'success' | 'error' | 'warning' = 'success') {
 async function loadDrafts() {
   loading.value = true
   try {
-    const r = await fetch('/api/wechat-writer/drafts?page=1&page_size=50', {
-      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('v2_auth_token') },
-    })
-    const body = await r.json()
-    if (body.success) drafts.value = body.data.items || []
-  } catch (e: any) {
+    const data = await apiGet<{ items?: Draft[] }>('/wechat-writer/drafts?page=1&page_size=50')
+    drafts.value = data.items || []
+  } catch (e: unknown) {
     console.error('Load drafts error:', e)
+    toast(e instanceof Error ? e.message : '草稿加载失败', 'error')
   } finally {
     loading.value = false
   }
 }
 
-function viewDraft(d: any) {
+function viewDraft(d: Draft) {
   currentDraft.value = { ...d }
   viewDialog.value = true
 }
 
-function editDraft(d: any) {
+function editDraft(d: Draft) {
   emit('edit-draft', d)
 }
 
-async function deleteDraft(d: any) {
+async function deleteDraft(d: Draft) {
   if (!window.confirm('确定删除这篇草稿？')) return
-  const r = await fetch('/api/wechat-writer/drafts/' + d.id, {
-    method: 'DELETE',
-    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('v2_auth_token') },
-  })
-  const body = await r.json()
-  if (body.success) {
+  try {
+    await apiDelete('/wechat-writer/drafts/' + d.id)
     toast('已删除', 'success')
     loadDrafts()
-  } else {
-    toast('删除失败', 'error')
+  } catch (e: unknown) {
+    toast(e instanceof Error ? e.message : '删除失败', 'error')
   }
 }
 
@@ -119,7 +123,7 @@ async function copyDraft() {
   }
 }
 
-function formatDate(dateStr: string): string {
+function formatDate(dateStr?: string): string {
   if (!dateStr) return ''
   const d = new Date(dateStr)
   return d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })

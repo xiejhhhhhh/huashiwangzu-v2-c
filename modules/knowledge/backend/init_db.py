@@ -14,7 +14,8 @@ KB_TABLES = [
     "kb_entity_dictionary", "kb_entity_aliases", "kb_disambiguation",
     "kb_graph_nodes", "kb_graph_edges", "kb_chunk_entities",
     "kb_evidence", "kb_conclusion_evidence", "kb_entity_merge_log",
-    "kb_governance_candidates", "kb_pipeline_stale",
+    "kb_governance_candidates", "kb_pipeline_runs",
+    "kb_pipeline_stage_runs", "kb_pipeline_stale",
 ]
 
 # 关键索引语句（幂等，CREATE INDEX IF NOT EXISTS）
@@ -43,26 +44,37 @@ _INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_kb_file_rel_source ON kb_file_relations(source_document_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_file_rel_target ON kb_file_relations(target_document_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_file_rel_owner ON kb_file_relations(owner_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_runs_doc ON kb_pipeline_runs(document_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_runs_status ON kb_pipeline_runs(status)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_stage_runs_doc_stage ON kb_pipeline_stage_runs(document_id, stage)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_stage_runs_run ON kb_pipeline_stage_runs(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_stale_doc ON kb_pipeline_stale(document_id)",
 ]
 
-# ALTER 列补齐语句（幂等，ADD COLUMN IF NOT EXISTS）
+# ALTER 列补齐语句（幂等，ADD COLUMN IF NOT EXISTS）。
+# 运行前仍先查 information_schema，避免列已存在时重复 ALTER 参与强锁竞争。
 _MIGRATION_STATEMENTS = [
-    "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS raw_status VARCHAR(32) DEFAULT 'pending'",
-    "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS fusion_status VARCHAR(32) DEFAULT 'pending'",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS page_summary TEXT",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS page_title VARCHAR(512)",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS body_json JSON",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS attributes_json JSON",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS tags_json JSON",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS conflicts_json JSON",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS evidence_json JSON",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS source_version INTEGER",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS fusion_version INTEGER DEFAULT 1",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS fusion_status VARCHAR(32) DEFAULT 'pending'",
-    "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS confidence FLOAT",
-    "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS content_package_id BIGINT",
-    "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS block_id VARCHAR(64)",
+    ("kb_documents", "raw_status", "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS raw_status VARCHAR(32) DEFAULT 'pending'"),
+    ("kb_documents", "fusion_status", "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS fusion_status VARCHAR(32) DEFAULT 'pending'"),
+    ("kb_page_fusions", "page_summary", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS page_summary TEXT"),
+    ("kb_page_fusions", "page_title", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS page_title VARCHAR(512)"),
+    ("kb_page_fusions", "body_json", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS body_json JSON"),
+    ("kb_page_fusions", "attributes_json", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS attributes_json JSON"),
+    ("kb_page_fusions", "tags_json", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS tags_json JSON"),
+    ("kb_page_fusions", "conflicts_json", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS conflicts_json JSON"),
+    ("kb_page_fusions", "evidence_json", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS evidence_json JSON"),
+    ("kb_page_fusions", "source_version", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS source_version INTEGER"),
+    ("kb_page_fusions", "fusion_version", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS fusion_version INTEGER DEFAULT 1"),
+    ("kb_page_fusions", "fusion_status", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS fusion_status VARCHAR(32) DEFAULT 'pending'"),
+    ("kb_page_fusions", "confidence", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS confidence FLOAT"),
+    ("kb_documents", "content_package_id", "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS content_package_id BIGINT"),
+    ("kb_chunks", "block_id", "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS block_id VARCHAR(64)"),
+    ("kb_raw_data", "status", "ALTER TABLE kb_raw_data ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'done'"),
+    ("kb_raw_data", "error_message", "ALTER TABLE kb_raw_data ADD COLUMN IF NOT EXISTS error_message TEXT"),
+    ("kb_raw_data", "duration_ms", "ALTER TABLE kb_raw_data ADD COLUMN IF NOT EXISTS duration_ms INTEGER"),
+    ("kb_page_fusions", "diagnostics_json", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS diagnostics_json JSON"),
+    ("kb_page_fusions", "error_message", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS error_message TEXT"),
+    ("kb_page_fusions", "duration_ms", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS duration_ms INTEGER"),
 ]
 
 _KNOWLEDGE_PROMPT_CATEGORY = {
@@ -182,6 +194,8 @@ async def ensure_kb_tables(db: AsyncSession) -> None:
         KbGraphEdge,
         KbGraphNode,
         KbPageFusion,
+        KbPipelineRun,
+        KbPipelineStageRun,
         KbPipelineStale,
         KbRawData,
     )
@@ -209,8 +223,23 @@ async def ensure_migration_columns(db: AsyncSession) -> None:
 
     模块自带迁移 = create_all(新表) + ALTER IF NOT EXISTS(旧表加列)。
     """
-    for stmt in _MIGRATION_STATEMENTS:
+    for table_name, column_name, stmt in _MIGRATION_STATEMENTS:
         try:
+            exists = await db.scalar(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = :table_name
+                      AND column_name = :column_name
+                    LIMIT 1
+                    """
+                ),
+                {"table_name": table_name, "column_name": column_name},
+            )
+            if exists:
+                continue
             await db.execute(text(stmt))
         except Exception as e:
             logger.warning("Migration skipped (%s): %s", stmt[:80], e)

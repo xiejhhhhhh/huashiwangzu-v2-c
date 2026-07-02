@@ -83,7 +83,10 @@ def _load_memories(repo_root: Path, limit: int = 200) -> list[dict[str, Any]]:
 
 
 def _component_tool_names(module_name: str) -> list[str]:
-    module = importlib.import_module(module_name)
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        module = importlib.import_module(module_name.rsplit(".", 1)[-1])
     if not hasattr(module, "tool_definitions"):
         return []
     try:

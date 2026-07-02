@@ -142,6 +142,7 @@ async def http_rethink(
         memory.tags = req.tags
     memory.source = "rethink"
     await db.commit()
+    await memory_service._update_embedding(memory.id, req.text)
     await memory_service._enqueue_post_save(memory.id, req.text, "rethink")
     return ApiResponse(data={"id": memory.id, "status": "rethought", "old_text": old_text})
 
@@ -160,10 +161,12 @@ async def http_replace(
         raise PermissionDenied("只能编辑自己的记忆")
     if req.old_text not in memory.text:
         raise ValidationError("未找到要替换的文本")
-    memory.text = memory.text.replace(req.old_text, req.new_text, 1)
+    new_memory_text = memory.text.replace(req.old_text, req.new_text, 1)
+    memory.text = new_memory_text
     memory.source = "edit"
     await db.commit()
-    await memory_service._enqueue_post_save(memory.id, memory.text, "edit")
+    await memory_service._update_embedding(memory.id, new_memory_text)
+    await memory_service._enqueue_post_save(memory.id, new_memory_text, "edit")
     return ApiResponse(data={"id": memory.id, "status": "replaced"})
 
 
@@ -179,10 +182,12 @@ async def http_insert(
         raise NotFound("记忆不存在")
     if memory.owner_id != current_user.id:
         raise PermissionDenied("只能编辑自己的记忆")
-    memory.text += "\n" + req.text
+    new_memory_text = memory.text + "\n" + req.text
+    memory.text = new_memory_text
     memory.source = "edit"
     await db.commit()
-    await memory_service._enqueue_post_save(memory.id, memory.text, "edit")
+    await memory_service._update_embedding(memory.id, new_memory_text)
+    await memory_service._enqueue_post_save(memory.id, new_memory_text, "edit")
     return ApiResponse(data={"id": memory.id, "status": "inserted"})
 
 
@@ -393,6 +398,23 @@ register_capability(
     description="Admin overview: aggregated memory & experience statistics (total_count, with_embedding, avg_confidence, link_count, experience counts, etc.)",
     brief="记忆和经验的概览统计",
     parameters={},
+    min_role="admin",
+)
+
+register_capability(
+    "memory", "backfill_embeddings", cap_mod._cap_backfill_embeddings,
+    description="Admin governance: safely backfill missing memory record embeddings with dry-run, owner, limit, and optional dream linking",
+    brief="治理缺失记忆向量",
+    parameters={
+        "type": "object",
+        "properties": {
+            "dry_run": {"type": "boolean", "description": "仅诊断不写入，默认 true"},
+            "limit": {"type": "integer", "description": "本次最多处理条数，1-100，默认 20"},
+            "owner_id": {"type": "integer", "description": "只治理指定 owner 的记忆，可选"},
+            "owner": {"type": "integer", "description": "owner_id 的兼容别名，可选"},
+            "run_dream": {"type": "boolean", "description": "成功回填后触发 dream 建链，可选"},
+        },
+    },
     min_role="admin",
 )
 

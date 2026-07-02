@@ -36,11 +36,11 @@ const tabs = [
 
 const activeTab = ref('generate')
 
-async function onSaveDraft(data: any) {
+async function onSaveDraft(data: unknown) {
   return data
 }
 
-function onEditDraft(draft: any) {
+function onEditDraft(_draft: unknown) {
   activeTab.value = 'generate'
 }
 </script>

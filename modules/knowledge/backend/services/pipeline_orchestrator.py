@@ -9,17 +9,22 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, Awaitable, Callable
 
+from app.database import AsyncSessionLocal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import KbDocument
+from ..models import KbDocument, KbPipelineRun, KbPipelineStageRun
+from .document_service import mark_document_source_unavailable
 from .entity_service import process_document_entities_from_fusions
 from .fusion_service import fuse_all_pages
 from .profile_service import generate_document_profile
 from .raw_collection_service import collect_raw_data
 from .relation_service import compute_file_relations
+from .source_file_state import get_source_file_availability
 from .stale_tracker import (
     detect_stale_stages,
     mark_stale,
@@ -51,6 +56,187 @@ class StageAssessment:
 
 FAILED_STATUSES = {"failed", "error"}
 DEGRADED_STATUSES = {"degraded", "partial", "done_with_errors"}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
+async def _start_pipeline_run(
+    db: AsyncSession,
+    document_id: int,
+    owner_id: int,
+    file_id: int,
+) -> int | None:
+    """Persist a best-effort pipeline run row for diagnostics."""
+    _ = db
+    diag_db = None
+    try:
+        async with AsyncSessionLocal() as session:
+            diag_db = session
+            run = KbPipelineRun(
+                document_id=document_id,
+                owner_id=owner_id,
+                file_id=file_id,
+                trigger="kb_pipeline",
+                status="running",
+                started_at=_now(),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = int(run.id)
+            await session.commit()
+            return run_id
+    except Exception as exc:
+        if diag_db is not None:
+            await diag_db.rollback()
+        logger.warning("Pipeline run diagnostics start skipped doc_id=%d: %s", document_id, exc)
+        return None
+
+
+async def _finish_pipeline_run(
+    db: AsyncSession,
+    run_id: int | None,
+    status: str,
+    *,
+    reason: str = "",
+    diagnostics: dict | None = None,
+) -> None:
+    _ = db
+    if run_id is None:
+        return
+    diag_db = None
+    try:
+        async with AsyncSessionLocal() as session:
+            diag_db = session
+            run = await session.get(KbPipelineRun, run_id)
+            if run is None:
+                return
+            run.status = status
+            run.reason = reason or None
+            run.diagnostics_json = _json_safe(diagnostics or {})
+            run.completed_at = _now()
+            await session.commit()
+    except Exception as exc:
+        if diag_db is not None:
+            await diag_db.rollback()
+        logger.warning("Pipeline run diagnostics finish skipped run_id=%s: %s", run_id, exc)
+
+
+async def _record_stage_run(
+    db: AsyncSession,
+    run_id: int | None,
+    *,
+    document_id: int,
+    owner_id: int,
+    stage: str,
+    status: str,
+    started_at: datetime,
+    reason: str = "",
+    metrics: dict | None = None,
+    error_message: str = "",
+    artifact_hash: str | None = None,
+    duration_ms: int | None = None,
+) -> None:
+    """Persist one stage diagnostic row without making diagnostics flow-critical."""
+    _ = db
+    diag_db = None
+    try:
+        async with AsyncSessionLocal() as session:
+            diag_db = session
+            record = KbPipelineStageRun(
+                run_id=run_id,
+                document_id=document_id,
+                owner_id=owner_id,
+                stage=stage,
+                status=status,
+                reason=reason or None,
+                artifact_hash=artifact_hash,
+                metrics_json=_json_safe(metrics or {}),
+                error_message=error_message or None,
+                started_at=started_at,
+                completed_at=_now(),
+                duration_ms=duration_ms,
+            )
+            session.add(record)
+            await session.commit()
+    except Exception as exc:
+        if diag_db is not None:
+            await diag_db.rollback()
+        logger.warning("Pipeline stage diagnostics skipped doc_id=%d stage=%s: %s", document_id, stage, exc)
+
+
+async def _abort_if_source_unavailable(
+    db: AsyncSession,
+    run_id: int | None,
+    *,
+    doc: KbDocument,
+    document_id: int,
+    owner_id: int,
+    file_id: int,
+    steps: dict[str, dict],
+    stage: str,
+    metrics: dict | None = None,
+) -> dict | None:
+    """Stop the pipeline if the source file disappeared during this run."""
+    state = await get_source_file_availability(db, file_id)
+    if state.available:
+        return None
+
+    mark_document_source_unavailable(doc, state.reason)
+    await db.commit()
+    step_payload = {
+        "status": "skipped",
+        "reason": state.reason,
+        "classification": "source_unavailable",
+    }
+    if metrics:
+        step_payload["metrics"] = metrics
+    steps[stage] = step_payload
+    await _record_stage_run(
+        db,
+        run_id,
+        document_id=document_id,
+        owner_id=owner_id,
+        stage=stage,
+        status="skipped",
+        started_at=_now(),
+        reason=state.reason,
+        metrics=step_payload,
+        duration_ms=0,
+    )
+    await _finish_pipeline_run(
+        db,
+        run_id,
+        "skipped",
+        reason=state.reason,
+        diagnostics={"steps": steps},
+    )
+    logger.info(
+        "Pipeline skipped for document_id=%d file_id=%d during stage=%s: %s",
+        document_id,
+        file_id,
+        stage,
+        state.reason,
+    )
+    return {
+        "document_id": document_id,
+        "file_id": file_id,
+        "status": "skipped",
+        "reason": state.reason,
+        "classification": "source_unavailable",
+        "steps": steps,
+    }
 
 
 def assess_stage_result(stage_name: str, result: dict, required: bool = True) -> StageAssessment:
@@ -150,6 +336,21 @@ async def run_pipeline(
     )).scalar_one_or_none()):
         return {"error": f"Document {document_id} not found"}
 
+    run = await _start_pipeline_run(db, document_id, owner_id, file_id)
+
+    aborted = await _abort_if_source_unavailable(
+        db,
+        run,
+        doc=doc,
+        document_id=document_id,
+        owner_id=owner_id,
+        file_id=file_id,
+        steps=steps,
+        stage="source_file",
+    )
+    if aborted:
+        return aborted
+
     # ── 1. 检测 stale ──────────────────────────────
     stale_stages = set(await detect_stale_stages(db, document_id, file_id))
 
@@ -162,7 +363,21 @@ async def run_pipeline(
         stale_stages.add("fusion")
 
     # 记录当前源文件 hash
-    await record_artifact_hash(db, document_id, "source_file", file_id)
+    source_started = _now()
+    source_timer = perf_counter()
+    source_hash = await record_artifact_hash(db, document_id, "source_file", file_id)
+    await _record_stage_run(
+        db,
+        run,
+        document_id=document_id,
+        owner_id=owner_id,
+        stage="source_file",
+        status="done",
+        started_at=source_started,
+        reason="available",
+        artifact_hash=source_hash,
+        duration_ms=round((perf_counter() - source_timer) * 1000),
+    )
 
     # ── 2. 按注册表顺序执行 ────────────────────────────
     completed_stages: set[str] = set()
@@ -172,6 +387,19 @@ async def run_pipeline(
 
     for stage_def in STAGE_REGISTRY:
         step_name = stage_def.name
+
+        aborted = await _abort_if_source_unavailable(
+            db,
+            run,
+            doc=doc,
+            document_id=document_id,
+            owner_id=owner_id,
+            file_id=file_id,
+            steps=steps,
+            stage=step_name,
+        )
+        if aborted:
+            return aborted
 
         # 判断是否需要执行
         skip = False
@@ -185,6 +413,18 @@ async def run_pipeline(
             if current_status == "done":
                 steps[step_name] = {"status": "skipped", "reason": "already done"}
                 completed_stages.add(step_name)
+                await _record_stage_run(
+                    db,
+                    run,
+                    document_id=document_id,
+                    owner_id=owner_id,
+                    stage=step_name,
+                    status="skipped",
+                    started_at=_now(),
+                    reason="already done",
+                    metrics=steps[step_name],
+                    duration_ms=0,
+                )
                 skip = True
 
         if skip:
@@ -204,6 +444,18 @@ async def run_pipeline(
                     "classification": "degraded_dependency",
                 }
                 degraded_stages.add(step_name)
+                await _record_stage_run(
+                    db,
+                    run,
+                    document_id=document_id,
+                    owner_id=owner_id,
+                    stage=step_name,
+                    status="degraded",
+                    started_at=_now(),
+                    reason=steps[step_name]["reason"],
+                    metrics=steps[step_name],
+                    duration_ms=0,
+                )
                 logger.warning("Pipeline skipped %s: dependency '%s' unavailable for doc_id=%d",
                                step_name, req, document_id)
                 break
@@ -212,6 +464,8 @@ async def run_pipeline(
 
         # 执行
         logger.info("Pipeline step %s: doc_id=%d", step_name, document_id)
+        stage_started = _now()
+        stage_timer = perf_counter()
         try:
             fn_kwargs: dict[str, Any] = {"db": db, "document_id": document_id, "owner_id": owner_id}
             if step_name == "raw":
@@ -220,6 +474,20 @@ async def run_pipeline(
             # relations 只需要 db + document_id + owner_id
             steps[step_name] = await stage_def.fn(**fn_kwargs)
             await db.commit()
+
+            aborted = await _abort_if_source_unavailable(
+                db,
+                run,
+                doc=doc,
+                document_id=document_id,
+                owner_id=owner_id,
+                file_id=file_id,
+                steps=steps,
+                stage=step_name,
+                metrics=steps[step_name],
+            )
+            if aborted:
+                return aborted
 
             assessment = assess_stage_result(
                 step_name,
@@ -232,6 +500,21 @@ async def run_pipeline(
 
             if assessment.status == "failed":
                 failed_stages.add(step_name)
+                await _record_stage_run(
+                    db,
+                    run,
+                    document_id=document_id,
+                    owner_id=owner_id,
+                    stage=step_name,
+                    status="failed",
+                    started_at=stage_started,
+                    reason=assessment.reason,
+                    metrics=steps[step_name],
+                    error_message=assessment.reason,
+                    duration_ms=round((perf_counter() - stage_timer) * 1000),
+                )
+                await _finish_pipeline_run(db, run, "failed", reason=assessment.reason, diagnostics={"steps": steps})
+                await db.commit()
                 logger.error("Pipeline step %s failed for doc_id=%d: %s",
                              step_name, document_id, assessment.reason)
                 return {"document_id": document_id, "status": "failed", "steps": steps}
@@ -241,15 +524,52 @@ async def run_pipeline(
                                step_name, document_id, assessment.reason)
 
             # 记录 hash
+            artifact_hash = None
             if assessment.complete_for_dependencies:
-                await record_artifact_hash(db, document_id, step_name)
+                artifact_hash = await record_artifact_hash(db, document_id, step_name)
                 completed_stages.add(step_name)
+            await _record_stage_run(
+                db,
+                run,
+                document_id=document_id,
+                owner_id=owner_id,
+                stage=step_name,
+                status=assessment.status,
+                started_at=stage_started,
+                reason=assessment.reason,
+                metrics=steps[step_name],
+                artifact_hash=artifact_hash,
+                duration_ms=round((perf_counter() - stage_timer) * 1000),
+            )
 
         except Exception as e:
             steps[step_name] = {"error": str(e)}
+            await _record_stage_run(
+                db,
+                run,
+                document_id=document_id,
+                owner_id=owner_id,
+                stage=step_name,
+                status="failed",
+                started_at=stage_started,
+                reason=str(e),
+                metrics=steps[step_name],
+                error_message=str(e),
+                duration_ms=round((perf_counter() - stage_timer) * 1000),
+            )
+            await _finish_pipeline_run(db, run, "failed", reason=str(e), diagnostics={"steps": steps})
+            await db.commit()
             logger.error("Pipeline step %s failed for doc_id=%d: %s", step_name, document_id, e)
             return {"document_id": document_id, "status": "failed", "steps": steps}
 
     # ── 3. 汇总 ────────────────────────────────────────
     status = "degraded" if degraded_stages else "done"
+    await _finish_pipeline_run(
+        db,
+        run,
+        status,
+        reason=";".join(sorted(degraded_stages)) if degraded_stages else "",
+        diagnostics={"steps": steps},
+    )
+    await db.commit()
     return {"document_id": document_id, "status": status, "steps": steps}

@@ -9,27 +9,41 @@ These tests verify that:
 """
 import asyncio
 import logging
-import pytest
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 
-from app.main import app
+import pytest
 from app.database import AsyncSessionLocal, engine
-from app.models.base import Base
+from app.main import app
 from app.models.platform_workflow import (
     WorkflowDefinition,
     WorkflowRunRecord,
     WorkflowStepRecord,
 )
 from app.schemas.platform_resource import (
+    ResourceMetadata,
     ResourceObject,
     ResourceRef,
     ResourceType,
-    ResourceMetadata,
 )
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete, select
 
 SEED_PASS = "admin123"
 logger = logging.getLogger("v2.test_platform_workflow")
+TEST_WORKFLOW_NAMES = {
+    "test-workflow",
+    "wf-a",
+    "wf-b",
+    "wf-c",
+    "ledger-test",
+    "transition-test",
+    "step-lifecycle",
+    "api-steps",
+    "fail-test",
+}
+TEST_RUN_TRACES = {
+    "test-trace-001",
+    "transition-001",
+}
 
 
 async def _ensure_tables():
@@ -48,8 +62,31 @@ async def _login(client: AsyncClient) -> str:
 
 async def _do_cleanup():
     async with AsyncSessionLocal() as db:
-        for table in (WorkflowStepRecord, WorkflowRunRecord, WorkflowDefinition):
-            await db.execute(table.__table__.delete().where(table.__table__.c.id > 99999))
+        definition_ids_result = await db.execute(
+            select(WorkflowDefinition.id).where(WorkflowDefinition.name.in_(TEST_WORKFLOW_NAMES))
+        )
+        definition_ids = list(definition_ids_result.scalars().all())
+
+        run_ids: list[int] = []
+        if definition_ids:
+            run_ids_result = await db.execute(
+                select(WorkflowRunRecord.id).where(
+                    WorkflowRunRecord.definition_id.in_(definition_ids)
+                )
+            )
+            run_ids.extend(run_ids_result.scalars().all())
+
+        traced_run_ids_result = await db.execute(
+            select(WorkflowRunRecord.id).where(WorkflowRunRecord.trace.in_(TEST_RUN_TRACES))
+        )
+        run_ids.extend(traced_run_ids_result.scalars().all())
+        run_ids = sorted(set(run_ids))
+
+        if run_ids:
+            await db.execute(delete(WorkflowStepRecord).where(WorkflowStepRecord.run_id.in_(run_ids)))
+            await db.execute(delete(WorkflowRunRecord).where(WorkflowRunRecord.id.in_(run_ids)))
+        if definition_ids:
+            await db.execute(delete(WorkflowDefinition).where(WorkflowDefinition.id.in_(definition_ids)))
         await db.commit()
 
 
@@ -213,7 +250,10 @@ class TestWorkflowRunLedger:
     async def test_run_status_transitions(self):
         """Run status transitions through orchestrator service."""
         from app.services.workflow_orchestrator import (
-            create_run, start_run, complete_run, get_run,
+            complete_run,
+            create_run,
+            get_run,
+            start_run,
         )
 
         async with AsyncSessionLocal() as db:
@@ -241,10 +281,14 @@ class TestWorkflowRunLedger:
     @pytest.mark.asyncio
     async def test_step_lifecycle(self):
         """Step records can be created and linked to a run."""
-        from app.services.workflow_orchestrator import (
-            create_run, create_step, start_step, complete_step, list_steps,
-        )
         from app.schemas.platform_resource import ResourceRef, ResourceType
+        from app.services.workflow_orchestrator import (
+            complete_step,
+            create_run,
+            create_step,
+            list_steps,
+            start_step,
+        )
 
         async with AsyncSessionLocal() as db:
             wd = WorkflowDefinition(name="step-lifecycle", owner_id=1)
@@ -304,7 +348,7 @@ class TestWorkflowRunLedger:
     @pytest.mark.asyncio
     async def test_failed_run(self):
         """A failed run has error populated."""
-        from app.services.workflow_orchestrator import create_run, complete_run
+        from app.services.workflow_orchestrator import complete_run, create_run
 
         async with AsyncSessionLocal() as db:
             wd = WorkflowDefinition(name="fail-test", owner_id=1)

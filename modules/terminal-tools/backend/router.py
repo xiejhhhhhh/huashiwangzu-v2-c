@@ -14,23 +14,29 @@ All file operations are locked to the user's workspace directory.
 Dangerous commands are intercepted.  Execution has timeout + output caps.
 """
 import logging
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from typing import Any
 
-from app.database import get_db
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from .handlers.exec import _exec
-from .handlers.file_ops import _write_file, _read_file, _list_workspace, _publish, _import
-from .handlers.python import _run_python, _chart
+from .handlers.file_ops import _import, _list_workspace, _publish, _read_file, _write_file
+from .handlers.python import _chart, _run_python
 
 logger = logging.getLogger("v2.terminal-tools")
 
 router = APIRouter(prefix="/api/terminal-tools", tags=["terminal-tools"])
 
 _DEFAULT_TIMEOUT = 60
+
+
+def _terminal_response(result: dict[str, Any]) -> ApiResponse[dict[str, Any]]:
+    if result.get("success") is False:
+        return ApiResponse(success=False, data=result, error=str(result.get("error") or "Terminal tool failed"))
+    return ApiResponse(data=result)
 
 
 # ── HTTP request schemas ──
@@ -96,7 +102,7 @@ async def http_exec(
     user: User = Depends(require_permission("editor")),
 ):
     result = await _exec(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 @router.post("/write-file")
@@ -105,7 +111,7 @@ async def http_write_file(
     user: User = Depends(require_permission("editor")),
 ):
     result = await _write_file(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 @router.post("/read-file")
@@ -114,7 +120,7 @@ async def http_read_file(
     user: User = Depends(require_permission("viewer")),
 ):
     result = await _read_file(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 @router.post("/list-workspace")
@@ -123,7 +129,7 @@ async def http_list_workspace(
     user: User = Depends(require_permission("viewer")),
 ):
     result = await _list_workspace(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 @router.post("/publish")
@@ -132,7 +138,7 @@ async def http_publish(
     user: User = Depends(require_permission("editor")),
 ):
     result = await _publish(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 @router.post("/import")
@@ -141,7 +147,7 @@ async def http_import(
     user: User = Depends(require_permission("editor")),
 ):
     result = await _import(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 @router.post("/run-python")
@@ -150,7 +156,7 @@ async def http_run_python(
     user: User = Depends(require_permission("editor")),
 ):
     result = await _run_python(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 @router.post("/chart")
@@ -159,7 +165,7 @@ async def http_chart(
     user: User = Depends(require_permission("editor")),
 ):
     result = await _chart(body.model_dump(), f"user:{user.id}")
-    return ApiResponse(data=result)
+    return _terminal_response(result)
 
 
 # Import capabilities to register them at module load

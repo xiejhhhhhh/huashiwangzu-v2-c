@@ -25,7 +25,7 @@ async def _upload_sample(
     source_path: Path,
     prefix: str,
 ) -> int:
-    filename = f"{prefix}-{source_path.name}"
+    filename = f"{prefix}-{uuid4().hex[:8]}-{source_path.name}"
     with source_path.open("rb") as file_obj:
         response = await client.post(
             "/api/files/upload",
@@ -209,12 +209,12 @@ async def test_file_parsers_reject_other_users_private_files(
     sample_path: Path,
 ) -> None:
     if case_name == "image-vision":
-        from app.gateway.router import gateway_router
+        from app.services import model_services
 
         monkeypatch.setattr(
-            gateway_router,
-            "chat",
-            AsyncMock(return_value={"content": "mock image description"}),
+            model_services,
+            "describe_image",
+            AsyncMock(return_value="mock image description"),
         )
 
     transport = ASGITransport(app=app)

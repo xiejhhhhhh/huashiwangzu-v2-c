@@ -4,14 +4,18 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+REPO_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_ROOT = REPO_ROOT / "backend"
+for path in (REPO_ROOT, BACKEND_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 
 def _load_raw_service():
     for module_name, module in sys.modules.items():
         if module_name.endswith(".raw_collection_service") and hasattr(module, "collect_raw_data"):
             return module
-    return importlib.import_module("modules.knowledge.backend.raw_collection_service")
+    return importlib.import_module("modules.knowledge.backend.services.raw_collection_service")
 
 
 class _ScalarResult:
@@ -47,6 +51,20 @@ class _FakeDb:
         return None
 
 
+class _SessionFactory:
+    def __init__(self, db):
+        self.db = db
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self.db
+
+    async def __aexit__(self, *_exc_info):
+        return None
+
+
 @pytest.mark.asyncio
 async def test_collect_raw_data_marks_failed_when_all_rounds_return_errors(monkeypatch):
     raw_service = _load_raw_service()
@@ -55,6 +73,7 @@ async def test_collect_raw_data_marks_failed_when_all_rounds_return_errors(monke
         return {"round": 1, "page": 1, "chars": 0, "error": "parser failed"}
 
     monkeypatch.setattr(raw_service, "_exec_round_1_text", fake_round_1)
+    monkeypatch.setattr(raw_service, "AsyncSessionLocal", _SessionFactory(_FakeDb()))
 
     db = _FakeDb()
     result = await raw_service.collect_raw_data(

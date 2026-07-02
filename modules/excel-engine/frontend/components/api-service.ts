@@ -3,26 +3,7 @@
  *
  * Handles all backend communication for the Excel editor.
  */
-import { getApiUrl } from '../../runtime'
-
-const TOKEN_KEY = 'v2_auth_token'
-
-let __redirecting = false
-
-function _handle401(status: number): boolean {
-  if (status !== 401) return false
-  localStorage.removeItem(TOKEN_KEY)
-  if (!__redirecting) {
-    __redirecting = true
-    window.location.replace('/')
-  }
-  return true
-}
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem(TOKEN_KEY)
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
+import { apiPost as post, getApiUrl } from '../../runtime'
 
 export interface CellEditRequest {
   state_key: string
@@ -93,23 +74,6 @@ export interface ClipboardRequest {
   params: Record<string, unknown>
 }
 
-function apiUrl(path: string): string {
-  return getApiUrl(path)
-}
-
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(apiUrl(path), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(body),
-  })
-  if (_handle401(res.status)) throw new Error('登录已失效，请重新登录')
-  if (!res.ok) throw new Error(`API ${path} returned ${res.status}`)
-  const json = await res.json()
-  if (!json.success) throw new Error(json.error || 'API error')
-  return json.data as T
-}
-
 export async function openFile(fileId: number): Promise<OpenResult> {
   return post<OpenResult>('/excel-engine/open', { file_id: fileId })
 }
@@ -156,5 +120,5 @@ export async function dispatch(req: {
 }
 
 export function getDownloadUrl(stateKey: string): string {
-  return apiUrl(`/excel-engine/download/${stateKey}`)
+  return getApiUrl(`/excel-engine/download/${stateKey}`)
 }

@@ -45,6 +45,7 @@
 
         <div class="list-section">
           <h3>脚本列表</h3>
+          <el-alert v-if="scriptsError" type="error" :title="scriptsError" show-icon :closable="false" class="list-error" />
           <el-table :data="scriptsList" stripe style="width:100%" v-loading="scriptsLoading" size="small">
             <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
             <el-table-column prop="channel" label="渠道" width="90">
@@ -94,6 +95,7 @@
 
         <div class="list-section">
           <h3>文案列表</h3>
+          <el-alert v-if="adCopiesError" type="error" :title="adCopiesError" show-icon :closable="false" class="list-error" />
           <el-table :data="adCopiesList" stripe style="width:100%" v-loading="adCopiesLoading" size="small">
             <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
             <el-table-column prop="channel" label="渠道" width="90">
@@ -152,6 +154,7 @@
 
         <div class="list-section">
           <h3>计划列表</h3>
+          <el-alert v-if="campaignsError" type="error" :title="campaignsError" show-icon :closable="false" class="list-error" />
           <el-table :data="campaignsList" stripe style="width:100%" v-loading="campaignsLoading" size="small">
             <el-table-column prop="name" label="计划名称" min-width="160" show-overflow-tooltip />
             <el-table-column prop="channel" label="渠道" width="90">
@@ -219,6 +222,7 @@
         </div>
 
         <div class="list-section">
+          <el-alert v-if="productsError" type="error" :title="productsError" show-icon :closable="false" class="list-error" />
           <el-table :data="productsList" stripe style="width:100%" v-loading="productsLoading" size="small">
             <el-table-column prop="name" label="产品名称" min-width="160" />
             <el-table-column prop="category" label="品类" width="100" />
@@ -305,6 +309,7 @@
         </div>
 
         <div class="list-section">
+          <el-alert v-if="promptsError" type="error" :title="promptsError" show-icon :closable="false" class="list-error" />
           <el-table :data="promptsList" stripe style="width:100%" v-loading="promptsLoading" size="small">
             <el-table-column prop="key" label="Key" width="160" />
             <el-table-column prop="name" label="名称" min-width="160" />
@@ -368,6 +373,16 @@ const channelLabel = (ch: string) => ({ local_push: '本地推', ocean_engine: '
 function onChannelChange() {}
 function onTabChange() {}
 
+function errorMessage(e: unknown, fallback: string): string {
+  return e instanceof Error && e.message ? e.message : fallback
+}
+
+function showLoadError(target: { value: string }, fallback: string, e: unknown) {
+  const message = errorMessage(e, fallback)
+  target.value = message
+  ElMessage.error(message)
+}
+
 // ── Script tab ─────────────────────────────────
 
 const scriptInput = ref('')
@@ -377,6 +392,7 @@ const scriptLoading = ref(false)
 const scriptResult = ref<api.GenerateResult | null>(null)
 const scriptsList = ref<api.Script[]>([])
 const scriptsLoading = ref(false)
+const scriptsError = ref('')
 const showScriptDialog = ref(false)
 const previewingScript = ref<api.Script | null>(null)
 
@@ -418,9 +434,12 @@ async function saveCurrentScript() {
 
 async function loadScripts() {
   scriptsLoading.value = true
+  scriptsError.value = ''
   try {
     scriptsList.value = await api.scripts.list(scriptFilterChannel.value || undefined)
-  } catch { /* empty */ }
+  } catch (e: unknown) {
+    showLoadError(scriptsError, '脚本列表加载失败', e)
+  }
   finally { scriptsLoading.value = false }
 }
 
@@ -447,6 +466,7 @@ const adCopyLoading = ref(false)
 const adCopyResult = ref<api.GenerateResult | null>(null)
 const adCopiesList = ref<api.AdCopy[]>([])
 const adCopiesLoading = ref(false)
+const adCopiesError = ref('')
 const showAdCopyDialog = ref(false)
 const previewingAdCopy = ref<api.AdCopy | null>(null)
 
@@ -486,9 +506,12 @@ async function saveCurrentAdCopy() {
 
 async function loadAdCopies() {
   adCopiesLoading.value = true
+  adCopiesError.value = ''
   try {
     adCopiesList.value = await api.adCopies.list()
-  } catch { /* empty */ }
+  } catch (e: unknown) {
+    showLoadError(adCopiesError, '文案列表加载失败', e)
+  }
   finally { adCopiesLoading.value = false }
 }
 
@@ -519,13 +542,17 @@ const campaignForm = ref({
 const campaignDateRange = ref<[string, string] | null>(null)
 const campaignsList = ref<api.Campaign[]>([])
 const campaignsLoading = ref(false)
+const campaignsError = ref('')
 const campaignAnalysis = ref<{ analysis: string } | null>(null)
 
 async function loadCampaigns() {
   campaignsLoading.value = true
+  campaignsError.value = ''
   try {
     campaignsList.value = await api.campaigns.list()
-  } catch { /* empty */ }
+  } catch (e: unknown) {
+    showLoadError(campaignsError, '计划列表加载失败', e)
+  }
   finally { campaignsLoading.value = false }
 }
 
@@ -600,12 +627,16 @@ const productForm = ref({
 })
 const productsList = ref<api.Product[]>([])
 const productsLoading = ref(false)
+const productsError = ref('')
 
 async function loadProducts() {
   productsLoading.value = true
+  productsError.value = ''
   try {
     productsList.value = await api.products.list()
-  } catch { /* empty */ }
+  } catch (e: unknown) {
+    showLoadError(productsError, '产品列表加载失败', e)
+  }
   finally { productsLoading.value = false }
 }
 
@@ -702,12 +733,16 @@ const promptForm = ref({
 })
 const promptsList = ref<api.Prompt[]>([])
 const promptsLoading = ref(false)
+const promptsError = ref('')
 
 async function loadPrompts() {
   promptsLoading.value = true
+  promptsError.value = ''
   try {
     promptsList.value = await api.prompts.list()
-  } catch { /* empty */ }
+  } catch (e: unknown) {
+    showLoadError(promptsError, '提示词列表加载失败', e)
+  }
   finally { promptsLoading.value = false }
 }
 
@@ -847,6 +882,9 @@ onMounted(() => {
   font-size: 14px;
   font-weight: 600;
   color: #303133;
+}
+.list-error {
+  margin-bottom: 8px;
 }
 .form-card {
   border: 1px solid #e4e7ed;

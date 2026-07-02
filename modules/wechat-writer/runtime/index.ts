@@ -277,6 +277,19 @@ export async function apiPost<T>(path: string, payload?: unknown): Promise<T> {
   return body.data as T
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  const url = getApiUrl(path)
+  const r = await fetch(url, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (_handle401(r.status)) throw new Error('登录已失效，请重新登录')
+  if (!r.ok) throw new Error(`API ${path} returned ${r.status}`)
+  const body = await r.json()
+  if (!body.success) throw new Error(body.error ?? 'API error')
+  return body.data as T
+}
+
 // ── Platform SDK namespaces ─────────────────────────────────────────
 
 export const auth = {

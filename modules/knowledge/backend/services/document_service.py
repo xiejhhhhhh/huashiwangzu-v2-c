@@ -28,11 +28,14 @@ SUPPORTED_EXTENSIONS = {
 _ACTIVE_OR_SOURCE_ERROR_STATUSES = {
     "parsing", "indexing", "collecting", "running", "error", "failed",
 }
+SOURCE_UNAVAILABLE_REASONS = {"source_file_deleted", "source_file_missing"}
 PARSER_NO_CONTENT_MARKER = "Parser returned no content blocks"
 
 
 def document_pipeline_complete(doc) -> bool:
     """Return whether the durable knowledge pipeline has fully completed."""
+    if (doc.parse_error or "") in SOURCE_UNAVAILABLE_REASONS:
+        return False
     return (
         document_parse_allows_search(doc)
         and doc.vector_status == "done"
@@ -360,13 +363,16 @@ def document_registration_payload(doc, task_info: dict | None = None) -> dict:
         status = "completed"
     else:
         status = "existing"
+    source_available = (doc.parse_error or "") not in SOURCE_UNAVAILABLE_REASONS
     search_ready = (
-        document_parse_allows_search(doc)
+        source_available
+        and document_parse_allows_search(doc)
         and doc.vector_status == "done"
         and (doc.total_chunks or 0) > 0
     )
     deep_ready = (
-        getattr(doc, "raw_status", "pending") == "done"
+        source_available
+        and getattr(doc, "raw_status", "pending") == "done"
         and getattr(doc, "fusion_status", "pending") == "done"
     )
     payload.update({
@@ -591,6 +597,7 @@ async def parse_and_index_document(
             doc.total_chunks = 0
             doc.parse_error = reason[:2000]
             await db.commit()
+            await db.refresh(doc)
             logger.warning(
                 "Parser produced no content for document_id=%d; continuing deep pipeline as degraded: %s",
                 document_id,

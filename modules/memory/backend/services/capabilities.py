@@ -302,6 +302,45 @@ async def _cap_overview_stats(params: dict, caller: str) -> dict:
     return result
 
 
+async def _cap_backfill_embeddings(params: dict, caller: str) -> dict:
+    limit = params.get("limit", 20)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("limit must be an integer") from exc
+    if limit < 1 or limit > 100:
+        raise ValidationError("limit must be between 1 and 100")
+
+    owner_id = params.get("owner_id", params.get("owner"))
+    if owner_id not in (None, ""):
+        try:
+            owner_id = int(owner_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("owner_id must be an integer") from exc
+        if owner_id <= 0:
+            raise ValidationError("owner_id must be positive")
+    else:
+        owner_id = None
+
+    dry_run = params.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        raise ValidationError("dry_run must be boolean")
+    run_dream = params.get("run_dream", False)
+    if not isinstance(run_dream, bool):
+        raise ValidationError("run_dream must be boolean")
+
+    await memory_service._ensure_init()
+    async with AsyncSessionLocal() as db:
+        result = await embedding_service.backfill_missing_record_embeddings(
+            db,
+            owner_id=owner_id,
+            limit=limit,
+            dry_run=dry_run,
+            run_dream=run_dream,
+        )
+    return {"success": True, "data": result}
+
+
 # ── Three-layer memory capabilities ─────────────────────────────
 
 

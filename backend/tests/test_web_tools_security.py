@@ -45,6 +45,7 @@ router_mod = _load_router("web-tools")
 @pytest.mark.asyncio
 async def test_fetch_rejects_localhost():
     result = await router_mod._cap_fetch({"url": "http://127.0.0.1:33000"}, "user:1")
+    assert result["success"] is False
     assert not result.get("title") and not result.get("text")
     assert "error" in result
     assert result["error"]
@@ -53,24 +54,28 @@ async def test_fetch_rejects_localhost():
 @pytest.mark.asyncio
 async def test_fetch_rejects_metadata():
     result = await router_mod._cap_fetch({"url": "http://169.254.169.254/latest/meta-data"}, "user:1")
+    assert result["success"] is False
     assert result["error"]
 
 
 @pytest.mark.asyncio
 async def test_fetch_rejects_private():
     result = await router_mod._cap_fetch({"url": "http://10.0.0.1/admin"}, "user:1")
+    assert result["success"] is False
     assert result["error"]
 
 
 @pytest.mark.asyncio
 async def test_fetch_rejects_file_scheme():
     result = await router_mod._cap_fetch({"url": "file:///etc/passwd"}, "user:1")
+    assert result["success"] is False
     assert result["error"]
 
 
 @pytest.mark.asyncio
 async def test_fetch_rejects_userinfo():
     result = await router_mod._cap_fetch({"url": "https://user:pass@example.com"}, "user:1")
+    assert result["success"] is False
     assert result["error"]
 
 
@@ -86,3 +91,18 @@ async def test_fetch_public_url_passes_ssrf_check():
     assert "internal" not in err
     assert "ssrf" not in err
     assert "private" not in err or "blocked" not in err
+
+
+def test_http_response_preserves_fetch_failure_status():
+    response = router_mod._web_response({
+        "success": False,
+        "url": "http://127.0.0.1:33000",
+        "title": "",
+        "text": "",
+        "truncated": False,
+        "error": "URL targets a private/internal address",
+    })
+
+    assert response.success is False
+    assert response.error == "URL targets a private/internal address"
+    assert response.data["success"] is False

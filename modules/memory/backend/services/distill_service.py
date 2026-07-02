@@ -11,8 +11,8 @@ from datetime import datetime
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .embedding_service import _compute_embedding, _update_embedding_sql
-from ..models import MemoryExperience, MemoryLink, MemoryRecord
+from ..models import MemoryLink, MemoryRecord
+from .embedding_service import _compute_embedding
 
 logger = logging.getLogger("v2.memory").getChild("distill_service")
 
@@ -62,7 +62,7 @@ async def _distill_summary(text: str, source: str | None = None) -> dict:
         content = content.strip()
         if content.startswith("```"):
             lines = content.split("\n")
-            cleaned = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = [line for line in lines if not line.strip().startswith("```")]
             content = "\n".join(cleaned).strip()
         start = content.find("{")
         end = content.rfind("}")

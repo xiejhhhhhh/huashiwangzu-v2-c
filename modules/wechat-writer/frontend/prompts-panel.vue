@@ -21,7 +21,7 @@
             <div class="pp-item-desc" v-if="p.description">{{ p.description }}</div>
             <textarea
               :value="p.content"
-              @input="(e: any) => onPromptChange(p, e.target.value)"
+              @input="onPromptInput(p, $event)"
               class="pp-item-input"
               rows="4"
             ></textarea>
@@ -83,12 +83,24 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { apiDelete, apiGet, apiPost } from '../runtime'
+
+interface Prompt {
+  id?: number
+  key: string
+  name: string
+  content: string
+  description?: string
+  category?: string
+  owner_id?: number
+  _dirty?: boolean
+}
 
 const loading = ref(false)
-const prompts = ref<any[]>([])
+const prompts = ref<Prompt[]>([])
 const expandedCategories = ref<Record<string, boolean>>({ system: true })
 const addDialog = ref(false)
-const newPrompt = ref({ key: '', name: '', category: 'custom', description: '', content: '' })
+const newPrompt = ref<Prompt>({ key: '', name: '', category: 'custom', description: '', content: '' })
 
 const catNames: Record<string, string> = {
   system: '系统设置', topic: '选题生成', outline: '大纲生成',
@@ -104,7 +116,7 @@ const categories = computed(() => {
 })
 
 const groupedPrompts = computed(() => {
-  const groups: Record<string, any[]> = {}
+  const groups: Record<string, Prompt[]> = {}
   for (const p of prompts.value) {
     const cat = p.category || 'custom'
     if (!groups[cat]) groups[cat] = []
@@ -128,13 +140,10 @@ function toast(msg: string, type: 'success' | 'error' | 'warning' = 'success') {
 async function loadPrompts() {
   loading.value = true
   try {
-    const r = await fetch('/api/wechat-writer/prompts', {
-      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('v2_auth_token') },
-    })
-    const body = await r.json()
-    if (body.success) prompts.value = body.data || []
-  } catch (e: any) {
+    prompts.value = await apiGet<Prompt[]>('/wechat-writer/prompts')
+  } catch (e: unknown) {
     console.error('Load prompts error:', e)
+    toast(e instanceof Error ? e.message : '提示词加载失败', 'error')
   } finally {
     loading.value = false
   }
@@ -144,42 +153,35 @@ function toggleCategory(cat: string) {
   expandedCategories.value[cat] = !expandedCategories.value[cat]
 }
 
-function onPromptChange(p: any, val: string) {
+function onPromptInput(p: Prompt, event: Event) {
+  const target = event.target as HTMLTextAreaElement | null
+  onPromptChange(p, target?.value ?? '')
+}
+
+function onPromptChange(p: Prompt, val: string) {
   p._dirty = true
   p.content = val
 }
 
-async function savePrompt(p: any) {
+async function savePrompt(p: Prompt) {
   try {
-    const r = await fetch('/api/wechat-writer/prompts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('v2_auth_token') },
-      body: JSON.stringify({ key: p.key, name: p.name, content: p.content, description: p.description, category: p.category }),
-    })
-    const body = await r.json()
-    if (body.success) {
-      toast('已保存', 'success')
-      p._dirty = false
-    } else {
-      toast('保存失败：' + (body.error || ''), 'error')
-    }
-  } catch (e: any) {
-    toast('保存失败：' + (e.message || ''), 'error')
+    await apiPost('/wechat-writer/prompts', { key: p.key, name: p.name, content: p.content, description: p.description, category: p.category })
+    toast('已保存', 'success')
+    p._dirty = false
+  } catch (e: unknown) {
+    toast('保存失败：' + (e instanceof Error ? e.message : ''), 'error')
   }
 }
 
-async function deletePrompt(p: any) {
+async function deletePrompt(p: Prompt) {
+  if (!p.id) return
   if (!window.confirm('确定删除此提示词？')) return
-  const r = await fetch('/api/wechat-writer/prompts/' + p.id, {
-    method: 'DELETE',
-    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('v2_auth_token') },
-  })
-  const body = await r.json()
-  if (body.success) {
+  try {
+    await apiDelete('/wechat-writer/prompts/' + p.id)
     toast('已删除', 'success')
     loadPrompts()
-  } else {
-    toast('删除失败', 'error')
+  } catch (e: unknown) {
+    toast(e instanceof Error ? e.message : '删除失败', 'error')
   }
 }
 
@@ -190,21 +192,12 @@ function showAddDialog() {
 
 async function confirmAdd() {
   try {
-    const r = await fetch('/api/wechat-writer/prompts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('v2_auth_token') },
-      body: JSON.stringify(newPrompt.value),
-    })
-    const body = await r.json()
-    if (body.success) {
-      toast('新增成功', 'success')
-      addDialog.value = false
-      loadPrompts()
-    } else {
-      toast('新增失败：' + (body.error || ''), 'error')
-    }
-  } catch (e: any) {
-    toast('新增失败：' + (e.message || ''), 'error')
+    await apiPost('/wechat-writer/prompts', newPrompt.value)
+    toast('新增成功', 'success')
+    addDialog.value = false
+    loadPrompts()
+  } catch (e: unknown) {
+    toast('新增失败：' + (e instanceof Error ? e.message : ''), 'error')
   }
 }
 </script>

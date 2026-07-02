@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import io
 import logging
+from time import perf_counter
 
 from app.database import AsyncSessionLocal
 from app.services.task_worker import register_task_handler
@@ -98,6 +99,8 @@ async def _exec_round_1_text(
 ) -> dict:
     """第1轮：文本提取。独立 DB 会话，单独 commit。"""
     async with AsyncSessionLocal() as task_db:
+        started = perf_counter()
+        error_message = ""
         try:
             parsed = to_legacy_dict(await parse_document(file_id, ext, caller))
             blocks = parsed.get("blocks", [])
@@ -111,6 +114,7 @@ async def _exec_round_1_text(
         except Exception as e:
             logger.warning("Round 1 text extraction failed for doc_id=%d page=%d: %s", doc_id, page, e)
             content = ""
+            error_message = str(e)
 
         record = KbRawData(
             document_id=doc_id,
@@ -123,6 +127,9 @@ async def _exec_round_1_text(
             model_used="parser",
             confidence=0.95 if content else 0.0,
             content_hash=_hash_content(content),
+            status="done" if content else ("failed" if error_message else "degraded"),
+            error_message=error_message or None,
+            duration_ms=round((perf_counter() - started) * 1000),
         )
         task_db.add(record)
         await task_db.commit()
@@ -143,6 +150,8 @@ async def _exec_round_2_ocr(
     from app.services.model_services import describe_image
 
     async with AsyncSessionLocal() as task_db:
+        started = perf_counter()
+        error_message = ""
         try:
             if img_bytes is None:
                 img_bytes = await render_page_to_image(file_id, page, user_id)
@@ -175,6 +184,7 @@ async def _exec_round_2_ocr(
             logger.warning("Round 2 OCR failed for doc_id=%d page=%d: %s", doc_id, page, e)
             content = ""
             metadata = {"method": "vlm_ocr", "provider": "mimo"}
+            error_message = str(e)
 
         record = KbRawData(
             document_id=doc_id,
@@ -188,6 +198,9 @@ async def _exec_round_2_ocr(
             confidence=0.85 if content else 0.0,
             content_hash=_hash_content(content),
             metadata_json=metadata,
+            status="done" if content else ("failed" if error_message else "degraded"),
+            error_message=error_message or None,
+            duration_ms=round((perf_counter() - started) * 1000),
         )
         task_db.add(record)
         await task_db.commit()
@@ -206,6 +219,8 @@ async def _exec_round_3_vision(
     from app.services.model_services import describe_image
 
     async with AsyncSessionLocal() as task_db:
+        started = perf_counter()
+        error_message = ""
         try:
             if img_bytes is None:
                 img_bytes = await render_page_to_image(file_id, page, user_id)
@@ -219,6 +234,7 @@ async def _exec_round_3_vision(
         except Exception as e:
             logger.warning("Round 3 vision failed for doc_id=%d page=%d: %s", doc_id, page, e)
             content = ""
+            error_message = str(e)
 
         record = KbRawData(
             document_id=doc_id,
@@ -232,6 +248,9 @@ async def _exec_round_3_vision(
             confidence=0.80 if content else 0.0,
             content_hash=_hash_content(content),
             metadata_json={"method": "vlm_vision", "provider": "mimo"},
+            status="done" if content else ("failed" if error_message else "degraded"),
+            error_message=error_message or None,
+            duration_ms=round((perf_counter() - started) * 1000),
         )
         task_db.add(record)
         await task_db.commit()
@@ -434,6 +453,9 @@ async def get_raw_data(
             "model_used": rec.model_used,
             "confidence": rec.confidence,
             "content_hash": rec.content_hash,
+            "status": getattr(rec, "status", "done"),
+            "error_message": getattr(rec, "error_message", None),
+            "duration_ms": getattr(rec, "duration_ms", None),
             "created_at": rec.created_at.isoformat() if rec.created_at else None,
         }
         for rec in records

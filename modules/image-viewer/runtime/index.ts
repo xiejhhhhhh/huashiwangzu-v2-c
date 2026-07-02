@@ -248,6 +248,10 @@ function _handle401(status: number): boolean {
   return true
 }
 
+export function handleUnauthorized(status: number): boolean {
+  return _handle401(status)
+}
+
 export function authHeaders(): HeadersInit {
   const token = localStorage.getItem(TOKEN_KEY)
   return token ? { Authorization: `Bearer ${token}` } : {}

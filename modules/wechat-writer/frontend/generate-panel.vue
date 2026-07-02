@@ -81,7 +81,25 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { platform } from '../runtime'
+import { apiPost, platform } from '../runtime'
+
+interface TopicResult {
+  topics?: string
+}
+
+interface OutlineResult {
+  outline?: string
+}
+
+interface ArticleResult {
+  article?: string
+}
+
+interface ValidationResult {
+  has_knowledge_base_results?: boolean
+  knowledge_results?: unknown[]
+  ai_validation?: string
+}
 
 const steps = [
   { key: 'topic', label: '① 选题', disabled: false },
@@ -113,6 +131,10 @@ function toast(msg: string, type: 'success' | 'error' | 'warning' = 'success') {
   setTimeout(() => el.remove(), 3000)
 }
 
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : '未知错误'
+}
+
 async function generateTopics() {
   if (!direction.value.trim()) return
   topicLoading.value = true
@@ -120,10 +142,10 @@ async function generateTopics() {
   try {
     const result = await platform.modules.call('wechat-writer', 'generate_topics', {
       direction: direction.value,
-    }) as any
+    }) as TopicResult
     topicsResult.value = result.topics || ''
-  } catch (e: any) {
-    topicsResult.value = '生成失败：' + (e.message || '未知错误')
+  } catch (e: unknown) {
+    topicsResult.value = '生成失败：' + errorMessage(e)
   } finally {
     topicLoading.value = false
   }
@@ -137,10 +159,10 @@ async function generateOutline() {
     const result = await platform.modules.call('wechat-writer', 'generate_outline', {
       topic: outlineTopic.value,
       direction: direction.value,
-    }) as any
+    }) as OutlineResult
     outlineResult.value = result.outline || ''
-  } catch (e: any) {
-    outlineResult.value = '生成失败：' + (e.message || '未知错误')
+  } catch (e: unknown) {
+    outlineResult.value = '生成失败：' + errorMessage(e)
   } finally {
     outlineLoading.value = false
   }
@@ -161,10 +183,10 @@ async function generateArticle() {
       topic: articleTopic.value,
       outline: articleOutline.value,
       direction: direction.value,
-    }) as any
+    }) as ArticleResult
     articleResult.value = result.article || ''
-  } catch (e: any) {
-    articleResult.value = '生成失败：' + (e.message || '未知错误')
+  } catch (e: unknown) {
+    articleResult.value = '生成失败：' + errorMessage(e)
   } finally {
     articleLoading.value = false
   }
@@ -176,17 +198,17 @@ async function validateContent() {
   validateResult.value = ''
   try {
     const content = articleResult.value.substring(0, 2000)
-    const result = await platform.modules.call('wechat-writer', 'validate_content', { content }) as any
+    const result = await platform.modules.call('wechat-writer', 'validate_content', { content }) as ValidationResult
     let text = ''
     if (result.has_knowledge_base_results) {
-      text += '✅ 知识库匹配到 ' + result.knowledge_results.length + ' 条相关结果\n'
+      text += '✅ 知识库匹配到 ' + (result.knowledge_results?.length ?? 0) + ' 条相关结果\n'
     } else {
       text += 'ℹ️ 知识库无直接匹配（知识库内容待补充）\n'
     }
     text += '\n--- AI 校验 ---\n' + (result.ai_validation || '')
     validateResult.value = text
-  } catch (e: any) {
-    validateResult.value = '校验失败：' + (e.message || '未知错误')
+  } catch (e: unknown) {
+    validateResult.value = '校验失败：' + errorMessage(e)
   } finally {
     validateLoading.value = false
   }
@@ -194,28 +216,16 @@ async function validateContent() {
 
 async function saveDraft() {
   try {
-    const r = await fetch('/api/wechat-writer/drafts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + localStorage.getItem('v2_auth_token'),
-      },
-      body: JSON.stringify({
-        title: articleTopic.value,
-        content: articleResult.value,
-        outline: { text: articleOutline.value },
-        article_type: direction.value.substring(0, 100),
-        status: 'draft',
-      }),
+    await apiPost('/wechat-writer/drafts', {
+      title: articleTopic.value,
+      content: articleResult.value,
+      outline: { text: articleOutline.value },
+      article_type: direction.value.substring(0, 100),
+      status: 'draft',
     })
-    const body = await r.json()
-    if (body.success) {
-      toast('草稿已保存！', 'success')
-    } else {
-      toast('保存失败：' + (body.error || ''), 'error')
-    }
-  } catch (e: any) {
-    toast('保存失败：' + (e.message || ''), 'error')
+    toast('草稿已保存！', 'success')
+  } catch (e: unknown) {
+    toast('保存失败：' + errorMessage(e), 'error')
   }
 }
 

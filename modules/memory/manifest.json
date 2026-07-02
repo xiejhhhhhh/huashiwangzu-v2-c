@@ -36,6 +36,10 @@
         "tags": {
           "type": "string",
           "description": "标签"
+        },
+        "source": {
+          "type": "string",
+          "description": "来源（可选，如 auto-distill/user-save）"
         }
       },
       "min_role": "viewer"
@@ -47,6 +51,14 @@
         "query": {
           "type": "string",
           "description": "检索查询（语义匹配）"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "返回条数上限"
+        },
+        "expand_chain": {
+          "type": "boolean",
+          "description": "是否顺链扩展"
         }
       },
       "min_role": "viewer"
@@ -103,6 +115,10 @@
         "text": {
           "type": "string",
           "description": "新的完整内容"
+        },
+        "tags": {
+          "type": "string",
+          "description": "新标签（可选）"
         }
       },
       "min_role": "viewer"
@@ -128,15 +144,15 @@
     },
     {
       "action": "insert",
-      "description": "插入记忆",
+      "description": "向已有记忆追加内容",
       "parameters": {
+        "id": {
+          "type": "integer",
+          "description": "记忆ID"
+        },
         "text": {
           "type": "string",
-          "description": "内容"
-        },
-        "conversation_id": {
-          "type": "integer",
-          "description": "对话ID"
+          "description": "追加的内容"
         }
       },
       "min_role": "viewer"
@@ -185,6 +201,13 @@
         "limit": {
           "type": "integer",
           "description": "返回条数上限"
+        },
+        "team_owner_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "系统通路可传的团队 owner id 列表"
         }
       },
       "min_role": "viewer"
@@ -204,6 +227,13 @@
         "note": {
           "type": "string",
           "description": "失败时的备注（可选）"
+        },
+        "team_owner_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "系统通路可传的团队 owner id 列表"
         }
       },
       "min_role": "viewer"
@@ -212,6 +242,33 @@
       "action": "overview_stats",
       "description": "管理概览：记忆和经验的全量聚合统计",
       "parameters": {},
+      "min_role": "admin"
+    },
+    {
+      "action": "backfill_embeddings",
+      "description": "安全回填历史记忆向量，支持 dry-run、limit、owner 和可选 dream 建链",
+      "parameters": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "仅诊断不写入，默认 true"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "本次最多处理条数，1-100，默认 20"
+        },
+        "owner_id": {
+          "type": "integer",
+          "description": "只治理指定 owner 的记忆，可选"
+        },
+        "owner": {
+          "type": "integer",
+          "description": "owner_id 的兼容别名，可选"
+        },
+        "run_dream": {
+          "type": "boolean",
+          "description": "成功回填后触发 dream 建链，可选"
+        }
+      },
       "min_role": "admin"
     },
     {

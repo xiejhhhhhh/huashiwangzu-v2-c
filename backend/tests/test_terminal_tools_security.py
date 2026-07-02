@@ -45,6 +45,7 @@ def _load_module(module_key: str, module_path: str):
 # Load handlers using namespace
 exec_mod = _load_module("terminal-tools", "handlers.exec")
 file_ops_mod = _load_module("terminal-tools", "handlers.file_ops")
+router_mod = _load_module("terminal-tools", "router")
 
 
 # ── exec handler security ──────────────────────────────────────────────
@@ -89,3 +90,15 @@ async def test_list_workspace_rejects_absolute():
     assert result.get("success") is False
     err = result.get("error", "").lower()
     assert "workspace" in err or "boundary" in err
+
+
+def test_http_response_preserves_inner_failure_status():
+    response = router_mod._terminal_response({
+        "success": False,
+        "error": "Dangerous command blocked: sudo command",
+        "command": "sudo whoami",
+    })
+
+    assert response.success is False
+    assert response.error == "Dangerous command blocked: sudo command"
+    assert response.data["success"] is False

@@ -4,24 +4,36 @@ Validates parameter schemas, required fields, value ranges, and output
 shapes for all public_actions — without calling real embedding service
 or DB.
 """
+from pathlib import Path
 
 
 def test_save_params() -> None:
-    """save: text (string required), tags (string optional)."""
+    """save: text required, tags/source optional."""
     params_min = {"text": "User prefers dark mode"}
     assert "text" in params_min
     assert isinstance(params_min["text"], str) and len(params_min["text"]) > 0
-    params_full = {"text": "User prefers dark mode", "tags": "preference,ui"}
+    params_full = {
+        "text": "User prefers dark mode",
+        "tags": "preference,ui",
+        "source": "user-save",
+    }
     assert "tags" in params_full
     assert isinstance(params_full["tags"], str)
+    assert isinstance(params_full["source"], str)
     print("  [SAVE] Parameter contract valid")
 
 
 def test_recall_params() -> None:
-    """recall: query (string required)."""
-    params = {"query": "What theme does the user prefer?"}
+    """recall: query required, limit/expand_chain optional."""
+    params = {
+        "query": "What theme does the user prefer?",
+        "limit": 5,
+        "expand_chain": True,
+    }
     assert "query" in params
     assert isinstance(params["query"], str) and len(params["query"]) > 0
+    assert isinstance(params["limit"], int) and params["limit"] > 0
+    assert isinstance(params["expand_chain"], bool)
     print("  [RECALL] Parameter contract valid")
 
 
@@ -55,11 +67,12 @@ def test_fuse_params() -> None:
 
 
 def test_rethink_params() -> None:
-    """rethink: id (int required), text (string required)."""
-    params = {"id": 42, "text": "Updated preference text"}
+    """rethink: id/text required, tags optional."""
+    params = {"id": 42, "text": "Updated preference text", "tags": "preference"}
     assert "id" in params and "text" in params
     assert isinstance(params["id"], int) and params["id"] > 0
     assert isinstance(params["text"], str) and len(params["text"]) > 0
+    assert isinstance(params["tags"], str)
     print("  [RETHINK] Parameter contract valid")
 
 
@@ -74,12 +87,12 @@ def test_replace_params() -> None:
 
 
 def test_insert_params() -> None:
-    """insert: text (string required), conversation_id (int)."""
-    params_min = {"text": "New memory entry", "conversation_id": 5}
+    """insert: id (int required), text (string required)."""
+    params_min = {"id": 7, "text": "New memory entry"}
+    assert "id" in params_min
+    assert isinstance(params_min["id"], int)
     assert "text" in params_min
     assert isinstance(params_min["text"], str) and len(params_min["text"]) > 0
-    assert "conversation_id" in params_min
-    assert isinstance(params_min["conversation_id"], int)
     print("  [INSERT] Parameter contract valid")
 
 
@@ -104,23 +117,30 @@ def test_save_experience_params() -> None:
 
 
 def test_match_experience_params() -> None:
-    """match_experience: query (string required), limit optional."""
-    params = {"query": "user asks about theme", "limit": 2}
+    """match_experience: query required, limit/team_owner_ids optional."""
+    params = {"query": "user asks about theme", "limit": 2, "team_owner_ids": [7, 8]}
     assert "query" in params
     assert isinstance(params["query"], str) and len(params["query"]) > 0
     assert isinstance(params["limit"], int) and params["limit"] > 0
+    assert all(isinstance(owner_id, int) for owner_id in params["team_owner_ids"])
     print("  [MATCH_EXPERIENCE] Parameter contract valid")
 
 
 def test_experience_feedback_params() -> None:
-    """experience_feedback: experience_id (int), success (bool), note (string optional)."""
+    """experience_feedback: experience_id/success required, note/team_owner_ids optional."""
     params_min = {"experience_id": 10, "success": True}
     assert "experience_id" in params_min and "success" in params_min
     assert isinstance(params_min["experience_id"], int) and params_min["experience_id"] > 0
     assert isinstance(params_min["success"], bool)
-    params_with_note = {"experience_id": 10, "success": False, "note": "Failed to apply"}
+    params_with_note = {
+        "experience_id": 10,
+        "success": False,
+        "note": "Failed to apply",
+        "team_owner_ids": [7],
+    }
     assert "note" in params_with_note
     assert isinstance(params_with_note["note"], str)
+    assert all(isinstance(owner_id, int) for owner_id in params_with_note["team_owner_ids"])
     print("  [EXPERIENCE_FEEDBACK] Parameter contract valid")
 
 
@@ -129,6 +149,19 @@ def test_overview_stats_params() -> None:
     params: dict = {}
     assert len(params) == 0
     print("  [OVERVIEW_STATS] Parameter contract valid")
+
+
+def test_backfill_embeddings_params() -> None:
+    """backfill_embeddings: admin governance with dry-run safety controls."""
+    params_default = {"dry_run": True}
+    assert isinstance(params_default["dry_run"], bool)
+    params_full = {"dry_run": False, "limit": 10, "owner_id": 7, "owner": 7, "run_dream": True}
+    assert isinstance(params_full["limit"], int)
+    assert 1 <= params_full["limit"] <= 100
+    assert isinstance(params_full["owner_id"], int) and params_full["owner_id"] > 0
+    assert isinstance(params_full["owner"], int) and params_full["owner"] == params_full["owner_id"]
+    assert isinstance(params_full["run_dream"], bool)
+    print("  [BACKFILL_EMBEDDINGS] Parameter contract valid")
 
 
 def test_recall_stable_rules_params() -> None:
@@ -162,6 +195,21 @@ def test_save_stable_rule_params() -> None:
     assert isinstance(params_full["priority"], int)
     assert isinstance(params_full["source"], str)
     print("  [SAVE_STABLE_RULE] Parameter contract valid")
+
+
+def test_embedding_update_sql_uses_asyncpg_safe_cast() -> None:
+    """Embedding update SQL must keep bind params separate from pgvector casts."""
+    service_src = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "services"
+        / "embedding_service.py"
+    ).read_text(encoding="utf-8")
+
+    assert ":embedding::vector" not in service_src
+    assert "CAST(:embedding AS vector(1024))" in service_src
+    assert "backfill_missing_record_embeddings" in service_src
+    assert "dry_run" in service_src
 
 
 def test_memory_output_shape() -> None:
@@ -218,6 +266,64 @@ def test_stable_rule_output_shape() -> None:
     print("  [STABLE_RULE] Output shape valid")
 
 
+def test_backfill_embeddings_output_shape() -> None:
+    """Backfill governance output exposes counts and failures."""
+    result = {
+        "dry_run": True,
+        "owner_id": 7,
+        "limit": 10,
+        "total": 37,
+        "with_embedding": 4,
+        "missing": 33,
+        "selected_count": 10,
+        "processed": 0,
+        "updated": 0,
+        "failed": 0,
+        "failures": [],
+        "sample_ids": [1, 2],
+        "dream": None,
+        "dream_failures": [],
+        "diagnostic": "dry_run_only",
+    }
+    required = {
+        "dry_run",
+        "limit",
+        "total",
+        "with_embedding",
+        "missing",
+        "selected_count",
+        "updated",
+        "failed",
+        "failures",
+        "dream_failures",
+        "diagnostic",
+    }
+    for field in required:
+        assert field in result, f"Missing required field: {field}"
+    assert result["dry_run"] is True
+    assert isinstance(result["failures"], list)
+    assert isinstance(result["dream_failures"], list)
+    print("  [BACKFILL_EMBEDDINGS] Output shape valid")
+
+
+def test_backfill_dream_followup_is_degraded() -> None:
+    """Backfill must report dream failures without hiding successful updates."""
+    result = {
+        "dry_run": False,
+        "updated": 2,
+        "failed": 0,
+        "failures": [],
+        "dream": {},
+        "dream_failures": [{"owner_id": 7, "reason": "link creation failed"}],
+        "diagnostic": "completed_with_dream_failures",
+    }
+    assert result["updated"] == 2
+    assert result["failed"] == 0
+    assert result["diagnostic"] == "completed_with_dream_failures"
+    assert result["dream_failures"][0]["owner_id"] == 7
+    print("  [BACKFILL_EMBEDDINGS] Dream degradation valid")
+
+
 def test_response_shape() -> None:
     """Unified API response shape contract."""
     r = {"success": True, "data": {"id": 1, "text": "test", "created_at": "2026-07-01T00:00:00"}, "error": None}
@@ -243,12 +349,15 @@ def main() -> None:
     test_match_experience_params()
     test_experience_feedback_params()
     test_overview_stats_params()
+    test_backfill_embeddings_params()
     test_recall_stable_rules_params()
     test_recall_chunk_params()
     test_save_stable_rule_params()
     test_memory_output_shape()
     test_experience_output_shape()
     test_stable_rule_output_shape()
+    test_backfill_embeddings_output_shape()
+    test_backfill_dream_followup_is_degraded()
     test_response_shape()
     print("=" * 60)
     print("PASS: memory sandbox test")

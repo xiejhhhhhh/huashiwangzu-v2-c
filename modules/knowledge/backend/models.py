@@ -99,6 +99,10 @@ class KbPageFusion(Base, TimestampMixin):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     # 知识图谱增强后的融合文本（原有字段保留向下兼容）
     enhanced_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 页级诊断：fallback/LLM/索引等结构化信息
+    diagnostics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class KbRawData(Base, TimestampMixin):
@@ -116,6 +120,10 @@ class KbRawData(Base, TimestampMixin):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # round 级诊断：done/degraded/failed，保留失败原因和耗时
+    status: Mapped[str] = mapped_column(String(32), default="done")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class KbEntityDictionary(Base, TimestampMixin):
@@ -288,6 +296,40 @@ class KbFileRelation(Base, TimestampMixin):
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 双向边权重
     weight: Mapped[float] = mapped_column(Float, default=1.0)
+
+
+class KbPipelineRun(Base, TimestampMixin):
+    """一次知识库全链路运行的持久诊断账本。"""
+    __tablename__ = "kb_pipeline_runs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    trigger: Mapped[str] = mapped_column(String(64), default="kb_pipeline")
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnostics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KbPipelineStageRun(Base, TimestampMixin):
+    """Pipeline stage 级运行结果，承接 degraded/失败诊断和扩展指标。"""
+    __tablename__ = "kb_pipeline_stage_runs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    artifact_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metrics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class KbPipelineStale(Base, TimestampMixin):

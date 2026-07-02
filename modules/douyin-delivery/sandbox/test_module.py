@@ -2,6 +2,7 @@
 
 Validates core schemas and response shapes without calling external APIs or DB.
 """
+from pathlib import Path
 
 
 def test_product_schema() -> None:
@@ -97,6 +98,23 @@ def test_response_shape() -> None:
     print("  [RESPONSE] Shape valid")
 
 
+def test_frontend_crud_methods_match_backend_routes() -> None:
+    """Frontend update/delete helpers must call PUT/DELETE backend routes."""
+    module_root = Path(__file__).resolve().parents[1]
+    api_src = (module_root / "frontend" / "api.ts").read_text(encoding="utf-8")
+    runtime_src = (module_root / "runtime" / "index.ts").read_text(encoding="utf-8")
+
+    assert "export async function apiPut" in runtime_src
+    assert "export async function apiDelete" in runtime_src
+    assert "update: (id: number, data: Partial<Product>) => apiPut" in api_src
+    assert "update: (id: number, data: Partial<Script>) => apiPut" in api_src
+    assert "update: (id: number, data: Partial<AdCopy>) => apiPut" in api_src
+    assert "update: (id: number, data: Partial<Campaign>) => apiPut" in api_src
+    assert "delete: (id: number) => apiDelete" in api_src
+    assert "apiPost<{ deleted: boolean }>" not in api_src
+    print("  [FRONTEND CRUD] HTTP methods match backend routes")
+
+
 def main() -> None:
     print("=" * 60)
     print("douyin-delivery sandbox test")
@@ -106,6 +124,7 @@ def main() -> None:
     test_script_schema()
     test_ad_copy_schema()
     test_response_shape()
+    test_frontend_crud_methods_match_backend_routes()
     print("=" * 60)
     print("PASS: douyin-delivery sandbox test")
 
