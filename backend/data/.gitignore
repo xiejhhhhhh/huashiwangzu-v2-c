@@ -1,2 +1,14 @@
-backend/data/.tmp_uploads/
-backend/data/__pycache__/
+.chunked_uploads/
+.tmp_downloads/
+.tmp_exports/
+.tmp_uploads/
+.tmp_upload_sessions/
+.upload_sessions/
+__pycache__/
+*.pyc
+*.json.lock
+.DS_Store
+
+agent/*.json
+runtime/*.jsonl
+workspaces/
