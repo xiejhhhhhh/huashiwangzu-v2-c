@@ -118,22 +118,85 @@ def _discover_components(repo_root: Path) -> list[dict[str, Any]]:
     return components
 
 
-def _direct_server_tools(server_path: Path) -> list[str]:
+def _wired_component_tools(server_path: Path) -> list[dict[str, Any]]:
+    """Parse server.py to determine which component tools are actually wired.
+
+    Reads the per-alias import lines (e.g. each ``from dev_toolkit.code_tools import tool_definitions as code_tool_definitions``),
+    the ``*X()`` call in ``list_tools``, and the ``elif X_handles_tool(name)`` chain in ``call_tool``.
+    """
     try:
         text = server_path.read_text(encoding="utf-8")
     except OSError:
         return []
-    return re.findall(r'Tool\(\s*\n\s*name="([^"]+)"', text)
+
+    # Collect import aliases: component -> {defs_alias, handles_alias}
+    # Only include modules that export the component contract (tool_definitions + handles_tool)
+    aliases: dict[str, dict[str, str | None]] = {}
+    for m in re.finditer(
+        r"from dev_toolkit\.(\w+) import (\w+) as (\w+)",
+        text,
+    ):
+        component = m.group(1)
+        symbol = m.group(2)
+        alias = m.group(3)
+        entry = aliases.setdefault(component, {"defs_alias": None, "handles_alias": None})
+        if symbol == "tool_definitions":
+            entry["defs_alias"] = alias
+        elif symbol == "handles_tool":
+            entry["handles_alias"] = alias
+
+    # Drop imports that don't export both tool_definitions and handles_tool (helpers, not components)
+    aliases = {k: v for k, v in aliases.items() if v["defs_alias"] and v["handles_alias"]}
+
+    # Imports in list_tools: *core_tool_definitions()
+    registered_in_list = set()
+    for m in re.finditer(r"\*(\w+)\(\)", text):
+        registered_in_list.add(m.group(1))
+
+    # Dispatch branches in call_tool: if/elif X_handles_tool(name)
+    dispatched = set()
+    for m in re.finditer(r"(?:if|elif) (\w+)\(name\):", text):
+        dispatched.add(m.group(1))
+
+    wired = []
+    for component, entry in sorted(aliases.items()):
+        defs_alias = entry["defs_alias"]
+        handles_alias = entry["handles_alias"]
+        registered = defs_alias in registered_in_list if defs_alias else False
+        dispatched_flag = handles_alias in dispatched if handles_alias else False
+        wired.append({
+            "component": component,
+            "imported": True,
+            "registered_in_list_tools": registered,
+            "dispatched_in_call_tool": dispatched_flag,
+            "wired": registered and dispatched_flag,
+            "issue": "" if (registered and dispatched_flag)
+            else "missing from list_tools" if not registered
+            else "missing dispatch in call_tool",
+        })
+    return wired
+
+
+def _orphan_component_tools(components: list[dict[str, Any]], wired: list[dict[str, Any]]) -> list[str]:
+    """Tools declared in component files but whose component is not fully wired in server.py."""
+    wired_components = {w["component"] for w in wired if w["wired"]}
+    orphan_tools = []
+    for comp in components:
+        module = comp.get("module", "")
+        stem = module.split(".")[-1] if "." in module else module
+        if stem not in wired_components:
+            orphan_tools.extend(comp.get("tools", []))
+    return sorted(orphan_tools)
 
 
 def mcp_self_check(repo_root: Path, usage_path: Path, include_tools: bool = True) -> str:
     components = _discover_components(repo_root)
     server_path = repo_root / "dev_toolkit" / "server.py"
     entrypoint = validate_declared_server_config(repo_root)
-    direct_tools = _direct_server_tools(server_path)
+    wired = _wired_component_tools(server_path)
     component_tools = [tool for component in components for tool in component["tools"]]
-    all_tools = direct_tools + component_tools
-    duplicates = sorted(name for name, count in Counter(all_tools).items() if count > 1)
+    orphan_tools = _orphan_component_tools(components, wired)
+    duplicates = sorted(name for name, count in Counter(component_tools).items() if count > 1)
     long_files = [
         {"path": _repo_rel(repo_root, path), "lines": _line_count(path)}
         for path in sorted((repo_root / "dev_toolkit").glob("*.py"))
@@ -147,23 +210,36 @@ def mcp_self_check(repo_root: Path, usage_path: Path, include_tools: bool = True
         warnings.append("dev_toolkit/server.py is still larger than 600 lines; keep migrating tool groups into *_tools.py components.")
     if duplicates:
         warnings.append("Duplicate tool names found: " + ", ".join(duplicates))
+    for w in wired:
+        if not w["wired"]:
+            warnings.append(
+                f"dev_toolkit/{w['component']}.py is not fully wired: {w['issue']}"
+            )
+    if orphan_tools:
+        warnings.append(
+            f"Tools declared in component files but NOT fully wired in server.py "
+            f"(orphan, will 404 at runtime): {', '.join(orphan_tools)}"
+        )
+    fully_wired = all(item.get("wired") for item in wired)
     payload = {
-        "success": not duplicates and bool(entrypoint.get("success", False)),
+        "success": bool(entrypoint.get("success", False)) and fully_wired and not duplicates and not orphan_tools,
         "server": {"path": _repo_rel(repo_root, server_path), "lines": _line_count(server_path)},
         "entrypoint": entrypoint,
         "component_count": len(components),
         "components": components,
-        "direct_tool_count": len(direct_tools),
+        "wired_components": wired,
+        "direct_tool_count": 0,
         "component_tool_count": len(component_tools),
-        "total_declared_tools": len(sorted(set(all_tools))),
+        "total_declared_tools": len(sorted(set(component_tools))),
         "duplicate_tools": duplicates,
+        "orphan_tools": orphan_tools,
         "long_files": long_files,
         "usage_total_calls": usage.get("total_calls", 0),
         "delayed_loading_hint": "Codex may expose only a subset of MCP tools until tool_search loads matching names or descriptions.",
         "warnings": warnings,
     }
     if include_tools:
-        payload["tools"] = sorted(set(all_tools))
+        payload["tools"] = sorted(set(component_tools))
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 

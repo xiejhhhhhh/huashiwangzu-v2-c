@@ -292,6 +292,7 @@ async def process_document_entities_from_fusions(
     幂等：每次重跑先清该文档的旧实体/图谱数据（kb_entity_dictionary 保留已有条目供其他文档引用）。
     """
     from ..models import (
+        KbChunk,
         KbChunkEntity,
         KbEntityDictionary,
         KbEvidence,
@@ -344,8 +345,7 @@ async def process_document_entities_from_fusions(
                 )
             )
 
-    await db.commit()
-    logger.info("Cleared old entity/graph data for document_id=%d", document_id)
+    logger.info("Cleared old entity/graph data for document_id=%d (uncommitted, safe on crash)", document_id)
 
     # 读取所有页融合正文
     r = await db.execute(
@@ -361,6 +361,7 @@ async def process_document_entities_from_fusions(
 
     all_entities: list[dict] = []
     all_relationships: list[dict] = []
+    entity_page: list[int] = []  # tracks which page each raw entity came from (parallel to all_entities)
     processed_pages = 0
 
     for pf in fusions:
@@ -369,7 +370,9 @@ async def process_document_entities_from_fusions(
             continue
 
         result = await extract_entities_from_text(text, db=db)
-        all_entities.extend(result.get("entities", []))
+        page_ents = result.get("entities", [])
+        all_entities.extend(page_ents)
+        entity_page.extend([pf.page] * len(page_ents))
         all_relationships.extend(result.get("relationships", []))
         processed_pages += 1
 
@@ -388,6 +391,7 @@ async def process_document_entities_from_fusions(
 
     # 本地 dedup：避免重复 governance candidate（DB query 看不到 same-session 未 flush 的数据）
     seen_candidate_names: set[str] = set()
+    entity_name_to_id: dict[str, int] = {}
 
     for key, ent in seen_entities.items():
         name = ent.get("name", key.split("|")[0])
@@ -405,6 +409,7 @@ async def process_document_entities_from_fusions(
 
         if existing_entity:
             entity_id = existing_entity.id
+            entity_name_to_id[name] = entity_id
             # 更新描述（保留更长的那个）
             existing_desc = existing_entity.description or ""
             if len(description) > len(existing_desc):
@@ -431,6 +436,7 @@ async def process_document_entities_from_fusions(
             db.add(entity_record)
             await db.flush()
             entity_id = entity_record.id
+            entity_name_to_id[name] = entity_id
 
             node = KbGraphNode(
                 owner_id=owner_id, entity_id=entity_id,
@@ -449,15 +455,60 @@ async def process_document_entities_from_fusions(
             )
             db.add(candidate)
 
-        # 证据（本文档的）
-        evidence = KbEvidence(
-            owner_id=owner_id, entity_id=entity_id,
-            document_id=document_id, chunk_id=0, page=0,
-            excerpt=description[:500], confidence=0.7, status="pending",
-        )
-        db.add(evidence)
-
     stats["entities_found"] = len(seen_entities)
+
+    # ── 第2步：构建页→chunk映射 ──────────────────────────
+    # Fusion 层 chunk 由 index_fusions_to_chunks() 写入 kb_chunks，
+    # 每块携带 page 号。查询本文档所有 chunk 建立 page→[chunk_id] 映射。
+    chunks_r = await db.execute(
+        select(KbChunk)
+        .where(KbChunk.document_id == document_id)
+        .order_by(KbChunk.page, KbChunk.chunk_index)
+    )
+    all_doc_chunks = chunks_r.scalars().all()
+    page_to_chunks: dict[int, list[int]] = {}
+    for ch in all_doc_chunks:
+        p = ch.page or 0
+        page_to_chunks.setdefault(p, []).append(ch.id)
+
+    # ── 第3步：证据 + chunk_entity 关联（逐原始实体逐页写入） ──
+    # 用 entity_name_to_id 把原始非去重实体列表按页写出精确关联
+    seen_evidence_key: set[tuple[int, int]] = set()  # (entity_id, page)
+    seen_chunk_entity_key: set[tuple[int, int]] = set()  # (entity_id, chunk_id)
+    for raw_idx, ent in enumerate(all_entities):
+        name = (ent.get("name") or "").strip()
+        entity_id = entity_name_to_id.get(name)
+        if not entity_id:
+            continue
+        page = entity_page[raw_idx] if raw_idx < len(entity_page) else 0
+        description = ent.get("description", "")
+        chunk_ids = page_to_chunks.get(page, [])
+
+        # 证据：每个(实体,页)写一条，chunk_id 取该页第一个 chunk
+        ev_key = (entity_id, page)
+        if ev_key not in seen_evidence_key:
+            seen_evidence_key.add(ev_key)
+            first_chunk_id = chunk_ids[0] if chunk_ids else 0
+            evidence = KbEvidence(
+                owner_id=owner_id, entity_id=entity_id,
+                document_id=document_id, chunk_id=first_chunk_id,
+                page=page,
+                excerpt=(description or "")[:500],
+                confidence=0.7, status="pending",
+            )
+            db.add(evidence)
+
+        # chunk_entity：将该实体关联到该页所有 chunk
+        for cid in chunk_ids:
+            ce_key = (entity_id, cid)
+            if ce_key not in seen_chunk_entity_key:
+                seen_chunk_entity_key.add(ce_key)
+                ce = KbChunkEntity(
+                    owner_id=owner_id, chunk_id=cid,
+                    entity_id=entity_id, document_id=document_id,
+                    confidence=0.7,
+                )
+                db.add(ce)
 
     # 关系写入
     seen_relations: set = set()

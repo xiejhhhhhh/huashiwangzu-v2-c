@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, NotFound, PermissionDenied, ValidationError
+from app.core.exceptions import AppException, ConflictError, NotFound, PermissionDenied, ValidationError
 from app.middleware.auth import require_permission
 from app.models.private_module import PrivateModule
 from app.models.user import User
@@ -18,7 +18,12 @@ from app.routers.registry import (
     _module_router_paths,
     import_module_router,
 )
-from app.services.module_registry import unregister_capability
+from app.services.module_registry import (
+    _current_capability_snapshot,
+    _restore_capability_snapshot,
+    private_capability_registration,
+    unregister_capability,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,9 @@ WORKSPACES_ROOT = Path(__file__).resolve().parents[3] / "data" / "workspaces"
 PRIVATE_MODULES_INSTALL_ROOT = Path(__file__).resolve().parents[3] / "data" / "private_modules"
 
 _APP_INSTANCE: FastAPI | None = None
+# Tracks capability keys registered by each private module.
+# Key: f"__private__{owner_id}__{module_key}" -> list of capability keys
+_PRIVATE_MODULE_CAP_KEYS: dict[str, list[str]] = {}
 
 
 def set_app_instance(app: FastAPI) -> None:
@@ -37,6 +45,21 @@ def get_app_instance() -> FastAPI:
     if _APP_INSTANCE is None:
         raise RuntimeError("FastAPI app instance not set. Call set_app_instance during startup.")
     return _APP_INSTANCE
+
+
+def _unregister_capability_keys(capability_keys: list[str]) -> None:
+    for cap_key in capability_keys:
+        module_part, action_part = cap_key.split(":", 1)
+        unregister_capability(module_part, action_part)
+
+
+def _registered_private_capability_keys(owner_id: int, snapshot: dict[str, dict]) -> list[str]:
+    current = _current_capability_snapshot()
+    return sorted(
+        key
+        for key, entry in current.items()
+        if entry.get("owner_id") == owner_id and snapshot.get(key) != entry
+    )
 
 
 def _workspace_private_modules_dir(owner_id: int) -> Path:
@@ -191,12 +214,14 @@ async def activate_private_module(
 
     registered_prefix = ""
     private_key = f"__private__{owner_id}__{module_key}"
+    cap_snapshot_before = _current_capability_snapshot()
     try:
         backend_config = manifest.get("backend")
         if isinstance(backend_config, dict) and backend_config.get("router"):
             router_entry = backend_config["router"]
             router_path = _safe_private_router_path(module_dir, router_entry)
-            router = import_module_router(private_key, router_path)
+            with private_capability_registration(owner_id):
+                router = import_module_router(private_key, router_path)
             prefix = _normalize_private_prefix(owner_id, module_key, manifest)
             registered_prefix = prefix
             _module_prefix_map[prefix.rstrip("/")] = private_key
@@ -212,11 +237,17 @@ async def activate_private_module(
             _refresh_middleware_stack(app)
             logger.info("Registered private module router: %s at %s", module_key, prefix)
 
+        registered_keys = _registered_private_capability_keys(owner_id, cap_snapshot_before)
+        if registered_keys:
+            _PRIVATE_MODULE_CAP_KEYS[private_key] = registered_keys
+
         record.status = "active"
         record.error_message = None
     except Exception as exc:
         if registered_prefix:
             _unregister_private_module(owner_id, module_key, registered_prefix)
+        _restore_capability_snapshot(cap_snapshot_before)
+        _PRIVATE_MODULE_CAP_KEYS.pop(private_key, None)
         record.status = "failed"
         record.error_message = str(exc)
         logger.error("Failed to activate private module '%s': %s", module_key, exc)
@@ -238,7 +269,12 @@ async def deactivate_private_module(
     if record.status != "active":
         return _record_to_dict(record)
 
-    _unregister_private_module(owner_id, module_key, record.router_prefix)
+    router_prefix = record.router_prefix
+    try:
+        _unregister_private_module(owner_id, module_key, router_prefix)
+    except Exception as exc:
+        logger.error("Failed to unregister private module '%s' runtime: %s", module_key, exc)
+        raise AppException(f"Failed to deactivate private module: {exc}", status_code=500)
 
     record.status = "installed"
     await db.commit()
@@ -285,9 +321,11 @@ async def rollback_private_module(
     try:
         return await activate_private_module(db, owner_id, module_key)
     except Exception as exc:
+        await db.refresh(record)
         record.status = "failed"
         record.error_message = f"Rollback activation failed: {exc}"
         await db.commit()
+        await db.refresh(record)
         return _record_to_dict(record)
 
 
@@ -379,7 +417,10 @@ def _unregister_private_module(owner_id: int, module_key: str, router_prefix: st
             logger.warning("FastAPI app unavailable while unregistering private module %s", private_key)
     _module_router_paths.pop(private_key, None)
     _module_load_errors.pop(private_key, None)
-    unregister_capability(private_key)
+    # Clean up capabilities registered by this private module during activation
+    tracked_keys = _PRIVATE_MODULE_CAP_KEYS.pop(private_key, None)
+    if tracked_keys:
+        _unregister_capability_keys(tracked_keys)
 
 
 def _route_belongs_to_private_prefix(path: str, prefix: str) -> bool:

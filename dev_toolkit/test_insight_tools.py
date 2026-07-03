@@ -14,10 +14,11 @@ pytest.importorskip("mcp")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_mcp_self_check_discovers_new_components() -> None:
+def test_mcp_self_check_discovers_components_and_wiring() -> None:
     result = json.loads(mcp_self_check(REPO_ROOT, REPO_ROOT / "backend" / "logs" / "tool_usage_stats.json"))
 
-    assert result["success"] is True
+    assert result["duplicate_tools"] == []
+    assert result["orphan_tools"] == []
     assert result["direct_tool_count"] == 0
     assert "brief" in result["tools"]
     assert "batch_quick_fix_apply" in result["tools"]
@@ -25,6 +26,11 @@ def test_mcp_self_check_discovers_new_components() -> None:
     assert any(component["file"] == "dev_toolkit/core_tools.py" for component in result["components"])
     assert any(component["file"] == "dev_toolkit/edit_tools.py" for component in result["components"])
     assert any(component["file"] == "dev_toolkit/insight_tools.py" for component in result["components"])
+
+    wired = result["wired_components"]
+    assert any(w["component"] == "core_tools" and w["wired"] for w in wired)
+    assert any(w["component"] == "opencode_tools" and w["wired"] for w in wired)
+    assert any(w["component"] == "insight_tools" and w["wired"] for w in wired)
 
 
 def test_every_tool_component_exposes_contract() -> None:

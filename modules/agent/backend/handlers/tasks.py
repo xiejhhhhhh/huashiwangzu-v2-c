@@ -46,7 +46,7 @@ async def _handle_memory_dream(params: dict) -> dict:
                 "error": "memory dream returned no result",
                 "owner_id": owner_id,
             }
-        if isinstance(result, dict) and result.get("success") is False:
+        if isinstance(result, dict) and (result.get("success") is False or result.get("error")):
             return {
                 "success": False,
                 "status": "failed",

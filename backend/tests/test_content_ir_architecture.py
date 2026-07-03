@@ -941,6 +941,82 @@ class TestCompileDownload:
                     await cleanup_db.delete(file_to_delete)
                     await cleanup_db.commit()
 
+    @pytest.mark.asyncio
+    async def test_degraded_package_is_used_for_download_compile(self):
+        """Degraded ContentPackages still contain usable body text and should compile."""
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackage, ContentPackageVersion
+        from app.models.file import File
+        from app.routers.file_transfer import _try_compile_from_content_package
+
+        owner_id = 4
+        async with AsyncSessionLocal() as db:
+            file_rec = File(
+                name=f"degraded-download-{uuid.uuid4().hex}",
+                extension="docx",
+                size=0,
+                owner_id=owner_id,
+                storage_path="missing-degraded-download.docx",
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                deleted=False,
+            )
+            db.add(file_rec)
+            await db.flush()
+            pkg = ContentPackage(
+                owner_id=owner_id,
+                source_file_id=file_rec.id,
+                package_type="document",
+                origin_type="generated",
+                source_extension="docx",
+                status="degraded",
+            )
+            db.add(pkg)
+            await db.flush()
+            version = ContentPackageVersion(
+                package_id=pkg.id,
+                version_no=1,
+                content_json=json.dumps({
+                    "manifest": {"title": file_rec.name},
+                    "blocks": [{"id": "b1", "type": "paragraph", "text": "kept body"}],
+                    "parse_status": "degraded",
+                }, ensure_ascii=False),
+                operation_type="parse",
+                created_by=owner_id,
+            )
+            db.add(version)
+            await db.flush()
+            pkg.current_version_id = version.id
+            await db.commit()
+            file_id = file_rec.id
+            package_id = pkg.id
+
+        try:
+            compile_payload = {
+                "success": True,
+                "data": {
+                    "file_path": "/tmp/degraded-download.docx",
+                    "filename": "degraded-download.docx",
+                },
+            }
+            with mock.patch(
+                "app.routers.file_transfer.call_capability",
+                new=mock.AsyncMock(return_value=compile_payload),
+            ) as mock_call:
+                async with AsyncSessionLocal() as db:
+                    result = await _try_compile_from_content_package(db, file_id, owner_id)
+
+            assert result == {
+                "file_path": "/tmp/degraded-download.docx",
+                "filename": "degraded-download.docx",
+            }
+            mock_call.assert_awaited_once()
+            assert mock_call.await_args.args[:2] == ("content", "compile")
+            assert mock_call.await_args.args[2]["package_id"] == package_id
+        finally:
+            async with AsyncSessionLocal() as cleanup_db:
+                await _delete_content_packages(cleanup_db, [package_id])
+                await _delete_files(cleanup_db, [file_id])
+
 
 # ====================================================================
 # 4. Content capability failure semantics
@@ -967,6 +1043,7 @@ class TestContentFailureSemantics:
 
     @pytest.mark.asyncio
     async def test_pipeline_rest_propagates_failed_result(self):
+        from app.core.exceptions import AppException as CoreAppException
         from app.routers import content
 
         user = mock.Mock()
@@ -976,11 +1053,11 @@ class TestContentFailureSemantics:
             "run_pipeline",
             return_value={"status": "failed", "error": "pipeline failed"},
         ):
-            result = await content.trigger_pipeline(content.PipelineRequest(file_id=123), user=user)
+            with pytest.raises(CoreAppException) as exc_info:
+                await content.trigger_pipeline(content.PipelineRequest(file_id=123), user=user)
 
-        assert result.success is False
-        assert result.error == "pipeline failed"
-        assert result.data["status"] == "failed"
+        assert "Pipeline failed: pipeline failed" in str(exc_info.value)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_get_file_content_lazy_parse_exception_fails(self):
@@ -1026,6 +1103,70 @@ class TestContentFailureSemantics:
             async with AsyncSessionLocal() as db:
                 if file_id is not None:
                     await _delete_files(db, [file_id])
+
+    @pytest.mark.asyncio
+    async def test_get_file_content_returns_degraded_package_body(self):
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackage, ContentPackageVersion
+        from app.models.file import File
+        from app.routers.content import _cap_get_file_content
+
+        owner_id = 4
+        async with AsyncSessionLocal() as db:
+            file_rec = File(
+                name=f"degraded-read-{uuid.uuid4().hex}",
+                extension="pdf",
+                size=0,
+                owner_id=owner_id,
+                storage_path="missing-degraded-read.pdf",
+                mime_type="application/pdf",
+                deleted=False,
+            )
+            db.add(file_rec)
+            await db.flush()
+            pkg = ContentPackage(
+                owner_id=owner_id,
+                source_file_id=file_rec.id,
+                package_type="document",
+                origin_type="uploaded",
+                source_extension="pdf",
+                status="degraded",
+                manifest_json=json.dumps({"title": file_rec.name}, ensure_ascii=False),
+            )
+            db.add(pkg)
+            await db.flush()
+            version = ContentPackageVersion(
+                package_id=pkg.id,
+                version_no=1,
+                content_json=json.dumps({
+                    "manifest": {"title": file_rec.name},
+                    "blocks": [{"id": "b1", "type": "paragraph", "text": "kept degraded正文"}],
+                    "resource_diagnostics": [{"status": "failed", "code": "resource_store_failed"}],
+                    "parse_status": "degraded",
+                }, ensure_ascii=False),
+                operation_type="parse",
+                created_by=owner_id,
+            )
+            db.add(version)
+            await db.flush()
+            pkg.current_version_id = version.id
+            await db.commit()
+            file_id = file_rec.id
+            package_id = pkg.id
+
+        try:
+            result = await _cap_get_file_content({"file_id": file_id}, f"user:{owner_id}")
+
+            assert result["success"] is True
+            data = result["data"]
+            assert data["source"] == "content_package"
+            assert data["status"] == "degraded"
+            assert data["package_id"] == package_id
+            assert data["blocks"][0]["text"] == "kept degraded正文"
+        finally:
+            async with AsyncSessionLocal() as cleanup_db:
+                await _delete_content_packages(cleanup_db, [package_id])
+                await _delete_files(cleanup_db, [file_id])
 
     @pytest.mark.asyncio
     async def test_file_uploaded_handler_propagates_pipeline_failure(self):

@@ -35,4 +35,4 @@ async def module_call(payload: ModuleCallRequest, user: User = Depends(require_p
 
 @router.get("/capabilities")
 async def capabilities(user: User = Depends(require_permission("viewer"))):
-    return ApiResponse(data=list_capabilities(role=user.role))
+    return ApiResponse(data=list_capabilities(role=user.role, caller=f"user:{user.id}"))

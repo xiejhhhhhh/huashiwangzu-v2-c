@@ -97,16 +97,13 @@ async def test_profile_evolve_llm_soft_failures_are_skipped(monkeypatch, content
         "owner_id": 4,
     })
 
-    assert result["status"] == "skipped"
-    assert result["reason"] == reason
+    assert result["status"] == "failed"
+    assert result["error"] == reason
+    assert result.get("retryable") is True
     assert db.profile.profile_data == {}
     assert db.profile.version == 1
-    assert db.commits == 1
-    assert len(db.added) == 1
-    watermark = db.added[0]
-    assert watermark.signal_type == "watermark"
-    assert watermark.signal_data["last_msg_id"] == 12
-    assert watermark.signal_data["reason"] == reason
+    assert db.commits == 0
+    assert len(db.added) == 0
 
 
 def test_parse_profile_json_accepts_fenced_and_python_style_dict() -> None:

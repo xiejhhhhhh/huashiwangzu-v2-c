@@ -1,14 +1,21 @@
 """Cross-module capability registry（带元数据，支持技能发现）。"""
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Awaitable, Callable
 
-from app.core.exceptions import NotFound, PermissionDenied
+from app.core.exceptions import ConflictError, NotFound, PermissionDenied
 
 logger = logging.getLogger("v2.module_registry")
 
 CapabilityHandler = Callable[[dict, str], Awaitable[dict]]
 # key -> {handler, description, parameters, min_role}
 _CAPABILITIES: dict[str, dict] = {}
+_PRIVATE_REGISTRATION_OWNER: ContextVar[int | None] = ContextVar(
+    "private_registration_owner",
+    default=None,
+)
 
 _ROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
 
@@ -24,6 +31,37 @@ def _key(module_key: str, action: str) -> str:
     return f"{module_key}:{action}"
 
 
+def _current_capability_keys() -> set[str]:
+    """Return the current set of all registered capability keys.
+
+    Used by private_module_service to track which capabilities a
+    private module registers during activation, so they can be
+    properly cleaned up on deactivation.
+    """
+    return set(_CAPABILITIES.keys())
+
+
+def _current_capability_snapshot() -> dict[str, dict]:
+    """Return a shallow snapshot of capability entries for activation rollback."""
+    return {key: dict(value) for key, value in _CAPABILITIES.items()}
+
+
+def _restore_capability_snapshot(snapshot: dict[str, dict]) -> None:
+    """Restore registry state after a failed dynamic module activation."""
+    _CAPABILITIES.clear()
+    _CAPABILITIES.update({key: dict(value) for key, value in snapshot.items()})
+
+
+@contextmanager
+def private_capability_registration(owner_id: int) -> Iterator[None]:
+    """Scope import-time capability registration to a private module owner."""
+    token = _PRIVATE_REGISTRATION_OWNER.set(owner_id)
+    try:
+        yield
+    finally:
+        _PRIVATE_REGISTRATION_OWNER.reset(token)
+
+
 def register_capability(
     module_key: str,
     action: str,
@@ -35,18 +73,28 @@ def register_capability(
     owner_id: int | None = None,
 ) -> None:
     """模块注册一个对外能力。owner_id 非空时标识该能力为私有,仅对应 owner 可调用。"""
-    _CAPABILITIES[_key(module_key, action)] = {
+    scoped_owner_id = owner_id
+    implicit_owner_id = _PRIVATE_REGISTRATION_OWNER.get()
+    if scoped_owner_id is None and implicit_owner_id is not None:
+        scoped_owner_id = implicit_owner_id
+
+    key = _key(module_key, action)
+    existing = _CAPABILITIES.get(key)
+    if implicit_owner_id is not None and existing and existing.get("owner_id") != scoped_owner_id:
+        raise ConflictError(f"Private capability cannot override existing capability: {key}")
+
+    _CAPABILITIES[key] = {
         "handler": handler,
         "description": description,
         "parameters": parameters or {},
         "min_role": min_role,
         "brief": brief or description[:20],
-        "owner_id": owner_id,
+        "owner_id": scoped_owner_id,
     }
     logger.info(
         "Registered capability: %s:%s (scope=%s)",
         module_key, action,
-        f"private:owner={owner_id}" if owner_id else "public",
+        f"private:owner={scoped_owner_id}" if scoped_owner_id else "public",
     )
 
 
@@ -129,11 +177,25 @@ async def call_capability(
     return await entry["handler"](params, caller)
 
 
-def list_capabilities(role: str | None = None) -> list[dict]:
+def _caller_owner_id(caller: str | None) -> int | None:
+    if not caller or not caller.startswith("user:"):
+        return None
+    try:
+        return int(caller.split(":", 1)[1])
+    except ValueError:
+        return None
+
+
+def list_capabilities(role: str | None = None, caller: str | None = None) -> list[dict]:
     """列出能力元数据（不含 handler）。传 role 则按权限过滤（只返回该角色可调的）。"""
+    caller_owner_id = _caller_owner_id(caller)
+    include_all_private = bool(caller and caller.startswith("system:"))
     result = []
     for k, e in _CAPABILITIES.items():
         if role and _ROLE_ORDER.get(role, 0) < _ROLE_ORDER.get(e["min_role"], 0):
+            continue
+        capability_owner = e.get("owner_id")
+        if capability_owner is not None and not include_all_private and capability_owner != caller_owner_id:
             continue
         module_key, action = k.split(":", 1)
         result.append({

@@ -17,7 +17,7 @@ from app.schemas.content_package import (
     ReplaceTextRequest,
 )
 from app.services.content.export_service import ContentExportService
-from app.services.content.package_service import ContentPackageService
+from app.services.content.package_service import ContentPackageService, is_package_consumable_status
 from app.services.content.pipeline_service import ContentPipelineService
 from app.services.content.resource_service import ResourceService
 from app.services.file_reader import resolve_caller_user_id
@@ -95,7 +95,8 @@ async def trigger_pipeline(
     result = await pipeline_svc.run_pipeline(body.file_id, caller)
     pipeline_error = _pipeline_failure(result)
     if pipeline_error:
-        return ApiResponse(success=False, error=pipeline_error, data=result)
+        from app.core.exceptions import AppException
+        raise AppException(f"Pipeline failed: {pipeline_error}", status_code=422)
     return ApiResponse(data=result)
 
 
@@ -338,7 +339,7 @@ async def _cap_get_file_content(params: dict, caller: str) -> dict:
 
             pkg_svc = ContentPackageService()
             pkg = await pkg_svc.get_package(db, file_id=file_id, owner_id=owner_id)
-            if pkg and pkg.get("status") == "parsed":
+            if pkg and is_package_consumable_status(pkg.get("status")):
                 full = await pkg_svc.get_full_package(db, pkg["id"], owner_id=owner_id)
                 content = full.get("content", {})
                 blocks = content.get("blocks", [])
@@ -377,7 +378,7 @@ async def _cap_get_file_content(params: dict, caller: str) -> dict:
 
             if pipeline_result:
                 pkg = await pkg_svc.get_package(db, file_id=file_id, owner_id=owner_id)
-                if pkg and pkg.get("status") == "parsed":
+                if pkg and is_package_consumable_status(pkg.get("status")):
                     full = await pkg_svc.get_full_package(db, pkg["id"], owner_id=owner_id)
                     content = full.get("content", {})
                     blocks = content.get("blocks", [])
@@ -389,7 +390,7 @@ async def _cap_get_file_content(params: dict, caller: str) -> dict:
                         "source": "content_package",
                         "package_id": pkg["id"],
                         "blocks": blocks,
-                        "status": "parsed",
+                        "status": pkg.get("status"),
                     }}
 
             return {"success": True, "data": {

@@ -183,6 +183,59 @@ interface TranscribeResult {
   detail?: string
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isTranscribeSegment(value: unknown): value is TranscribeSegment {
+  if (!isRecord(value)) return false
+  return typeof value.start === 'number' && typeof value.end === 'number' && typeof value.text === 'string'
+}
+
+function isOptionalNumber(value: unknown): boolean {
+  return value === undefined || typeof value === 'number'
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
+}
+
+function isOptionalNullableNumber(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'number'
+}
+
+function isTranscribeMetadata(value: unknown): value is TranscribeResult['metadata'] {
+  if (value === undefined) return true
+  if (!isRecord(value)) return false
+  return (
+    isOptionalNumber(value.segment_count) &&
+    isOptionalNumber(value.sample_rate) &&
+    isOptionalNullableNumber(value.text_file_id)
+  )
+}
+
+function isTranscribeResult(value: unknown): value is TranscribeResult {
+  if (!isRecord(value)) return false
+  if (!isOptionalNumber(value.source_file_id)) return false
+  if (!isOptionalNumber(value.file_id)) return false
+  if (!isOptionalNumber(value.audio_file_id)) return false
+  if (!isOptionalNumber(value.text_file_id)) return false
+  if (!isOptionalString(value.text)) return false
+  if (!isOptionalString(value.format)) return false
+  if (!isOptionalString(value.model)) return false
+  if (!isOptionalString(value.audio_format)) return false
+  if (!isOptionalNumber(value.sample_rate)) return false
+  if (!isOptionalNumber(value.duration_seconds)) return false
+  if (!isOptionalNumber(value.size)) return false
+  if (!isTranscribeMetadata(value.metadata)) return false
+  if (!isOptionalString(value.error)) return false
+  if (!isOptionalString(value.detail)) return false
+  if (value.segments !== undefined) {
+    return Array.isArray(value.segments) && value.segments.every(isTranscribeSegment)
+  }
+  return true
+}
+
 const modes = [
   { key: 'transcribe_video', label: '视频转文字' },
   { key: 'extract_audio', label: '仅提取音频' },
@@ -313,7 +366,10 @@ async function doExecute(): Promise<void> {
   const t0 = performance.now()
 
   try {
-    const resp = await platform.modules.call<TranscribeResult>('media-asr', mode.value, buildParams())
+    const resp = await platform.modules.call('media-asr', mode.value, buildParams())
+    if (!isTranscribeResult(resp)) {
+      throw new Error('返回格式不正确')
+    }
     if (resp.error) {
       errorMsg.value = resp.error
       return

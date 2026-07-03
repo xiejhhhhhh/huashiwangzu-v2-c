@@ -164,6 +164,8 @@ class _EmptyParseDb:
 
 class _ParsedIr:
     parse_errors = ["empty_result"]
+    parse_status = "ok"
+    resource_diagnostics = []
 
 
 def test_raw_collection_classifies_all_empty_as_degraded_or_failed():

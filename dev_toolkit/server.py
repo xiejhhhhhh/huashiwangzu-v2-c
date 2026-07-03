@@ -55,6 +55,12 @@ try:
     from dev_toolkit.memory_tools import list_memories
     from dev_toolkit.memory_tools import tool_definitions as memory_tool_definitions
     from dev_toolkit.memory_tools import update_index as memory_update_index
+    from dev_toolkit.opencode_pty_tools import handle_tool as opencode_pty_handle_tool
+    from dev_toolkit.opencode_pty_tools import handles_tool as opencode_pty_handles_tool
+    from dev_toolkit.opencode_pty_tools import tool_definitions as opencode_pty_tool_definitions
+    from dev_toolkit.opencode_tools import handle_tool as opencode_handle_tool
+    from dev_toolkit.opencode_tools import handles_tool as opencode_handles_tool
+    from dev_toolkit.opencode_tools import tool_definitions as opencode_tool_definitions
     from dev_toolkit.quick_fix import QuickFixError
     from dev_toolkit.release_response import build_release_gate_response as build_release_gate_payload
     from dev_toolkit.sql_guard import check_sql_readonly, readonly_psql_env
@@ -100,6 +106,12 @@ except ModuleNotFoundError:
     from memory_tools import list_memories
     from memory_tools import tool_definitions as memory_tool_definitions
     from memory_tools import update_index as memory_update_index
+    from opencode_pty_tools import handle_tool as opencode_pty_handle_tool
+    from opencode_pty_tools import handles_tool as opencode_pty_handles_tool
+    from opencode_pty_tools import tool_definitions as opencode_pty_tool_definitions
+    from opencode_tools import handle_tool as opencode_handle_tool
+    from opencode_tools import handles_tool as opencode_handles_tool
+    from opencode_tools import tool_definitions as opencode_tool_definitions
     from quick_fix import QuickFixError
     from release_response import build_release_gate_response as build_release_gate_payload
     from sql_guard import check_sql_readonly, readonly_psql_env
@@ -1616,6 +1628,8 @@ async def list_tools() -> list[Tool]:
         *worktree_tool_definitions(),
         *tool_usage_tool_definitions(),
         *agent_board_tool_definitions(),
+        *opencode_tool_definitions(),
+        *opencode_pty_tool_definitions(),
     ]
 
 # ── 工具执行 ──────────────────────────────────────────────────────────
@@ -1653,6 +1667,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await tool_usage_handle_tool(REPO_ROOT, TOOL_USAGE_PATH, name, arguments)
         elif agent_board_handles_tool(name):
             result = await agent_board_handle_tool(REPO_ROOT, name, arguments)
+        elif opencode_handles_tool(name):
+            result = await opencode_handle_tool(REPO_ROOT, name, arguments)
+        elif opencode_pty_handles_tool(name):
+            result = await opencode_pty_handle_tool(REPO_ROOT, name, arguments)
         else:
             result = json.dumps({"error": f"未知工具: {name}"})
             success = False

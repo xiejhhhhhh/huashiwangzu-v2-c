@@ -6,6 +6,7 @@
 import logging
 
 from app.services.module_registry import call_capability
+
 from ..ir_models import DocumentIr, from_legacy_blocks
 
 logger = logging.getLogger("v2.knowledge").getChild("parsing")
@@ -74,11 +75,15 @@ async def parse_document(file_id: int, extension: str, caller: str) -> DocumentI
 
     doc_ir: DocumentIr
     if isinstance(result, dict):
+        resource_diagnostics = result.get("resource_diagnostics")
+        parse_status = _compute_parse_status(resource_diagnostics)
         doc_ir = from_legacy_blocks(
             file_id=file_id,
             fmt=result.get("format", extension),
             blocks=result.get("blocks", []),
             resources=result.get("resources"),
+            resource_diagnostics=resource_diagnostics,
+            parse_status=parse_status,
         )
     elif isinstance(result, DocumentIr):
         doc_ir = result
@@ -90,10 +95,29 @@ async def parse_document(file_id: int, extension: str, caller: str) -> DocumentI
 
     if not non_empty or total_chars == 0:
         doc_ir.parse_errors.append("empty_result")
+        doc_ir.parse_status = "failed"
         logger.warning("Parser returned empty result for file_id=%d via %s:%s", file_id, module_key, action)
     elif total_chars < LOW_QUALITY_CHAR_THRESHOLD:
         doc_ir.parse_errors.append("low_quality")
+        if doc_ir.parse_status == "ok":
+            doc_ir.parse_status = "degraded"
         logger.warning("Parser returned low-quality result for file_id=%d via %s:%s (chars=%d)",
                        file_id, module_key, action, total_chars)
 
     return doc_ir
+
+
+def _compute_parse_status(resource_diagnostics: list[dict] | None) -> str:
+    if not resource_diagnostics:
+        return "ok"
+    has_failure = any(
+        d.get("status") in ("failed",) for d in resource_diagnostics
+    )
+    has_degraded = any(
+        d.get("status") in ("degraded",) for d in resource_diagnostics
+    )
+    if has_failure:
+        return "degraded"
+    if has_degraded:
+        return "degraded"
+    return "ok"

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import AppException
 from app.database import get_db
 from app.middleware.auth import require_permission
 from app.models.user import User
@@ -63,7 +64,10 @@ async def api_activate_private_module(
 ):
     result = await activate_private_module(db, user.id, module_key)
     if result.get("status") == "failed":
-        return ApiResponse(success=False, data=result, error=result.get("error_message") or "Private module activation failed")
+        raise AppException(
+            result.get("error_message") or "Private module activation failed",
+            status_code=500,
+        )
     return ApiResponse(data=result)
 
 
@@ -94,6 +98,11 @@ async def api_rollback_private_module(
     user: User = Depends(require_permission("admin")),
 ):
     result = await rollback_private_module(db, user.id, module_key)
+    if result.get("status") == "failed":
+        raise AppException(
+            result.get("error_message") or "Private module rollback failed",
+            status_code=500,
+        )
     return ApiResponse(data=result)
 
 

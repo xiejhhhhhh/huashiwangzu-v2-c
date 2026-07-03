@@ -4,7 +4,7 @@ Extracted from router.py to follow Router → Service → Model layering.
 """
 import logging
 
-from huashiwangzu_modules.memory.models import MemoryRecord
+from huashiwangzu_modules.memory.models import MemoryChunk, MemoryRecord
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -123,6 +123,85 @@ async def backfill_missing_record_embeddings(
         result["diagnostic"] = "completed_with_failures"
     elif result["dream_failures"]:
         result["diagnostic"] = "completed_with_dream_failures"
+    else:
+        result["diagnostic"] = "completed"
+    return result
+
+
+async def backfill_missing_chunk_embeddings(
+    db: AsyncSession,
+    *,
+    owner_id: int | None = None,
+    limit: int = 20,
+    dry_run: bool = True,
+) -> dict:
+    """Safely backfill missing memory_chunk embeddings.
+
+    Processes chunk text through the normal embedding pipeline.
+    Dry-run mode only reports candidates.
+    """
+    safe_limit = max(1, min(int(limit or 20), 100))
+
+    total_stmt = select(func.count()).select_from(MemoryChunk)
+    with_embedding_stmt = select(func.count()).select_from(MemoryChunk).where(MemoryChunk.embedding.is_not(None))
+    missing_stmt = select(func.count()).select_from(MemoryChunk).where(MemoryChunk.embedding.is_(None))
+    candidate_stmt = (
+        select(MemoryChunk)
+        .where(MemoryChunk.embedding.is_(None))
+        .order_by(MemoryChunk.created_at.asc(), MemoryChunk.id.asc())
+        .limit(safe_limit)
+    )
+    if owner_id is not None:
+        total_stmt = total_stmt.where(MemoryChunk.owner_id == owner_id)
+        with_embedding_stmt = with_embedding_stmt.where(MemoryChunk.owner_id == owner_id)
+        missing_stmt = missing_stmt.where(MemoryChunk.owner_id == owner_id)
+        candidate_stmt = candidate_stmt.where(MemoryChunk.owner_id == owner_id)
+
+    total = await db.scalar(total_stmt) or 0
+    with_embedding = await db.scalar(with_embedding_stmt) or 0
+    missing = await db.scalar(missing_stmt) or 0
+    rows = (await db.execute(candidate_stmt)).scalars().all()
+
+    result: dict = {
+        "dry_run": dry_run,
+        "owner_id": owner_id,
+        "limit": safe_limit,
+        "total": total,
+        "with_embedding": with_embedding,
+        "missing": missing,
+        "selected_count": len(rows),
+        "processed": 0,
+        "updated": 0,
+        "failed": 0,
+        "failures": [],
+        "diagnostic": None,
+    }
+    if dry_run or not rows:
+        result["diagnostic"] = "dry_run_only" if dry_run else "no_missing_embeddings_selected"
+        return result
+
+    for chunk in rows:
+        result["processed"] += 1
+        try:
+            vec = await _compute_embedding(chunk.text)
+            if not vec:
+                result["failed"] += 1
+                result["failures"].append({"id": chunk.id, "reason": "embedding_service_returned_empty"})
+                continue
+            vec_literal = "[" + ",".join(str(v) for v in vec) + "]"
+            sql = "UPDATE memory_chunks SET embedding = CAST(:embedding AS vector(1024)) WHERE id = :id"
+            await db.execute(text(sql), {"embedding": vec_literal, "id": chunk.id})
+            result["updated"] += 1
+        except Exception as exc:
+            await db.rollback()
+            logger.warning("Chunk embedding backfill failed for %s: %s", chunk.id, exc)
+            result["failed"] += 1
+            result["failures"].append({"id": chunk.id, "reason": str(exc)[:300]})
+
+    await db.commit()
+
+    if result["failed"]:
+        result["diagnostic"] = "completed_with_failures"
     else:
         result["diagnostic"] = "completed"
     return result

@@ -198,33 +198,21 @@ async def handle_profile_evolve(params: dict) -> dict:
         content = result.get("content", "")
         if not content:
             logger.warning("Profile evolve: empty LLM response for user %s", owner_id)
-            await _add_profile_watermark(
-                db,
-                AgentProfileSignal,
-                owner_id=owner_id,
-                conversation_id=conversation_id,
-                msg_ids=new_msg_ids,
-                reason="empty_llm_response",
-            )
-            await db.commit()
-            return {"status": "skipped", "reason": "empty_llm_response", "owner_id": owner_id}
+            return {
+                "status": "failed",
+                "error": "empty_llm_response",
+                "owner_id": owner_id,
+                "retryable": True,
+            }
 
         new_analysis = _parse_profile_json(content)
         if not new_analysis:
             logger.warning("Profile evolve: failed to parse LLM response for user %s: %s", owner_id, content[:200])
-            await _add_profile_watermark(
-                db,
-                AgentProfileSignal,
-                owner_id=owner_id,
-                conversation_id=conversation_id,
-                msg_ids=new_msg_ids,
-                reason="unparseable_llm_profile_json",
-            )
-            await db.commit()
             return {
-                "status": "skipped",
-                "reason": "unparseable_llm_profile_json",
+                "status": "failed",
+                "error": "unparseable_llm_profile_json",
                 "owner_id": owner_id,
+                "retryable": True,
             }
 
         # Write new observations as low-confidence signals with fingerprint dedup

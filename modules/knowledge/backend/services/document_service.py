@@ -583,8 +583,12 @@ async def parse_and_index_document(
             except Exception as e:
                 logger.warning("Failed to read from Content Package document_id=%d: %s", document_id, e)
 
+        ir_parse_status = "ok"
+        ir_resource_diagnostics: list[dict] = []
         if not blocks:
             parsed_ir = await parse_document(doc.file_id, doc.extension, caller)
+            ir_parse_status = parsed_ir.parse_status
+            ir_resource_diagnostics = list(parsed_ir.resource_diagnostics)
             parsed = to_legacy_dict(parsed_ir)
             blocks = parsed.get("blocks", [])
 
@@ -610,6 +614,8 @@ async def parse_and_index_document(
                 "total_pages": doc.total_pages or 1,
                 "status": "degraded",
                 "reason": reason,
+                "ir_parse_status": ir_parse_status,
+                "ir_resource_diagnostics": ir_resource_diagnostics,
             }
 
         # 写页级融合
@@ -631,9 +637,12 @@ async def parse_and_index_document(
             except Exception as e:
                 logger.warning("Graph extraction failed for document_id=%d (non-fatal): %s", document_id, e)
 
-        # 更新文档状态
+        # 更新文档状态：优先使用 IR parse_status，当 IR 标记为 ok 时才标 done
         await db.refresh(doc)
-        doc.parse_status = "done"
+        if ir_parse_status in ("degraded", "failed"):
+            doc.parse_status = ir_parse_status
+        else:
+            doc.parse_status = "done"
         doc.vector_status = "done" if chunk_count > 0 else "error"
         doc.total_chunks = chunk_count
         doc.total_pages = total_pages
@@ -646,6 +655,8 @@ async def parse_and_index_document(
             "stored_chunks": chunk_count,
             "total_pages": total_pages,
             "entity_stats": entity_stats,
+            "ir_parse_status": ir_parse_status,
+            "ir_resource_diagnostics": ir_resource_diagnostics,
         }
     except Exception as e:
         await db.refresh(doc)

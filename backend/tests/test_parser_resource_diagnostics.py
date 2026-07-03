@@ -1,4 +1,12 @@
+import sys
+from pathlib import Path
+
 import pytest
+
+_repo_root = Path(__file__).resolve().parents[2]
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 from app.services.parser_resource_diagnostics import (
     build_resource_diagnostic,
     store_extracted_resources_with_diagnostics,
@@ -221,6 +229,93 @@ async def test_store_extracted_resources_requires_traceable_stored_id():
     assert diagnostic["status"] == "failed"
     assert diagnostic["code"] == "resource_store_missing_id"
     assert "stored_resource_id" not in parsed["resources"][0]
+
+
+# ── Package parse_status computation ─────────────────────────────────────
+
+
+def test_compute_package_parse_status_no_diagnostics_returns_parsed():
+    from app.services.content.package_service import _compute_package_parse_status
+    assert _compute_package_parse_status([]) == "parsed"
+    assert _compute_package_parse_status(None) == "parsed"  # type: ignore[arg-type]
+    assert _compute_package_parse_status([{"irrelevant": True}]) == "parsed"
+
+
+def test_compute_package_parse_status_failure_returns_degraded():
+    from app.services.content.package_service import _compute_package_parse_status
+    diags = [{"status": "stored"}, {"status": "failed", "code": "resource_store_failed"}]
+    assert _compute_package_parse_status(diags) == "degraded"
+
+
+def test_compute_package_parse_status_degraded_returns_degraded():
+    from app.services.content.package_service import _compute_package_parse_status
+    diags = [{"status": "stored"}, {"status": "degraded", "code": "resource_bytes_missing"}]
+    assert _compute_package_parse_status(diags) == "degraded"
+
+
+def test_degraded_content_package_is_consumable():
+    from app.services.content.package_service import is_package_consumable_status
+    assert is_package_consumable_status("parsed") is True
+    assert is_package_consumable_status("degraded") is True
+    assert is_package_consumable_status("failed") is False
+
+
+# ── Knowledge parse_status computation ───────────────────────────────────
+
+
+def test_compute_parse_status_no_diagnostics_returns_ok():
+    from modules.knowledge.backend.services.parsing_service import _compute_parse_status
+    assert _compute_parse_status([]) == "ok"
+    assert _compute_parse_status(None) == "ok"
+
+
+def test_compute_parse_status_failure_returns_degraded():
+    from modules.knowledge.backend.services.parsing_service import _compute_parse_status
+    assert _compute_parse_status([{"status": "failed"}]) == "degraded"
+
+
+def test_compute_parse_status_degraded_returns_degraded():
+    from modules.knowledge.backend.services.parsing_service import _compute_parse_status
+    assert _compute_parse_status([{"status": "degraded"}]) == "degraded"
+
+
+def test_compute_parse_status_all_stored_returns_ok():
+    from modules.knowledge.backend.services.parsing_service import _compute_parse_status
+    assert _compute_parse_status([{"status": "stored"}, {"status": "stored"}]) == "ok"
+
+
+# ── from_legacy_blocks propagation ───────────────────────────────────────
+
+
+def test_from_legacy_blocks_propagates_resource_diagnostics():
+    from modules.knowledge.backend.ir_models import from_legacy_blocks
+    diags = [{"parser": "pdf-parser", "status": "failed", "code": "resource_store_failed"}]
+    doc = from_legacy_blocks(
+        file_id=1, fmt="pdf", blocks=[],
+        resource_diagnostics=diags,
+        parse_status="degraded",
+    )
+    assert doc.parse_status == "degraded"
+    assert len(doc.resource_diagnostics) == 1
+    assert doc.resource_diagnostics[0]["code"] == "resource_store_failed"
+
+
+def test_from_legacy_blocks_stored_resource_id_preferred():
+    from modules.knowledge.backend.ir_models import from_legacy_blocks
+    resources = [
+        {"id": 1, "type": "image", "stored_resource_id": 99, "text_desc": "photo"},
+    ]
+    doc = from_legacy_blocks(file_id=1, fmt="docx", blocks=[], resources=resources)
+    assert len(doc.resources) == 1
+    assert doc.resources[0].id == 99
+
+
+def test_from_legacy_blocks_fallback_to_local_id():
+    from modules.knowledge.backend.ir_models import from_legacy_blocks
+    resources = [{"id": 5, "type": "image", "text_desc": "legacy"}]
+    doc = from_legacy_blocks(file_id=1, fmt="pptx", blocks=[], resources=resources)
+    assert len(doc.resources) == 1
+    assert doc.resources[0].id == 5
 
 
 def test_build_resource_diagnostic_keeps_explicit_location():

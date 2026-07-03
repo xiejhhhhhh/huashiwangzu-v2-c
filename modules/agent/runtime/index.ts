@@ -470,6 +470,15 @@ export const modules = {
   async capabilities(): Promise<string[]> {
     return apiGet<string[]>('/modules/capabilities')
   },
+  /** 打开另一个模块的应用窗口（框架模式下可用） */
+  openApp(appKey: string, params?: Record<string, unknown>): string | null {
+    const wm = (window as unknown as Record<string, unknown>).__HSWZ_WINDOW_MANAGER__ as {
+      openWindow: (appKey: string, payload?: unknown) => string | null
+    } | undefined
+    if (wm) return wm.openWindow(appKey, params)
+    console.warn('[runtime] openApp: windowManager not available (not in framework mode)')
+    return null
+  },
 }
 
 // ── Unified platform export ─────────────────────────────────────────

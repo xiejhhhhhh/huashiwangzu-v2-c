@@ -73,6 +73,12 @@ async def _post_save_process(memory_id: int, content: str, source: str | None) -
                 sql = "UPDATE memory_records SET " + ", ".join(update_parts) + " WHERE id = :id"
                 await db.execute(text(sql), params)
             await _refresh_chunks_for_memory(db, mem, content, source, distilled)
+            owner_id = mem.owner_id
+            await db.commit()
+            # Auto-create memory_links to semantically similar existing memories.
+            # Capture owner_id BEFORE commit because expire_on_commit=True expires
+            # ORM attributes and async lazy-load after commit would fail.
+            await _auto_link_memory(db, memory_id, owner_id)
             await db.commit()
     except Exception as e:
         logger.warning("Post-save processing failed (non-fatal): %s", e)
@@ -284,6 +290,145 @@ async def _do_dream(db: AsyncSession, owner_id: int) -> dict:
 
     await db.commit()
     return report
+
+
+async def _auto_link_memory(db: AsyncSession, memory_id: int, owner_id: int) -> int:
+    """Auto-create memory_links between the given memory and semantically similar existing memories.
+
+    Finds memories owned by the same user whose vector similarity >= 0.55
+    (matching the dream link threshold) and inserts directed links.
+    Uses ON CONFLICT DO NOTHING via the unique index on
+    (owner_id, LEAST(from_id,to_id), GREATEST(from_id,to_id), relation).
+    Returns the number of links created.
+
+    NOTE: Queries embedding directly from DB with a fresh query instead of
+    relying on the session identity map, because the embedding may have been
+    written via raw SQL (bypassing ORM column refresh).
+    """
+    vec_row = await db.execute(
+        text("SELECT embedding FROM memory_records WHERE id = :id"),
+        {"id": memory_id},
+    )
+    embed_row = vec_row.mappings().first()
+    if not embed_row:
+        return 0
+    raw_embedding = embed_row["embedding"]
+    if raw_embedding is None:
+        return 0
+    # Raw SQL text() returns the vector as a string like '[-0.03,-0.02,...]'
+    # or as a pgvector Vector type. Handle both.
+    if isinstance(raw_embedding, str):
+        vec = [float(x) for x in raw_embedding.strip("[]").split(",")]
+    else:
+        vec = list(raw_embedding)
+    vec_literal = "[" + ",".join(str(v) for v in vec) + "]"
+    # Use f-string + quoting for the vector literal (matching _hybrid_recall pattern)
+    # to ensure proper pgvector cast in parameterized queries.
+    sql = text(f"""
+        SELECT id, (1 - (embedding <=> '{vec_literal}'::vector)) AS similarity
+        FROM memory_records
+        WHERE owner_id = :owner_id
+          AND id != :memory_id
+          AND embedding IS NOT NULL
+          AND (1 - (embedding <=> '{vec_literal}'::vector)) >= :threshold
+        ORDER BY similarity DESC
+        LIMIT 10
+    """)
+    r = await db.execute(sql, {
+        "owner_id": owner_id,
+        "memory_id": memory_id,
+        "threshold": 0.55,
+    })
+    similar = r.mappings().all()
+
+    links_created = 0
+    insert_sql = text("""
+        INSERT INTO memory_links (from_id, to_id, relation, weight, owner_id, created_at, updated_at)
+        VALUES (:from_id, :to_id, 'semantic_related', :weight, :owner_id, NOW(), NOW())
+        ON CONFLICT DO NOTHING
+    """)
+    for row in similar:
+        result = await db.execute(insert_sql, {
+            "from_id": memory_id,
+            "to_id": row["id"],
+            "weight": row["similarity"],
+            "owner_id": owner_id,
+        })
+        links_created += max(result.rowcount or 0, 0)
+
+    return links_created
+
+
+async def _backfill_missing_memory_links(
+    db: AsyncSession,
+    *,
+    owner_id: int | None = None,
+    limit: int = 50,
+    dry_run: bool = True,
+) -> dict:
+    """Backfill missing memory_links for records that have embeddings but no links.
+
+    Finds pairs of memories (same owner) with vector similarity >= 0.55 where
+    no link exists in either direction, and creates 'semantic_related' links.
+    Dry-run mode only reports candidates.
+    """
+    where_owner = "AND a.owner_id = :owner_id" if owner_id else ""
+
+    candidate_sql = text(f"""
+        SELECT a.id AS from_id, b.id AS to_id, a.owner_id,
+               (1 - (a.embedding <=> b.embedding)) AS similarity
+        FROM memory_records a
+        JOIN memory_records b ON a.owner_id = b.owner_id AND a.id < b.id
+        WHERE a.embedding IS NOT NULL
+          AND b.embedding IS NOT NULL
+          AND (1 - (a.embedding <=> b.embedding)) >= 0.55
+          AND NOT EXISTS (
+              SELECT 1 FROM memory_links
+              WHERE (from_id = a.id AND to_id = b.id)
+                 OR (from_id = b.id AND to_id = a.id)
+          )
+          {where_owner}
+        ORDER BY similarity DESC
+        LIMIT :limit
+    """)
+    params: dict = {"limit": limit}
+    if owner_id:
+        params["owner_id"] = owner_id
+
+    rows = (await db.execute(candidate_sql, params)).mappings().all()
+
+    result: dict = {
+        "dry_run": dry_run,
+        "owner_id": owner_id,
+        "limit": limit,
+        "candidate_count": len(rows),
+        "links_created": 0,
+        "diagnostic": "dry_run_only" if dry_run else "pending",
+    }
+
+    if dry_run or not rows:
+        result["diagnostic"] = "dry_run_only" if dry_run else "no_candidates"
+        return result
+
+    insert_sql = text("""
+        INSERT INTO memory_links (from_id, to_id, relation, weight, owner_id, created_at, updated_at)
+        VALUES (:from_id, :to_id, 'semantic_related', :weight, :owner_id, NOW(), NOW())
+        ON CONFLICT DO NOTHING
+    """)
+    created = 0
+    for row in rows:
+        res = await db.execute(insert_sql, {
+            "from_id": row["from_id"],
+            "to_id": row["to_id"],
+            "weight": row["similarity"],
+            "owner_id": row["owner_id"],
+        })
+        created += max(res.rowcount or 0, 0)
+
+    await db.commit()
+    result["links_created"] = created
+    result["diagnostic"] = "completed"
+    return result
 
 
 async def _enqueue_post_save(memory_id: int, content: str, source: str | None) -> None:

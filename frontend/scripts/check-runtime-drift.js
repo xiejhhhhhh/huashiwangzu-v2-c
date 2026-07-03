@@ -18,15 +18,18 @@ const KNOWN_VARIANTS = new Set([
   'agent',
   'doc-viewer',
   'docs-open',
+  'douyin-delivery', // exports apiPut/apiDelete for CRUD panels
   'image-viewer',
   'knowledge',
   'memory',
+  'office-gen',     // has content namespace + apiPut (content pipeline helpers beyond template)
   'pdf-viewer',
   'ppt-viewer',
   'scheduler',
   'terminal-tools',
   'text-editor',
   'web-tools',
+  'wechat-writer',  // exports apiDelete for draft/prompt management
 ])
 
 function normalizeRuntimeSource(source) {

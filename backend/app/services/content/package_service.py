@@ -63,6 +63,8 @@ FORMAT_PARSER_MAP: dict[str, tuple[str, str]] = {
 }
 
 IMAGE_FORMATS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg"}
+CONSUMABLE_PACKAGE_STATUSES = ("parsed", "degraded", "partial")
+DEGRADED_RESOURCE_STATUSES = {"failed", "degraded", "partial", "done_with_errors"}
 
 
 def _detect_package_type(extension: str) -> str:
@@ -98,6 +100,18 @@ def _iter_all_blocks(blocks: list[dict]) -> list[dict]:
         if b.get("children"):
             stack = b["children"] + stack
     return result
+
+
+def _compute_package_parse_status(resource_diagnostics: list[dict]) -> str:
+    if not isinstance(resource_diagnostics, list) or not resource_diagnostics:
+        return "parsed"
+    if any(d.get("status") in DEGRADED_RESOURCE_STATUSES for d in resource_diagnostics):
+        return "degraded"
+    return "parsed"
+
+
+def is_package_consumable_status(status: object) -> bool:
+    return str(status or "") in CONSUMABLE_PACKAGE_STATUSES
 
 
 class ContentPackageService:
@@ -225,19 +239,22 @@ class ContentPackageService:
             "source_hash": file_record.md5_hash or "",
         }
 
+        parse_status = _compute_package_parse_status(resource_diagnostics)
+
         content_ir = {
             "manifest": manifest_dict,
             "blocks": raw_blocks,
         }
         if isinstance(resource_diagnostics, list) and resource_diagnostics:
             content_ir["resource_diagnostics"] = resource_diagnostics
+        content_ir["parse_status"] = parse_status
 
         content_json_str = json.dumps(content_ir, ensure_ascii=False)
 
         source_bytes_str = file_record.md5_hash or ""
         pkg.source_hash = hashlib.sha256(source_bytes_str.encode()).hexdigest()
         pkg.manifest_json = json.dumps(manifest_dict, ensure_ascii=False)
-        pkg.status = "parsed"
+        pkg.status = parse_status
         pkg.parse_error = None
 
         version_no = 1

@@ -192,11 +192,12 @@ async def _try_compile_from_content_package(
 ) -> dict | None:
     """Try to compile from ContentPackage. Returns None if no package found."""
     from app.models.content import ContentPackage
+    from app.services.content.package_service import CONSUMABLE_PACKAGE_STATUSES
     result = await db.execute(
         select(ContentPackage).where(
             ContentPackage.source_file_id == file_id,
             ContentPackage.deleted.is_(False),
-            ContentPackage.status == "parsed",
+            ContentPackage.status.in_(CONSUMABLE_PACKAGE_STATUSES),
         ).order_by(ContentPackage.created_at.desc()).limit(1)
     )
     pkg = result.scalar_one_or_none()

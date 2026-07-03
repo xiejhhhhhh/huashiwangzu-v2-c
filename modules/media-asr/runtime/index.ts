@@ -1,6 +1,7 @@
 /**
  * Module Runtime — shared middle layer between sandbox and main framework.
  *
+ * Each module copies this file into modules/{name}/runtime/index.ts.
  * All API paths, permissions, and settings are read through this layer,
  * so module code never hardcodes framework-specific values.
  *
@@ -107,6 +108,34 @@ export interface FileOpenPayload {
   mimeType: string | null
   mode: 'view' | 'edit'
 }
+
+export interface OfficeStatus {
+  package_id: number | null
+  latest_version: number
+  format_type: string
+}
+
+export interface OfficePackage {
+  id: number
+  file_id: number
+  current_version_id: number | null
+  format_type: string
+  package_status: string
+}
+
+export interface OfficeVersion {
+  id: number
+  package_id: number
+  version_number: number
+  summary: string | null
+  created_at: string
+}
+
+
+
+
+
+
 
 export interface ModelProfile {
   key: string
@@ -251,15 +280,18 @@ export async function apiPost<T>(path: string, payload?: unknown): Promise<T> {
 // ── Platform SDK namespaces ─────────────────────────────────────────
 
 export const auth = {
+  /** Get current authenticated user info */
   async getCurrentUser(): Promise<CurrentUser> {
     return apiGet<CurrentUser>('/current-user')
   },
+  /** Check if a specific permission is granted */
   hasPermission(permission: string): boolean {
     return hasPermission(permission)
   },
 }
 
 export const files = {
+  /** List files and folders in a given folder */
   async list(params: { folder_id?: number; page?: number; page_size?: number } = {}): Promise<FileListPage> {
     const qs = new URLSearchParams()
     if (params.folder_id !== undefined) qs.set('folder_id', String(params.folder_id))
@@ -267,6 +299,7 @@ export const files = {
     if (params.page_size) qs.set('page_size', String(params.page_size))
     return apiGet<FileListPage>(`/files/list?${qs.toString()}`)
   },
+  /** Search files and folders */
   async search(params: { keyword?: string; extension?: string; page?: number; page_size?: number } = {}): Promise<FileSearchPage> {
     const qs = new URLSearchParams()
     if (params.keyword) qs.set('keyword', params.keyword)
@@ -275,9 +308,11 @@ export const files = {
     if (params.page_size) qs.set('page_size', String(params.page_size))
     return apiGet<FileSearchPage>(`/files/search?${qs.toString()}`)
   },
+  /** Get file detail */
   async detail(fileId: number): Promise<FileDetail> {
     return apiGet<FileDetail>(`/files/detail/${fileId}`)
   },
+  /** Upload a file */
   async upload(file: File, options?: { folder_id?: number }): Promise<UploadResult> {
     const form = new FormData()
     form.append('file', file)
@@ -290,36 +325,64 @@ export const files = {
     if (!body.success) throw new Error(body.error ?? 'Upload error')
     return body.data as UploadResult
   },
+  /** Get download URL for a file */
   downloadUrl(fileId: number): string {
     return getApiUrl(`/files/download/${fileId}`)
   },
+  /** Get preview data for a file */
   async preview(fileId: number): Promise<unknown> {
     return apiGet<unknown>(`/files/preview/${fileId}`)
   },
+  /** Get files shared with the current user */
   async receivedShares(params: { page?: number; page_size?: number } = {}): Promise<FileSharePage> {
     const qs = new URLSearchParams()
     if (params.page) qs.set('page', String(params.page))
     if (params.page_size) qs.set('page_size', String(params.page_size))
     return apiGet<FileSharePage>(`/files/share/received?${qs.toString()}`)
   },
+  /** Check if the current user can access a given file */
   async checkAccess(fileId: number): Promise<FileAccessResult> {
     return apiGet<FileAccessResult>(`/files/share/check/${fileId}`)
   },
+  /** Get the FileOpenPayload injected by the framework when a file is opened */
   getOpenPayload(): FileOpenPayload | null {
     return (window as unknown as Record<string, unknown>).__MODULE_OPEN_FILE_PAYLOAD__ as FileOpenPayload ?? null
   },
 }
 
+export const office = {
+  /** Get Office document status for a file */
+  async getStatus(fileId: number): Promise<OfficeStatus> {
+    return apiGet<OfficeStatus>(`/office/status/${fileId}`)
+  },
+  /** Create a new JSON package for a file */
+  async createPackage(payload: { file_id: number; format_type: string }): Promise<OfficePackage> {
+    return apiPost<OfficePackage>('/office/package', payload)
+  },
+  /** Get a JSON package by ID */
+  async getPackage(packageId: number): Promise<OfficePackage> {
+    return apiGet<OfficePackage>(`/office/package/${packageId}`)
+  },
+  /** List all versions of a JSON package */
+  async listVersions(packageId: number): Promise<OfficeVersion[]> {
+    return apiGet<OfficeVersion[]>(`/office/package/${packageId}/versions`)
+  },
+}
+
 export const gateway = {
+  /** List available AI model profiles */
   async listModels(): Promise<ModelProfile[]> {
     return apiGet<ModelProfile[]>('/gateway/models')
   },
+  /** Check health of all model providers */
   async health(): Promise<ModelHealth> {
     return apiGet<ModelHealth>('/gateway/health')
   },
+  /** Send a chat completion request */
   async chat(payload: { messages: Array<{ role: string; content: string }>; profile_key?: string }): Promise<ChatResult> {
     return apiPost<ChatResult>('/gateway/chat', payload)
   },
+  /** Send a streaming chat completion request (returns ReadableStream) */
   async chatStream(payload: { messages: Array<{ role: string; content: string }>; profile_key?: string }): Promise<ReadableStream<Uint8Array>> {
     const url = getApiUrl('/gateway/chat-stream')
     const r = await fetch(url, {
@@ -332,70 +395,89 @@ export const gateway = {
     if (!r.body) throw new Error('No response body for stream')
     return r.body
   },
+  /** Get embeddings for text */
   async embedding(payload: { texts: string[]; model?: string }): Promise<EmbeddingResult> {
     return apiPost<EmbeddingResult>('/gateway/embedding', payload)
   },
+  /** Rerank documents */
   async rerank(payload: { query: string; documents: string[]; model?: string }): Promise<RerankResult> {
     return apiPost<RerankResult>('/gateway/rerank', payload)
   },
 }
 
 export const tasks = {
+  /** Submit a background task */
   async submit(payload: { module: string; task_type: string; parameters?: Record<string, unknown>; priority?: number }): Promise<TaskInfo> {
     return apiPost<TaskInfo>('/tasks/submit', payload)
   },
+  /** Get task info */
   async get(taskId: number): Promise<TaskInfo> {
     return apiGet<TaskInfo>(`/tasks/${taskId}`)
   },
+  /** Cancel a pending task */
   async cancel(taskId: number): Promise<void> {
     await apiPost<void>(`/tasks/${taskId}/cancel`)
   },
+  /** Retry a failed task */
   async retry(taskId: number): Promise<void> {
     await apiPost<void>(`/tasks/${taskId}/retry`)
   },
 }
 
 export const notifications = {
+  /** Send a module notification */
   async send(payload: { title: string; content?: string; notification_type?: string }): Promise<void> {
     await apiPost<void>('/notifications/module', payload)
   },
 }
 
 export const logs = {
+  /** Write an informational log entry */
   async info(action: string, message: string, data?: unknown): Promise<void> {
     await apiPost<void>('/logs/module', { level: 'info', action, message, data })
   },
+  /** Write an error log entry */
   async error(action: string, message: string, data?: unknown): Promise<void> {
     await apiPost<void>('/logs/module', { level: 'error', action, message, data })
   },
+  /** Send a frontend error report */
   async frontendError(payload: { url?: string; status_code?: number; error_message?: string; page_path?: string }): Promise<void> {
     await apiPost<void>('/logs/frontend-error', payload)
   },
 }
 
 export const settings = {
+  /** Get a module setting by key */
   async get<T = unknown>(key: string, defaultValue?: T): Promise<T | undefined> {
     return (getModuleSetting<T>(key, defaultValue) as T) ?? defaultValue
   },
+  /** Set a module setting */
   async set<T = unknown>(_key: string, _value: T): Promise<void> {
+    // Persisted via HTTP when available; current implementation uses in-memory config
   },
+  /** Get all module settings */
   async all(): Promise<Record<string, unknown>> {
     return _config?.module_settings ?? {}
   },
 }
 
 export const modules = {
-  async call<T = unknown>(targetModule: string, action: string, parameters: Record<string, unknown> = {}): Promise<T> {
-    return apiPost<T>('/modules/call', { target_module: targetModule, action, parameters })
+  /** 调用另一个模块对外公开的能力（经框架统一通路 + 权限 + 审计） */
+  async call(targetModule: string, action: string, parameters: Record<string, unknown> = {}): Promise<unknown> {
+    return apiPost<unknown>('/modules/call', { target_module: targetModule, action, parameters })
   },
+  /** 列出当前已注册的跨模块能力（module:action 列表） */
   async capabilities(): Promise<string[]> {
     return apiGet<string[]>('/modules/capabilities')
   },
 }
 
+// ── Unified platform export ─────────────────────────────────────────
+
 export const platform = {
   auth,
   files,
+  office,
   gateway,
   tasks,
   notifications,

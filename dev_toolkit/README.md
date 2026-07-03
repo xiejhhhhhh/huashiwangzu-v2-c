@@ -41,6 +41,7 @@ elif domain_handles_tool(name):
 | `worktree_tools.py` | `worktree_guard` |
 | `tool_usage_tools.py` | `tool_usage_stats` + 全局工具调用统计落盘 |
 | `agent_board_tools.py` | `agent_board_claim`、`agent_board_heartbeat`、`agent_board_complete`、`agent_board_block`、`agent_board_snapshot`（多子代理任务板，本地持久化进度） |
+| `opencode_tools.py` | `opencode_gateway_status`、`opencode_gateway_start`、`opencode_list_letters`、`opencode_sdk_smoke/prompt/dispatch_letter/messages`、`opencode_sdk_job_*`、`opencode_dispatch_letter`、`opencode_pty_start/read/write/stop`（固定 55891 网关；短调用走官方 SDK 同步通路，长任务走 SDK 后台队列，终态通知进 job notifications 收件箱，CLI/PTY 只作兜底和人工接管） |
 | `code_tools.py` | `code_explore`、`code_node`、`code_impact`、`quick_fix_preview`、`quick_fix_patch`、`apply_patch`、`lint`、`run_test` |
 | `edit_tools.py` | `batch_quick_fix_preview`、`batch_quick_fix_apply`、`edit_recipe_catalog`、`edit_recipe_preview`、`edit_recipe_apply` |
 | `db_reverse_tools.py` | `db_reverse_audit` |
@@ -194,6 +195,11 @@ mailbox_check_delivery_bundle(task_name)
 | `start_frontend()` | 启动前端开发服务器 | 等价 `cd frontend && npm run dev`，服务已启动时不应重复调用 |
 | `tool_usage_stats(limit, reset, confirm)` | 查看项目工具台 MCP 工具调用热度 | 统计文件在 `backend/logs/tool_usage_stats.json`，可用于清理低价值工具和发现高频工作流 |
 | `agent_board_claim/heartbeat/complete/block/snapshot` | 多子代理任务板，记录任务 owner、心跳、节点日志和终态 | 状态文件在 `backend/logs/agent_board.json`；claim 会拒绝未 stale 的活跃 owner，complete/block 只允许当前 owner |
+| `opencode_gateway_status/start/list_letters` | 查看/启动 opencode headless 网关，并列出投递箱任务信 | 默认 `http://127.0.0.1:55891`；首次 SDK 调用会自动安装官方 `@opencode-ai/sdk@1.17.13` 到被忽略的 `.opencode/` |
+| `opencode_sdk_smoke/prompt/dispatch_letter/messages` | 官方 SDK 同步通路：创建/复用 session、发送短 prompt/任务信、读取 session 消息用于跟踪 | 日志写到 `backend/logs/opencode-sdk/`；返回 `session.id`、`assistant.id`、文本、tokens、cost 和 parts |
+| `opencode_sdk_job_submit/job_dispatch_letter/job_status/job_list/job_continue/job_notifications` | 官方 SDK 后台队列：长任务提交后立即返回 `job_id`，后台轮询 session messages，停滞时自动补继续执行，终态写通知收件箱 | 状态落盘到 `backend/logs/opencode-sdk-jobs.json`；通知落盘到 `backend/logs/opencode-sdk-notifications.json`；完成只认 assistant `finish` 或 `step-finish`，避免 async 空壳消息假完成 |
+| `opencode_dispatch_letter` | 旧 CLI 兜底：用 `opencode run --attach --format json` 派发任务信 | 派发日志写到 `backend/logs/opencode-dispatches/`；本机 attach 默认不走 4780 代理 |
+| `opencode_pty_start/read/write/stop` | 启动、读取、写入、停止一个实时 opencode PTY 会话，类似 SSH 控制面 | 仅适合调试卡住的 opencode 或人工补充指令；输出落盘到 `backend/logs/opencode-pty/`，可能包含 ANSI/TUI 刷新字符 |
 | `mcp_feedback(agent, task_summary, rating, smoothness, tools_used, friction, missing_tools, upgrade_suggestions, remove_or_merge_suggestions)` | 收工工具体验反馈，写入结构化 Markdown 项目记忆 | 必填轻量反馈：本次是否顺畅、缺什么、建议升级/移除什么 |
 | `mcp_feedback_summary(limit)` | 汇总最近工具体验反馈 | 升级工具台前先看：平均评分、最新反馈、卡点和升级建议 |
 | `mailbox_write_letter(target, category, title, body, required_docs, delivery_mode, overwrite)` | 标准化写投递信到邮箱/投递箱 | 自动补系统指令、必读文档、交付要求和收件箱路径；服务端兼容旧别名 `写封信`，但标准 MCP 声明只公开 ASCII 工具名 |
@@ -258,6 +264,24 @@ mailbox_check_delivery_bundle(task_name)
 | `agent_board_complete(agent, task_id, result_summary, node_note)` | 当前 owner 将任务标记 completed |
 | `agent_board_block(agent, task_id, reason, node_note)` | 当前 owner 将任务标记 blocked 并记录卡点 |
 | `agent_board_snapshot(status, agent, include_events, limit)` | 查看持久化任务板，可按状态/agent 过滤，含最近事件 |
+| `opencode_gateway_status(host, port)` | 查看 opencode 网关监听、pid、日志尾部 |
+| `opencode_gateway_start(host, port)` | 启动 opencode headless 网关，默认 55891；已启动则返回现状 |
+| `opencode_list_letters(target_contains, limit)` | 列出 `华世王镞_v2邮箱/投递箱/*.md` |
+| `opencode_sdk_smoke(prompt, title)` | 用官方 SDK 创建 session、发最小 prompt、返回最终 assistant 消息 |
+| `opencode_sdk_prompt(prompt, title, session_id, agent)` | 用官方 SDK 发 prompt；可传 `session_id` 继续同一会话 |
+| `opencode_sdk_dispatch_letter(letter, title, session_id, agent)` | 用官方 SDK 读取投递信并派发；返回可跟踪的 session/message |
+| `opencode_sdk_messages(session_id, limit)` | 用官方 SDK 按 session_id 读取消息历史 |
+| `opencode_sdk_job_submit(prompt, title, session_id, agent, poll_seconds, stall_seconds, max_continue, max_runtime_seconds)` | 提交后台 prompt job，返回 `job.id`；适合会超过 MCP 单次调用时间的任务 |
+| `opencode_sdk_job_dispatch_letter(letter, title, session_id, agent, poll_seconds, stall_seconds, max_continue, max_runtime_seconds)` | 把投递箱任务信提交到后台 job 队列，后续用 status/list 跟踪 |
+| `opencode_sdk_job_status(job_id, refresh)` | 查询后台 job；`refresh=true` 会刷新 session messages，MCP 重启后会自动重挂非终态 job 监控 |
+| `opencode_sdk_job_list(status, limit)` | 列出后台 job，`active_count` 统计全队列非终态任务 |
+| `opencode_sdk_job_continue(job_id, prompt)` | 手动给已有 job 所在 session 补一句继续执行，并重新纳入后台监控 |
+| `opencode_sdk_job_notifications(status, unread_only, limit, mark_read, acknowledged_by)` | 查看后台 job 终态通知收件箱；默认返回未读通知，`mark_read=true` 表示 Codex 已接手 |
+| `opencode_dispatch_letter(letter, title, background)` | 旧 CLI 兜底派发；默认后台执行并写派发日志 |
+| `opencode_pty_start(title, prompt)` | 启动实时 opencode PTY 会话，返回 `session_id` 和初始输出 |
+| `opencode_pty_read(session_id)` | 读取实时 PTY 会话输出 |
+| `opencode_pty_write(session_id, text)` | 向实时 PTY 会话写入文本，默认追加回车 |
+| `opencode_pty_stop(session_id)` | 停止并清理实时 PTY 会话 |
 | `mcp_feedback(agent, task_summary, rating, smoothness, tools_used, friction, missing_tools, upgrade_suggestions, remove_or_merge_suggestions)` | 收工反馈本次 MCP 是否顺畅、有无缺失能力和升级/移除建议；生成 Markdown 反馈记录 |
 | `mcp_feedback_summary(limit)` | 汇总最近 MCP 反馈 Markdown，升级工具台前用它找高频卡点和建议 |
 | `mcp_self_check(include_tools)` | MCP 自检: 工具数、组件覆盖、重复工具名、长文件、延迟加载提示 |

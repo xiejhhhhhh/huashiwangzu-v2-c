@@ -185,16 +185,13 @@ async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
             })
 
     resp: dict[str, object] = {
-        "success": True,
-        "data": {
-            "results": results,
-            "total_tasks": len(tasks),
-            "completed": sum(1 for r in results if r["status"] == "completed"),
-            "errors": sum(1 for r in results if r["status"] == "error"),
-        },
+        "results": results,
+        "total_tasks": len(tasks),
+        "completed": sum(1 for r in results if r["status"] == "completed"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
     }
     if track_trajectory:
-        resp["data"]["trajectory"] = trajectory  # type: ignore[index]
+        resp["trajectory"] = trajectory
     return resp
 
 

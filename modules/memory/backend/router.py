@@ -462,3 +462,33 @@ register_capability(
     },
     min_role="viewer",
 )
+
+register_capability(
+    "memory", "backfill_links", cap_mod._cap_backfill_links,
+    description="Admin governance: backfill missing memory_links between existing memory records using vector similarity. Dry-run safe.",
+    brief="治理缺失记忆链接",
+    parameters={
+        "type": "object",
+        "properties": {
+            "dry_run": {"type": "boolean", "description": "仅诊断不写入，默认 true"},
+            "limit": {"type": "integer", "description": "最多处理条数，1-500，默认 50"},
+            "owner_id": {"type": "integer", "description": "只治理指定 owner 的记忆，可选"},
+        },
+    },
+    min_role="admin",
+)
+
+register_capability(
+    "memory", "backfill_chunk_embeddings", cap_mod._cap_backfill_chunk_embeddings,
+    description="Admin governance: safely backfill missing memory_chunk embeddings with dry-run support",
+    brief="治理缺失 chunk 向量",
+    parameters={
+        "type": "object",
+        "properties": {
+            "dry_run": {"type": "boolean", "description": "仅诊断不写入，默认 true"},
+            "limit": {"type": "integer", "description": "本次最多处理条数，1-100，默认 20"},
+            "owner_id": {"type": "integer", "description": "只治理指定 owner 的 chunk，可选"},
+        },
+    },
+    min_role="admin",
+)

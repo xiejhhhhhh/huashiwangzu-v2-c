@@ -56,6 +56,8 @@ class DocumentIr(BaseModel):
     resources: list[ResourceRef] = Field(default_factory=list)
     parsed_at: str = ""
     parse_errors: list[str] = Field(default_factory=list)
+    parse_status: str = "ok"
+    resource_diagnostics: list[dict] = Field(default_factory=list)
     source_filename: str = ""
     source_size: int = 0
 
@@ -73,8 +75,12 @@ class DocumentIr(BaseModel):
         return result
 
 
-def from_legacy_blocks(file_id: int, fmt: str, blocks: list[dict],
-                       resources: list[dict] | None = None) -> DocumentIr:
+def from_legacy_blocks(
+    file_id: int, fmt: str, blocks: list[dict],
+    resources: list[dict] | None = None,
+    resource_diagnostics: list[dict] | None = None,
+    parse_status: str = "ok",
+) -> DocumentIr:
     ir_blocks = []
     for b in blocks:
         level = 0
@@ -102,17 +108,24 @@ def from_legacy_blocks(file_id: int, fmt: str, blocks: list[dict],
     ir_resources = []
     if resources:
         for r in resources:
+            stored_id = r.get("stored_resource_id")
             ir_resources.append(ResourceRef(
-                id=r.get("id", 0),
+                id=stored_id or r.get("id", 0),
                 type=r.get("type", ""),
+                mime_type=r.get("mime_type", ""),
                 text_desc=r.get("text_desc", ""),
             ))
+    diagnostics: list[dict] = []
+    if resource_diagnostics:
+        diagnostics = list(resource_diagnostics)
     return DocumentIr(
         file_id=file_id,
         format=fmt,
         blocks=ir_blocks,
         resources=ir_resources,
         parsed_at=datetime.now().isoformat(),
+        resource_diagnostics=diagnostics,
+        parse_status=parse_status,
     )
 
 
@@ -139,7 +152,8 @@ def to_legacy_dict(ir: DocumentIr) -> dict:
             "resource_ref": b.resource_ref,
         })
     resource_dicts = [
-        {"id": r.id, "type": r.type, "file_storage_id": None, "text_desc": r.text_desc}
+        {"id": r.id, "type": r.type, "file_storage_id": None, "text_desc": r.text_desc,
+         "stored_resource_id": r.id, "mime_type": r.mime_type}
         for r in ir.resources
     ]
     return {
@@ -147,4 +161,6 @@ def to_legacy_dict(ir: DocumentIr) -> dict:
         "format": ir.format,
         "blocks": block_dicts,
         "resources": resource_dicts,
+        "parse_status": ir.parse_status,
+        "resource_diagnostics": list(ir.resource_diagnostics),
     }
