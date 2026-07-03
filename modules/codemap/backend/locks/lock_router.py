@@ -2,22 +2,30 @@
 
 Extracted from router.py to follow size guidelines.
 """
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
+import logging
 
 from app.database import get_db
 from app.middleware.auth import require_permission
 from app.schemas.common import ApiResponse
-from sqlalchemy import select, func, desc
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy import desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from . import file_lock
+from ..graph.graph import normalize_path
+from ..init_db import ensure_codemap_tables
 from ..models import CodemapFeedback
+from . import file_lock
 
-import logging
 logger = logging.getLogger("v2.codemap").getChild("lock_router")
 
 router = APIRouter(tags=["codemap"])
+
+
+def _operation_response(result: dict) -> ApiResponse:
+    if result.get("success") is False:
+        return ApiResponse(success=False, data=result, error=str(result.get("error") or "operation failed"))
+    return ApiResponse(data=result)
 
 
 # ── File lock endpoints ──────────────────────────────────────────────────────
@@ -46,7 +54,7 @@ async def http_acquire_lock(
     body: AcquireLockRequest,
     _user=Depends(require_permission("viewer")),
 ):
-    return ApiResponse(data=file_lock.acquire_lock(body.path, body.agent_id, body.ttl))
+    return _operation_response(file_lock.acquire_lock(body.path, body.agent_id, body.ttl))
 
 
 @router.post("/check-lock")
@@ -62,7 +70,7 @@ async def http_release_lock(
     body: LockPathRequest,
     _user=Depends(require_permission("viewer")),
 ):
-    return ApiResponse(data=file_lock.release_lock(body.path))
+    return _operation_response(file_lock.release_lock(body.path))
 
 
 @router.get("/list-locks")
@@ -81,8 +89,9 @@ async def http_report_inaccuracy(
     _user=Depends(require_permission("viewer")),
 ):
     """Agent 实读验证后发现 codemap 不准时，调用此接口记录一条反馈。"""
+    await ensure_codemap_tables(db)
     feedback = CodemapFeedback(
-        path=body.path,
+        path=normalize_path(body.path),
         query_type=body.query_type,
         codemap_said=body.codemap_said,
         actual=body.actual,
@@ -90,9 +99,11 @@ async def http_report_inaccuracy(
         agent_id=body.agent_id or "anonymous",
     )
     db.add(feedback)
+    await db.flush()
+    feedback_id = feedback.id
     await db.commit()
     logger.info("Feedback recorded: path=%s type=%s reason=%s", body.path, body.query_type, body.reason[:80])
-    return ApiResponse(data={"id": feedback.id, "message": "反馈已记录"})
+    return ApiResponse(data={"id": feedback_id, "message": "反馈已记录"})
 
 
 @router.get("/list-feedback")
@@ -104,7 +115,9 @@ async def http_list_feedback(
     _user=Depends(require_permission("admin")),
 ):
     """列出 codemap 反馈记录。仅 admin。可按 path 过滤、按频次排序。"""
+    await ensure_codemap_tables(db)
     if path:
+        path = normalize_path(path)
         # Filter by path, ordered by recency
         result = await db.execute(
             select(CodemapFeedback)

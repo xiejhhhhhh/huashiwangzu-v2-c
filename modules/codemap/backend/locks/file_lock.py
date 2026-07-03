@@ -26,7 +26,8 @@ from typing import TypeVar
 
 logger = logging.getLogger("v2.codemap").getChild("file_lock")
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 LOCK_FILE = DATA_DIR / "locks.json"
 OS_LOCK_FILE = DATA_DIR / "locks.json.lock"
 _LOCK_FILE_LOCK = threading.Lock()
@@ -73,9 +74,15 @@ def _normalize_path(path: str) -> str:
     if not clean:
         raise ValueError("path is required")
     raw = Path(clean)
+    if raw.is_absolute():
+        try:
+            clean = str(raw.resolve().relative_to(PROJECT_ROOT.resolve()))
+        except ValueError as exc:
+            raise ValueError("path must be inside repository root") from exc
+        raw = Path(clean)
     parts: list[str] = []
     for part in raw.parts:
-        if part in ("", "."):
+        if part in ("", ".", os.sep):
             continue
         if part == "..":
             if not parts:
@@ -114,6 +121,11 @@ def acquire_lock(path: str, agent_id: str, ttl: int = 600) -> dict:
         norm_path = _normalize_path(path)
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
+    agent_id = agent_id.strip()
+    if not agent_id:
+        return {"success": False, "error": "agent_id is required"}
+    if ttl <= 0:
+        return {"success": False, "error": "ttl must be positive"}
 
     def _mutate(locks: dict) -> dict:
         expires_at = time.time() + ttl

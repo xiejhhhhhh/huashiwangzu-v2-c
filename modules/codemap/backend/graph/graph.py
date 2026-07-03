@@ -21,15 +21,20 @@ import logging
 import os
 import threading
 import time
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from collections import deque
 from pathlib import Path
-from typing import Any
+
+from .graph_models import (
+    CallEdge,
+    CapabilityEdge,
+    DbTableEdge,
+    FileNode,
+    ImportEdge,
+)
 
 logger = logging.getLogger("v2.codemap").getChild("graph")
-
-# Project root — graph.py lives in modules/codemap/backend/graph.py
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# Project root — graph.py lives in modules/codemap/backend/graph/graph.py
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 def normalize_path(path: str) -> str:
     """Convert an input path to a project-relative path suitable for index lookup.
@@ -53,14 +58,12 @@ def normalize_path(path: str) -> str:
 
     # Clean relative path: normalize, strip leading ./, trailing /
     cleaned = os.path.normpath(path).replace("\\", "/")
-    # Remove leading ./ 
+    # Remove leading ./
     while cleaned.startswith("./"):
         cleaned = cleaned[2:]
     # Remove trailing /
     cleaned = cleaned.rstrip("/")
     return cleaned
-
-from .graph_models import ImportEdge, CallEdge, CapabilityEdge, DbTableEdge, FileNode
 
 # ── Graph ──────────────────────────────────────────────────────────────────
 
@@ -187,6 +190,14 @@ class CodeGraph:
         with self._lock:
             self._ready = False
             self._build_start = time.time()
+            self._files.clear()
+            self._symbols.clear()
+            self._imports.clear()
+            self._calls.clear()
+            self._capabilities.clear()
+            self._db_tables.clear()
+            self._rev_imports.clear()
+            self._rev_calls.clear()
             self._file_mtimes.clear()
             self._failed_files.clear()
             self._total_files_scanned = 0
@@ -262,10 +273,12 @@ class CodeGraph:
 
         return "；".join(notes) if notes else None
 
-    def reindex_now(self) -> None:
+    def reindex_now(self) -> bool:
         """Trigger a full rebuild via the registered callback."""
         if self._reindex_callback:
             self._reindex_callback()
+            return True
+        return False
 
     # ── Query: get_file ────────────────────────────────────────────────
 
@@ -344,7 +357,6 @@ class CodeGraph:
                             reverse_modules.add(src_node.module_key)
 
             # Risk level assessment
-            cross_module_count = len(forward_modules & reverse_modules)
             if len(reverse_modules) > 3 or len(forward_modules) > 3:
                 risk = "high"
             elif len(reverse_modules) > 1 or len(forward_modules) > 1:
@@ -391,7 +403,7 @@ class CodeGraph:
             return {"error": "Provide path or module_key"}
 
     def _check_file_boundary(self, path: str) -> dict:
-        from .boundary_engine import is_framework_internal
+        from ..boundary_engine import is_framework_internal
 
         node = self._files.get(path)
         if not node:
@@ -488,9 +500,14 @@ class CodeGraph:
 
     def module_map(self, module_key: str) -> dict:
         """Return module-level overview: capabilities exposed, capabilities consumed, boundary health."""
+        module_key = (module_key or "").strip()
+        if not module_key:
+            return {"error": "module_key is required"}
         with self._lock:
             module_files = [p for p, n in self._files.items()
                             if n.module_key == module_key]
+            if not module_files:
+                return {"error": f"Module not found: {module_key}", "module_key": module_key}
 
             # Capabilities registered by this module
             exposed: list[str] = []
@@ -598,6 +615,7 @@ class CodeGraph:
             confidence = max(0, min(100, confidence))
             return {
                 "ready": self._ready,
+                "index_scope": "process-local",
                 "file_count": len(self._files),
                 "file_count_at_build": self._file_count_at_build,
                 "symbol_count": len(self._symbols),

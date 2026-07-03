@@ -33,23 +33,56 @@ sys.modules["codemap.backend"] = _backend_pkg
 _codemap_pkg.backend = _backend_pkg
 
 
-def _load_backend_module(name: str) -> types.ModuleType:
-    """Load a codemap.backend.* module with proper package prefix."""
-    full_name = f"codemap.backend.{name}"
-    file_path = _BACKEND_DIR / f"{name}.py"
+def _make_package(full_name: str, path: Path, parent: types.ModuleType, attr: str) -> types.ModuleType:
+    pkg = types.ModuleType(full_name)
+    pkg.__path__ = [str(path)]
+    sys.modules[full_name] = pkg
+    setattr(parent, attr, pkg)
+    return pkg
+
+
+_graph_pkg = _make_package("codemap.backend.graph", _BACKEND_DIR / "graph", _backend_pkg, "graph")
+_locks_pkg = _make_package("codemap.backend.locks", _BACKEND_DIR / "locks", _backend_pkg, "locks")
+
+
+def _load_module_from_path(full_name: str, file_path: Path, parent: types.ModuleType, attr: str) -> types.ModuleType:
     spec = importlib.util.spec_from_file_location(full_name, file_path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[full_name] = module
-    setattr(_backend_pkg, name, module)
+    setattr(parent, attr, module)
     spec.loader.exec_module(module)
     return module
 
 
+def _load_backend_module(name: str) -> types.ModuleType:
+    """Load a codemap.backend.* module with proper package prefix."""
+    full_name = f"codemap.backend.{name}"
+    file_path = _BACKEND_DIR / f"{name}.py"
+    return _load_module_from_path(full_name, file_path, _backend_pkg, name)
+
+
 # Load all backend modules
-graph_module = _load_backend_module("graph")
+graph_models_module = _load_module_from_path(
+    "codemap.backend.graph.graph_models",
+    _BACKEND_DIR / "graph" / "graph_models.py",
+    _graph_pkg,
+    "graph_models",
+)
+graph_module = _load_module_from_path(
+    "codemap.backend.graph.graph",
+    _BACKEND_DIR / "graph" / "graph.py",
+    _graph_pkg,
+    "graph",
+)
 indexer_module = _load_backend_module("indexer")
 boundary_module = _load_backend_module("boundary_engine")
 init_db_module = _load_backend_module("init_db")
+file_lock_module = _load_module_from_path(
+    "codemap.backend.locks.file_lock",
+    _BACKEND_DIR / "locks" / "file_lock.py",
+    _locks_pkg,
+    "file_lock",
+)
 
 CodeGraph = graph_module.CodeGraph
 ImportEdge = graph_module.ImportEdge
@@ -295,11 +328,22 @@ class TestCodeGraphIsolated:
         assert "b.py" in forward_files
         assert "c.py" in forward_files
 
+    def test_impact_missing_file_returns_error(self):
+        graph = CodeGraph()
+        result = graph.impact("missing.py")
+        assert result["error"] == "File not found: missing.py"
+        assert result["path"] == "missing.py"
+
     def test_check_boundary_compliant(self):
         graph = CodeGraph()
         graph._ensure_file_node("modules/ok/backend/r.py", "module", "ok")
         result = graph.check_boundary(path="modules/ok/backend/r.py")
         assert result["compliant"] is True
+
+    def test_check_boundary_missing_target_returns_error(self):
+        graph = CodeGraph()
+        result = graph.check_boundary()
+        assert result["error"] == "Provide path or module_key"
 
     def test_check_boundary_violation(self):
         graph = CodeGraph()
@@ -365,6 +409,23 @@ class TestCodeGraphIsolated:
         result = graph.module_map("terminal-tools")
         assert len(result["exposed_capabilities"]) == 2
         assert "terminal-tools:exec" in result["exposed_capabilities"]
+
+    def test_module_map_missing_module_returns_error(self):
+        graph = CodeGraph()
+        result = graph.module_map("ghost")
+        assert result["error"] == "Module not found: ghost"
+
+    def test_reindex_now_reports_missing_callback(self):
+        graph = CodeGraph()
+        assert graph.reindex_now() is False
+        called = {"value": False}
+
+        def _mark_called() -> None:
+            called["value"] = True
+
+        graph.set_reindex_callback(_mark_called)
+        assert graph.reindex_now() is True
+        assert called["value"] is True
 
     def test_normalize_path_absolute(self):
         """Absolute path should normalize to project-relative."""
@@ -481,6 +542,50 @@ class TestCodeGraphIsolated:
         assert abs_result["module_key"] == rel_result["module_key"]
 
 
+class TestFileLockPersistence:
+    """Tests for file-backed locks shared across workers."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        data_dir = tmp_path / "codemap-data"
+        monkeypatch.setattr(file_lock_module, "DATA_DIR", data_dir)
+        monkeypatch.setattr(file_lock_module, "LOCK_FILE", data_dir / "locks.json")
+        monkeypatch.setattr(file_lock_module, "OS_LOCK_FILE", data_dir / "locks.json.lock")
+
+    def test_acquire_lock_persists_to_json(self):
+        result = file_lock_module.acquire_lock(
+            "modules/codemap/backend/router.py",
+            "agent-a",
+            ttl=60,
+        )
+        assert result["success"] is True
+        assert file_lock_module.LOCK_FILE.exists()
+
+        stored = file_lock_module._read_locks()
+        assert stored["modules/codemap/backend/router.py"]["agent_id"] == "agent-a"
+
+    def test_lock_conflict_and_release(self):
+        first = file_lock_module.acquire_lock("modules/codemap/README.md", "agent-a", ttl=60)
+        assert first["success"] is True
+
+        conflict = file_lock_module.acquire_lock("modules/codemap/README.md", "agent-b", ttl=60)
+        assert conflict["success"] is False
+        assert "Already locked" in conflict["error"]
+
+        released = file_lock_module.release_lock("modules/codemap/README.md")
+        assert released["success"] is True
+        state = file_lock_module.check_lock("modules/codemap/README.md")
+        assert state["locked"] is False
+
+    def test_rejects_invalid_lock_inputs(self):
+        assert file_lock_module.acquire_lock("", "agent-a")["success"] is False
+        assert file_lock_module.acquire_lock("modules/codemap/README.md", "")["success"] is False
+        assert file_lock_module.acquire_lock("modules/codemap/README.md", "agent-a", ttl=0)["success"] is False
+        outside = file_lock_module.acquire_lock("/tmp/outside-repo-file.py", "agent-a")
+        assert outside["success"] is False
+        assert outside["error"] == "path must be inside repository root"
+
+
 class TestIndexerFullBuild:
     """Tests that build a complete mini index from a temporary project."""
 
@@ -581,12 +686,19 @@ class TestIndexerFullBuild:
     def test_stats(self):
         stats = self.graph.stats()
         assert stats["ready"] is True
+        assert stats["index_scope"] == "process-local"
         assert stats["file_count"] > 0
         assert stats["build_time_seconds"] >= 0
 
-    def test_incremental_update(self):
-        old_count = len(self.graph._files)
+    def test_rebuild_does_not_duplicate_edges(self):
+        before = self.graph.stats()
+        self.indexer.build_full()
+        after = self.graph.stats()
 
+        for key in ("file_count", "symbol_count", "import_edges", "capability_edges", "db_table_edges"):
+            assert after[key] == before[key], f"{key} changed after rebuild: {before[key]} -> {after[key]}"
+
+    def test_incremental_update(self):
         new_file = self.tmp / "modules" / "agent" / "backend" / "utils.py"
         new_file.parent.mkdir(parents=True, exist_ok=True)
         new_file.write_text("""
@@ -709,7 +821,7 @@ class TestRealProjectIntegration:
         """≥95% of TS/Vue files with project-internal imports resolve edges."""
         try:
             import tree_sitter_typescript as tstypescript
-            from tree_sitter import Parser, Language
+            from tree_sitter import Language, Parser
         except ImportError:
             pytest.skip("tree-sitter-typescript not available")
 

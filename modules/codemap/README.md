@@ -51,10 +51,18 @@ curl -sS -X POST "http://127.0.0.1:$PORT/api/codemap/impact" \
 | 项 | 说明 |
 |---|---|
 | 数据目录 | `modules/codemap/data/`，已 gitignore |
-| 表 | `codemap_feedback` |
+| 文件锁 | `modules/codemap/data/locks.json` + `locks.json.lock`，temp+rename 原子写，OS 文件锁保护读改写 |
+| 表 | `codemap_feedback`、`codemap_metrics` |
 | 依赖 | `tree-sitter`、`watchdog` |
 | 热更新 | 后端启动后后台建索引，watchdog 500ms 防抖增量更新 |
 | 可信度 | `confidence` 是解析覆盖率，`empirical_accuracy` 是反馈后的实战命中率 |
+
+## 多 Worker 口径
+
+- 代码图索引是 worker 进程内内存状态，`stats.index_scope` 固定为 `process-local`。
+- 后端多 worker 启动时每个 worker 都会各自构建索引；`rebuild` 刷新当前处理请求的 worker，并在响应中标明 `rebuild_scope: current_worker`。
+- 跨 worker 必须共享的状态已经持久化：`codemap_metrics.query_count`、`codemap_feedback` 在数据库，文件锁在 `modules/codemap/data/locks.json`。
+- 验收时不要把单次 `rebuild` 理解为全 worker 广播；需要全 worker 同步刷新时重启后端，或连续请求直到各 worker 均完成本地热更新。
 
 ## 边界
 
@@ -64,6 +72,43 @@ curl -sS -X POST "http://127.0.0.1:$PORT/api/codemap/impact" \
 
 ## 验证
 
+模块级回归：
+
 ```bash
 cd backend && .venv/bin/python -m pytest ../modules/codemap/tests/ -v
+cd backend && .venv/bin/python -m pytest ../modules/codemap/sandbox/test_module.py -v
+cd backend && .venv/bin/ruff check ../modules/codemap/backend ../modules/codemap/tests ../modules/codemap/sandbox
+```
+
+主框架活栈验收（常驻后端 33000/实际端口来自 `backend/logs/.backend.port`）：
+
+```bash
+# 读接口必须返回 success:true，且 data 内含 confidence/stale/reliability 相关字段
+codemap:stats
+codemap:get_file {"path":"modules/codemap/backend/router.py"}
+codemap:impact {"path":"modules/codemap/backend/router.py"}
+codemap:check_boundary {"module_key":"codemap"}
+codemap:module_map {"module_key":"codemap"}
+codemap:search {"keyword":"CodemapFeedback"}
+
+# 假成功守卫：不存在文件、空边界参数、空搜索词必须 success:false
+codemap:impact {"path":"no/such/file.py"}
+codemap:check_boundary {}
+codemap:search {"keyword":""}
+
+# 锁持久化守卫：acquire 后 list/check 可见，release 后消失；测试锁必须清理
+codemap:acquire_lock {"path":"modules/codemap/README.md","agent_id":"codemap-readme-test","ttl":60}
+codemap:check_lock {"path":"modules/codemap/README.md"}
+codemap:list_locks {}
+codemap:release_lock {"path":"modules/codemap/README.md"}
+
+# 反馈链路守卫：report 后 list_feedback 可见；验收创建的反馈必须从 codemap_feedback 清理
+codemap:report_inaccuracy {
+  "path":"modules/codemap/README.md",
+  "query_type":"verification",
+  "codemap_said":"temporary verification row",
+  "actual":"temporary verification row",
+  "reason":"temporary verification row"
+}
+codemap:list_feedback {"path":"modules/codemap/README.md"}
 ```

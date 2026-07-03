@@ -1,6 +1,6 @@
 """FastAPI router for codemap module.
 
-Provides 11 HTTP endpoints and 11 cross-module capabilities:
+Provides HTTP endpoints and cross-module capabilities:
   codemap:get_file
   codemap:impact
   codemap:check_boundary
@@ -22,23 +22,22 @@ from __future__ import annotations
 import logging
 import threading
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
-from sqlalchemy import select, func, desc, text
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.database import get_db, AsyncSessionLocal
+from app.core.exceptions import NotFound
+from app.database import AsyncSessionLocal, get_db
 from app.middleware.auth import require_permission
 from app.schemas.common import ApiResponse
-from app.core.exceptions import NotFound
 from app.services.module_registry import register_capability
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy import desc, func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from .locks import file_lock
-from .graph.graph import get_graph
+from .graph.graph import get_graph, normalize_path
 from .indexer import get_indexer
-from .watcher import get_watcher
-from .models import CodemapFeedback
 from .init_db import ensure_codemap_tables
+from .locks import file_lock
+from .models import CodemapFeedback
+from .watcher import get_watcher
 
 logger = logging.getLogger("v2.codemap").getChild("router")
 
@@ -104,7 +103,6 @@ class CheckBoundaryRequest(BaseModel):
     module_key: str | None = None
 
 class ModuleMapRequest(BaseModel):
-    path: str
     module_key: str
 
 class SearchRequest(BaseModel):
@@ -161,6 +159,19 @@ async def _add_reliability_note(result: dict | None, path: str, db: AsyncSession
         result["reliability_note"] = note
     return result
 
+
+def _graph_error(result: dict | None) -> str | None:
+    if isinstance(result, dict) and result.get("error"):
+        return str(result["error"])
+    return None
+
+
+def _graph_api_response(result: dict | None) -> ApiResponse:
+    error = _graph_error(result)
+    if error:
+        return ApiResponse(success=False, data=result, error=error)
+    return ApiResponse(data=result)
+
 # ── Query count helpers (DB-persisted, cross-worker consistent) ───────────────
 
 _tables_ensured = False
@@ -196,25 +207,9 @@ async def _get_query_count(db: AsyncSession) -> int:
     row = result.scalar_one_or_none()
     return row if row is not None else 0
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# HTTP Endpoints
-# ═══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/health")
-async def health(_user=Depends(require_permission("viewer"))):
-    graph = get_graph()
-    return ApiResponse(data={
-        "module": "codemap",
-        "status": "ok",
-        "index_ready": graph.ready,
-        "file_count": len(graph._files),
-    })
-
-@router.get("/stats")
-async def http_stats(db: AsyncSession = Depends(get_db), _user=Depends(require_permission("viewer"))):
-    graph = get_graph()
-    stats = graph.stats()
-    # Enrich with DB feedback data and persisted query count
+async def _enrich_stats_with_db(stats: dict, db: AsyncSession) -> dict:
+    """Attach persisted metrics and feedback summary to graph stats."""
     qc = await _get_query_count(db)
     stats["query_count"] = qc
     result = await db.execute(select(func.count(CodemapFeedback.id)))
@@ -236,7 +231,27 @@ async def http_stats(db: AsyncSession = Depends(get_db), _user=Depends(require_p
             }
             for r in result.scalars().all()
         ]
-    return ApiResponse(data=stats)
+    return stats
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTTP Endpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/health")
+async def health(_user=Depends(require_permission("viewer"))):
+    graph = get_graph()
+    return ApiResponse(data={
+        "module": "codemap",
+        "status": "ok",
+        "index_ready": graph.ready,
+        "file_count": len(graph._files),
+    })
+
+@router.get("/stats")
+async def http_stats(db: AsyncSession = Depends(get_db), _user=Depends(require_permission("viewer"))):
+    graph = get_graph()
+    stats = graph.stats()
+    return ApiResponse(data=await _enrich_stats_with_db(stats, db))
 
 @router.post("/get-file")
 async def http_get_file(
@@ -249,10 +264,11 @@ async def http_get_file(
         return ApiResponse(**not_ready)
     graph = get_graph()
     await _increment_query_count(db)
-    result = graph.get_file(body.path)
+    path = normalize_path(body.path)
+    result = graph.get_file(path)
     if result is None:
-        raise NotFound(f"File not found: {body.path}")
-    result = await _add_reliability_note(result, body.path, db)
+        raise NotFound(f"File not found: {path}")
+    result = await _add_reliability_note(result, path, db)
     return ApiResponse(data=result)
 
 @router.post("/impact")
@@ -266,9 +282,12 @@ async def http_impact(
         return ApiResponse(**not_ready)
     graph = get_graph()
     await _increment_query_count(db)
-    result = graph.impact(body.path, body.symbol)
-    result = await _add_reliability_note(result, body.path, db)
-    return ApiResponse(data=result)
+    path = normalize_path(body.path)
+    result = graph.impact(path, body.symbol)
+    if _graph_error(result):
+        return _graph_api_response(result)
+    result = await _add_reliability_note(result, path, db)
+    return _graph_api_response(result)
 
 @router.post("/check-boundary")
 async def http_check_boundary(
@@ -280,7 +299,7 @@ async def http_check_boundary(
         return ApiResponse(**not_ready)
     graph = get_graph()
     result = graph.check_boundary(path=body.path, module_key=body.module_key)
-    return ApiResponse(data=result)
+    return _graph_api_response(result)
 
 @router.post("/module-map")
 async def http_module_map(
@@ -292,7 +311,7 @@ async def http_module_map(
         return ApiResponse(**not_ready)
     graph = get_graph()
     result = graph.module_map(body.module_key)
-    return ApiResponse(data=result)
+    return _graph_api_response(result)
 
 @router.post("/search")
 async def http_search(
@@ -303,16 +322,25 @@ async def http_search(
     if not_ready:
         return ApiResponse(**not_ready)
     graph = get_graph()
+    if not body.keyword.strip():
+        return ApiResponse(success=False, error="keyword is required", data={"keyword": body.keyword})
     result = graph.search(body.keyword)
     return ApiResponse(data=result)
 
 # ── Rebuild endpoint ─────────────────────────────────────────────────────────
 
 @router.post("/rebuild")
-async def http_rebuild(_user=Depends(require_permission("admin"))):
+async def http_rebuild(
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_permission("admin")),
+):
     graph = get_graph()
-    graph.reindex_now()
-    return ApiResponse(data=graph.stats())
+    if not graph.reindex_now():
+        return ApiResponse(success=False, error="rebuild callback is not registered", data=graph.stats())
+    stats = graph.stats()
+    stats["rebuild_triggered"] = True
+    stats["rebuild_scope"] = "current_worker"
+    return ApiResponse(data=await _enrich_stats_with_db(stats, db))
 
 
 # ── Cross-module capability handlers ───────────────────────────────────────
@@ -321,7 +349,7 @@ async def _cap_get_file(params: dict, caller: str) -> dict:
     graph = get_graph()
     if not graph.ready:
         return {"success": False, "error": "索引构建中"}
-    path = params.get("path", "")
+    path = normalize_path(params.get("path", ""))
     result = graph.get_file(path)
     if result is None:
         return {"success": False, "error": f"File not found: {path}"}
@@ -341,9 +369,12 @@ async def _cap_impact(params: dict, caller: str) -> dict:
     graph = get_graph()
     if not graph.ready:
         return {"success": False, "error": "索引构建中"}
-    path = params.get("path", "")
+    path = normalize_path(params.get("path", ""))
     symbol = params.get("symbol")
     result = graph.impact(path, symbol)
+    error = _graph_error(result)
+    if error:
+        return {"success": False, "error": error, "data": result}
     try:
         async with AsyncSessionLocal() as db:
             feedback_count, latest_reason = await _load_path_feedback(db, path)
@@ -360,27 +391,32 @@ async def _cap_check_boundary(params: dict, caller: str) -> dict:
     graph = get_graph()
     if not graph.ready:
         return {"success": False, "error": "索引构建中"}
-    return {
-        "success": True,
-        "data": graph.check_boundary(
-            path=params.get("path"),
-            module_key=params.get("module_key"),
-        ),
-    }
+    result = graph.check_boundary(path=params.get("path"), module_key=params.get("module_key"))
+    error = _graph_error(result)
+    if error:
+        return {"success": False, "error": error, "data": result}
+    return {"success": True, "data": result}
 
 
 async def _cap_module_map(params: dict, caller: str) -> dict:
     graph = get_graph()
     if not graph.ready:
         return {"success": False, "error": "索引构建中"}
-    return {"success": True, "data": graph.module_map(params.get("module_key", ""))}
+    result = graph.module_map(params.get("module_key", ""))
+    error = _graph_error(result)
+    if error:
+        return {"success": False, "error": error, "data": result}
+    return {"success": True, "data": result}
 
 
 async def _cap_search(params: dict, caller: str) -> dict:
     graph = get_graph()
     if not graph.ready:
         return {"success": False, "error": "索引构建中"}
-    return {"success": True, "data": graph.search(params.get("keyword", ""))}
+    keyword = str(params.get("keyword", ""))
+    if not keyword.strip():
+        return {"success": False, "error": "keyword is required"}
+    return {"success": True, "data": graph.search(keyword)}
 
 
 async def _cap_stats(params: dict, caller: str) -> dict:
@@ -388,12 +424,7 @@ async def _cap_stats(params: dict, caller: str) -> dict:
     stats = graph.stats()
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(func.count(CodemapFeedback.id)))
-            feedback_count = result.scalar() or 0
-            qc = await _get_query_count(db)
-            stats["query_count"] = qc
-            stats["feedback_count"] = feedback_count
-            stats["empirical_accuracy"] = max(0, 100 - int(feedback_count * 100 / max(qc, 1))) if qc > 0 else 100
+            stats = await _enrich_stats_with_db(stats, db)
     except Exception:
         pass
     return {"success": True, "data": stats}
@@ -401,8 +432,17 @@ async def _cap_stats(params: dict, caller: str) -> dict:
 
 async def _cap_rebuild(params: dict, caller: str) -> dict:
     graph = get_graph()
-    graph.reindex_now()
-    return {"success": True, "data": graph.stats()}
+    if not graph.reindex_now():
+        return {"success": False, "error": "rebuild callback is not registered", "data": graph.stats()}
+    stats = graph.stats()
+    stats["rebuild_triggered"] = True
+    stats["rebuild_scope"] = "current_worker"
+    try:
+        async with AsyncSessionLocal() as db:
+            stats = await _enrich_stats_with_db(stats, db)
+    except Exception:
+        pass
+    return {"success": True, "data": stats}
 
 
 async def _cap_acquire_lock(params: dict, caller: str) -> dict:
@@ -428,8 +468,9 @@ async def _cap_list_locks(params: dict, caller: str) -> dict:
 async def _cap_report_inaccuracy(params: dict, caller: str) -> dict:
     try:
         async with AsyncSessionLocal() as db:
+            await _ensure_tables_once(db)
             feedback = CodemapFeedback(
-                path=params.get("path", ""),
+                path=normalize_path(params.get("path", "")),
                 query_type=params.get("query_type", ""),
                 codemap_said=params.get("codemap_said", ""),
                 actual=params.get("actual", ""),
@@ -437,8 +478,10 @@ async def _cap_report_inaccuracy(params: dict, caller: str) -> dict:
                 agent_id=params.get("agent_id", caller),
             )
             db.add(feedback)
+            await db.flush()
+            feedback_id = feedback.id
             await db.commit()
-            return {"success": True, "data": {"id": feedback.id, "message": "反馈已记录"}}
+            return {"success": True, "data": {"id": feedback_id, "message": "反馈已记录"}}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
@@ -449,7 +492,9 @@ async def _cap_list_feedback(params: dict, caller: str) -> dict:
         page = params.get("page", 1)
         page_size = params.get("page_size", 50)
         async with AsyncSessionLocal() as db:
+            await _ensure_tables_once(db)
             if path:
+                path = normalize_path(path)
                 result = await db.execute(
                     select(CodemapFeedback)
                     .where(CodemapFeedback.path == path)
