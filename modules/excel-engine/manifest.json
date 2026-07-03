@@ -60,73 +60,273 @@
     {
       "action": "create_workbook",
       "description": "Create a new empty workbook in the database",
-      "parameters": {"name": "Workbook name"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Workbook name",
+            "default": "Untitled"
+          },
+          "state_key": {
+            "type": "string",
+            "description": "Optional state_key (auto-generated if omitted)"
+          }
+        }
+      },
       "min_role": "editor"
     },
     {
       "action": "import_file_to_workbook",
       "description": "Import a file into a database workbook for editing",
-      "parameters": {"file_id": "File ID to import"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "integer",
+            "description": "File ID to import"
+          },
+          "state_key": {
+            "type": "string",
+            "description": "Optional state_key"
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      },
       "min_role": "editor"
     },
     {
       "action": "update_range",
       "description": "Update a range of cells",
-      "parameters": {"state_key": "Workbook key", "rows": "2D array of values"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Sheet name",
+            "default": "Sheet1"
+          },
+          "start_row": {
+            "type": "integer",
+            "description": "Starting row (0-based)",
+            "default": 0
+          },
+          "start_col": {
+            "type": "integer",
+            "description": "Starting column (0-based)",
+            "default": 0
+          },
+          "rows": {
+            "type": "array",
+            "description": "2D array of cell values"
+          }
+        },
+        "required": [
+          "state_key",
+          "rows"
+        ]
+      },
       "min_role": "editor"
     },
     {
       "action": "append_rows",
       "description": "Append rows to the end of a sheet",
-      "parameters": {"state_key": "Workbook key", "rows": "2D array of values"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Sheet name",
+            "default": "Sheet1"
+          },
+          "rows": {
+            "type": "array",
+            "description": "2D array of cell values to append"
+          }
+        },
+        "required": [
+          "state_key",
+          "rows"
+        ]
+      },
       "min_role": "editor"
     },
     {
       "action": "undo",
       "description": "Undo the last operation",
-      "parameters": {"state_key": "Workbook key"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          }
+        },
+        "required": [
+          "state_key"
+        ]
+      },
       "min_role": "editor"
     },
     {
       "action": "redo",
       "description": "Redo the last undone operation",
-      "parameters": {"state_key": "Workbook key"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          }
+        },
+        "required": [
+          "state_key"
+        ]
+      },
       "min_role": "editor"
     },
     {
       "action": "list_history",
       "description": "List operation history for a workbook",
-      "parameters": {"state_key": "Workbook key"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          }
+        },
+        "required": [
+          "state_key"
+        ]
+      },
       "min_role": "viewer"
     },
     {
       "action": "list_versions",
       "description": "List saved versions of a workbook",
-      "parameters": {"state_key": "Workbook key"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          }
+        },
+        "required": [
+          "state_key"
+        ]
+      },
       "min_role": "viewer"
     },
     {
       "action": "restore_version",
       "description": "Restore a workbook to a saved version",
-      "parameters": {"state_key": "Workbook key", "version_id": "Version ID"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          },
+          "version_id": {
+            "type": "integer",
+            "description": "Version ID to restore"
+          }
+        },
+        "required": [
+          "state_key",
+          "version_id"
+        ]
+      },
       "min_role": "editor"
     },
     {
       "action": "export_xlsx",
       "description": "Export workbook to XLSX file",
-      "parameters": {"state_key": "Workbook key"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Sheet name",
+            "default": "Sheet1"
+          },
+          "folder_id": {
+            "type": "integer",
+            "description": "Target folder ID (optional)"
+          }
+        },
+        "required": [
+          "state_key"
+        ]
+      },
       "min_role": "editor"
     },
     {
       "action": "compile_xlsx",
       "description": "Compile workbook to temporary XLSX for download without creating a file record",
-      "parameters": {"state_key": "Workbook key"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Sheet name",
+            "default": "Sheet1"
+          }
+        },
+        "required": [
+          "state_key"
+        ]
+      },
       "min_role": "viewer"
     },
     {
       "action": "publish_to_desktop",
       "description": "Publish workbook to desktop",
-      "parameters": {"state_key": "Workbook key"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "state_key": {
+            "type": "string",
+            "description": "Workbook state_key"
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Sheet name",
+            "default": "Sheet1"
+          },
+          "target_file_id": {
+            "type": "integer",
+            "description": "Target desktop file ID (optional, creates new if omitted)"
+          },
+          "folder_id": {
+            "type": "integer",
+            "description": "Target folder ID (optional)"
+          }
+        },
+        "required": [
+          "state_key"
+        ]
+      },
       "min_role": "editor"
     }
   ]
