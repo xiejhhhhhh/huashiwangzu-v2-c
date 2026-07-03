@@ -9,6 +9,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ for path in (REPO_ROOT, BACKEND_ROOT):
         sys.path.insert(0, path_text)
 
 from app.core.exceptions import ConflictError, ValidationError  # noqa: E402
+from app.services import module_registry  # noqa: E402
 
 from modules.scheduler.backend import router as scheduler_router  # noqa: E402
 
@@ -83,6 +85,40 @@ class FakeAsyncSession:
 
     async def refresh(self, task: object) -> None:
         setattr(task, "id", 123)
+
+
+class FakeCapabilityCaller:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any], str | None, str | None]] = []
+
+    async def __call__(
+        self,
+        module: str,
+        action: str,
+        params: dict[str, Any],
+        *,
+        caller: str | None = None,
+        caller_role: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append((module, action, params, caller, caller_role))
+        if module == "agent" and action == "spawn_subagent":
+            return {
+                "success": True,
+                "data": {"results": [{"conclusion": "scheduled action done"}]},
+            }
+        if module == "im" and action == "notify":
+            return {"success": True, "data": {"notified": True}}
+        return {"success": False, "error": f"unexpected capability {module}:{action}"}
+
+
+@contextmanager
+def _patch_call_capability(fake: FakeCapabilityCaller):
+    original = module_registry.call_capability
+    module_registry.call_capability = fake
+    try:
+        yield
+    finally:
+        module_registry.call_capability = original
 
 
 def _future_iso(minutes: int = 10) -> str:
@@ -304,6 +340,67 @@ def test_task_to_dict_uses_stored_parameters() -> None:
     print("  [TASK] Production task serialization valid")
 
 
+def test_scheduled_job_handler_rejects_legacy_empty_payload() -> None:
+    async def run() -> None:
+        fake = FakeCapabilityCaller()
+        with _patch_call_capability(fake):
+            result = await scheduler_router._cap_scheduled_job_handler({
+                "title": "   ",
+                "action_description": "",
+                "creator_id": 7,
+            })
+
+        assert result["success"] is False
+        assert result["status"] == "failed"
+        assert result["executed"] is False
+        assert result["error"]
+        assert fake.calls == []
+
+    asyncio.run(run())
+    print("  [HANDLER] Legacy empty payload fails closed")
+
+
+def test_scheduled_job_handler_rejects_missing_creator_id() -> None:
+    async def run() -> None:
+        fake = FakeCapabilityCaller()
+        with _patch_call_capability(fake):
+            result = await scheduler_router._cap_scheduled_job_handler({
+                "title": "Daily check",
+                "action_description": "Summarize current queue state",
+            })
+
+        assert result["success"] is False
+        assert result["status"] == "failed"
+        assert result["executed"] is False
+        assert result["error"] == "Missing creator_id"
+        assert fake.calls == []
+
+    asyncio.run(run())
+    print("  [HANDLER] Missing creator_id fails closed")
+
+
+def test_scheduled_job_handler_accepts_minimal_payload() -> None:
+    async def run() -> None:
+        fake = FakeCapabilityCaller()
+        with _patch_call_capability(fake):
+            result = await scheduler_router._cap_scheduled_job_handler({
+                "title": "Daily check",
+                "action_description": "Summarize current queue state",
+                "creator_id": 7,
+            })
+
+        assert result["success"] is True
+        assert result["executed"] is True
+        assert "scheduled action done" in result["result"]
+        assert [call[0:2] for call in fake.calls] == [
+            ("agent", "spawn_subagent"),
+            ("im", "notify"),
+        ]
+
+    asyncio.run(run())
+    print("  [HANDLER] Minimal scheduled payload executes")
+
+
 def test_cancel_output_shape() -> None:
     result = {
         "success": True,
@@ -373,6 +470,9 @@ def main() -> None:
     test_cancel_params_rejects_zero_id()
     test_task_output_shape()
     test_task_to_dict_uses_stored_parameters()
+    test_scheduled_job_handler_rejects_legacy_empty_payload()
+    test_scheduled_job_handler_rejects_missing_creator_id()
+    test_scheduled_job_handler_accepts_minimal_payload()
     test_cancel_output_shape()
     test_list_output_shape()
     test_response_shape()

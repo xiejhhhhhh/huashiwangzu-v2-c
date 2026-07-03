@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from app.database import AsyncSessionLocal
 from app.models.system import SystemTaskQueue
+from app.routers.tasks import worker_status
 from app.services import task_queue_audit_service as audit
 from app.services.task_debt_governance_service import govern_task_queue_debt
 from app.services.task_queue_audit_service import reconcile_orphan_running, reconcile_stale_pending
@@ -119,6 +120,43 @@ async def _create_file_and_document(
 
 
 @pytest.mark.asyncio
+async def test_audit_historical_debt_total_is_not_sample_limited() -> None:
+    marker = uuid4().hex
+    await _cleanup(marker)
+    try:
+        now = datetime.now(timezone.utc)
+        async with AsyncSessionLocal() as db:
+            baseline = await audit.audit_task_queue(db)
+
+        baseline_total = baseline["historical_debt_total"]
+        async with AsyncSessionLocal() as db:
+            for index in range(501):
+                db.add(
+                    SystemTaskQueue(
+                        task_type=f"test_audit_{marker}_{index}",
+                        parameters=json.dumps({"marker": marker, "index": index}),
+                        status="failed",
+                        priority=0,
+                        module="test",
+                        retry_count=0,
+                        max_retries=3,
+                        created_at=now - timedelta(hours=3),
+                        completed_at=now - timedelta(hours=2),
+                        error_message="historical debt sample-limit regression",
+                    )
+                )
+            await db.commit()
+
+        async with AsyncSessionLocal() as db:
+            audit_result = await audit.audit_task_queue(db)
+
+        assert audit_result["historical_debt_total"] >= baseline_total + 501
+        assert audit_result["classification"]["historical_failed_debt_count"] >= baseline_total + 501
+    finally:
+        await _cleanup(marker)
+
+
+@pytest.mark.asyncio
 async def test_audit_classifies_recent_vs_historical_failed() -> None:
     marker = uuid4().hex
     await _cleanup(marker)
@@ -143,6 +181,35 @@ async def test_audit_classifies_recent_vs_historical_failed() -> None:
         assert audit_result["historical_debt_total"] >= 1, "old failure should be historical debt"
         assert audit_result["classification"]["historical_failed_debt_count"] >= 1
         assert audit_result["classification"]["recent_failed_count"] >= 1
+    finally:
+        await _cleanup(marker)
+
+
+@pytest.mark.asyncio
+async def test_worker_status_oldest_waiting_seconds_ignores_future_scheduled_pending() -> None:
+    marker = uuid4().hex
+    await _cleanup(marker)
+    try:
+        now = datetime.now(timezone.utc)
+        await _create_task(
+            f"test_audit_{marker}_future",
+            "pending",
+            created_at=now - timedelta(days=365 * 50),
+            scheduled_at=now + timedelta(days=1),
+        )
+        await _create_task(
+            f"test_audit_{marker}_due",
+            "pending",
+            created_at=now - timedelta(seconds=5),
+            scheduled_at=now - timedelta(seconds=1),
+        )
+
+        async with AsyncSessionLocal() as db:
+            response = await worker_status(db=db, user=None)
+
+        assert response.data is not None
+        assert response.data.oldest_waiting_seconds is not None
+        assert response.data.oldest_waiting_seconds < 365 * 24 * 60 * 60
     finally:
         await _cleanup(marker)
 

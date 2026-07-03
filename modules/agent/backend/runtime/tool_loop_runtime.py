@@ -46,6 +46,7 @@ from .runtime_policy import RuntimePolicy
 from .stream_emitter import StreamEmitter
 from .stream_proxy import StreamProxy, StreamSegment
 from .task_sink import RuntimeTaskSink
+from .tool_failure_normalizer import effective_tool_name, normalize_tool_result_for_model
 
 logger = logging.getLogger("v2.agent").getChild("runtime.tool_loop")
 
@@ -699,6 +700,10 @@ class ToolLoopRuntime:
                         }
                         for t in fast_tools
                     ]
+                    effective_tool_names = {
+                        t["tool_call_id"]: effective_tool_name(t)
+                        for t in fast_tools
+                    }
                     _tool_batch_t0 = time.monotonic()
                     orchestrated_results = await orchestrator.execute_batch(
                         orchestrator_tools, _tool_execute_fn,
@@ -714,6 +719,14 @@ class ToolLoopRuntime:
                             if "result" in outcome
                             else {"error": outcome.get("error", "unknown")}
                         )
+                        resolved_tool_name = effective_tool_names.get(
+                            outcome.get("tool_call_id", ""),
+                            outcome.get("name", ""),
+                        )
+                        result_data, failure_signal = normalize_tool_result_for_model(
+                            result_data,
+                            resolved_tool_name,
+                        )
                         if isinstance(result_data, dict) and result_data.get("policy_action") == "confirm":
                             result_data["approval_required"] = True
                         result_event = {
@@ -724,6 +737,14 @@ class ToolLoopRuntime:
                             "started_at": time.time(),
                             "duration_ms": round((time.time() - _tool_call_times.get(outcome.get("tool_call_id", ""), time.time())) * 1000),
                         }
+                        if failure_signal:
+                            result_event.update({
+                                "status": "failed",
+                                "error_class": failure_signal["error_class"],
+                                "failure_kind": failure_signal["kind"],
+                                "hard_failure": failure_signal["hard"],
+                                "effective_tool_name": failure_signal["tool_name"],
+                            })
                         tool_events.append(result_event)
                         timeline.append(result_event)
                         yield self._j_sse(result_event)
@@ -745,6 +766,11 @@ class ToolLoopRuntime:
                             },
                             "llm_response_id": None,
                         })
+                        if failure_signal:
+                            pending_events[-1]["payload"]["status"] = "failed"
+                            pending_events[-1]["payload"]["error_class"] = failure_signal["error_class"]
+                            pending_events[-1]["payload"]["failure_kind"] = failure_signal["kind"]
+                            pending_events[-1]["payload"]["hard_failure"] = failure_signal["hard"]
 
                     # ── Auto-create assets for tool outputs ─────────
                     try:
