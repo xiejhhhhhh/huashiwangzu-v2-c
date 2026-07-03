@@ -14,7 +14,13 @@ logger = logging.getLogger("v2.agent").getChild("bootstrap")
 
 def register_agent_tasks() -> None:
     """Register all background task handlers."""
-    from .handlers.tasks import _handle_memory_distill, _handle_memory_dream, _handle_slow_tool, _handle_workflow_mine
+    from .handlers.tasks import (
+        _handle_context_compact,
+        _handle_memory_distill,
+        _handle_memory_dream,
+        _handle_slow_tool,
+        _handle_workflow_mine,
+    )
     from .services.profile_evolve import handle_profile_evolve
 
     register_task_handler("profile_evolve", handle_profile_evolve)
@@ -22,7 +28,11 @@ def register_agent_tasks() -> None:
     register_task_handler("memory_distill", _handle_memory_distill)
     register_task_handler("agent_execute_slow_tool", _handle_slow_tool)
     register_task_handler("workflow_mine", _handle_workflow_mine)
-    logger.info("Agent task handlers registered (profile_evolve, memory_dream, memory_distill, agent_execute_slow_tool, workflow_mine)")
+    register_task_handler("agent_context_compact", _handle_context_compact)
+    logger.info(
+        "Agent task handlers registered (profile_evolve, memory_dream, memory_distill, "
+        "agent_execute_slow_tool, workflow_mine, agent_context_compact)"
+    )
 
 
 def register_agent_capabilities() -> None:
