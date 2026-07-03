@@ -43,8 +43,14 @@ TOOL_NAMES = {
 @dataclass(frozen=True)
 class CoreToolContext:
     brief: Callable[[], Awaitable[str]]
-    probe: Callable[[str, str, str | None, str], Awaitable[str]]
-    call_capability: Callable[[str, str, str, str], Awaitable[str]]
+    probe: Callable[
+        [str, str, str | None, str, int | None, int | None, str | None, str | None],
+        Awaitable[str],
+    ]
+    call_capability: Callable[
+        [str, str, str, str, int | None, int | None, str | None, str | None],
+        Awaitable[str],
+    ]
     tail_log: Callable[[str, int], Awaitable[str]]
     clear_log: Callable[[str, bool, bool], dict[str, Any]]
     sql: Callable[[str], Awaitable[str]]
@@ -58,7 +64,7 @@ class CoreToolContext:
     capabilities: Callable[[str], Awaitable[str]]
     db_schema: Callable[[str], Awaitable[str]]
     plan_task: Callable[[str, str, str], Awaitable[str]]
-    finish_task: Callable[[str, str, str, str, str, str, str, str], Awaitable[str]]
+    finish_task: Callable[[str, str, str, str, str, str, str, str, str, str], Awaitable[str]]
     knowledge_noise_report: Callable[[], dict[str, Any]]
     knowledge_cleanup_noise: Callable[[], dict[str, Any]]
     workspace_audit: Callable[[], Awaitable[dict[str, Any]]]
@@ -87,6 +93,16 @@ def tool_definitions() -> list[Any]:
                     "path": {"type": "string", "description": "API path, 如 /api/health, /api/agent/conversations"},
                     "body": {"type": "string", "description": "JSON body string (可选)"},
                     "role": {"type": "string", "description": "角色: admin/editor/viewer", "default": "admin"},
+                    "selector": {
+                        "type": "string",
+                        "description": "可选 dotted path，仅返回响应中的子树，如 data.data.summary",
+                    },
+                    "json_path": {
+                        "type": "string",
+                        "description": "selector 的别名，当前支持 dotted path",
+                    },
+                    "max_items": {"type": "number", "description": "可选，列表最多保留多少项"},
+                    "max_bytes": {"type": "number", "description": "可选，最终 JSON 输出字节上限"},
                 },
                 "required": ["method", "path"],
             },
@@ -101,6 +117,16 @@ def tool_definitions() -> list[Any]:
                     "action": {"type": "string", "description": "能力名, 如 list_templates, search"},
                     "params": {"type": "string", "description": "JSON 参数", "default": "{}"},
                     "role": {"type": "string", "description": "角色: admin/editor/viewer", "default": "admin"},
+                    "selector": {
+                        "type": "string",
+                        "description": "可选 dotted path，仅返回响应中的子树，如 data.data.problem_queue",
+                    },
+                    "json_path": {
+                        "type": "string",
+                        "description": "selector 的别名，当前支持 dotted path",
+                    },
+                    "max_items": {"type": "number", "description": "可选，列表最多保留多少项"},
+                    "max_bytes": {"type": "number", "description": "可选，最终 JSON 输出字节上限"},
                 },
                 "required": ["module", "action"],
             },
@@ -247,6 +273,16 @@ def tool_definitions() -> list[Any]:
                         "description": "额外允许路径前缀，逗号或换行分隔；传入后覆盖 module_key 默认边界",
                         "default": "",
                     },
+                    "baseline_paths": {
+                        "type": "string",
+                        "description": "开工基线 dirty 路径，支持逗号/换行或 JSON list；这些既有变更不判本轮失败",
+                        "default": "",
+                    },
+                    "baseline_status_json": {
+                        "type": "string",
+                        "description": "开工时 worktree_guard/git status JSON；会从 changed_files/entries 等字段提取基线路径",
+                        "default": "",
+                    },
                     "verification_summary": {"type": "string", "description": "验证结果摘要", "default": ""},
                     "risk_note": {"type": "string", "description": "残留风险评估", "default": ""},
                 },
@@ -302,6 +338,12 @@ def handles_tool(name: str) -> bool:
     return name in TOOL_NAMES
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
 async def handle_tool(context: CoreToolContext, name: str, arguments: dict[str, Any]) -> str:
     if name == "brief":
         return await context.brief()
@@ -311,6 +353,10 @@ async def handle_tool(context: CoreToolContext, name: str, arguments: dict[str, 
             arguments["path"],
             arguments.get("body"),
             arguments.get("role", "admin"),
+            _optional_int(arguments.get("max_bytes")),
+            _optional_int(arguments.get("max_items")),
+            arguments.get("selector"),
+            arguments.get("json_path"),
         )
     if name == "call_capability":
         return await context.call_capability(
@@ -318,6 +364,10 @@ async def handle_tool(context: CoreToolContext, name: str, arguments: dict[str, 
             arguments["action"],
             arguments.get("params", "{}"),
             arguments.get("role", "admin"),
+            _optional_int(arguments.get("max_bytes")),
+            _optional_int(arguments.get("max_items")),
+            arguments.get("selector"),
+            arguments.get("json_path"),
         )
     if name == "tail_log":
         return await context.tail_log(arguments.get("module", "backend"), int(arguments.get("lines", 50)))
@@ -365,6 +415,8 @@ async def handle_tool(context: CoreToolContext, name: str, arguments: dict[str, 
             arguments.get("test_targets", ""),
             arguments.get("module_key", ""),
             arguments.get("allowed_prefixes", ""),
+            arguments.get("baseline_paths", ""),
+            arguments.get("baseline_status_json", ""),
             arguments.get("verification_summary", ""),
             arguments.get("risk_note", ""),
         )

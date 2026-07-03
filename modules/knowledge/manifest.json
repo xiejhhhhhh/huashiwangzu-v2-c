@@ -133,6 +133,25 @@
       "min_role": "admin"
     },
     {
+      "action": "reconcile_orphan_pipeline_runs",
+      "description": "dry-run 或 guarded apply 收口无 task_id 的 orphan running 诊断运行",
+      "parameters": {
+        "limit": {
+          "type": "integer",
+          "description": "最多检查的 orphan run 数（默认500）"
+        },
+        "run_ids": {
+          "type": "array",
+          "description": "可选，限定 run id 列表"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
       "action": "get_evidence_detail",
       "description": "获取证据详情",
       "parameters": {

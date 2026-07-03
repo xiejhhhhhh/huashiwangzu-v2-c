@@ -13,7 +13,10 @@ BACKEND_ROOT = REPO_ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from modules.knowledge.backend.services.document_service import document_registration_payload
+from modules.knowledge.backend.services.document_service import (
+    document_pipeline_complete,
+    document_registration_payload,
+)
 from modules.knowledge.backend.services.ingest_status_service import build_ingest_status_payload
 
 
@@ -128,6 +131,49 @@ def test_ingest_status_done_is_search_and_deep_ready() -> None:
     assert payload["next_action"] == "ready"
 
 
+def test_document_source_missing_marker_blocks_historical_done_readiness() -> None:
+    doc = _doc(
+        parse_status="done",
+        parse_error="source_file_missing",
+        vector_status="done",
+        raw_status="done",
+        fusion_status="done",
+        total_chunks=8,
+    )
+
+    payload = build_ingest_status_payload(
+        doc,
+        _task(status="completed", result='{"status":"done"}'),
+        profile_count=1,
+        graph_entity_count=2,
+        relation_count=3,
+    )
+    registration = document_registration_payload(
+        doc,
+        {"task_id": None, "enqueued": False, "reason": "not_enqueued"},
+    )
+
+    assert document_pipeline_complete(doc) is False
+    assert payload["pipeline_status"] == "source_unavailable"
+    assert payload["source_available"] is False
+    assert payload["source_state"] == "source_file_missing"
+    assert payload["last_error"] == "source_file_missing"
+    assert payload["search_ready"] is False
+    assert payload["deep_ready"] is False
+    assert payload["stage_summary"]["parse"]["ready"] is False
+    assert payload["stage_summary"]["vector"]["ready"] is False
+    assert payload["stage_summary"]["raw"]["ready"] is False
+    assert payload["stage_summary"]["fusion"]["ready"] is False
+    assert payload["stage_summary"]["profile"]["ready"] is False
+    assert payload["stage_summary"]["graph"]["ready"] is False
+    assert payload["stage_summary"]["relation"]["ready"] is False
+    assert registration["status"] == "source_unavailable"
+    assert registration["pipeline_status"] == "source_unavailable"
+    assert registration["stage"] == "source"
+    assert registration["search_ready"] is False
+    assert registration["deep_ready"] is False
+
+
 def test_ingest_status_graph_ready_can_use_candidate_or_node_counts() -> None:
     payload = build_ingest_status_payload(
         _doc(
@@ -223,6 +269,25 @@ def test_ingest_status_source_unavailable_is_not_search_ready() -> None:
     assert payload["stage"] == "source"
     assert payload["source_available"] is False
     assert payload["source_state"] == "source_file_deleted"
+    assert payload["last_error"] == "source_file_deleted"
     assert payload["search_ready"] is False
     assert payload["deep_ready"] is False
+    assert payload["stage_summary"]["parse"]["ready"] is False
+    assert payload["stage_summary"]["vector"]["ready"] is False
+    assert payload["stage_summary"]["raw"]["ready"] is False
+    assert payload["stage_summary"]["fusion"]["ready"] is False
     assert payload["next_action"] == "restore_source_or_archive_document"
+
+
+def test_document_pipeline_complete_accepts_live_source_guard() -> None:
+    doc = _doc(
+        parse_status="done",
+        vector_status="done",
+        raw_status="done",
+        fusion_status="done",
+        total_chunks=8,
+    )
+
+    assert document_pipeline_complete(doc) is True
+    assert document_pipeline_complete(doc, source_available=True) is True
+    assert document_pipeline_complete(doc, source_available=False) is False

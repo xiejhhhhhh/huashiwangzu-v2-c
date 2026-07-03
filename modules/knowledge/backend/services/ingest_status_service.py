@@ -24,6 +24,7 @@ from ..models import (
     KbGovernanceCandidate,
     KbGraphNode,
 )
+from .document_service import document_source_unavailable_reason
 
 ACTIVE_TASK_STATUSES = {"pending", "running"}
 FAILED_STAGE_STATUSES = {"failed", "error"}
@@ -143,9 +144,20 @@ def build_ingest_status_payload(
     fusion_status = getattr(doc, "fusion_status", "pending") or "pending"
     task_status = task.status if task is not None else None
     task_result = _json_or_none(task.result if task is not None else None) or {}
-    parse_ready = parse_status == "done" or (
-        parse_status == "degraded"
-        and PARSER_NO_CONTENT_MARKER.lower() in (doc.parse_error or "").lower()
+    stored_source_reason = document_source_unavailable_reason(doc)
+    if stored_source_reason:
+        source_available = False
+        source_state = stored_source_reason
+    elif not source_available and not source_state:
+        source_state = "source_unavailable"
+    elif source_available:
+        source_state = "available"
+
+    parse_ready = source_available and (
+        parse_status == "done" or (
+            parse_status == "degraded"
+            and PARSER_NO_CONTENT_MARKER.lower() in (doc.parse_error or "").lower()
+        )
     )
 
     search_ready = (
@@ -155,14 +167,17 @@ def build_ingest_status_payload(
         and (doc.total_chunks or 0) > 0
     )
     deep_ready = source_available and raw_status == "done" and fusion_status == "done"
+    profile_ready = source_available and profile_count > 0
+    graph_ready = source_available and graph_entity_count > 0
+    relation_ready = source_available and relation_count > 0
     stage_summary = {
         "parse": _stage(parse_status, ready=parse_ready),
         "vector": _stage(vector_status, ready=search_ready, count=doc.total_chunks or 0),
-        "raw": _stage(raw_status, ready=raw_status == "done"),
-        "fusion": _stage(fusion_status, ready=fusion_status == "done"),
-        "profile": _stage("done" if profile_count > 0 else "pending", count=profile_count),
-        "graph": _stage("done" if graph_entity_count > 0 else "pending", count=graph_entity_count),
-        "relation": _stage("done" if relation_count > 0 else "pending", count=relation_count),
+        "raw": _stage(raw_status, ready=source_available and raw_status == "done"),
+        "fusion": _stage(fusion_status, ready=source_available and fusion_status == "done"),
+        "profile": _stage("done" if profile_count > 0 else "pending", ready=profile_ready, count=profile_count),
+        "graph": _stage("done" if graph_entity_count > 0 else "pending", ready=graph_ready, count=graph_entity_count),
+        "relation": _stage("done" if relation_count > 0 else "pending", ready=relation_ready, count=relation_count),
     }
     stage_summary["graph"]["node_count"] = graph_node_count
     stage_summary["graph"]["chunk_entity_count"] = chunk_entity_count
@@ -172,9 +187,12 @@ def build_ingest_status_payload(
         (key for key in stage_order if not stage_summary[key]["ready"]),
         "complete",
     )
-    last_error = (
-        task.error_message if task is not None and task.error_message else None
-    ) or doc.parse_error or task_result.get("error")
+    if not source_available:
+        last_error = source_state
+    else:
+        last_error = (
+            task.error_message if task is not None and task.error_message else None
+        ) or doc.parse_error or task_result.get("error")
 
     if not source_available:
         pipeline_status = "source_unavailable"

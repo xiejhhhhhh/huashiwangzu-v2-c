@@ -66,6 +66,7 @@ try:
     from dev_toolkit.opencode_tools import tool_definitions as opencode_tool_definitions
     from dev_toolkit.quick_fix import QuickFixError
     from dev_toolkit.release_response import build_release_gate_response as build_release_gate_payload
+    from dev_toolkit.response_shaping import ResponseShapeOptions, dumps_response
     from dev_toolkit.sql_guard import check_sql_readonly, readonly_psql_env
     from dev_toolkit.tool_usage_tools import handle_tool as tool_usage_handle_tool
     from dev_toolkit.tool_usage_tools import handles_tool as tool_usage_handles_tool
@@ -120,6 +121,7 @@ except ModuleNotFoundError:
     from opencode_tools import tool_definitions as opencode_tool_definitions
     from quick_fix import QuickFixError
     from release_response import build_release_gate_response as build_release_gate_payload
+    from response_shaping import ResponseShapeOptions, dumps_response
     from sql_guard import check_sql_readonly, readonly_psql_env
     from tool_usage_tools import handle_tool as tool_usage_handle_tool
     from tool_usage_tools import handles_tool as tool_usage_handles_tool
@@ -1115,6 +1117,8 @@ async def _finish_task(
     test_targets: str = "",
     module_key: str = "",
     allowed_prefixes: str = "",
+    baseline_paths: str = "",
+    baseline_status_json: str = "",
     verification_summary: str = "",
     risk_note: str = "",
 ) -> str:
@@ -1170,6 +1174,8 @@ async def _finish_task(
             REPO_ROOT,
             module_key=module_key,
             allowed_prefixes=allowed_prefixes,
+            baseline_paths=baseline_paths,
+            baseline_status_json=baseline_status_json,
         ))
     except json.JSONDecodeError as exc:
         report["boundary_check"] = {"success": False, "error": str(exc)}
@@ -1463,7 +1469,16 @@ async def _brief() -> str:
 
 # ──────────────────── 工具 3: probe ──────────────────────────────────
 
-async def _probe(method: str, path: str, body: str | None = None, role: str = "admin") -> str:
+async def _probe(
+    method: str,
+    path: str,
+    body: str | None = None,
+    role: str = "admin",
+    max_bytes: int | None = None,
+    max_items: int | None = None,
+    selector: str | None = None,
+    json_path: str | None = None,
+) -> str:
     """打后端任意接口, 自动登录."""
     token = await _ensure_live_token(role)
     headers = {"Authorization": f"Bearer {token}"}
@@ -1481,11 +1496,25 @@ async def _probe(method: str, path: str, body: str | None = None, role: str = "a
         except Exception:
             data = resp.text
         result = {"status_code": resp.status_code, "data": data}
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        options = ResponseShapeOptions(
+            selector=selector or json_path,
+            max_items=max_items,
+            max_bytes=max_bytes,
+        )
+        return dumps_response(result, options)
 
 # ──────────────────── 工具 3: call_capability ────────────────────────
 
-async def _call_capability(module: str, action: str, params: str = "{}", role: str = "admin") -> str:
+async def _call_capability(
+    module: str,
+    action: str,
+    params: str = "{}",
+    role: str = "admin",
+    max_bytes: int | None = None,
+    max_items: int | None = None,
+    selector: str | None = None,
+    json_path: str | None = None,
+) -> str:
     """调模块能力(跨模块调用入口)."""
     token = await _ensure_live_token(role)
     body = {
@@ -1514,7 +1543,12 @@ async def _call_capability(module: str, action: str, params: str = "{}", role: s
         "data": data,
         "target": {"module": module, "action": action, "role": role},
     }
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    options = ResponseShapeOptions(
+        selector=selector or json_path,
+        max_items=max_items,
+        max_bytes=max_bytes,
+    )
+    return dumps_response(result, options)
 
 # ──────────────────── 工具 4: tail_log ───────────────────────────────
 

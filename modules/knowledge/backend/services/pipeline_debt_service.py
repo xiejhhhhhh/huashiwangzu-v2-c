@@ -23,7 +23,6 @@ DOCUMENT_ALREADY_PARSING_MARKER = "Document is already parsing"
 DOCUMENT_IR_ATTR_MARKER = "'DocumentIr' object has no attribute 'get'"
 LIFECYCLE_ARCHIVE_CATEGORIES = {
     "doc_missing",
-    "doc_deleted",
     "source_file_missing",
     "source_file_deleted",
 }
@@ -142,12 +141,14 @@ async def _load_candidate_tasks(
     ]
     if task_ids:
         filters.append(SystemTaskQueue.id.in_(task_ids))
-    result = await db.execute(
+    query = (
         select(SystemTaskQueue)
         .where(*filters)
         .order_by(SystemTaskQueue.id.desc())
-        .limit(limit)
     )
+    if not task_ids:
+        query = query.limit(limit)
+    result = await db.execute(query)
     return list(result.scalars().all())
 
 
@@ -393,8 +394,14 @@ async def classify_pipeline_lifecycle_debt(
     return classification
 
 
+def _count_by_category(items: list[dict[str, Any]]) -> dict[str, int]:
+    return dict(Counter(str(item["category"]) for item in items))
+
+
 def _archive_task(task: SystemTaskQueue, item: dict[str, Any], now: datetime) -> None:
     previous_error = task.error_message
+    previous_status = task.status
+    previous_result = task.result
     task.status = "completed"
     task.completed_at = now
     task.started_at = None
@@ -407,6 +414,8 @@ def _archive_task(task: SystemTaskQueue, item: dict[str, Any], now: datetime) ->
         "document_id": item["document_id"],
         "file_id": item["file_id"],
         "previous_error_message": previous_error,
+        "previous_status": previous_status,
+        "previous_result": previous_result,
     }, ensure_ascii=False)
 
 
@@ -494,6 +503,8 @@ async def apply_pipeline_lifecycle_debt_action(
         "changed": len(changed),
         "skipped": len(skipped),
         "summary": classification["summary"],
+        "changed_by_category": _count_by_category(changed),
+        "skipped_by_category": _count_by_category(skipped),
         "changed_items": changed,
         "skipped_items": skipped,
     }

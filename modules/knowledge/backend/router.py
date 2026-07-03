@@ -45,6 +45,10 @@ from .services.pipeline_debt_service import (
     apply_pipeline_lifecycle_debt_action,
     classify_pipeline_lifecycle_debt,
 )
+from .services.pipeline_reconcile_service import (
+    apply_orphan_pipeline_run_reconcile,
+    dry_run_orphan_pipeline_run_reconcile,
+)
 from .services.profile_service import get_document_profile
 from .services.progress_service import get_document_progress, list_documents_progress
 from .services.raw_collection_service import get_ocr_words, get_raw_data
@@ -92,6 +96,10 @@ class PipelineDebtApplyRequest(BaseModel):
     action: Literal["archive_obsolete", "retry_live"]
     limit: int = Field(default=500, ge=1, le=5000)
     task_ids: list[int] = Field(default_factory=list)
+    dry_run: bool = True
+class PipelineRunReconcileRequest(BaseModel):
+    limit: int = Field(default=500, ge=1, le=5000)
+    run_ids: list[int] = Field(default_factory=list)
     dry_run: bool = True
 
 @router.get("/health")
@@ -625,6 +633,31 @@ async def api_pipeline_debt_apply(
     )
     return ApiResponse(data=result)
 
+@router.get("/governance/pipeline-runs/orphan-running/dry-run")
+async def api_orphan_pipeline_run_reconcile_dry_run(
+    limit: int = Query(default=500, ge=1, le=5000),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    _ = user
+    result = await dry_run_orphan_pipeline_run_reconcile(db, limit=limit)
+    return ApiResponse(data=result)
+
+@router.post("/governance/pipeline-runs/orphan-running/apply")
+async def api_orphan_pipeline_run_reconcile_apply(
+    payload: PipelineRunReconcileRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    _ = user
+    result = await apply_orphan_pipeline_run_reconcile(
+        db,
+        limit=payload.limit,
+        run_ids=payload.run_ids or None,
+        dry_run=payload.dry_run,
+    )
+    return ApiResponse(data=result)
+
 # ── Cross-module capabilities ───────────────────────────────
 
 async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> ApiResponse:
@@ -746,6 +779,21 @@ async def _cap_classify_pipeline_debt(params: dict, caller: str) -> dict:
     async with AsyncSessionLocal() as db:
         return await classify_pipeline_lifecycle_debt(db, limit=limit)
 
+async def _cap_reconcile_orphan_pipeline_runs(params: dict, caller: str) -> dict:
+    resolve_user_id(caller)
+    limit = int(params.get("limit", 500) or 500)
+    limit = max(1, min(limit, 5000))
+    raw_run_ids = params.get("run_ids") or []
+    run_ids = [int(run_id) for run_id in raw_run_ids] if isinstance(raw_run_ids, list) else []
+    dry_run = bool(params.get("dry_run", True))
+    async with AsyncSessionLocal() as db:
+        return await apply_orphan_pipeline_run_reconcile(
+            db,
+            limit=limit,
+            run_ids=run_ids or None,
+            dry_run=dry_run,
+        )
+
 async def _cap_get_evidence_detail(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     entity_id = int(params.get("entity_id", 0) or 0)
@@ -808,6 +856,17 @@ register_capability(
     brief="分类知识库管道债",
     parameters={
         "limit": {"type": "integer", "description": "Maximum failed tasks to inspect, default 500"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "reconcile_orphan_pipeline_runs", _cap_reconcile_orphan_pipeline_runs,
+    description="Dry-run or apply guarded reconcile for orphan running kb_pipeline_runs with no queue task",
+    brief="收口孤儿管道运行",
+    parameters={
+        "limit": {"type": "integer", "description": "Maximum orphan runs to inspect, default 500"},
+        "run_ids": {"type": "array", "description": "Optional run IDs to restrict apply/dry-run"},
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
     },
     min_role="admin",
 )

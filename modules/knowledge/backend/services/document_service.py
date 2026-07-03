@@ -32,9 +32,15 @@ SOURCE_UNAVAILABLE_REASONS = {"source_file_deleted", "source_file_missing"}
 PARSER_NO_CONTENT_MARKER = "Parser returned no content blocks"
 
 
-def document_pipeline_complete(doc) -> bool:
+def document_source_unavailable_reason(doc) -> str | None:
+    """Return the durable source-unavailable reason stored on a document."""
+    reason = (doc.parse_error or "").strip()
+    return reason if reason in SOURCE_UNAVAILABLE_REASONS else None
+
+
+def document_pipeline_complete(doc, *, source_available: bool | None = None) -> bool:
     """Return whether the durable knowledge pipeline has fully completed."""
-    if (doc.parse_error or "") in SOURCE_UNAVAILABLE_REASONS:
+    if source_available is False or document_source_unavailable_reason(doc):
         return False
     return (
         document_parse_allows_search(doc)
@@ -46,6 +52,8 @@ def document_pipeline_complete(doc) -> bool:
 
 def document_parse_allows_search(doc) -> bool:
     """Return whether parse state can support a searchable document."""
+    if document_source_unavailable_reason(doc):
+        return False
     if doc.parse_status == "done":
         return True
     return (
@@ -329,8 +337,9 @@ async def register_document(
 
 def document_payload(doc) -> dict:
     """文档 ORM → API payload。"""
-    source_available = (doc.parse_error or "") not in SOURCE_UNAVAILABLE_REASONS
-    source_state = "available" if source_available else str(doc.parse_error)
+    unavailable_reason = document_source_unavailable_reason(doc)
+    source_available = unavailable_reason is None
+    source_state = "available" if source_available else unavailable_reason
     return {
         "id": doc.id,
         "owner_id": doc.owner_id,
@@ -366,7 +375,11 @@ def document_registration_payload(doc, task_info: dict | None = None) -> dict:
     }
     enqueued = bool(info.get("enqueued"))
     reason = str(info.get("reason") or "")
-    if enqueued:
+    unavailable_reason = document_source_unavailable_reason(doc)
+    source_available = unavailable_reason is None
+    if not source_available:
+        status = "source_unavailable"
+    elif enqueued:
         status = "queued"
     elif reason == "already_in_flight":
         status = "inflight"
@@ -374,7 +387,6 @@ def document_registration_payload(doc, task_info: dict | None = None) -> dict:
         status = "completed"
     else:
         status = "existing"
-    source_available = (doc.parse_error or "") not in SOURCE_UNAVAILABLE_REASONS
     search_ready = (
         source_available
         and document_parse_allows_search(doc)
@@ -391,7 +403,7 @@ def document_registration_payload(doc, task_info: dict | None = None) -> dict:
         "task_id": info.get("task_id"),
         "enqueued": enqueued,
         "reason": reason or None,
-        "stage": "kb_pipeline",
+        "stage": "source" if not source_available else "kb_pipeline",
         "status": status,
         "pipeline_status": status,
         "search_ready": search_ready,

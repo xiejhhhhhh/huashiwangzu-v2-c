@@ -10,7 +10,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 pytest.importorskip("mcp")
 
-from dev_toolkit import code_tools, server  # noqa: E402
+from dev_toolkit import code_tools, core_tools, server  # noqa: E402
 
 
 def test_project_python_prefers_backend_venv() -> None:
@@ -190,12 +190,16 @@ def test_finish_task_forwards_allowed_prefixes_to_worktree_guard(monkeypatch: py
         allowed_prefixes: str = "",
         forbidden_prefixes: str = "",
         include_untracked: bool = True,
+        baseline_paths: str = "",
+        baseline_status_json: str = "",
     ) -> str:
         calls.append({
             "module_key": module_key,
             "allowed_prefixes": allowed_prefixes,
             "forbidden_prefixes": forbidden_prefixes,
             "include_untracked": include_untracked,
+            "baseline_paths": baseline_paths,
+            "baseline_status_json": baseline_status_json,
         })
         return json.dumps({"success": True, "outside_allowed": []})
 
@@ -207,6 +211,8 @@ def test_finish_task_forwards_allowed_prefixes_to_worktree_guard(monkeypatch: py
             "finish with memory",
             module_key="knowledge",
             allowed_prefixes="modules/knowledge\n开发文档/项目记忆",
+            baseline_paths="backend/app/preexisting.py",
+            baseline_status_json='{"changed_files":["modules/other/preexisting.py"]}',
         )
         return json.loads(raw)
 
@@ -218,7 +224,17 @@ def test_finish_task_forwards_allowed_prefixes_to_worktree_guard(monkeypatch: py
         "allowed_prefixes": "modules/knowledge\n开发文档/项目记忆",
         "forbidden_prefixes": "",
         "include_untracked": True,
+        "baseline_paths": "backend/app/preexisting.py",
+        "baseline_status_json": '{"changed_files":["modules/other/preexisting.py"]}',
     }]
+
+
+def test_finish_task_schema_exposes_baseline_parameters() -> None:
+    finish_tool = next(tool for tool in core_tools.tool_definitions() if tool.name == "finish_task")
+    properties = finish_tool.inputSchema["properties"]
+
+    assert "baseline_paths" in properties
+    assert "baseline_status_json" in properties
 
 
 def test_normalize_pytest_targets_accepts_module_repo_path() -> None:
