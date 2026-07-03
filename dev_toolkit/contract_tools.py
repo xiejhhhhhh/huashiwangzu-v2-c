@@ -216,10 +216,13 @@ def _registered_capabilities(path: Path, repo_root: Path) -> tuple[list[RuntimeC
 
     constants = _module_constants(tree)
     capabilities: list[RuntimeCapability] = []
+    has_static_capability_table = False
     dynamic_sites: list[dict[str, Any]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
-            capabilities.extend(_tuple_capabilities(node, path))
+            tuple_capabilities = _tuple_capabilities(node, path)
+            has_static_capability_table = has_static_capability_table or bool(tuple_capabilities)
+            capabilities.extend(tuple_capabilities)
             continue
         if not isinstance(node, ast.Call) or _call_name(node) != "register_capability":
             continue
@@ -227,6 +230,8 @@ def _registered_capabilities(path: Path, repo_root: Path) -> tuple[list[RuntimeC
         module = _literal_string(node.args[0], constants) if len(node.args) > 0 else None
         action = _literal_string(node.args[1], constants) if len(node.args) > 1 else None
         if not module or not action:
+            if has_static_capability_table and _looks_like_static_table_registration(node):
+                continue
             dynamic_sites.append({
                 "module": module or "",
                 "path": _rel(path, repo_root),
@@ -251,6 +256,15 @@ def _registered_capabilities(path: Path, repo_root: Path) -> tuple[list[RuntimeC
     return capabilities, dynamic_sites
 
 
+def _looks_like_static_table_registration(node: ast.Call) -> bool:
+    """Ignore the registration loop when the static capability table was parsed."""
+    return (
+        len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and isinstance(node.args[1], ast.Name)
+    )
+
+
 def _tuple_capabilities(node: ast.Assign, path: Path) -> list[RuntimeCapability]:
     if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
         return []
@@ -264,7 +278,7 @@ def _tuple_capabilities(node: ast.Assign, path: Path) -> list[RuntimeCapability]
         module = _literal_string(item.elts[0], {})
         action = _literal_string(item.elts[1], {})
         min_role = _literal_string(item.elts[6], {}) or "viewer"
-        parameters = _literal_value(item.elts[4], {}) if len(item.elts) > 4 else None
+        parameters = _literal_value(item.elts[5], {}) if len(item.elts) > 5 else None
         if module and action:
             result.append(RuntimeCapability(
                 module,

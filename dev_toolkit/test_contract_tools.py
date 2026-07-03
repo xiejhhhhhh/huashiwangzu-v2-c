@@ -78,3 +78,39 @@ def test_capability_contract_diff_accepts_matching_metadata(tmp_path: Path) -> N
 
     assert result["success"] is True
     assert result["diffs"] == []
+
+
+def test_capability_contract_diff_accepts_static_table_registration_loop(tmp_path: Path) -> None:
+    module_dir = tmp_path / "modules" / "demo" / "backend"
+    module_dir.mkdir(parents=True)
+    manifest = {
+        "key": "demo",
+        "public_actions": [
+            {
+                "action": "create",
+                "description": "Create demo item",
+                "parameters": {"title": {"type": "string"}},
+                "min_role": "editor",
+            }
+        ],
+    }
+    (tmp_path / "modules" / "demo" / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (module_dir / "bootstrap.py").write_text(
+        "from app.services.module_registry import register_capability\n\n"
+        "async def _handler(params, caller):\n"
+        "    return {}\n\n"
+        "capabilities = [\n"
+        "    ('demo', 'create', _handler, 'desc', 'brief', {'title': {'type': 'string'}}, 'editor'),\n"
+        "]\n\n"
+        "for module_key, action, handler, desc, brief, params, min_role in capabilities:\n"
+        "    register_capability(module_key, action, handler, description=desc, brief=brief, parameters=params, min_role=min_role)\n",
+        encoding="utf-8",
+    )
+
+    result = capability_contract_diff(tmp_path, module="demo")
+
+    assert result["success"] is True
+    assert result["uncheckable_sites"] == []

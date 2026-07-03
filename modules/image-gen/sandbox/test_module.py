@@ -47,6 +47,10 @@ def test_manifest_public_actions_match_runtime_contract() -> None:
     assert params["steps"]["default"] == 30
     assert params["template"]["default"] == ""
 
+    usage_params = actions["usage_history"]["parameters"]
+    assert usage_params["limit"]["type"] == "integer"
+    assert usage_params["limit"]["default"] == 20
+
 
 def test_template_config_has_registered_provider_and_default() -> None:
     template_config = _load_json(BACKEND_DIR / "image_templates.json")
