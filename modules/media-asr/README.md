@@ -37,6 +37,7 @@ All capabilities require `editor` role (they may create framework files). Called
 ## Dependencies
 
 - `ffmpeg` (system) — audio extraction
+- `ffprobe` (system, bundled with ffmpeg) — local media metadata and stream validation
 - `mlx_whisper` (Python, Apple Silicon) — local transcription
 - No network API keys required
 
@@ -47,6 +48,7 @@ All capabilities require `editor` role (they may create framework files). Called
 | Video input | mp4, mov, m4v, webm, mkv, avi |
 | Audio input | wav, mp3, m4a, aac, flac, ogg |
 | Audio output | wav (default), mp3, m4a, flac, ogg |
+| Whisper model | tiny, small, medium, large, large-v2, large-v3, turbo |
 
 ## Architecture
 
@@ -54,4 +56,15 @@ Video/audio reading uses `run_uploaded_file_capability` which internally calls `
 
 Temporary files are handled in `tempfile.TemporaryDirectory()` and cleaned up automatically.
 
+Before ffmpeg extraction or mlx_whisper transcription, the module performs local `ffprobe` metadata validation. It rejects unreadable files, missing audio streams, audio/video type mismatches, invalid duration, files over 4 hours, unsupported sample rates, unknown Whisper models, and invalid `file_id`/`folder_id` values with structured 4xx errors. This keeps bad inputs on the cheap local path and prevents arbitrary model downloads.
+
 The UI communicates with the backend exclusively via `platform.modules.call` (for cross-module capability invocation) and `platform.files` (for file upload/detail). No direct HTTP calls bypassing the framework path.
+
+## Validation
+
+```bash
+cd /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2
+backend/.venv/bin/python modules/media-asr/sandbox/test_module.py
+```
+
+The sandbox imports production router/service code and stubs only DB/media/model boundaries. It does not create framework upload files or call real ASR.
