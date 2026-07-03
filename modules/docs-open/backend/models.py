@@ -1,8 +1,10 @@
-import uuid
+import hashlib
 import logging
+import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, JSON
+
 from app.models.base import Base
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String
 
 logger = logging.getLogger("v2.docs-open").getChild("models")
 
@@ -25,5 +27,15 @@ def generate_access_token() -> tuple[str, str, str]:
     """Generate a token, return (raw_token, prefix, hashed_token)."""
     raw = uuid.uuid4().hex + uuid.uuid4().hex
     prefix = raw[:8]
-    hashed = uuid.uuid5(uuid.NAMESPACE_DNS, raw).hex
+    hashed = hash_access_token(raw)
     return raw, prefix, hashed
+
+
+def hash_access_token(raw_token: str) -> str:
+    """Hash a raw token for storage/comparison."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def legacy_hash_access_token(raw_token: str) -> str:
+    """Hash used by early docs-open tokens; kept until old short-lived tokens expire."""
+    return uuid.uuid5(uuid.NAMESPACE_DNS, raw_token).hex

@@ -4,6 +4,8 @@
 
 `docs-open` provides a document open facade for the desktop shell and other modules. It issues scoped open tokens, returns document metadata/content endpoints, renders embedded editor/viewer pages, and delegates file conversion or creation to framework services and public module capabilities.
 
+Docs-open tokens are scoped bearer alternatives for one or more document IDs. They are reusable until expiry or explicit revoke, but they are not full login tokens: issuing/opening/creating/exporting/revoking documents requires the framework JWT bearer token.
+
 ## Public capabilities
 
 - `docs-open:open`
@@ -23,15 +25,15 @@
 
 Router prefix: `/api/docs`
 
-- `POST /api/docs/token` — issue a scoped docs-open token for a client/open_id pair.
-- `POST /api/docs/open` — open an existing framework file and return embed/content URLs.
-- `POST /api/docs` — create a new empty document.
-- `GET /api/docs/{file_id}/content` — read the JSON middle-layer document content.
-- `POST /api/docs/{file_id}/content` — write JSON middle-layer content.
-- `POST /api/docs/{file_id}/export` — export or convert a document, delegating office formats to `office-gen:convert`.
-- `GET /api/docs/embed/{file_id}` — render an embedded HTML editor/viewer page.
-- `GET /api/docs/{file_id}/file` — return the underlying file after docs token access checks.
-- `POST /api/docs/{file_id}/revoke-tokens` — revoke active docs-open tokens for a file.
+- `POST /api/docs/token` — issue a scoped docs-open token with a non-empty `scope.doc_ids` or `scope.edit_doc_ids`; JWT bearer only.
+- `POST /api/docs/open` — open an existing framework file and return embed/content URLs; JWT bearer only.
+- `POST /api/docs` — create a new empty document; JWT bearer only.
+- `GET /api/docs/{file_id}/content` — read the JSON middle-layer document content; JWT bearer or scoped docs-open token.
+- `POST /api/docs/{file_id}/content` — write JSON middle-layer content; JWT bearer or scoped docs-open token with edit scope.
+- `POST /api/docs/{file_id}/export` — export or convert a document, delegating office formats to `office-gen:convert`; JWT bearer only.
+- `GET /api/docs/embed/{file_id}` — render an embedded HTML editor/viewer page after token triple validation.
+- `GET /api/docs/{file_id}/file` — return the underlying file after docs token query checks or JWT bearer checks.
+- `POST /api/docs/{file_id}/revoke-tokens` — revoke active docs-open tokens for a file; JWT bearer only.
 
 ## Data tables
 
@@ -62,3 +64,12 @@ For HTTP clients, call `/api/docs/open` to obtain an `embed_url` and `/api/docs/
 - This module is a facade, not an editor implementation. Office generation/conversion is delegated to `office-gen`; file creation and framework file access stay in framework services.
 - Cross-module capabilities resolve the caller from `user:{id}` and enforce file access checks before reading content.
 - Embedded HTML generation is intentionally isolated in handlers and should continue using safe value injection and CSP headers.
+- Content writes currently update text-like files and CSV through framework content-addressed replacement. Office binary writes are rejected instead of pretending success until a true replace-back contract exists.
+
+## Sandbox validation
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/docs-open/sandbox/test_module.py
+```
+
+The sandbox test covers token scope/expiry/client ID boundaries, mode and document type normalization, token hashing, capability return shapes, and the scoped-token-vs-JWT boundary.

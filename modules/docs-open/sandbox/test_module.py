@@ -1,126 +1,150 @@
-"""Sandbox test for docs-open module.
+"""Sandbox contract tests for docs-open.
 
-Validates core contracts: open, get_content, create_doc parameter schemas
-and output shapes — without real document reads or DB calls.
+Run from the repository root with:
+PYTHONPATH=backend backend/.venv/bin/python modules/docs-open/sandbox/test_module.py
 """
 
+from __future__ import annotations
 
-def test_open_params() -> None:
-    """open action parameter contract: file_id required int, mode optional string."""
-    # Minimum valid params
-    params_min = {"file_id": 42}
-    assert "file_id" in params_min
-    assert isinstance(params_min["file_id"], int) and params_min["file_id"] > 0
+import hashlib
+import importlib.util
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Callable
 
-    # Full params
-    params_full = {"file_id": 42, "mode": "read"}
-    assert "file_id" in params_full
-    assert isinstance(params_full["file_id"], int) and params_full["file_id"] > 0
-    if "mode" in params_full:
-        assert isinstance(params_full["mode"], str)
-    print("  [OPEN] Parameter contract valid")
+ROOT = Path(__file__).resolve().parents[3]
+BACKEND = ROOT / "backend"
+MODULE_BACKEND = ROOT / "modules" / "docs-open" / "backend"
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
 
 
-def test_open_output_shape() -> None:
-    """open action output shape contract."""
-    result = {
-        "embed_url": "https://docs.example.com/view/42",
+def load_module(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+validators = load_module("docs_open_validators", MODULE_BACKEND / "validators.py")
+models = load_module("docs_open_models", MODULE_BACKEND / "models.py")
+
+
+def assert_raises(fn: Callable[[], object], message_part: str) -> None:
+    try:
+        fn()
+    except Exception as exc:
+        assert message_part in str(exc), f"Unexpected error: {exc}"
+        return
+    raise AssertionError("Expected exception was not raised")
+
+
+def test_token_scope_contract() -> None:
+    scope = validators.normalize_token_scope({
+        "doc_ids": [42, "42", 7],
+        "edit_doc_ids": ["9"],
+    })
+    assert scope == {"doc_ids": [42, 7], "edit_doc_ids": [9]}
+    assert_raises(lambda: validators.normalize_token_scope({}), "scope must include")
+    assert_raises(lambda: validators.normalize_token_scope({"doc_ids": []}), "non-empty list")
+    assert_raises(lambda: validators.normalize_token_scope({"doc_ids": [0]}), "positive integer")
+    assert_raises(lambda: validators.normalize_token_scope({"doc_ids": [True]}), "positive integer")
+    assert_raises(lambda: validators.normalize_token_scope({"all": True}), "unsupported scope keys")
+    print("  [TOKEN] Scope boundary contract valid")
+
+
+def test_token_identity_contract() -> None:
+    assert validators.normalize_client_id("docs-open_1.2") == "docs-open_1.2"
+    assert_raises(lambda: validators.normalize_client_id("bad'id"), "client_id")
+    assert validators.normalize_expiry_hours(1) == 1
+    assert validators.normalize_expiry_hours("24") == 24
+    assert_raises(lambda: validators.normalize_expiry_hours(0), "positive integer")
+    assert_raises(lambda: validators.normalize_expiry_hours(25), "<= 24")
+    print("  [TOKEN] Identity and expiry contract valid")
+
+
+def test_mode_and_document_type_contract() -> None:
+    assert validators.normalize_mode("read") == "view"
+    assert validators.normalize_mode("view") == "view"
+    assert validators.normalize_mode("edit") == "edit"
+    assert validators.access_mode_for_mode("view") == "read"
+    assert validators.access_mode_for_mode("edit") == "edit"
+    assert_raises(lambda: validators.normalize_mode("admin"), "mode must be")
+
+    assert validators.normalize_doc_type("plain") == "txt"
+    assert validators.normalize_doc_type(".docx") == "docx"
+    assert_raises(lambda: validators.normalize_doc_type("exe"), "doc_type must be")
+    assert validators.normalize_title("Report") == "Report"
+    assert_raises(lambda: validators.normalize_title("../Report"), "path separators")
+    print("  [DOC] Mode, type and title contract valid")
+
+
+def test_token_hash_contract() -> None:
+    raw, prefix, hashed = models.generate_access_token()
+    assert len(raw) == 64
+    assert prefix == raw[:8]
+    assert hashed == hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    assert len(hashed) == 64
+    assert models.legacy_hash_access_token(raw) != hashed
+    print("  [TOKEN] Hashing contract valid")
+
+
+def test_capability_output_shape_contract() -> None:
+    open_result = {
+        "id": "42",
         "file_id": 42,
         "title": "Sample Document",
-        "content_type": "text",
+        "type": "txt",
+        "category": "text",
+        "editor": "text-editor",
+        "mime": "text/plain",
     }
-    required = {"embed_url", "file_id"}
-    for field in required:
-        assert field in result, f"Missing required field: {field}"
-    assert isinstance(result["embed_url"], str)
-    assert isinstance(result["file_id"], int)
-    print("  [OPEN] Output shape valid")
+    for field in ("id", "file_id", "title", "type", "category", "editor", "mime"):
+        assert field in open_result
+    assert isinstance(open_result["file_id"], int)
+
+    create_result = {"id": "100", "file_id": 100, "title": "New Document", "type": "txt"}
+    for field in ("id", "file_id", "title", "type"):
+        assert field in create_result
+    assert isinstance(create_result["file_id"], int)
+    print("  [CAPABILITY] Output shape contract valid")
 
 
-def test_get_content_params() -> None:
-    """get_content action parameter contract: file_id required int."""
-    params = {"file_id": 42}
-    assert "file_id" in params
-    assert isinstance(params["file_id"], int) and params["file_id"] > 0
-    print("  [GET_CONTENT] Parameter contract valid")
-
-
-def test_get_content_output_shape() -> None:
-    """get_content action output shape contract (structured JSON)."""
-    result = {
-        "file_id": 42,
-        "title": "Sample Document",
-        "sections": [
-            {"heading": "Introduction", "body": "Text content..."},
-            {"heading": "Details", "body": "More text..."},
-        ],
+def test_scoped_token_auth_boundary_contract() -> None:
+    full_jwt_only_endpoints = {
+        "POST /api/docs/token",
+        "POST /api/docs/open",
+        "POST /api/docs",
+        "POST /api/docs/{file_id}/export",
+        "POST /api/docs/{file_id}/revoke-tokens",
     }
-    required = {"file_id", "title", "sections"}
-    for field in required:
-        assert field in result, f"Missing required field: {field}"
-    assert isinstance(result["sections"], list)
-    if result["sections"]:
-        section = result["sections"][0]
-        assert "heading" in section and "body" in section
-    print("  [GET_CONTENT] Output shape valid")
-
-
-def test_create_doc_params() -> None:
-    """create_doc action parameter contract: title and type required strings."""
-    # Minimum valid params
-    params = {"title": "New Document", "type": "plain"}
-    assert "title" in params
-    assert "type" in params
-    assert isinstance(params["title"], str) and params["title"].strip()
-    assert isinstance(params["type"], str) and params["type"].strip()
-
-    # Missing title
-    bad = {"type": "plain"}
-    assert "title" not in bad or not bad.get("title"), "title should be required"
-
-    # Missing type
-    bad2 = {"title": "New Document"}
-    assert "type" not in bad2 or not bad2.get("type"), "type should be required"
-    print("  [CREATE_DOC] Parameter contract valid")
-
-
-def test_create_doc_output_shape() -> None:
-    """create_doc action output shape contract."""
-    result = {
-        "file_id": 100,
-        "title": "New Document",
-        "type": "plain",
-        "created_at": "2026-07-01T00:00:00",
+    scoped_token_endpoints = {
+        "GET /api/docs/{file_id}/content",
+        "POST /api/docs/{file_id}/content",
+        "GET /api/docs/embed/{file_id}",
+        "GET /api/docs/{file_id}/file?token=...",
     }
-    required = {"file_id", "title"}
-    for field in required:
-        assert field in result, f"Missing required field: {field}"
-    assert isinstance(result["file_id"], int)
-    assert isinstance(result["title"], str)
-    print("  [CREATE_DOC] Output shape valid")
-
-
-def test_response_shape() -> None:
-    """Unified API response shape contract."""
-    r = {"success": True, "data": {"file_id": 1}, "error": None}
-    assert all(k in r for k in ("success", "data", "error"))
-    assert r["success"] is True
-    print("  [RESPONSE] Shape valid")
+    assert full_jwt_only_endpoints
+    assert scoped_token_endpoints
+    assert full_jwt_only_endpoints.isdisjoint(scoped_token_endpoints)
+    print("  [AUTH] Scoped token boundary contract documented")
 
 
 def main() -> None:
     print("=" * 60)
-    print("docs-open sandbox test")
+    print("docs-open sandbox contract test")
     print("=" * 60)
-    test_open_params()
-    test_open_output_shape()
-    test_get_content_params()
-    test_get_content_output_shape()
-    test_create_doc_params()
-    test_create_doc_output_shape()
-    test_response_shape()
+    test_token_scope_contract()
+    test_token_identity_contract()
+    test_mode_and_document_type_contract()
+    test_token_hash_contract()
+    test_capability_output_shape_contract()
+    test_scoped_token_auth_boundary_contract()
     print("=" * 60)
-    print("PASS: docs-open sandbox test")
+    print("PASS: docs-open sandbox contract test")
 
 
 if __name__ == "__main__":

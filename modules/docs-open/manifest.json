@@ -39,7 +39,8 @@
           "type": "int"
         },
         "mode": {
-          "type": "string"
+          "type": "string",
+          "enum": ["view", "edit"]
         }
       },
       "min_role": "viewer"
@@ -62,7 +63,8 @@
           "type": "string"
         },
         "type": {
-          "type": "string"
+          "type": "string",
+          "enum": ["txt", "md", "json", "yaml", "yml", "xml", "ini", "cfg", "log", "csv", "docx", "xlsx", "pptx", "pdf"]
         }
       },
       "min_role": "editor"

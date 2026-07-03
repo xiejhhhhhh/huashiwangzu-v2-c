@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.core.exceptions import AuthError, PermissionDenied
 from app.database import get_db
 from app.models.user import User
-from app.core.exceptions import AuthError, PermissionDenied
-
-from .embed import _get_doc_type
+from app.services.auth import decode_access_token
+from app.services.auth import get_user_by_id as auth_get_user
+from fastapi import Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def get_authenticated_user(
@@ -30,7 +29,7 @@ async def get_authenticated_user(
 
     if x_client_id and x_open_id and x_access_token:
         token_record = await validate_token(db, x_access_token, x_client_id, x_open_id)
-        user = await db.get(User, int(x_open_id))
+        user = await db.get(User, token_record.open_id)
         if not user or not user.enabled:
             raise PermissionDenied("User not found or disabled")
         return user
@@ -38,7 +37,6 @@ async def get_authenticated_user(
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         jwt_token = auth_header[7:]
-        from app.services.auth import decode_access_token, get_user_by_id as auth_get_user
         payload = decode_access_token(jwt_token)
         user_id = int(payload.get("sub", 0))
         token_sv = payload.get("sv", 0)
@@ -52,11 +50,41 @@ async def get_authenticated_user(
     raise AuthError("Authentication required")
 
 
-def require_docs_permission(min_role: str = "viewer"):
+async def get_bearer_authenticated_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Authenticate only via framework JWT bearer token."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise AuthError("Authentication required")
+
+    jwt_token = auth_header[7:]
+
+    payload = decode_access_token(jwt_token)
+    user_id = int(payload.get("sub", 0))
+    token_sv = payload.get("sv", 0)
+    user = await auth_get_user(db, user_id)
+    if not user or not user.enabled:
+        raise PermissionDenied("User not found or disabled")
+    if token_sv != user.session_version:
+        raise PermissionDenied("Session expired, please login again")
+    return user
+
+
+def require_docs_permission(min_role: str = "viewer", allow_scoped_token: bool = False):
     """Dependency factory: auth + role check for docs-open endpoints."""
     role_level = {"admin": 3, "editor": 2, "viewer": 1}
 
-    async def _check(user: User = Depends(get_authenticated_user)) -> User:
+    async def _check(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        user = (
+            await get_authenticated_user(request, db)
+            if allow_scoped_token
+            else await get_bearer_authenticated_user(request, db)
+        )
         if role_level.get(user.role, 0) < role_level.get(min_role, 0):
             raise PermissionDenied(
                 f"Requires at least '{min_role}' role, got '{user.role}'"

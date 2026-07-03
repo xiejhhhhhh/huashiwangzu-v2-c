@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 # ── Document type mapping ──
 
 DOC_TYPE_MAP = {
@@ -56,7 +54,6 @@ def _generate_embed_html(
     is_editable: bool,
 ) -> str:
     category = doc_info.get("category", "unknown")
-    editor = doc_info.get("editor", "")
 
     api_base = base_url.rstrip("/")
 
