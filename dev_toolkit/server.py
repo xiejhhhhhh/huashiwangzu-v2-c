@@ -32,6 +32,9 @@ try:
     from dev_toolkit.code_tools import resolve_repo_path as _resolve_repo_path_raw
     from dev_toolkit.code_tools import run_test as code_run_test
     from dev_toolkit.code_tools import tool_definitions as code_tool_definitions
+    from dev_toolkit.contract_tools import handle_tool as contract_handle_tool
+    from dev_toolkit.contract_tools import handles_tool as contract_handles_tool
+    from dev_toolkit.contract_tools import tool_definitions as contract_tool_definitions
     from dev_toolkit.core_tools import CoreToolContext
     from dev_toolkit.core_tools import handle_tool as core_handle_tool
     from dev_toolkit.core_tools import handles_tool as core_handles_tool
@@ -83,6 +86,9 @@ except ModuleNotFoundError:
     from code_tools import resolve_repo_path as _resolve_repo_path_raw
     from code_tools import run_test as code_run_test
     from code_tools import tool_definitions as code_tool_definitions
+    from contract_tools import handle_tool as contract_handle_tool
+    from contract_tools import handles_tool as contract_handles_tool
+    from contract_tools import tool_definitions as contract_tool_definitions
     from core_tools import CoreToolContext
     from core_tools import handle_tool as core_handle_tool
     from core_tools import handles_tool as core_handles_tool
@@ -1621,6 +1627,7 @@ async def list_tools() -> list[Tool]:
         *core_tool_definitions(),
         *mailbox_tool_definitions(),
         *memory_tool_definitions(),
+        *contract_tool_definitions(),
         *code_tool_definitions(),
         *edit_tool_definitions(),
         *db_reverse_tool_definitions(),
@@ -1653,6 +1660,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 name,
                 arguments,
             )
+        elif contract_handles_tool(name):
+            result = await contract_handle_tool(REPO_ROOT, name, arguments)
         elif code_handles_tool(name):
             result = await code_handle_tool(_run_command_json, REPO_ROOT, _CODEGRAPH_CLI, _RUFF_CLI, name, arguments)
         elif edit_handles_tool(name):
