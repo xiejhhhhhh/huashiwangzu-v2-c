@@ -14,13 +14,14 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import math
 import os
 import socket
 import tempfile
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from app.core.exceptions import ValidationError
 from app.core.url_safety import validate_safe_url
@@ -36,6 +37,9 @@ _MAX_PAGES = 5
 _MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 _MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024  # 5 MB
 _MAX_BODY_BYTES = 512 * 1024  # 512 KB text extraction limit
+_DEFAULT_TIMEOUT_SECONDS = 30
+_MIN_TIMEOUT_SECONDS = 1
+_MAX_TIMEOUT_SECONDS = 60
 
 _BLOCKED_HOSTNAMES = {
     "localhost",
@@ -184,6 +188,23 @@ def _viewport_from_params(params: dict) -> dict[str, int]:
     }
 
 
+def _bounded_timeout_seconds(value: object, *, default: int = _DEFAULT_TIMEOUT_SECONDS) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(numeric):
+        return default
+    bounded = max(_MIN_TIMEOUT_SECONDS, min(_MAX_TIMEOUT_SECONDS, numeric))
+    return int(bounded)
+
+
+def _timeout_ms(params: dict) -> int:
+    return _bounded_timeout_seconds(params.get("timeout", _DEFAULT_TIMEOUT_SECONDS)) * 1000
+
+
 def _ok(data: dict) -> dict:
     return {"success": True, "data": data, "error": None}
 
@@ -206,8 +227,8 @@ async def _ensure_allowed_current_url(page) -> str:
     return current_url
 
 
-async def _download_http_checked(url: str, timeout: int) -> tuple[bytes, str, str]:
-    """Download via HTTP while validating every redirect target."""
+async def _download_http_checked(url: str, destination: Path, timeout: int) -> tuple[int, str]:
+    """Stream a direct HTTP download while validating every redirect target."""
     import httpx
 
     current_url = url
@@ -216,15 +237,45 @@ async def _download_http_checked(url: str, timeout: int) -> tuple[bytes, str, st
         if reason:
             raise ValueError(reason)
         async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
-            resp = await client.get(current_url)
-        if resp.is_redirect:
-            next_url = str(resp.next_request.url) if resp.next_request else resp.headers.get("location", "")
-            if not next_url:
-                raise ValueError("redirect target missing")
-            current_url = next_url
-            continue
-        resp.raise_for_status()
-        return resp.content, current_url, resp.headers.get("content-type", "")
+            async with client.stream("GET", current_url) as resp:
+                if resp.is_redirect:
+                    next_url = str(resp.next_request.url) if resp.next_request else ""
+                    if not next_url:
+                        location = resp.headers.get("location", "")
+                        next_url = urljoin(current_url, location) if location else ""
+                    if not next_url:
+                        raise ValueError("redirect target missing")
+                    current_url = next_url
+                    continue
+
+                resp.raise_for_status()
+                content_length = resp.headers.get("content-length")
+                if content_length:
+                    try:
+                        expected_size = int(content_length)
+                    except ValueError:
+                        expected_size = 0
+                    if expected_size > _MAX_DOWNLOAD_BYTES:
+                        raise ValueError(
+                            f"download too large ({expected_size} bytes, max {_MAX_DOWNLOAD_BYTES})"
+                        )
+
+                total = 0
+                try:
+                    with destination.open("wb") as output:
+                        async for chunk in resp.aiter_bytes():
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > _MAX_DOWNLOAD_BYTES:
+                                raise ValueError(
+                                    f"download too large ({total} bytes, max {_MAX_DOWNLOAD_BYTES})"
+                                )
+                            output.write(chunk)
+                except Exception:
+                    destination.unlink(missing_ok=True)
+                    raise
+                return total, current_url
     raise ValueError("too many redirects")
 
 
@@ -391,8 +442,7 @@ async def _open(params: dict, caller: str) -> dict:
         page = session["page"]
         await page.set_viewport_size(_viewport_from_params(params))
 
-        await page.goto(url, wait_until="domcontentloaded",
-                        timeout=params.get("timeout", 30) * 1000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=_timeout_ms(params))
         await page.wait_for_load_state("networkidle", timeout=10000)
 
         current_url = await _ensure_allowed_current_url(page)
@@ -485,7 +535,7 @@ async def _click(params: dict, caller: str) -> dict:
         return _err("selector or text is required")
     try:
         page = session["page"]
-        timeout = params.get("timeout", 30) * 1000
+        timeout = _timeout_ms(params)
         await _ensure_allowed_current_url(page)
 
         if selector:
@@ -519,7 +569,7 @@ async def _type(params: dict, caller: str) -> dict:
         return _err("selector is required")
     try:
         page = session["page"]
-        timeout = params.get("timeout", 30) * 1000
+        timeout = _timeout_ms(params)
         await _ensure_allowed_current_url(page)
 
         await page.fill(selector, "", timeout=timeout)
@@ -539,7 +589,7 @@ async def _wait_for(params: dict, caller: str) -> dict:
         return _err(session_error)
     try:
         page = session["page"]
-        timeout = params.get("timeout", 30) * 1000
+        timeout = _timeout_ms(params)
         selector = params.get("selector", "")
         wait_nav = params.get("wait_for_navigation", False)
         await _ensure_allowed_current_url(page)
@@ -621,7 +671,7 @@ async def _download(params: dict, caller: str) -> dict:
             page = session["page"]
             await _ensure_allowed_current_url(page)
 
-            async with page.expect_download(timeout=params.get("timeout", 30) * 1000) as download_info:
+            async with page.expect_download(timeout=_timeout_ms(params)) as download_info:
                 if url:
                     await page.goto(url, wait_until="domcontentloaded")
                     await _ensure_allowed_current_url(page)
@@ -631,18 +681,20 @@ async def _download(params: dict, caller: str) -> dict:
             filepath = workspace / filename
             await download.save_as(str(filepath))
             file_size = filepath.stat().st_size
+            if file_size > _MAX_DOWNLOAD_BYTES:
+                filepath.unlink(missing_ok=True)
+                return _err(f"download too large ({file_size} bytes, max {_MAX_DOWNLOAD_BYTES})")
         else:
             # Direct HTTP download
-            content, final_url, content_type = await _download_http_checked(
+            tmp_filepath = workspace / f".download_{uuid.uuid4().hex[:8]}.tmp"
+            file_size, final_url = await _download_http_checked(
                 url,
-                timeout=params.get("timeout", 30),
+                tmp_filepath,
+                timeout=_bounded_timeout_seconds(params.get("timeout", _DEFAULT_TIMEOUT_SECONDS)),
             )
-            if len(content) > _MAX_DOWNLOAD_BYTES:
-                return _err(f"download too large ({len(content)} bytes, max {_MAX_DOWNLOAD_BYTES})")
-            filename = final_url.split("/")[-1] or f"download_{uuid.uuid4().hex[:8]}"
+            filename = Path(urlparse(final_url).path).name or f"download_{uuid.uuid4().hex[:8]}"
             filepath = workspace / filename
-            filepath.write_bytes(content)
-            file_size = len(content)
+            tmp_filepath.replace(filepath)
 
         return _ok({
             "file_path": str(filepath),

@@ -378,6 +378,16 @@ def _agent_failure_message(result: object) -> str | None:
     return None
 
 
+def _scheduled_job_failed_response(error: object, result: str = "") -> dict:
+    return {
+        "success": False,
+        "status": "failed",
+        "error": _stringify_error(error) or "Scheduled job failed",
+        "result": result[:2000],
+        "executed": False,
+    }
+
+
 async def _cap_cancel(params: dict, caller: str) -> dict:
     try:
         task_id = _parse_positive_task_id(params.get("task_id"))
@@ -408,11 +418,17 @@ async def _cap_scheduled_job_handler(params: dict) -> dict:
     Triggers a real Agent chat execution with the action_description,
     stores the result, and notifies the creator via IM.
     """
-    title = params.get("title", "定时任务")
-    action_desc = params.get("action_description", "")
+    try:
+        title = _normalize_required_text(params.get("title"), "title")
+        action_desc = _normalize_required_text(
+            params.get("action_description"), "action_description", max_length=4000,
+        )
+    except AppException as exc:
+        return _scheduled_job_failed_response(str(exc))
+
     creator_id = params.get("creator_id", 0)
     if not creator_id:
-        return {"success": False, "error": "Missing creator_id"}
+        return _scheduled_job_failed_response("Missing creator_id")
 
     result_text = f"定时任务「{title}」已触发。动作: {action_desc[:200]}"
     execute_result = ""
@@ -474,13 +490,7 @@ async def _cap_scheduled_job_handler(params: dict) -> dict:
         logger.warning("IM notify unavailable, falling back to log: %s", exc)
 
     if failure_error:
-        return {
-            "success": False,
-            "status": "failed",
-            "error": failure_error,
-            "result": result_text[:2000],
-            "executed": False,
-        }
+        return _scheduled_job_failed_response(failure_error, result_text)
 
     return {"success": True, "result": result_text[:2000], "executed": bool(execute_result)}
 

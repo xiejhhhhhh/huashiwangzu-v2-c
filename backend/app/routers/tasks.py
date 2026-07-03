@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFound, PermissionDenied
@@ -69,12 +69,21 @@ async def worker_status(
     counts = {"pending": 0, "running": 0, "completed": 0, "failed": 0}
     for row in r.all():
         counts[row[0]] = row[1]
+    now = datetime.now(timezone.utc)
     oldest = await db.scalar(
         select(SystemTaskQueue.created_at)
-        .where(SystemTaskQueue.status == "pending")
+        .where(
+            and_(
+                SystemTaskQueue.status == "pending",
+                or_(
+                    SystemTaskQueue.scheduled_at.is_(None),
+                    SystemTaskQueue.scheduled_at <= now,
+                ),
+            )
+        )
         .order_by(SystemTaskQueue.created_at).limit(1)
     )
-    wait_secs = int((datetime.now(timezone.utc) - oldest).total_seconds()) if oldest else None
+    wait_secs = int((now - oldest).total_seconds()) if oldest else None
     return ApiResponse(data=WorkerStatusResponse(
         pending=counts["pending"], running=counts["running"],
         completed=counts["completed"], failed=counts["failed"],

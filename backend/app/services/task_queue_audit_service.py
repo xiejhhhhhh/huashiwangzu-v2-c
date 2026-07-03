@@ -55,21 +55,17 @@ async def audit_task_queue(db: AsyncSession) -> dict:
     )
     recent_failed_list = list(recent_failed.scalars().all())
 
-    old_failed = await db.execute(
-        select(SystemTaskQueue)
-        .where(
-            and_(
-                SystemTaskQueue.status == "failed",
-                or_(
-                    SystemTaskQueue.completed_at.is_(None),
-                    SystemTaskQueue.completed_at < debt_cutoff,
-                ),
-            )
-        )
-        .order_by(SystemTaskQueue.completed_at.desc().nulls_last())
-        .limit(500)
+    historical_failed_filter = and_(
+        SystemTaskQueue.status == "failed",
+        or_(
+            SystemTaskQueue.completed_at.is_(None),
+            SystemTaskQueue.completed_at < debt_cutoff,
+        ),
     )
-    old_failed_list = list(old_failed.scalars().all())
+    old_failed_count = await db.scalar(
+        select(func.count(SystemTaskQueue.id)).where(historical_failed_filter)
+    )
+    historical_failed_debt_count = int(old_failed_count or 0)
 
     # --- Classify pending tasks ---
     pending_tasks = await db.execute(
@@ -192,7 +188,7 @@ async def audit_task_queue(db: AsyncSession) -> dict:
         },
         "classification": {
             "recent_failed_count": len(recent_failed_list),
-            "historical_failed_debt_count": len(old_failed_list),
+            "historical_failed_debt_count": historical_failed_debt_count,
             "actionable_pending_count": len(actionable_pending),
             "stale_pending_debt_count": len(stale_pending),
             "future_scheduled_count": len(unreachable_pending),
@@ -200,7 +196,7 @@ async def audit_task_queue(db: AsyncSession) -> dict:
             "orphan_running_debt_count": len(orphan_running),
         },
         "recent_failed_count": len(recent_failed_list),
-        "historical_debt_total": len(old_failed_list),
+        "historical_debt_total": historical_failed_debt_count,
         "stalest_pending": stalest_pending_info,
         "handler_breakdown": handler_breakdown,
         "top_error_signatures": top_error_signatures,
