@@ -79,7 +79,7 @@
 
 ## Cleanup 契约
 
-测试数据必须带唯一 marker（建议形如 `r2-douyin-20260703-xxxx`）。清理调用：
+测试数据必须带唯一 marker（建议形如 `r2-douyin-20260703-xxxx`）。marker 可出现在标题、备注、正文、投递任务 `error_message`、`payload` 或 `result_payload` 中。清理调用：
 
 ```text
 POST /api/douyin-delivery/cleanup
@@ -87,6 +87,23 @@ POST /api/douyin-delivery/cleanup
 ```
 
 marker 至少 6 个字符；仅清理当前用户数据，不清理 `owner_id=0` 的系统默认提示词。
+
+## 可复现验收
+
+```bash
+cd backend && ruff check ../modules/douyin-delivery/backend ../modules/douyin-delivery/sandbox/test_module.py
+cd .. && backend/.venv/bin/python -m pytest modules/douyin-delivery/sandbox/test_module.py
+```
+
+活栈能力验收使用项目工具台 `call_capability`：
+
+```text
+douyin-delivery:create_delivery_task
+douyin-delivery:mark_task_failed
+douyin-delivery:cleanup_marked_data
+```
+
+`generate_script` / `generate_ad_copy` / `validate_content` 的空输入或非法枚举必须返回结构化失败，不得进入模型调用后再假成功。
 
 ## 业务流程
 

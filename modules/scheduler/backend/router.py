@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime, timezone
+from hashlib import blake2b
 
 from app.core.exceptions import AppException, ConflictError, NotFound, PermissionDenied, ValidationError
 from app.database import AsyncSessionLocal, get_db
@@ -12,7 +13,7 @@ from app.services.file_reader import resolve_caller_user_id
 from app.services.module_registry import register_capability
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("v2.scheduler").getChild("router")
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 _FAILURE_STATUSES = {"failed", "error"}
 _ALLOWED_RECUR = {"hourly", "daily", "weekly"}
 _CANCELLABLE_STATUSES = {"pending"}
+_ACTIVE_DUPLICATE_STATUSES = {"pending", "running"}
 
 
 class CreateSchedulerRequest(BaseModel):
@@ -56,7 +58,10 @@ def _parse_scheduled_at(value: object) -> datetime | None:
         raise ValidationError("scheduled_at 格式无效，请使用 ISO 8601") from None
     if scheduled_dt.tzinfo is None:
         scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
-    return scheduled_dt.astimezone(timezone.utc)
+    normalized = scheduled_dt.astimezone(timezone.utc)
+    if normalized <= datetime.now(timezone.utc):
+        raise ValidationError("scheduled_at 不能早于当前时间；如需立即执行请留空")
+    return normalized
 
 
 def _validate_recur(value: object) -> str | None:
@@ -107,6 +112,70 @@ def _decode_task_parameters(raw: str | None) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _task_signature(
+    *,
+    creator_id: int,
+    title: str,
+    action_description: str,
+    scheduled_at: datetime | None,
+    recur: str | None,
+) -> str:
+    scheduled_key = scheduled_at.isoformat() if scheduled_at else ""
+    return json.dumps({
+        "creator_id": creator_id,
+        "title": title,
+        "action_description": action_description,
+        "scheduled_at": scheduled_key,
+        "recur": recur or "",
+    }, ensure_ascii=False, sort_keys=True)
+
+
+def _signature_lock_id(signature: str) -> int:
+    digest = blake2b(signature.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def _same_scheduled_time(left: datetime | None, right: datetime | None) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    return left.astimezone(timezone.utc) == right.astimezone(timezone.utc)
+
+
+async def _acquire_duplicate_lock(db: AsyncSession, signature: str) -> None:
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_id)"),
+        {"lock_id": _signature_lock_id(signature)},
+    )
+
+
+async def _ensure_no_active_duplicate(
+    db: AsyncSession,
+    *,
+    creator_id: int,
+    title: str,
+    action_description: str,
+    scheduled_at: datetime | None,
+    recur: str | None,
+) -> None:
+    stmt = select(SystemTaskQueue).where(
+        and_(
+            SystemTaskQueue.module == "scheduler",
+            SystemTaskQueue.creator_id == creator_id,
+            SystemTaskQueue.status.in_(_ACTIVE_DUPLICATE_STATUSES),
+        )
+    )
+    result = await db.execute(stmt)
+    for task in result.scalars().all():
+        params = _decode_task_parameters(task.parameters)
+        if (
+            params.get("title") == title
+            and params.get("action_description") == action_description
+            and task.recur == recur
+            and _same_scheduled_time(task.scheduled_at, scheduled_at)
+        ):
+            raise ConflictError("已存在相同的待执行定时任务")
+
+
 def _task_to_dict(task: SystemTaskQueue) -> dict:
     params = _decode_task_parameters(task.parameters)
     return {
@@ -138,6 +207,22 @@ async def _create_scheduler_task(
     )
     scheduled_dt = _parse_scheduled_at(scheduled_at)
     normalized_recur = _validate_recur(recur)
+    signature = _task_signature(
+        creator_id=creator_id,
+        title=normalized_title,
+        action_description=normalized_action,
+        scheduled_at=scheduled_dt,
+        recur=normalized_recur,
+    )
+    await _acquire_duplicate_lock(db, signature)
+    await _ensure_no_active_duplicate(
+        db,
+        creator_id=creator_id,
+        title=normalized_title,
+        action_description=normalized_action,
+        scheduled_at=scheduled_dt,
+        recur=normalized_recur,
+    )
     task = SystemTaskQueue(
         task_type="scheduled_agent_job",
         parameters=_encode_task_parameters(normalized_title, normalized_action, creator_id),
@@ -301,6 +386,8 @@ async def _cap_cancel(params: dict, caller: str) -> dict:
     try:
         owner_id = resolve_caller_user_id(caller)
     except PermissionDenied:
+        return {"success": False, "error": "无法解析调用者身份"}
+    if not owner_id:
         return {"success": False, "error": "无法解析调用者身份"}
     async with AsyncSessionLocal() as db:
         task = await db.get(SystemTaskQueue, task_id)

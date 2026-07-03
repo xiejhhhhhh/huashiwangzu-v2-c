@@ -1,10 +1,58 @@
 """Sandbox test for douyin-delivery module.
 
-Validates core schemas, module contracts, and response shapes without calling
-external APIs or DB.
+Validates core schemas, module contracts, and service guardrails without
+calling external APIs or mutating DB state.
 """
+import asyncio
+import importlib.util
 import json
+import os
+import sys
 from pathlib import Path
+from types import ModuleType
+from typing import Awaitable
+
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = MODULE_ROOT.parents[1]
+BACKEND_ROOT = REPO_ROOT / "backend"
+MODULE_BACKEND_ROOT = MODULE_ROOT / "backend"
+BACKEND_PACKAGE = "douyin_delivery_backend"
+
+os.environ.setdefault("JWT_SECRET", "douyin-delivery-sandbox-test-secret")
+
+for path in (str(REPO_ROOT), str(BACKEND_ROOT)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
+def load_backend_module(name: str) -> ModuleType:
+    """Load backend files under a package alias so relative imports work."""
+    if BACKEND_PACKAGE not in sys.modules:
+        package_spec = importlib.util.spec_from_loader(BACKEND_PACKAGE, loader=None, is_package=True)
+        package = importlib.util.module_from_spec(package_spec)
+        package.__path__ = [str(MODULE_BACKEND_ROOT)]
+        sys.modules[BACKEND_PACKAGE] = package
+
+    module_name = f"{BACKEND_PACKAGE}.{name}"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, MODULE_BACKEND_ROOT / f"{name}.py")
+    assert spec and spec.loader, f"Unable to load backend module: {name}"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def assert_validation_error(awaitable: Awaitable[object], expected: str) -> None:
+    from app.core.exceptions import ValidationError
+
+    try:
+        asyncio.run(awaitable)
+    except ValidationError as exc:
+        assert expected in str(exc), str(exc)
+    else:
+        raise AssertionError(f"Expected ValidationError containing: {expected}")
 
 
 def test_product_schema() -> None:
@@ -68,7 +116,7 @@ def test_script_schema() -> None:
     required = {"channel", "status", "product_name"}
     for field in required:
         assert field in script, f"Missing required field: {field}"
-    assert script["status"] in ("draft", "published", "archived"), f"Invalid status: {script['status']}"
+    assert script["status"] in ("draft", "ready", "published", "archived"), f"Invalid status: {script['status']}"
     print("  [SCRIPT] Schema valid")
 
 
@@ -126,6 +174,48 @@ def test_delivery_contract_schema() -> None:
     print("  [DELIVERY CONTRACT] Account/material/task schema valid")
 
 
+def test_generation_services_reject_invalid_inputs_before_external_calls() -> None:
+    """Invalid generation inputs must fail before model or DB work."""
+    services = load_backend_module("services")
+
+    assert_validation_error(services.generate_script("", "local_push", 1), "product is required")
+    assert_validation_error(services.generate_script("r2 product", "bad_channel", 1), "Invalid channel")
+    assert_validation_error(services.generate_ad_copy("r2 product", "local_push", "bad_ad", 1), "Invalid ad_type")
+    assert_validation_error(services.validate_content("", 1), "content is required")
+    print("  [GENERATION GUARDS] Invalid inputs rejected before external calls")
+
+
+def test_delivery_task_semantics_reject_fake_success() -> None:
+    """Task status helpers must not allow failed semantics to look succeeded."""
+    from app.core.exceptions import ValidationError
+
+    delivery_services = load_backend_module("delivery_services")
+
+    try:
+        delivery_services._validate_task_result_semantics("failed", "", None)
+    except ValidationError as exc:
+        assert "requires error_message" in str(exc)
+    else:
+        raise AssertionError("failed status without error_message should be rejected")
+
+    try:
+        delivery_services._validate_task_result_semantics("succeeded", "platform failed", None)
+    except ValidationError as exc:
+        assert "only allowed" in str(exc)
+    else:
+        raise AssertionError("non-failed status with error_message should be rejected")
+
+    try:
+        delivery_services._validate_task_result_semantics("succeeded", "", {"success": False, "error": "rejected"})
+    except ValidationError as exc:
+        assert "failure semantics" in str(exc)
+    else:
+        raise AssertionError("succeeded status with failed payload should be rejected")
+
+    delivery_services._validate_task_result_semantics("succeeded", "", {"success": True, "platform_id": "ok"})
+    print("  [TASK SEMANTICS] Fake success states rejected")
+
+
 def test_cleanup_marker_contract() -> None:
     """Cleanup must be marker-scoped to avoid deleting real data."""
     marker = "r2-douyin-20260703"
@@ -133,6 +223,16 @@ def test_cleanup_marker_contract() -> None:
     cleanup_request = {"marker": marker}
     assert cleanup_request["marker"].startswith("r2-douyin")
     print("  [CLEANUP] Marker contract valid")
+
+
+def test_cleanup_covers_delivery_task_json_markers() -> None:
+    """Cleanup must match markers stored in delivery task JSON payloads."""
+    module_root = Path(__file__).resolve().parents[1]
+    source = (module_root / "backend" / "delivery_services.py").read_text(encoding="utf-8")
+
+    assert "cast(DouyinDeliveryTask.payload, Text).ilike(pattern)" in source
+    assert "cast(DouyinDeliveryTask.result_payload, Text).ilike(pattern)" in source
+    print("  [CLEANUP JSON] Delivery task payload markers covered")
 
 
 def test_manifest_actions_and_db_contracts() -> None:
@@ -189,7 +289,10 @@ def main() -> None:
     test_script_schema()
     test_ad_copy_schema()
     test_delivery_contract_schema()
+    test_generation_services_reject_invalid_inputs_before_external_calls()
+    test_delivery_task_semantics_reject_fake_success()
     test_cleanup_marker_contract()
+    test_cleanup_covers_delivery_task_json_markers()
     test_manifest_actions_and_db_contracts()
     test_response_shape()
     test_frontend_crud_methods_match_backend_routes()

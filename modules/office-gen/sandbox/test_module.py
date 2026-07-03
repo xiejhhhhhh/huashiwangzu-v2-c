@@ -6,18 +6,31 @@ blocks used by the framework export pipeline.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import io
+import os
 import sys
 import types
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_ROOT = PROJECT_ROOT / "backend"
+os.environ.setdefault("JWT_SECRET", "office-gen-sandbox-test-secret")
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 
 def _load_backend_module(name: str) -> types.ModuleType:
-    full_name = f"office_gen_sandbox.{name}"
-    file_path = PROJECT_ROOT / "modules" / "office-gen" / "backend" / f"{name}.py"
+    package_name = "office_gen_sandbox"
+    backend_dir = PROJECT_ROOT / "modules" / "office-gen" / "backend"
+    if package_name not in sys.modules:
+        package = types.ModuleType(package_name)
+        setattr(package, "__path__", [str(backend_dir)])
+        sys.modules[package_name] = package
+
+    full_name = f"{package_name}.{name}"
+    file_path = backend_dir / f"{name}.py"
     spec = importlib.util.spec_from_file_location(full_name, file_path)
     if not spec or not spec.loader:
         raise RuntimeError(f"Cannot load module: {file_path}")
@@ -28,6 +41,7 @@ def _load_backend_module(name: str) -> types.ModuleType:
 
 
 gen = _load_backend_module("generator")
+router = _load_backend_module("router")
 
 
 def _assert_docx(data: bytes) -> None:
@@ -144,6 +158,65 @@ def test_generators_reject_empty_outputs() -> None:
         raise AssertionError(f"{func.__name__} accepted empty payload")
 
 
+def test_router_http_models_accept_content_ir_aliases() -> None:
+    docx = router.GenerateDocxRequest(
+        filename="alias_doc",
+        blocks=[{"type": "paragraph", "text": "ok"}],
+    ).model_dump()
+    assert docx["blocks"][0]["text"] == "ok"
+
+    xlsx = router.GenerateXlsxRequest(
+        filename="alias_sheet",
+        content_ir={"blocks": [{"type": "sheet", "data": {"name": "Data"}}]},
+    ).model_dump()
+    assert xlsx["content_ir"]["blocks"][0]["type"] == "sheet"
+
+
+def test_router_helpers_reject_bad_parameters() -> None:
+    from app.core.exceptions import ValidationError
+
+    for value in (None, "", 0, -1, "abc", True):
+        try:
+            router._positive_int(value, "file_id")
+        except ValidationError:
+            continue
+        raise AssertionError(f"_positive_int accepted bad value: {value!r}")
+
+    for target_format in (None, "", "exe"):
+        try:
+            router._normalize_convert_format(target_format)
+        except ValidationError:
+            continue
+        raise AssertionError(f"_normalize_convert_format accepted bad value: {target_format!r}")
+
+    try:
+        router._render_generated_bytes(lambda: (_ for _ in ()).throw(RuntimeError("missing dependency")))
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("_render_generated_bytes accepted RuntimeError")
+
+
+def test_capability_bad_parameters_fail_before_io() -> None:
+    from app.core.exceptions import ValidationError
+
+    async def run_checks() -> None:
+        cases = [
+            router._cap_convert({"file_id": "abc"}, "user:1"),
+            router._cap_convert({"file_id": 0}, "user:1"),
+            router._cap_replace_existing({"format": "xlsx", "target_file_id": "abc"}, "user:1"),
+            router._cap_export_to_artifact({"file_id": False}, "user:1"),
+        ]
+        for case in cases:
+            try:
+                await case
+            except ValidationError:
+                continue
+            raise AssertionError("bad capability parameters did not raise ValidationError")
+
+    asyncio.run(run_checks())
+
+
 def main() -> None:
     tests = [
         test_docx_generation_accepts_content_ir_blocks,
@@ -151,6 +224,9 @@ def main() -> None:
         test_pptx_generation_accepts_content_ir_elements,
         test_pdf_generation_accepts_content_ir_blocks,
         test_generators_reject_empty_outputs,
+        test_router_http_models_accept_content_ir_aliases,
+        test_router_helpers_reject_bad_parameters,
+        test_capability_bad_parameters_fail_before_io,
     ]
     print("=" * 60)
     print("office-gen sandbox test")

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from app.core.exceptions import ValidationError
 from app.database import AsyncSessionLocal
-from sqlalchemy import delete, or_, select
+from sqlalchemy import Text, cast, delete, or_, select
 
 from .models import (
     DouyinAccount,
@@ -54,6 +54,34 @@ def _require_marker(marker: str) -> str:
     if len(value) < 6:
         raise ValidationError("cleanup marker must be at least 6 characters")
     return value
+
+
+def _has_failure_signal(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("success") is False:
+            return True
+        status = str(value.get("status") or value.get("state") or "").strip().lower()
+        if status in {"failed", "failure", "error", "rejected"}:
+            return True
+        for key in ("error", "error_message", "failure_reason"):
+            if str(value.get(key) or "").strip():
+                return True
+        return any(_has_failure_signal(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_failure_signal(item) for item in value)
+    return False
+
+
+def _validate_task_result_semantics(status: str, error_message: str, result_payload: dict | None) -> None:
+    has_error_message = bool(error_message.strip())
+    if status == "failed":
+        if not has_error_message:
+            raise ValidationError("Failed delivery task requires error_message")
+        return
+    if has_error_message:
+        raise ValidationError("error_message is only allowed when delivery task status is failed")
+    if status == "succeeded" and _has_failure_signal(result_payload):
+        raise ValidationError("Succeeded delivery task result_payload must not contain failure semantics")
 
 
 async def list_accounts(owner_id: int, channel: str | None = None) -> list[dict]:
@@ -259,8 +287,9 @@ async def create_delivery_task(data: dict, owner_id: int) -> dict:
     task_type = _validate_choice("task_type", data.get("task_type", "publish_script"), VALID_DELIVERY_TASK_TYPES)
     target_type = _validate_choice("target_type", data.get("target_type", "campaign"), VALID_DELIVERY_TARGET_TYPES)
     status = _validate_choice("status", data.get("status", "pending"), VALID_DELIVERY_TASK_STATUSES)
-    if status == "failed" and not str(data.get("error_message", "")).strip():
-        raise ValidationError("Failed delivery task requires error_message")
+    error_message = str(data.get("error_message", "") or "")
+    result_payload = data.get("result_payload")
+    _validate_task_result_semantics(status, error_message, result_payload)
     now = _now()
     async with AsyncSessionLocal() as db:
         task = DouyinDeliveryTask(
@@ -271,8 +300,8 @@ async def create_delivery_task(data: dict, owner_id: int) -> dict:
             status=status,
             priority=int(data.get("priority", 5)),
             payload=data.get("payload"),
-            result_payload=data.get("result_payload"),
-            error_message=data.get("error_message", ""),
+            result_payload=result_payload,
+            error_message=error_message,
             started_at=now if status == "running" else data.get("started_at"),
             finished_at=now if status in {"succeeded", "failed", "cancelled"} else data.get("finished_at"),
         )
@@ -290,8 +319,6 @@ async def update_delivery_task(task_id: int, data: dict, owner_id: int) -> dict 
     ):
         if field in data:
             data[field] = _validate_choice(field, data[field], allowed)
-    if data.get("status") == "failed" and not str(data.get("error_message", "")).strip():
-        raise ValidationError("Failed delivery task requires error_message")
     async with AsyncSessionLocal() as db:
         r = await db.execute(
             select(DouyinDeliveryTask).where(
@@ -303,6 +330,10 @@ async def update_delivery_task(task_id: int, data: dict, owner_id: int) -> dict 
         task = r.scalar_one_or_none()
         if not task:
             return None
+        status = data.get("status", task.status)
+        error_message = str(data.get("error_message", task.error_message or "") or "")
+        result_payload = data.get("result_payload", task.result_payload)
+        _validate_task_result_semantics(status, error_message, result_payload)
         for field in (
             "task_type",
             "target_type",
@@ -345,6 +376,7 @@ async def mark_delivery_task_status(
         task = r.scalar_one_or_none()
         if not task:
             return None
+        _validate_task_result_semantics(status, error_message, result_payload)
         task.status = status
         task.error_message = error_message if status == "failed" else ""
         if result_payload is not None:
@@ -410,6 +442,8 @@ async def cleanup_marked_data(owner_id: int, marker: str) -> dict:
                     DouyinDeliveryTask.task_type.ilike(pattern),
                     DouyinDeliveryTask.target_type.ilike(pattern),
                     DouyinDeliveryTask.error_message.ilike(pattern),
+                    cast(DouyinDeliveryTask.payload, Text).ilike(pattern),
+                    cast(DouyinDeliveryTask.result_payload, Text).ilike(pattern),
                 ),
             )
         )

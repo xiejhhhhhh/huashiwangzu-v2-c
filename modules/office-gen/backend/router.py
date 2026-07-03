@@ -45,6 +45,34 @@ def _normalize_format(format_type: object) -> str:
     return fmt
 
 
+def _normalize_convert_format(format_type: object) -> str:
+    fmt = str(format_type or "").lower().lstrip(".").strip()
+    if not fmt:
+        raise ValidationError("target_format is required")
+    if fmt not in converter.SUPPORTED_FORMATS:
+        supported = ", ".join(sorted(converter.SUPPORTED_FORMATS))
+        raise ValidationError(f"Unsupported target_format: {fmt}. Supported: {supported}")
+    return fmt
+
+
+def _positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValidationError(f"{name} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValidationError(f"{name} must be a positive integer")
+    return parsed
+
+
+def _optional_positive_int(value: object, name: str) -> int | None:
+    if value is None or value == "":
+        return None
+    return _positive_int(value, name)
+
+
 def _require_non_empty_list(params: dict, key: str, aliases: tuple[str, ...] = ()) -> list:
     for candidate in (key, *aliases):
         value = params.get(candidate)
@@ -61,7 +89,7 @@ def _require_non_empty_list(params: dict, key: str, aliases: tuple[str, ...] = (
 def _render_generated_bytes(render) -> bytes:
     try:
         return render()
-    except ValueError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise ValidationError(str(exc)) from exc
 
 
@@ -192,7 +220,7 @@ async def _cap_docx(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名文档")
     content = _require_non_empty_list(params, "content", ("blocks",))
-    folder_id = params.get("folder_id")
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
 
     data = {"filename": filename, "content": content}
     bytes_data = _render_generated_bytes(lambda: generator.generate_docx(data))
@@ -207,7 +235,7 @@ async def _cap_xlsx(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名表格")
     sheets = _require_non_empty_list(params, "sheets", ("工作表", "blocks"))
-    folder_id = params.get("folder_id")
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
 
     data = {"filename": filename, "sheets": sheets}
     bytes_data = _render_generated_bytes(lambda: generator.generate_xlsx(data))
@@ -222,7 +250,7 @@ async def _cap_pptx(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名演示")
     slides = _require_non_empty_list(params, "slides", ("幻灯片", "blocks"))
-    folder_id = params.get("folder_id")
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
 
     data = {"filename": filename, "slides": slides}
     bytes_data = _render_generated_bytes(lambda: generator.generate_pptx(data))
@@ -237,7 +265,7 @@ async def _cap_pdf(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名文档")
     content = _require_non_empty_list(params, "content", ("blocks",))
-    folder_id = params.get("folder_id")
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
 
     data = {"filename": filename, "content": content}
     bytes_data = _render_generated_bytes(lambda: generator.generate_pdf(data))
@@ -250,16 +278,13 @@ async def _cap_pdf(params: dict, caller: str) -> dict:
 # =====================================================================
 async def _cap_convert(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
-    file_id = params.get("file_id")
-    target_format = params.get("target_format", "pdf")
-
-    if not file_id:
-        raise ValidationError("file_id is required")
+    file_id = _positive_int(params.get("file_id"), "file_id")
+    target_format = _normalize_convert_format(params.get("target_format", "pdf"))
 
     async with AsyncSessionLocal() as db:
         _, source_path, _ = await read_uploaded_file(
             db,
-            int(file_id),
+            file_id,
             owner_id,
             converter.SUPPORTED_FORMATS,
         )
@@ -268,14 +293,13 @@ async def _cap_convert(params: dict, caller: str) -> dict:
             output_name, output_bytes = await converter.convert_by_file_id(
                 str(source_path), target_format
             )
-        except ValueError as exc:
+        except (FileNotFoundError, RuntimeError, TimeoutError, ValueError) as exc:
             raise ValidationError(str(exc)) from exc
 
-    out_ext = target_format.lower().lstrip(".")
     result = await _save_file_bytes(
         output_bytes,
         os.path.splitext(output_name)[0],
-        out_ext,
+        target_format,
         owner_id,
     )
     return result
@@ -310,9 +334,11 @@ register_capability(
                     },
                 },
             },
+            "blocks": {"type": "array", "description": "Content IR block alias for content"},
+            "content_ir": {"type": "object", "description": "Content IR object with non-empty blocks"},
             "folder_id": {"type": "integer", "description": "Target folder ID (optional, root if omitted)"},
         },
-        "required": ["filename", "content"],
+        "required": ["filename"],
     },
     min_role="editor",
 )
@@ -338,9 +364,11 @@ register_capability(
                     },
                 },
             },
+            "blocks": {"type": "array", "description": "Content IR sheet block alias for sheets"},
+            "content_ir": {"type": "object", "description": "Spreadsheet Content IR object with non-empty blocks"},
             "folder_id": {"type": "integer", "description": "Target folder ID (optional)"},
         },
-        "required": ["filename", "sheets"],
+        "required": ["filename"],
     },
     min_role="editor",
 )
@@ -366,9 +394,11 @@ register_capability(
                     },
                 },
             },
+            "blocks": {"type": "array", "description": "Content IR slide block alias for slides"},
+            "content_ir": {"type": "object", "description": "Presentation Content IR object with non-empty blocks"},
             "folder_id": {"type": "integer", "description": "Target folder ID (optional)"},
         },
-        "required": ["filename", "slides"],
+        "required": ["filename"],
     },
     min_role="editor",
 )
@@ -396,9 +426,11 @@ register_capability(
                     },
                 },
             },
+            "blocks": {"type": "array", "description": "Content IR block alias for content"},
+            "content_ir": {"type": "object", "description": "Document Content IR object with non-empty blocks"},
             "folder_id": {"type": "integer", "description": "Target folder ID (optional)"},
         },
-        "required": ["filename", "content"],
+        "required": ["filename"],
     },
     min_role="editor",
 )
@@ -434,7 +466,7 @@ async def _cap_generate_to_artifact(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     format_type = _normalize_format(params.get("format", "xlsx"))
     filename = params.get("filename", "未命名文档")
-    folder_id = params.get("folder_id")
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
 
     bytes_data = _generate_bytes_for_format(format_type, filename, params)
 
@@ -474,10 +506,7 @@ async def _cap_replace_existing(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     format_type = _normalize_format(params.get("format", "xlsx"))
     filename = params.get("filename", "未命名文档")
-    target_file_id = int(params.get("target_file_id", 0))
-
-    if target_file_id <= 0:
-        raise ValidationError("target_file_id must be a positive integer")
+    target_file_id = _positive_int(params.get("target_file_id"), "target_file_id")
 
     bytes_data = _generate_bytes_for_format(format_type, filename, params)
 
@@ -509,10 +538,7 @@ async def _cap_replace_existing(params: dict, caller: str) -> dict:
 async def _cap_export_to_artifact(params: dict, caller: str) -> dict:
     """Export an existing office file as an artifact record for version management."""
     owner_id = resolve_caller_user_id(caller)
-    file_id = int(params.get("file_id", 0))
-
-    if file_id <= 0:
-        raise ValidationError("file_id must be a positive integer")
+    file_id = _positive_int(params.get("file_id"), "file_id")
 
     async with AsyncSessionLocal() as db:
         from app.services.file_service import check_file_access
@@ -563,6 +589,8 @@ register_capability(
             "sheets": {"type": "array", "description": "Sheets array (for xlsx)"},
             "content": {"type": "array", "description": "Content blocks (for docx/pdf)"},
             "slides": {"type": "array", "description": "Slides array (for pptx)"},
+            "blocks": {"type": "array", "description": "Content IR blocks alias for the chosen format"},
+            "content_ir": {"type": "object", "description": "Content IR object with non-empty blocks"},
             "folder_id": {"type": "integer", "description": "Target folder ID (optional)"},
         },
         "required": ["format", "filename"],
@@ -583,6 +611,8 @@ register_capability(
             "sheets": {"type": "array", "description": "Sheets array (for xlsx)"},
             "content": {"type": "array", "description": "Content blocks (for docx/pdf)"},
             "slides": {"type": "array", "description": "Slides array (for pptx)"},
+            "blocks": {"type": "array", "description": "Content IR blocks alias for the chosen format"},
+            "content_ir": {"type": "object", "description": "Content IR object with non-empty blocks"},
         },
         "required": ["format", "target_file_id"],
     },
@@ -611,24 +641,32 @@ register_capability(
 class GenerateDocxRequest(BaseModel):
     filename: str = "未命名文档"
     content: list = Field(default_factory=list)
+    blocks: list = Field(default_factory=list)
+    content_ir: dict | None = None
     folder_id: int | None = None
 
 
 class GenerateXlsxRequest(BaseModel):
     filename: str = "未命名表格"
     sheets: list = Field(default_factory=list)
+    blocks: list = Field(default_factory=list)
+    content_ir: dict | None = None
     folder_id: int | None = None
 
 
 class GeneratePptxRequest(BaseModel):
     filename: str = "未命名演示"
     slides: list = Field(default_factory=list)
+    blocks: list = Field(default_factory=list)
+    content_ir: dict | None = None
     folder_id: int | None = None
 
 
 class GeneratePdfRequest(BaseModel):
     filename: str = "未命名文档"
     content: list = Field(default_factory=list)
+    blocks: list = Field(default_factory=list)
+    content_ir: dict | None = None
     folder_id: int | None = None
 
 

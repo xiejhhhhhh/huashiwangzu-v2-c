@@ -27,6 +27,7 @@ VALID_CHANNELS = set(CHANNEL_LABELS)
 VALID_SCRIPT_STATUSES = {"draft", "ready", "published", "archived"}
 VALID_AD_COPY_STATUSES = {"draft", "ready", "published", "archived"}
 VALID_CAMPAIGN_STATUSES = {"planning", "running", "paused", "ended"}
+VALID_AD_TYPES = {"feed", "search", "brand"}
 
 
 def _now() -> datetime:
@@ -38,6 +39,13 @@ def _validate_choice(field: str, value: str, allowed: set[str]) -> str:
         allowed_text = ", ".join(sorted(allowed))
         raise ValidationError(f"Invalid {field}: {value}. Allowed: {allowed_text}")
     return value
+
+
+def _require_text(field: str, value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValidationError(f"{field} is required")
+    return text
 
 
 def _validate_optional_channel(channel: str | None) -> str:
@@ -89,6 +97,8 @@ async def _load_prompt_with_fallback(db, key: str, owner_id: int, **format_kwarg
 # ── Script generation ───────────────────────────────────────────
 
 async def generate_script(product: str, channel: str, owner_id: int) -> dict:
+    product = _require_text("product", product)
+    channel = _validate_choice("channel", channel or "local_push", VALID_CHANNELS)
     channel_label = CHANNEL_LABELS.get(channel, channel)
     async with AsyncSessionLocal() as db:
         system_prompt = await _load_prompt_with_fallback(db, "persona_system", owner_id)
@@ -108,6 +118,9 @@ async def generate_script(product: str, channel: str, owner_id: int) -> dict:
 # ── Ad copy generation ──────────────────────────────────────────
 
 async def generate_ad_copy(product: str, channel: str, ad_type: str, owner_id: int) -> dict:
+    product = _require_text("product", product)
+    channel = _validate_choice("channel", channel or "ocean_engine", VALID_CHANNELS)
+    ad_type = _validate_choice("ad_type", ad_type or "feed", VALID_AD_TYPES)
     channel_label = CHANNEL_LABELS.get(channel, channel)
     async with AsyncSessionLocal() as db:
         system_prompt = await _load_prompt_with_fallback(db, "persona_system", owner_id)
@@ -129,6 +142,8 @@ async def generate_ad_copy(product: str, channel: str, ad_type: str, owner_id: i
 async def validate_content(content: str, owner_id: int) -> dict:
     from app.services.module_registry import call_capability
 
+    content = _require_text("content", content)
+    knowledge_error: str | None = None
     try:
         kb_result = await call_capability(
             "knowledge", "search",
@@ -144,6 +159,7 @@ async def validate_content(content: str, owner_id: int) -> dict:
         kb_results = []
         evidence_meta = {}
         has_knowledge = False
+        knowledge_error = str(exc)
 
     async with AsyncSessionLocal() as db:
         validation_prompt = await _load_prompt_with_fallback(db, "ingredient_validation", owner_id, content=content)
@@ -159,6 +175,7 @@ async def validate_content(content: str, owner_id: int) -> dict:
         "has_knowledge_base_results": has_knowledge,
         "knowledge_results": kb_results,
         "evidence_meta": evidence_meta,
+        "knowledge_error": knowledge_error,
         "ai_validation": ai_review.get("content", ""),
     }
 
@@ -397,7 +414,7 @@ async def list_ad_copies(owner_id: int, channel: str | None = None) -> list[dict
 
 async def save_ad_copy(data: dict, owner_id: int) -> dict:
     channel = _validate_choice("channel", data.get("channel", "ocean_engine"), VALID_CHANNELS)
-    ad_type = _validate_choice("ad_type", data.get("ad_type", "feed"), {"feed", "search", "brand"})
+    ad_type = _validate_choice("ad_type", data.get("ad_type", "feed"), VALID_AD_TYPES)
     status = _validate_choice("status", data.get("status", "draft"), VALID_AD_COPY_STATUSES)
     async with AsyncSessionLocal() as db:
         copy = DouyinAdCopy(
@@ -424,7 +441,7 @@ async def update_ad_copy(copy_id: int, data: dict, owner_id: int) -> dict | None
     if "channel" in data:
         data["channel"] = _validate_choice("channel", data["channel"], VALID_CHANNELS)
     if "ad_type" in data:
-        data["ad_type"] = _validate_choice("ad_type", data["ad_type"], {"feed", "search", "brand"})
+        data["ad_type"] = _validate_choice("ad_type", data["ad_type"], VALID_AD_TYPES)
     if "status" in data:
         data["status"] = _validate_choice("status", data["status"], VALID_AD_COPY_STATUSES)
     async with AsyncSessionLocal() as db:

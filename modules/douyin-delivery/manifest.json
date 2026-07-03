@@ -33,11 +33,11 @@
   },
   "public_actions": [
     {"action": "generate_script", "description": "生成抖音口播脚本", "parameters": {"product": {"type": "string", "description": "产品名称或卖点方向"}, "channel": {"type": "string", "description": "投放渠道: local_push/ocean_engine/qianchuan"}}, "min_role": "editor"},
-    {"action": "generate_ad_copy", "description": "生成广告文案", "parameters": {"product": {"type": "string", "description": "产品名称或卖点"}, "channel": {"type": "string", "description": "投放渠道"}, "ad_type": {"type": "string", "description": "广告类型"}}, "min_role": "editor"},
+    {"action": "generate_ad_copy", "description": "生成广告文案", "parameters": {"product": {"type": "string", "description": "产品名称或卖点"}, "channel": {"type": "string", "description": "投放渠道: local_push/ocean_engine/qianchuan"}, "ad_type": {"type": "string", "description": "广告类型: feed/search/brand"}}, "min_role": "editor"},
     {"action": "validate_content", "description": "知识库校验成分/功效内容", "parameters": {"content": {"type": "string", "description": "需要校验的文本"}}, "min_role": "editor"},
     {"action": "create_delivery_task", "description": "创建抖音投递任务并返回可审计状态", "parameters": {"task_type": {"type": "string", "description": "publish_script/publish_ad_copy/sync_metrics/review_content"}, "target_type": {"type": "string", "description": "script/ad_copy/campaign/material"}, "target_id": {"type": "integer", "description": "目标逻辑 ID"}, "payload": {"type": "object", "description": "投递参数"}}, "min_role": "editor"},
     {"action": "mark_task_failed", "description": "把投递任务标记为 failed 并写入失败原因", "parameters": {"task_id": {"type": "integer", "description": "投递任务 ID"}, "error_message": {"type": "string", "description": "失败原因"}, "result_payload": {"type": "object", "description": "可选失败上下文"}}, "min_role": "editor"},
-    {"action": "cleanup_marked_data", "description": "按 marker 清理当前用户测试数据", "parameters": {"marker": {"type": "string", "description": "测试数据标记，至少 6 字符"}}, "min_role": "editor"}
+    {"action": "cleanup_marked_data", "description": "按 marker 清理当前用户测试数据（含投递任务 payload/result_payload）", "parameters": {"marker": {"type": "string", "description": "测试数据标记，至少 6 字符"}}, "min_role": "editor"}
   ],
   "dependency_declaration": [{"module": "knowledge", "optional": true}],
   "event_handler_declaration": [],
