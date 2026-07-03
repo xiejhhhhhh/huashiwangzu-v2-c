@@ -33,10 +33,14 @@ ACCOUNTS = {
 TS = int(time.time() * 1000)
 results: list[dict[str, Any]] = []
 _pending_deletions: list[int] = []  # 延后到所有测试结束后统一删除，避免异步 kb_pipeline 争抢
+_TOKEN_CACHE: dict[str, str] = {}
 
 # ── 辅助 ──────────────────────────────────────────────────────────────
 
-async def _ensure_token(role: str = "admin") -> str:
+async def _ensure_token(role: str = "admin", *, force_refresh: bool = False) -> str:
+    if not force_refresh and role in _TOKEN_CACHE:
+        return _TOKEN_CACHE[role]
+
     acct = ACCOUNTS.get(role, ACCOUNTS["admin"])
     async with httpx.AsyncClient(base_url=BACKEND_BASE, timeout=10, trust_env=False) as client:
         resp = await client.post("/api/login", json={
@@ -46,19 +50,47 @@ async def _ensure_token(role: str = "admin") -> str:
         data = resp.json()
         token = data.get("data", data).get("access_token") or data.get("access_token")
         if not token:
-            raise RuntimeError(f"Login failed {role}: {data}")
+            raise RuntimeError(f"Login failed {role}: status={resp.status_code}, data={data}")
+        _TOKEN_CACHE[role] = token
         return token
 
-async def _upload_file(filename: str, content: bytes, mime: str, folder_id: str = "0") -> dict:
-    token = await _ensure_token()
-    async with httpx.AsyncClient(base_url=BACKEND_BASE, timeout=30, trust_env=False) as client:
-        resp = await client.post(
-            "/api/files/upload",
-            files={"file": (filename, content, mime)},
-            data={"folder_id": folder_id},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+
+def _json_or_raw(resp: httpx.Response) -> dict:
+    try:
         return resp.json()
+    except Exception:
+        return {"raw": resp.text[:500]}
+
+
+async def _request_with_auth(
+    method: str,
+    path: str,
+    *,
+    role: str = "admin",
+    timeout: int = 30,
+    **kwargs: Any,
+) -> dict:
+    token = await _ensure_token(role)
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers["Authorization"] = f"Bearer {token}"
+    async with httpx.AsyncClient(base_url=BACKEND_BASE, timeout=timeout, trust_env=False) as client:
+        resp = await client.request(method, path, headers=headers, **kwargs)
+        if resp.status_code == 401:
+            token = await _ensure_token(role, force_refresh=True)
+            headers["Authorization"] = f"Bearer {token}"
+            resp = await client.request(method, path, headers=headers, **kwargs)
+        return {"status": resp.status_code, "data": _json_or_raw(resp)}
+
+
+async def _upload_file(filename: str, content: bytes, mime: str, folder_id: str = "0") -> dict:
+    result = await _request_with_auth(
+        "POST",
+        "/api/files/upload",
+        timeout=30,
+        files={"file": (filename, content, mime)},
+        data={"folder_id": folder_id},
+    )
+    return result["data"]
 
 async def _delete_file(file_id: int) -> bool:
     r = await probe("POST", "/api/files/delete", {"id": file_id, "type": "file"})
@@ -83,29 +115,63 @@ async def _flush_pending_deletions() -> int:
     return ok
 
 
-async def _await_queue_settle(baseline_pending: int = 0, timeout: int = 30) -> dict:
+async def _await_queue_settle(
+    baseline_pending: int = 0,
+    timeout: int = 30,
+    interval: float = 0.25,
+    quiet_samples: int = 2,
+) -> dict:
     """Wait for the task queue pending count to settle back to baseline (or timeout)."""
     print(f"  等待异步队列静默... (pending baseline={baseline_pending})")
     deadline = time.monotonic() + timeout
     last_state = {}
+    last_log = 0.0
+    quiet_seen = 0
     while time.monotonic() < deadline:
-        r = await probe("GET", "/api/tasks/worker/status")
-        state = r.get("data", {}).get("data", r.get("data", {}))
+        state = await _read_queue_state()
         pend = state.get("pending", 0)
         last_state = state
         if pend <= baseline_pending:
-            print(f"  队列静默: pending={pend} (基线 {baseline_pending})")
-            return state
+            quiet_seen += 1
+            if quiet_seen >= quiet_samples:
+                state["_settled"] = True
+                print(f"  队列静默: pending={pend} (基线 {baseline_pending})")
+                return state
+        else:
+            quiet_seen = 0
         elapsed = timeout - (deadline - time.monotonic())
-        print(f"  等待中... pending={pend} (已等 {elapsed:.0f}s/{timeout}s)")
-        await asyncio.sleep(2)
+        if elapsed - last_log >= 1 or last_log == 0.0:
+            print(f"  等待中... pending={pend} (已等 {elapsed:.0f}s/{timeout}s)")
+            last_log = elapsed
+        await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
     print(f"  超时: pending 未归零 (最后状态 pending={last_state.get('pending', '?')})")
+    last_state["_settled"] = False
+    last_state["_settle_timed_out"] = True
     return last_state
 
 
 async def _read_queue_state() -> dict:
     r = await probe("GET", "/api/tasks/worker/status")
+    if r.get("status") != 200:
+        raise RuntimeError(f"Queue status probe failed: status={r.get('status')}, data={r.get('data')}")
     return r.get("data", {}).get("data", r.get("data", {}))
+
+
+async def _quick_queue_quiet_probe(
+    baseline_pending: int = 0,
+    samples: int = 2,
+    interval: float = 0.2,
+) -> dict:
+    last_state = {}
+    for idx in range(samples):
+        last_state = await _read_queue_state()
+        if last_state.get("pending", 0) > baseline_pending:
+            last_state["_quick_quiet"] = False
+            return last_state
+        if idx < samples - 1:
+            await asyncio.sleep(interval)
+    last_state["_quick_quiet"] = True
+    return last_state
 
 def _cap_ok(r: dict) -> bool:
     """Check capability inner success (data.data.success), fallback to data.success."""
@@ -179,31 +245,15 @@ def _make_png() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 async def probe(method: str, path: str, body: dict | None = None, role: str = "admin") -> dict:
-    token = await _ensure_token(role)
-    headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient(base_url=BACKEND_BASE, timeout=30, trust_env=False) as client:
-        resp = await client.request(method, path, json=body, headers=headers)
-        try:
-            data = resp.json()
-        except Exception:
-            data = {"raw": resp.text[:500]}
-        return {"status": resp.status_code, "data": data}
+    return await _request_with_auth(method, path, role=role, timeout=30, json=body)
 
 async def call_capability(module: str, action: str, params: dict | None = None, role: str = "admin") -> dict:
-    token = await _ensure_token(role)
-    headers = {"Authorization": f"Bearer {token}"}
     body = {
         "target_module": module,
         "action": action,
         "parameters": params or {},
     }
-    async with httpx.AsyncClient(base_url=BACKEND_BASE, timeout=60, trust_env=False) as client:
-        resp = await client.post("/api/modules/call", json=body, headers=headers)
-        try:
-            data = resp.json()
-        except Exception:
-            data = {"raw": resp.text[:500]}
-        return {"status": resp.status_code, "data": data}
+    return await _request_with_auth("POST", "/api/modules/call", role=role, timeout=60, json=body)
 
 def add_result(scenario: str, passed: bool, notes: str = "", status: str | None = None) -> None:
     result_status = status or ("PASS" if passed else "FAIL")
@@ -606,26 +656,36 @@ async def main():
     print("\n═══════════════════ 清理 + 异步队列验证 ═══════════════════\n")
 
     # Wait for tasks created by this smoke run to drain back to the pre-run baseline.
-    await _await_queue_settle(baseline_pending=pre_pending, timeout=30)
+    after_business = await _await_queue_settle(baseline_pending=pre_pending, timeout=30)
 
     # 延后删除所有测试文件
     cleanup_count = len(_pending_deletions)
     deleted = await _flush_pending_deletions()
     print(f"  清理: 删除了 {deleted} 个测试文件")
 
-    # 再等待一轮：让本次操作的队列稳定
-    final = await _await_queue_settle(baseline_pending=pre_pending, timeout=30)
+    # 清理后先短间隔探测；未产生异步积压时跳过第二轮长 settle。
+    if cleanup_count == 0:
+        print("  清理队列为空，跳过第二轮异步队列等待")
+        final = after_business
+    else:
+        post_cleanup = await _quick_queue_quiet_probe(baseline_pending=pre_pending)
+        if post_cleanup.get("_quick_quiet"):
+            print("  清理后队列保持静默，跳过第二轮异步队列等待")
+            final = post_cleanup
+        else:
+            final = await _await_queue_settle(baseline_pending=pre_pending, timeout=30)
 
     # 查最终异步队列状态
     failed_now = final.get("failed", 0)
     pending_now = final.get("pending", 0)
-    oldest = final.get("oldest_waiting_seconds", 0)
+    oldest = final.get("oldest_waiting_seconds", 0) or 0
+    settle_timed_out = bool(final.get("_settle_timed_out"))
     new_failures = _new_failed_delta(failed_now, pre_failed)
     add_result("Z1 异步队列无意外新增失败", _no_new_queue_failures(failed_now, pre_failed),
                f"failed: {pre_failed}(业务前基线) → {failed_now}(终), 新增={new_failures}, "
                f"清理文件数={cleanup_count}")
-    add_result("Z2 异步队列积压可解释", pending_now <= 5,
-               f"pending={pending_now}, oldest_waiting={oldest}s")
+    add_result("Z2 异步队列积压可解释", pending_now <= 5 and not settle_timed_out,
+               f"pending={pending_now}, oldest_waiting={oldest}s, settle_timeout={settle_timed_out}")
     print("\n" + "=" * 60)
     print("  红绿矩阵")
     print("=" * 60)

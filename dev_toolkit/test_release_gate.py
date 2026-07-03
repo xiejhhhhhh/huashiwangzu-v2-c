@@ -1,9 +1,11 @@
 """Tests for release_gate.py — check level classification logic."""
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import anyio
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -14,14 +16,19 @@ GATE_SCRIPT = REPO_ROOT / "dev_toolkit" / "release_gate.py"
 BACKEND_PYTHON = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess:
+def _run(args: list[str], *, timeout: int = 360) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(BACKEND_PYTHON), str(GATE_SCRIPT), *args],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
-        timeout=360,
+        timeout=timeout,
     )
+
+
+@pytest.fixture(scope="module")
+def release_gate_preflight() -> subprocess.CompletedProcess:
+    return _run(["--skip-ui", "--preflight"], timeout=120)
 
 
 def test_help_output() -> None:
@@ -37,28 +44,50 @@ def test_help_output() -> None:
     assert "--preflight" in r.stdout
 
 
-def test_release_gate_runs_with_skip_ui() -> None:
-    """--skip-ui should complete without crash, output verdict."""
-    r = _run(["--skip-ui"])
+def test_release_gate_cli_preflight_runs_with_skip_ui(
+    release_gate_preflight: subprocess.CompletedProcess,
+) -> None:
+    """--skip-ui --preflight should complete without heavy smoke/sandbox checks."""
+    r = release_gate_preflight
     assert r.returncode in (0, 1), f"exit={r.returncode}, stderr={r.stderr[:1000]}"
     assert "RELEASE GATE VERDICT" in r.stdout
     assert "Health check" in r.stdout
     assert "Queue:" in r.stdout
     assert "Sandbox matrix" in r.stdout
+    summary = release_gate.parse_prefixed_json(r.stdout, "RELEASE_GATE_JSON:")
+    assert summary is not None
+    assert summary["gate_mode"] == "preflight"
+    assert summary["preflight"] is True
+    assert summary["ui_skipped"] is True
     # Even on failure, the output should be properly formatted
     output = r.stdout
     if r.returncode == 0:
         assert "ALL CHECKS PASS" in output or "No BLOCKER" in output or "PASS_WITH_DEBT" in output
 
 
-def test_output_contains_levels() -> None:
+def test_preflight_output_contains_levels(
+    release_gate_preflight: subprocess.CompletedProcess,
+) -> None:
     """Each check should have a PASS/BLOCKER/DEBT/SKIPPED level."""
-    r = _run(["--skip-ui"])
+    r = release_gate_preflight
     for level in ("PASS", "BLOCKER", "DEBT", "SKIPPED_WITH_REASON"):
         if level in r.stdout:
             return
     # At least one of these should be present
     raise AssertionError(f"no expected level found in output: {r.stdout[:500]}")
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_release_gate_full_skip_ui_is_opt_in() -> None:
+    """Full --skip-ui gate is intentionally slow and never runs in ordinary pytest."""
+    if os.environ.get("RUN_FULL_RELEASE_GATE") != "1":
+        pytest.skip("set RUN_FULL_RELEASE_GATE=1 to run the full --skip-ui release gate")
+    r = _run(["--skip-ui"])
+    assert r.returncode in (0, 1), f"exit={r.returncode}, stderr={r.stderr[:1000]}"
+    assert "RELEASE GATE VERDICT" in r.stdout
+    assert "Smoke test (backends)" in r.stdout
+    assert "Sandbox matrix" in r.stdout
 
 
 def test_final_verdict_distinguishes_clean_pass_from_debt() -> None:
@@ -86,6 +115,19 @@ def test_sandbox_matrix_skips_are_debt_not_clean_pass() -> None:
     )
     assert level == "DEBT"
     assert "skip" in detail
+
+
+def test_project_python_prefers_backend_venv_then_current_interpreter(tmp_path, monkeypatch) -> None:
+    backend_python = tmp_path / "backend-python"
+    backend_python.write_text("", encoding="utf-8")
+    fallback_python = tmp_path / "current-python"
+
+    monkeypatch.setattr(release_gate, "BACKEND_PYTHON", backend_python)
+    monkeypatch.setattr(release_gate.sys, "executable", str(fallback_python))
+    assert release_gate._project_python() == str(backend_python)
+
+    monkeypatch.setattr(release_gate, "BACKEND_PYTHON", tmp_path / "missing-python")
+    assert release_gate._project_python() == str(fallback_python)
 
 
 def test_skip_ui_marks_release_summary_as_debt() -> None:
@@ -223,8 +265,9 @@ def test_semantic_failed_completed_delta_is_blocker_only_for_new_growth() -> Non
 
 if __name__ == "__main__":
     test_help_output()
-    test_release_gate_runs_with_skip_ui()
-    test_output_contains_levels()
+    preflight = _run(["--skip-ui", "--preflight"], timeout=120)
+    test_release_gate_cli_preflight_runs_with_skip_ui(preflight)
+    test_preflight_output_contains_levels(preflight)
     test_final_verdict_distinguishes_clean_pass_from_debt()
     test_sandbox_matrix_skips_are_debt_not_clean_pass()
     test_skip_ui_marks_release_summary_as_debt()

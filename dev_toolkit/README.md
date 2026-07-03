@@ -307,6 +307,51 @@ mailbox_check_delivery_bundle(task_name)
 | `module_sandbox_matrix(check)` | 模块 sandbox 验收矩阵：列出全部模块的 sandbox/test/可运行状态，`--check` 运行 auto-runnable 用例 |
 | `start_frontend()` | 启动前端开发服务器（等价 `cd frontend && npm run dev`） |
 
+## Test And Release Gate Policy
+
+The live stack is a long-running fixture: backend defaults to `33000`, and frontend defaults to `5173`. Tests should call the running services instead of starting or stopping them inside test cases; UI tests should reuse storage state and wait on conditions.
+
+| Level | When to use it | Command |
+|------|----------------|---------|
+| fast | Quick confirmation after docs, small Python tooling, or pure unit changes | `backend/.venv/bin/python -m pytest <target> -q` |
+| targeted | Focused validation for one backend file, toolkit component, or module sandbox | `backend/.venv/bin/python -m pytest <test-file-or-node> -q`; for one module sandbox use `PYTHONPATH=backend backend/.venv/bin/python modules/<module>/sandbox/test_module.py` |
+| integration | Live backend, module capability, task queue, smoke, or UI validation | `python3.14 dev_toolkit/smoke.py`; UI-only run: `cd frontend && npm run test:browser` |
+| full | Pre-release gate combining health, system status, smoke, queue audit, and sandbox matrix | `backend/.venv/bin/python dev_toolkit/release_gate.py` |
+
+Common pre-release variants:
+
+```bash
+# Fast release preflight: health/status/queue baseline only; skips smoke and sandbox.
+backend/.venv/bin/python dev_toolkit/release_gate.py --preflight
+
+# Backend preflight: skips UI, so the result can only be PASS_WITH_DEBT / backend preflight.
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui
+
+# Full sandbox matrix.
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --check
+
+# Current single-module sandbox path.
+PYTHONPATH=backend backend/.venv/bin/python modules/<module>/sandbox/test_module.py
+```
+
+`module_sandbox_matrix --module <module>` / `--modules a,b,c` is the recommended target filter contract: `--module` should run one module, `--modules` should run a comma-separated set, and both should compose with `--check` / `--json`. The current script has not implemented these two filter flags yet; until that lands, do not treat them as executable commands. Use the direct single-module sandbox command above.
+
+Suggested pytest markers:
+
+```ini
+[pytest]
+markers =
+    fast: pure unit/contract tests that do not require the live stack
+    targeted: focused regression tests for one file, service, or module
+    integration: tests that require the live backend, database, worker, or module capability calls
+    e2e: browser/UI tests that require the frontend dev server
+    slow: long-running suites, release gates, or broad regression checks
+```
+
+Recommended usage: use `-m "fast or targeted"` for quick local confirmation, `-m integration` for live-stack validation, and `release_gate.py` as the source of truth before release.
+
+UI screenshots are opt-in with `UI_E2E_SCREENSHOTS=1`. Current `frontend/tests/ui-e2e.spec.mjs` writes enabled screenshots to `$HOME/Downloads/ui-e2e`; reports should use that actual path unless a later change adds a separate screenshot directory variable.
+
 ### 工作区管理
 | 工具 | 说明 |
 |------|------|

@@ -145,6 +145,27 @@ def test_feedback_empty_state_output_shape() -> None:
     print("  [FEEDBACK_EMPTY_STATE] Output shape valid")
 
 
+def test_metrics_enrichment_degraded_output_shape() -> None:
+    """Capability stats/rebuild must expose DB metrics enrichment failures."""
+    stats = {
+        "index_status": "ready",
+        "metrics_degraded": True,
+        "metrics_enrichment_error": "database connection failed",
+    }
+    assert stats["metrics_degraded"] is True
+    assert isinstance(stats["metrics_enrichment_error"], str)
+    assert len(stats["metrics_enrichment_error"]) > 0
+
+    healthy_stats = {
+        "index_status": "ready",
+        "metrics_degraded": False,
+        "metrics_enrichment_error": None,
+    }
+    assert healthy_stats["metrics_degraded"] is False
+    assert healthy_stats["metrics_enrichment_error"] is None
+    print("  [METRICS_ENRICHMENT_DEGRADED] Output shape valid")
+
+
 def test_file_info_output_shape() -> None:
     """File info output shape contract."""
     info = {
@@ -241,6 +262,7 @@ def main() -> None:
     test_report_inaccuracy_params()
     test_list_feedback_params()
     test_feedback_empty_state_output_shape()
+    test_metrics_enrichment_degraded_output_shape()
     test_file_info_output_shape()
     test_impact_output_shape()
     test_boundary_check_output_shape()

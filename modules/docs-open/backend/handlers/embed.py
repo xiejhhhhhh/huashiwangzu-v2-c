@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import html
+import json
+from urllib.parse import urlencode
+
 # ── Document type mapping ──
 
 DOC_TYPE_MAP = {
@@ -40,6 +44,32 @@ def _get_doc_type(extension: str) -> dict:
     return {**info, "extension": ext}
 
 
+def _html(value: object) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def _json_script(value: object) -> str:
+    return (
+        json.dumps(value, ensure_ascii=False)
+        .replace("</", "<\\/")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def _token_headers(cid: str, oid: str, token: str) -> dict[str, str]:
+    return {"X-Client-Id": cid, "X-Open-Id": oid, "X-Access-Token": token}
+
+
+def _content_url(base: str, file_id: int) -> str:
+    return f"{base}/api/docs/{file_id}/content"
+
+
+def _file_url(base: str, file_id: int, token: str, cid: str, oid: str) -> str:
+    query = urlencode({"token": token, "client_id": cid, "open_id": oid})
+    return f"{base}/api/docs/{file_id}/file?{query}"
+
+
 # ── Embed HTML generator ──
 
 def _generate_embed_html(
@@ -76,10 +106,13 @@ def _generate_embed_html(
 
 
 def _spreadsheet_embed_html(file_id: int, name: str, base: str, token: str, cid: str, oid: str, editable: bool) -> str:
+    name_html = _html(name)
+    content_url_js = _json_script(_content_url(base, file_id))
+    headers_js = _json_script(_token_headers(cid, oid, token))
     return rf"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)} - 文档</title>
+<title>{name_html} - 文档</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;font-family:苹方,"微软雅黑",宋体,sans-serif;background:#fff;color:#333}}
@@ -95,14 +128,15 @@ th{{background:#f5f7fa;font-weight:500;color:#606266;position:sticky;top:0;z-ind
 .error{{display:flex;align-items:center;justify-content:center;height:100%;color:#f56c6c;font-size:14px;padding:20px;text-align:center}}
 </style></head>
 <body>
-<div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{"可编辑" if editable else "只读"}</span></div>
+<div class="toolbar"><h2>{name_html}</h2><span class="badge">{"可编辑" if editable else "只读"}</span></div>
 <div class="content" id="app"><div class="loading">加载中…</div></div>
 <script>
 (async function(){{
   const app=document.getElementById('app')
+  const esc=(v)=>String(v).replace(/[&<>"']/g,(ch)=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]))
   try{{
-    const r=await fetch('{base}/api/docs/{file_id}/content',{{
-      headers:{{'X-Client-Id':'{cid}','X-Open-Id':'{oid}','X-Access-Token':'{token}'}}
+    const r=await fetch({content_url_js},{{
+      headers:{headers_js}
     }})
     if(!r.ok)throw new Error('HTTP '+r.status)
     const body=await r.json()
@@ -142,14 +176,14 @@ th{{background:#f5f7fa;font-weight:500;color:#606266;position:sticky;top:0;z-ind
       html+='<tr><th>'+r+'</th>'
       for(const c of sortedCols){{
         const val=(rows[r]?.[c]||'')
-        html+='<td>'+(typeof val==='string'?val.replace(/</g,'&lt;').replace(/>/g,'&gt;'):String(val))+'</td>'
+        html+='<td>'+esc(val)+'</td>'
       }}
       html+='</tr>'
     }}
     html+='</tbody></table></div>'
     app.innerHTML=html
   }}catch(e){{
-    app.innerHTML='<div class="error">加载失败: '+e.message+'</div>'
+    app.innerHTML='<div class="error">加载失败: '+esc(e.message)+'</div>'
   }}
 }})()
 </script>
@@ -157,10 +191,14 @@ th{{background:#f5f7fa;font-weight:500;color:#606266;position:sticky;top:0;z-ind
 
 
 def _csv_embed_html(file_id: int, name: str, base: str, token: str, cid: str, oid: str, editable: bool) -> str:
+    name_html = _html(name)
+    content_url_js = _json_script(_content_url(base, file_id))
+    headers_js = _json_script(_token_headers(cid, oid, token))
+    editable_js = _json_script(bool(editable))
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)} - CSV</title>
+<title>{name_html} - CSV</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;font-family:苹方,"微软雅黑",宋体,sans-serif;background:#fff;color:#333}}
@@ -171,34 +209,35 @@ textarea{{width:100%;height:100%;border:1px solid #e4e7ed;border-radius:4px;padd
 .loading{{display:flex;align-items:center;justify-content:center;height:100%;color:#909399}}
 </style></head>
 <body>
-<div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{"可编辑" if editable else "只读"}</span></div>
+<div class="toolbar"><h2>{name_html}</h2><span class="badge">{"可编辑" if editable else "只读"}</span></div>
 <div class="content" id="app"><div class="loading">加载中…</div></div>
 <script>
 (async function(){{
   const app=document.getElementById('app')
+  const esc=(v)=>String(v).replace(/[&<>"']/g,(ch)=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]))
   try{{
-    const r=await fetch('{base}/api/docs/{file_id}/content',{{
-      headers:{{'X-Client-Id':'{cid}','X-Open-Id':'{oid}','X-Access-Token':'{token}'}}
+    const r=await fetch({content_url_js},{{
+      headers:{headers_js}
     }})
     const body=await r.json()
     if(!body.success)throw new Error(body.error||'加载失败')
     const text=body.data?.content||''
-    if({str(editable).lower()} && 'content' in (body.data||{{}})){{
-      app.innerHTML='<textarea id="editor">'+text.replace(/</g,'&lt;')+'</textarea><div style="margin-top:8px;text-align:right"><button onclick="saveCsv()" style="padding:6px 16px;background:#2395bc;color:#fff;border:none;border-radius:4px;cursor:pointer">保存</button></div>'
+    if({editable_js} && 'content' in (body.data||{{}})){{
+      app.innerHTML='<textarea id="editor">'+esc(text)+'</textarea><div style="margin-top:8px;text-align:right"><button onclick="saveCsv()" style="padding:6px 16px;background:#2395bc;color:#fff;border:none;border-radius:4px;cursor:pointer">保存</button></div>'
       window.saveCsv=async function(){{
         const val=document.getElementById('editor').value
-        const r=await fetch('{base}/api/docs/{file_id}/content',{{
-          method:'POST',headers:{{'Content-Type':'application/json','X-Client-Id':'{cid}','X-Open-Id':'{oid}','X-Access-Token':'{token}'}},
+        const r=await fetch({content_url_js},{{
+          method:'POST',headers:{{'Content-Type':'application/json',...{headers_js}}},
           body:JSON.stringify({{content:val}})
         }})
         const b=await r.json()
         alert(b.success?'✅ 保存成功':'❌ '+b.error)
       }}
     }}else{{
-      app.innerHTML='<textarea readonly>'+text.replace(/</g,'&lt;')+'</textarea>'
+      app.innerHTML='<textarea readonly>'+esc(text)+'</textarea>'
     }}
   }}catch(e){{
-    app.innerHTML='<div class="loading">加载失败: '+e.message+'</div>'
+    app.innerHTML='<div class="loading">加载失败: '+esc(e.message)+'</div>'
   }}
 }})()
 </script>
@@ -206,10 +245,15 @@ textarea{{width:100%;height:100%;border:1px solid #e4e7ed;border-radius:4px;padd
 
 
 def _text_embed_html(file_id: int, name: str, ext: str, base: str, token: str, cid: str, oid: str, editable: bool) -> str:
+    name_html = _html(name)
+    ext_html = _html(ext.upper())
+    content_url_js = _json_script(_content_url(base, file_id))
+    headers_js = _json_script(_token_headers(cid, oid, token))
+    editable_js = _json_script(bool(editable))
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)} - 文本</title>
+<title>{name_html} - 文本</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;font-family:苹方,"微软雅黑",宋体,sans-serif;background:#fff;color:#333}}
@@ -224,36 +268,37 @@ textarea:focus{{border-color:#2395bc}}
 .loading{{display:flex;align-items:center;justify-content:center;height:100%;color:#909399;font-size:14px}}
 </style></head>
 <body>
-<div class="toolbar"><h2>{__import__("html").escape(name)}</h2>
-<span class="badge">{ext.upper()} {"可编辑" if editable else "只读"}</span>
+<div class="toolbar"><h2>{name_html}</h2>
+<span class="badge">{ext_html} {"可编辑" if editable else "只读"}</span>
 <button class="save-btn" id="saveBtn" onclick="saveText()" style="display:none">保存</button>
 </div>
 <div class="content" id="app"><div class="loading">加载中…</div></div>
 <script>
 (async function(){{
   const app=document.getElementById('app')
+  const esc=(v)=>String(v).replace(/[&<>"']/g,(ch)=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]))
   try{{
-    const r=await fetch('{base}/api/docs/{file_id}/content',{{
-      headers:{{'X-Client-Id':'{cid}','X-Open-Id':'{oid}','X-Access-Token':'{token}'}}
+    const r=await fetch({content_url_js},{{
+      headers:{headers_js}
     }})
     const body=await r.json()
     if(!body.success)throw new Error(body.error||'加载失败')
     const text=body.data?.content||''
-    const canEdit={'true' if editable else 'false'}
-    if(canEdit==='true'){{
-      app.innerHTML='<textarea id="editor">'+text.replace(/</g,'&lt;')+'</textarea>'
+    const canEdit={editable_js}
+    if(canEdit){{
+      app.innerHTML='<textarea id="editor">'+esc(text)+'</textarea>'
       document.getElementById('saveBtn').style.display='inline-block'
     }}else{{
-      app.innerHTML='<textarea readonly>'+text.replace(/</g,'&lt;')+'</textarea>'
+      app.innerHTML='<textarea readonly>'+esc(text)+'</textarea>'
     }}
   }}catch(e){{
-    app.innerHTML='<div class="loading">加载失败: '+e.message+'</div>'
+    app.innerHTML='<div class="loading">加载失败: '+esc(e.message)+'</div>'
   }}
 }})()
 window.saveText=async function(){{
   const val=document.getElementById('editor').value
-  const r=await fetch('{base}/api/docs/{file_id}/content',{{
-    method:'POST',headers:{{'Content-Type':'application/json','X-Client-Id':'{cid}','X-Open-Id':'{oid}','X-Access-Token':'{token}'}},
+  const r=await fetch({content_url_js},{{
+    method:'POST',headers:{{'Content-Type':'application/json',...{headers_js}}},
     body:JSON.stringify({{content:val}})
   }})
   const b=await r.json()
@@ -264,11 +309,12 @@ window.saveText=async function(){{
 
 
 def _pdf_embed_html(file_id: int, name: str, base: str, token: str, cid: str, oid: str) -> str:
-    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
+    file_url = _html(_file_url(base, file_id, token, cid, oid))
+    name_html = _html(name)
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)} - PDF</title>
+<title>{name_html} - PDF</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;background:#f0f2f5;font-family:苹方,"微软雅黑",宋体,sans-serif}}
@@ -280,19 +326,21 @@ iframe{{width:100%;height:100%;border:none;border-radius:4px;box-shadow:0 2px 8p
 .loading{{color:#909399;font-size:14px}}
 </style></head>
 <body>
-<div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">PDF</span></div>
+<div class="toolbar"><h2>{name_html}</h2><span class="badge">PDF</span></div>
 <div class="content">
-<iframe src="{file_url}" title="{__import__("html").escape(name)}"></iframe>
+<iframe src="{file_url}" title="{name_html}"></iframe>
 </div>
 </body></html>"""
 
 
 def _doc_embed_html(file_id: int, name: str, ext: str, base: str, token: str, cid: str, oid: str) -> str:
-    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
+    file_url = _html(_file_url(base, file_id, token, cid, oid))
+    name_html = _html(name)
+    ext_html = _html(ext.upper())
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)} - 文档</title>
+<title>{name_html} - 文档</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;background:#f0f2f5;font-family:苹方,"微软雅黑",宋体,sans-serif}}
@@ -304,19 +352,21 @@ iframe{{width:100%;height:100%;border:none;border-radius:4px;box-shadow:0 2px 8p
 .loading{{color:#909399;font-size:14px}}
 </style></head>
 <body>
-<div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{ext.upper()}</span></div>
+<div class="toolbar"><h2>{name_html}</h2><span class="badge">{ext_html}</span></div>
 <div class="content">
-<iframe src="{file_url}" title="{__import__("html").escape(name)}"></iframe>
+<iframe src="{file_url}" title="{name_html}"></iframe>
 </div>
 </body></html>"""
 
 
 def _presentation_embed_html(file_id: int, name: str, ext: str, base: str, token: str, cid: str, oid: str) -> str:
-    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
+    file_url = _html(_file_url(base, file_id, token, cid, oid))
+    name_html = _html(name)
+    ext_html = _html(ext.upper())
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)} - 演示</title>
+<title>{name_html} - 演示</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;background:#f0f2f5;font-family:苹方,"微软雅黑",宋体,sans-serif}}
@@ -328,19 +378,21 @@ iframe{{width:100%;height:100%;border:none;border-radius:4px;box-shadow:0 2px 8p
 .loading{{color:#909399;font-size:14px}}
 </style></head>
 <body>
-<div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{ext.upper()}</span></div>
+<div class="toolbar"><h2>{name_html}</h2><span class="badge">{ext_html}</span></div>
 <div class="content">
-<iframe src="{file_url}" title="{__import__("html").escape(name)}"></iframe>
+<iframe src="{file_url}" title="{name_html}"></iframe>
 </div>
 </body></html>"""
 
 
 def _image_embed_html(file_id: int, name: str, ext: str, base: str, token: str, cid: str, oid: str) -> str:
-    img_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}"
+    img_url = _html(_file_url(base, file_id, token, cid, oid))
+    name_html = _html(name)
+    ext_html = _html(ext.upper())
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)} - 图片</title>
+<title>{name_html} - 图片</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;background:#f0f2f5;font-family:苹方,"微软雅黑",宋体,sans-serif}}
@@ -351,19 +403,22 @@ html,body{{height:100%;background:#f0f2f5;font-family:苹方,"微软雅黑",宋�
 img{{max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}}
 </style></head>
 <body>
-<div class="toolbar"><h2>{__import__("html").escape(name)}</h2><span class="badge">{ext.upper()}</span></div>
+<div class="toolbar"><h2>{name_html}</h2><span class="badge">{ext_html}</span></div>
 <div class="content">
-<img src="{img_url}" alt="{__import__("html").escape(name)}" />
+<img src="{img_url}" alt="{name_html}" />
 </div>
 </body></html>"""
 
 
 def _fallback_embed_html(file_id: int, name: str, ext: str, base: str = "", token: str = "", cid: str = "", oid: str = "") -> str:
-    file_url = f"{base}/api/docs/{file_id}/file?token={token}&client_id={cid}&open_id={oid}" if base and token else f"/api/docs/{file_id}/file"
+    raw_file_url = _file_url(base, file_id, token, cid, oid) if base and token else f"/api/docs/{file_id}/file"
+    file_url = _html(raw_file_url)
+    name_html = _html(name)
+    ext_html = _html(ext)
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{__import__("html").escape(name)}</title>
+<title>{name_html}</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{height:100%;background:#fff;font-family:苹方,"微软雅黑",宋体,sans-serif}}
@@ -373,8 +428,8 @@ html,body{{height:100%;background:#fff;font-family:苹方,"微软雅黑",宋体,
 <body>
 <div class="content">
 <div class="icon">📄</div>
-<h3>{__import__("html").escape(name)}</h3>
-<p>格式 .{ext} 暂不支持在线预览</p>
+<h3>{name_html}</h3>
+<p>格式 .{ext_html} 暂不支持在线预览</p>
 <p style="font-size:13px"><a href="{file_url}" style="color:#2395bc">下载文件</a></p>
 </div>
 </body></html>"""

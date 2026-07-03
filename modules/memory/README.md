@@ -60,6 +60,13 @@ All `agent_*` prefix (shared with agent's `agent_*` convention):
 ## How to query/use
 Agent engine calls memory capabilities during conversations: `save` for facts, `recall`/`match_experience` for retrieval, `fuse` for summarization, `dream` for periodic optimization. All calls go through framework `call_capability("memory", "...", {...})`.
 
+## Verification
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py
+python3.14 scripts/check-capability-drift.py
+```
+
 ## Boundaries/notes
 - Embeddings use framework `model_services.get_embedding()` (bge-m3, 1024 dim).
 - Embedding writes validate exactly 1024 finite numeric dimensions before storing. Wrong backend/model dimensions are logged and treated as a failed embedding, not fake success.

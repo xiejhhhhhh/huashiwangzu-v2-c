@@ -29,6 +29,11 @@ from typing import Any
 
 import httpx
 
+try:
+    from dev_toolkit.process_tools import create_subprocess_exec_group, terminate_process_tree
+except ModuleNotFoundError:
+    from process_tools import create_subprocess_exec_group, terminate_process_tree
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_PYTHON = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
 BACKEND_BASE = "http://127.0.0.1:33000"
@@ -46,6 +51,10 @@ ACCOUNTS = {
 results: list[dict[str, Any]] = []
 _token_cache: dict[str, tuple[str, float]] = {}
 _TOKEN_MAX_AGE = 300  # 5 min — short enough to avoid stale-after-smoke expiry
+
+
+def _project_python() -> str:
+    return str(BACKEND_PYTHON if BACKEND_PYTHON.exists() else Path(sys.executable))
 
 
 def add_result(check: str, level: str, detail: str) -> None:
@@ -286,17 +295,17 @@ async def check_system_status() -> None:
 
 
 async def check_smoke(skip_ui: bool) -> None:
+    proc: asyncio.subprocess.Process | None = None
     try:
         started = time.monotonic()
         env_override = {"SMOKE_SKIP_UI": "1"} if skip_ui else {}
         env = {**os.environ.copy(), **env_override}
-        smoke_python = str(BACKEND_PYTHON if BACKEND_PYTHON.exists() else Path(sys.executable))
-        proc = await asyncio.create_subprocess_exec(
-            smoke_python,
+        proc = await create_subprocess_exec_group(
+            _project_python(),
             str(REPO_ROOT / "dev_toolkit" / "smoke.py"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(REPO_ROOT),
+            cwd=REPO_ROOT,
             env=env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=360)
@@ -357,7 +366,13 @@ async def check_smoke(skip_ui: bool) -> None:
             add_result("Smoke test (backends)", "BLOCKER",
                        f"{elapsed:.0f}s, exit={proc.returncode}, failures: {len(fail_lines)}")
     except asyncio.TimeoutError:
+        if proc is not None:
+            await terminate_process_tree(proc)
         add_result("Smoke test (backends)", "BLOCKER", "timeout (>360s)")
+    except asyncio.CancelledError:
+        if proc is not None:
+            await terminate_process_tree(proc)
+        raise
     except Exception as e:
         add_result("Smoke test (backends)", "BLOCKER", str(e))
 
@@ -447,15 +462,16 @@ async def check_task_queue_audit(
 
 async def check_sandbox_matrix() -> None:
     """Run module_sandbox_matrix.py and report summary."""
+    proc: asyncio.subprocess.Process | None = None
     try:
         started = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
+        proc = await create_subprocess_exec_group(
+            _project_python(),
             str(REPO_ROOT / "dev_toolkit" / "module_sandbox_matrix.py"),
             "--check", "--json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(REPO_ROOT),
+            cwd=REPO_ROOT,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
         elapsed = time.monotonic() - started
@@ -476,7 +492,13 @@ async def check_sandbox_matrix() -> None:
         level, detail = classify_sandbox_matrix(entries, elapsed)
         add_result("Sandbox matrix", level, detail)
     except asyncio.TimeoutError:
+        if proc is not None:
+            await terminate_process_tree(proc)
         add_result("Sandbox matrix", "BLOCKER", "timeout (>180s)")
+    except asyncio.CancelledError:
+        if proc is not None:
+            await terminate_process_tree(proc)
+        raise
     except Exception as e:
         add_result("Sandbox matrix", "BLOCKER", str(e))
 

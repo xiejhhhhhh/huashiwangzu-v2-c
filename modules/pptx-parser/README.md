@@ -26,13 +26,9 @@ Parse PPTX files into unified content blocks (slide text, picture detection).
 ## Verification
 
 ```bash
-# Health check
+PYTHONPATH=backend backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py
+(cd modules/pptx-parser/sandbox && npm run build)
+
 curl http://127.0.0.1:33000/api/pptx-parser/health
-
-# Parse a file
-curl -X POST http://127.0.0.1:33000/api/pptx-parser/parse \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{"file_id": <id>}'
+python3.14 scripts/check-capability-drift.py
 ```
-

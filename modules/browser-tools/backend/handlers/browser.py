@@ -16,6 +16,7 @@ import ipaddress
 import logging
 import math
 import os
+import shutil
 import socket
 import tempfile
 import time
@@ -218,6 +219,21 @@ def _blocked_error(url: str) -> str:
     return reason if blocked else ""
 
 
+def _safe_download_filename(raw_name: object, fallback: str) -> str:
+    name = str(raw_name or "").strip()
+    if "\x00" in name:
+        raise ValueError("download filename contains an invalid character")
+    if "/" in name or "\\" in name:
+        raise ValueError("download filename must be a basename, not a path")
+    if name in {".", ".."}:
+        raise ValueError("download filename must be a safe basename")
+    if name == "":
+        name = fallback
+    if "/" in name or "\\" in name or name in {"", ".", ".."}:
+        raise ValueError("download filename must be a safe basename")
+    return name
+
+
 async def _ensure_allowed_current_url(page) -> str:
     """Return current URL or raise if navigation ended at a blocked target."""
     current_url = page.url
@@ -393,34 +409,53 @@ async def _cleanup_stale_sessions():
     stale = [sid for sid, s in list(_sessions.items())
              if now - s["last_access"] > _SESSION_TTL]
     for sid in stale:
-        await _close_session(sid)
+        close_result = await _close_session(sid)
+        if close_result["cleanup_errors"]:
+            logger.warning(
+                "Stale browser session %s closed with cleanup errors: %s",
+                sid,
+                close_result["cleanup_errors"],
+            )
 
 
-async def _close_session(session_id: str):
+async def _close_session(session_id: str) -> dict:
     """Close and clean up a browser session."""
     session = _sessions.pop(session_id, None)
     if not session:
-        return
-    try:
-        await session["context"].close()
-    except Exception:
-        pass
-    try:
-        await session["browser"].close()
-    except Exception:
-        pass
+        return {"session_id": session_id, "closed": False, "degraded": False, "cleanup_errors": []}
+
+    cleanup_errors: list[dict[str, str]] = []
+
+    async def _close_part(label: str, resource) -> None:
+        try:
+            await resource.close()
+        except Exception as exc:
+            cleanup_errors.append({"step": label, "error": str(exc)})
+            logger.warning("browser-tools close %s failed for session %s: %s", label, session_id, exc)
+
+    await _close_part("context", session["context"])
+    await _close_part("browser", session["browser"])
     try:
         await session["playwright"].stop()
-    except Exception:
-        pass
+    except Exception as exc:
+        cleanup_errors.append({"step": "playwright", "error": str(exc)})
+        logger.warning("browser-tools close playwright failed for session %s: %s", session_id, exc)
     try:
         temp_dir = session.get("temp_dir", "")
         if temp_dir and os.path.isdir(temp_dir):
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-    except Exception:
-        pass
-    logger.info("Closed stale browser session %s", session_id)
+            shutil.rmtree(temp_dir)
+    except Exception as exc:
+        cleanup_errors.append({"step": "temp_dir", "error": str(exc)})
+        logger.warning("browser-tools temp dir cleanup failed for session %s: %s", session_id, exc)
+
+    result = {
+        "session_id": session_id,
+        "closed": not cleanup_errors,
+        "degraded": bool(cleanup_errors),
+        "cleanup_errors": cleanup_errors,
+    }
+    logger.info("Closed browser session %s (degraded=%s)", session_id, result["degraded"])
+    return result
 
 
 # ── Capabilities ───────────────────────────────────────────────────
@@ -677,7 +712,10 @@ async def _download(params: dict, caller: str) -> dict:
                     await _ensure_allowed_current_url(page)
                 # Trigger download - if no URL just wait for existing download trigger
             download = await download_info.value
-            filename = download.suggested_filename or f"download_{uuid.uuid4().hex[:8]}"
+            filename = _safe_download_filename(
+                download.suggested_filename,
+                f"download_{uuid.uuid4().hex[:8]}",
+            )
             filepath = workspace / filename
             await download.save_as(str(filepath))
             file_size = filepath.stat().st_size
@@ -692,7 +730,10 @@ async def _download(params: dict, caller: str) -> dict:
                 tmp_filepath,
                 timeout=_bounded_timeout_seconds(params.get("timeout", _DEFAULT_TIMEOUT_SECONDS)),
             )
-            filename = Path(urlparse(final_url).path).name or f"download_{uuid.uuid4().hex[:8]}"
+            filename = _safe_download_filename(
+                Path(urlparse(final_url).path).name,
+                f"download_{uuid.uuid4().hex[:8]}",
+            )
             filepath = workspace / filename
             tmp_filepath.replace(filepath)
 
@@ -714,8 +755,14 @@ async def _close(params: dict, caller: str) -> dict:
     _session, session_error = _get_existing_session(session_id, caller)
     if session_error:
         return _err(session_error)
-    await _close_session(session_id)
-    return _ok({"session_id": session_id, "closed": True})
+    close_result = await _close_session(session_id)
+    if close_result["degraded"]:
+        return {
+            "success": False,
+            "data": close_result,
+            "error": "browser close degraded: cleanup errors occurred",
+        }
+    return _ok(close_result)
 
 
 # ── Register capabilities ──

@@ -456,6 +456,63 @@ def test_direct_http_download_redirect_revalidates_ssrf_target() -> None:
     print("  [download] Redirect targets are revalidated for SSRF: PASS")
 
 
+def test_download_filename_rejects_paths() -> None:
+    """Browser suggested_filename must be a safe basename, never a path."""
+    handler = _load_browser_handler()
+    assert handler._safe_download_filename("report.pdf", "fallback.bin") == "report.pdf"
+    assert handler._safe_download_filename("", "fallback.bin") == "fallback.bin"
+    for raw in ("../secret.txt", "/tmp/report.pdf", "nested\\evil.txt", ".", "..", "bad\x00name"):
+        try:
+            handler._safe_download_filename(raw, "fallback.bin")
+        except ValueError:
+            continue
+        raise AssertionError(f"unsafe download filename should fail: {raw!r}")
+    print("  [download] suggested_filename path injection rejected: PASS")
+
+
+class _FakeClosable:
+    def __init__(self, label: str, fail: bool = False) -> None:
+        self.label = label
+        self.fail = fail
+        self.closed = False
+
+    async def close(self) -> None:
+        if self.fail:
+            raise RuntimeError(f"{self.label} failed")
+        self.closed = True
+
+
+class _FakePlaywright:
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.stopped = False
+
+    async def stop(self) -> None:
+        if self.fail:
+            raise RuntimeError("playwright failed")
+        self.stopped = True
+
+
+def test_close_session_reports_cleanup_errors() -> None:
+    """close must report degraded cleanup instead of pretending success."""
+    handler = _load_browser_handler()
+    session_id = "sandbox-close-degraded"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        handler._sessions[session_id] = {
+            "context": _FakeClosable("context", fail=True),
+            "browser": _FakeClosable("browser"),
+            "playwright": _FakePlaywright(),
+            "temp_dir": tmpdir,
+        }
+        result = asyncio.run(handler._close_session(session_id))
+        assert result["closed"] is False
+        assert result["degraded"] is True
+        assert result["cleanup_errors"]
+        assert result["cleanup_errors"][0]["step"] == "context"
+        assert session_id not in handler._sessions
+    print("  [close] Cleanup errors are surfaced as degraded: PASS")
+
+
 def test_close_params() -> None:
     """close: session_id required, returns success/failure."""
     params = {"session_id": "sess_abc"}
@@ -555,6 +612,8 @@ def main() -> None:
     test_direct_http_download_streams_to_file()
     test_direct_http_download_stream_limit_cleans_partial_file()
     test_direct_http_download_redirect_revalidates_ssrf_target()
+    test_download_filename_rejects_paths()
+    test_close_session_reports_cleanup_errors()
     test_close_params()
     test_output_shapes()
     test_no_cookie_localstorage_return()

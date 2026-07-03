@@ -259,6 +259,21 @@ async def _enrich_stats_with_db(stats: dict, db: AsyncSession) -> dict:
         ]
     return stats
 
+
+async def _enrich_capability_stats(stats: dict) -> dict:
+    """Best-effort DB metrics enrichment for cross-module capabilities."""
+    try:
+        async with AsyncSessionLocal() as db:
+            enriched = await _enrich_stats_with_db(stats, db)
+            enriched["metrics_degraded"] = False
+            enriched["metrics_enrichment_error"] = None
+            return enriched
+    except Exception as exc:
+        logger.warning("codemap metrics enrichment failed: %s", exc)
+        stats["metrics_degraded"] = True
+        stats["metrics_enrichment_error"] = str(exc)
+        return stats
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # HTTP Endpoints
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -456,11 +471,7 @@ async def _cap_search(params: dict, caller: str) -> dict:
 async def _cap_stats(params: dict, caller: str) -> dict:
     graph = get_graph()
     stats = graph.stats()
-    try:
-        async with AsyncSessionLocal() as db:
-            stats = await _enrich_stats_with_db(stats, db)
-    except Exception:
-        pass
+    stats = await _enrich_capability_stats(stats)
     return {"success": True, "data": stats}
 
 
@@ -471,11 +482,7 @@ async def _cap_rebuild(params: dict, caller: str) -> dict:
     stats = graph.stats()
     stats["rebuild_triggered"] = True
     stats["rebuild_scope"] = "current_worker"
-    try:
-        async with AsyncSessionLocal() as db:
-            stats = await _enrich_stats_with_db(stats, db)
-    except Exception:
-        pass
+    stats = await _enrich_capability_stats(stats)
     return {"success": True, "data": stats}
 
 

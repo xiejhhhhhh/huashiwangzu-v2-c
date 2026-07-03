@@ -185,6 +185,155 @@ def test_csv_generation():
         os.unlink(tmp_path)
 
 
+async def _async_test_export_csv_unlinks_temp_file():
+    import backend.router as excel_router
+
+    captured_path = ""
+    original_generate_csv = excel_router.generate_csv
+
+    def fake_generate_csv(path: str, state: dict, sheet: str = "Sheet1") -> str:
+        nonlocal captured_path
+        captured_path = path
+        assert os.path.exists(path)
+        return "A,B\n1,2\n"
+
+    excel_router.generate_csv = fake_generate_csv
+    try:
+        result = await excel_router._handle_export(
+            "csv",
+            {"cells": {"A1": "1", "B1": "2"}},
+            "cleanup_csv",
+            "Sheet1",
+            {},
+            None,
+        )
+        assert result["code"] == 0
+        assert result["csv"] == "A,B\n1,2\n"
+        assert captured_path
+        assert not os.path.exists(captured_path)
+    finally:
+        excel_router.generate_csv = original_generate_csv
+        if captured_path and os.path.exists(captured_path):
+            os.unlink(captured_path)
+
+    print('  ✓ test_export_csv_unlinks_temp_file passed')
+
+
+def test_export_csv_unlinks_temp_file():
+    asyncio.run(_async_test_export_csv_unlinks_temp_file())
+
+
+class _DummySessionContext:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+async def _async_test_xlsx_capability_temp_cleanup_on_failures():
+    import backend.router as excel_router
+
+    cleanup_paths: list[str] = []
+    original_async_session_local = excel_router.AsyncSessionLocal
+    original_resolve_state_owner_id = excel_router._resolve_state_owner_id
+    original_read_state_full = excel_router.read_state_full
+    original_handle_export = excel_router._handle_export
+    original_upload_file = excel_router.upload_file
+    original_create_artifact = excel_router.create_artifact
+    original_replace_file_content = excel_router.replace_file_content
+    original_find_workbook = excel_router.find_workbook
+
+    async def fake_resolve_state_owner_id(db, state_key: str, user_id: int, *, write: bool = False) -> int:
+        return user_id
+
+    async def fake_read_state_full(db, state_key: str, sheet: str = "Sheet1", owner_id: int = 0) -> dict:
+        return {"cells": {"A1": "cleanup"}, "styles": {}, "merges": {}, "total_rows": 1, "total_cols": 1}
+
+    async def fake_handle_export(method: str, state: dict, state_key: str, sheet: str, params: dict, db, owner_id: int = 0) -> dict:
+        fd, tmp_path = tempfile.mkstemp(suffix=".xlsx")
+        os.close(fd)
+        with open(tmp_path, "wb") as tmp_file:
+            tmp_file.write(b"temporary xlsx bytes")
+        cleanup_paths.append(tmp_path)
+        return {"code": 0, "file": tmp_path, "filename": f"{state_key}.xlsx"}
+
+    async def fake_find_workbook(db, state_key: str, owner_id: int = 0) -> dict:
+        return {"id": 1, "name": "cleanup-workbook"}
+
+    excel_router.AsyncSessionLocal = _DummySessionContext
+    excel_router._resolve_state_owner_id = fake_resolve_state_owner_id
+    excel_router.read_state_full = fake_read_state_full
+    excel_router._handle_export = fake_handle_export
+    excel_router.find_workbook = fake_find_workbook
+
+    async def assert_failure_cleans_temp(callable_obj, expected_message: str) -> None:
+        before_count = len(cleanup_paths)
+        try:
+            await callable_obj()
+        except RuntimeError as exc:
+            assert expected_message in str(exc)
+        else:
+            raise AssertionError(f"{expected_message} should fail")
+        created_paths = cleanup_paths[before_count:]
+        assert created_paths
+        for tmp_path in created_paths:
+            assert not os.path.exists(tmp_path)
+
+    try:
+        async def raising_upload_file(db, file_obj, filename: str, user_id: int, folder_id=None) -> dict:
+            raise RuntimeError("upload failed")
+
+        excel_router.upload_file = raising_upload_file
+        await assert_failure_cleans_temp(
+            lambda: excel_router._export_xlsx_capability({"state_key": "cleanup_export_upload"}, "user:1"),
+            "upload failed",
+        )
+
+        async def successful_upload_file(db, file_obj, filename: str, user_id: int, folder_id=None) -> dict:
+            return {"id": 11, "name": filename, "extension": "xlsx", "size": 20}
+
+        async def raising_create_artifact(*args, **kwargs) -> dict:
+            raise RuntimeError("artifact failed")
+
+        excel_router.upload_file = successful_upload_file
+        excel_router.create_artifact = raising_create_artifact
+        await assert_failure_cleans_temp(
+            lambda: excel_router._export_xlsx_capability({"state_key": "cleanup_export_artifact"}, "user:1"),
+            "artifact failed",
+        )
+
+        async def raising_replace_file_content(db, file_id: int, user_id: int, content: bytes) -> dict:
+            raise RuntimeError("replace failed")
+
+        excel_router.replace_file_content = raising_replace_file_content
+        await assert_failure_cleans_temp(
+            lambda: excel_router._publish_to_desktop_capability(
+                {"state_key": "cleanup_publish_replace", "target_file_id": 99},
+                "user:1",
+            ),
+            "replace failed",
+        )
+    finally:
+        excel_router.AsyncSessionLocal = original_async_session_local
+        excel_router._resolve_state_owner_id = original_resolve_state_owner_id
+        excel_router.read_state_full = original_read_state_full
+        excel_router._handle_export = original_handle_export
+        excel_router.upload_file = original_upload_file
+        excel_router.create_artifact = original_create_artifact
+        excel_router.replace_file_content = original_replace_file_content
+        excel_router.find_workbook = original_find_workbook
+        for tmp_path in cleanup_paths:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    print('  ✓ test_xlsx_capability_temp_cleanup_on_failures passed')
+
+
+def test_xlsx_capability_temp_cleanup_on_failures():
+    asyncio.run(_async_test_xlsx_capability_temp_cleanup_on_failures())
+
+
 async def _async_test_edit_operations():
     """Test edit operations"""
     from backend.state.manager import cell_get_text
@@ -658,6 +807,8 @@ if __name__ == '__main__':
     test_state_manager()
     test_xlsx_roundtrip()
     test_csv_generation()
+    test_export_csv_unlinks_temp_file()
+    test_xlsx_capability_temp_cleanup_on_failures()
     test_edit_operations()
     test_style_operations()
     test_row_col_operations()

@@ -102,15 +102,6 @@ SCOPE_TABLES: dict[Scope, tuple[str, ...]] = {
     "all-runtime": TASK_TABLES + KNOWLEDGE_TABLES + AGENT_TABLES + FILE_TABLES,
 }
 
-RUNTIME_DIRS = [
-    BACKEND_DATA_DIR / "uploads",
-    BACKEND_DATA_DIR / "workspaces",
-    BACKEND_DATA_DIR / ".tmp_downloads",
-    BACKEND_DATA_DIR / ".tmp_exports",
-    BACKEND_DATA_DIR / "agent",
-]
-
-
 @dataclass(frozen=True)
 class DbConfig:
     host: str
@@ -158,10 +149,16 @@ def _relative(path: Path) -> str:
 def _validate_db_safety(cfg: DbConfig, *, allow_non_local_db: bool) -> None:
     if any(pattern.search(cfg.name) for pattern in PRODUCTION_DB_PATTERNS):
         raise SystemExit(f"Refusing to reset production-like database name: {cfg.name}")
-    if cfg.host.lower() not in LOCAL_DB_HOSTS and not allow_non_local_db:
-        raise SystemExit(
-            f"Refusing non-local database host {cfg.host!r}; pass --allow-non-local-db to override"
-        )
+    if cfg.host.lower() in LOCAL_DB_HOSTS:
+        return
+    if not allow_non_local_db:
+        raise SystemExit(f"Refusing non-local database host {cfg.host!r}")
+    env = {**_read_env(ENV_PATH), **os.environ}
+    app_env = env.get("APP_ENV", "").lower()
+    if env.get("RESET_RUNTIME_ALLOW_REMOTE_DEV") != "1":
+        raise SystemExit("RESET_RUNTIME_ALLOW_REMOTE_DEV=1 is required for non-local database resets")
+    if app_env not in {"development", "test"}:
+        raise SystemExit("APP_ENV must be development or test for non-local database resets")
 
 
 def _validate_confirm(cfg: DbConfig, *, apply: bool, confirm: str) -> None:
@@ -170,20 +167,72 @@ def _validate_confirm(cfg: DbConfig, *, apply: bool, confirm: str) -> None:
         raise SystemExit(f'Apply requires --confirm "{expected}"')
 
 
-def _validate_db_backup(path: Path | None, *, apply: bool) -> None:
+def _manifest_database_name(manifest: dict[str, object]) -> str:
+    for key in ("database_name", "db_name"):
+        value = manifest.get(key)
+        if isinstance(value, str):
+            return value
+    database = manifest.get("database")
+    if isinstance(database, str):
+        return database
+    if isinstance(database, dict):
+        for key in ("name", "database_name", "db_name"):
+            value = database.get(key)
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+def _validate_db_backup(path: Path | None, *, apply: bool, database_name: str) -> None:
     if not apply:
         return
     if path is None:
         raise SystemExit("--db-backup is required when applying a reset")
     if path.is_file():
+        if path.stat().st_size <= 0:
+            raise SystemExit("--db-backup file must be non-empty")
         return
     if path.is_dir() and (path / "database.sql").is_file() and (path / "manifest.json").is_file():
+        try:
+            manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise SystemExit("--db-backup manifest.json must be valid JSON") from exc
+        if not isinstance(manifest, dict):
+            raise SystemExit("--db-backup manifest.json must be a JSON object")
+        backup_database_name = _manifest_database_name(manifest)
+        if not backup_database_name:
+            raise SystemExit("--db-backup manifest.json must include database_name")
+        if backup_database_name != database_name:
+            raise SystemExit(
+                f"--db-backup database mismatch: backup={backup_database_name!r}, current={database_name!r}"
+            )
         return
     raise SystemExit("--db-backup must be an existing file or a directory containing database.sql and manifest.json")
 
 
+def _validate_backend_data_dir() -> Path:
+    raw_backend_data = BACKEND_DATA_DIR.expanduser()
+    if raw_backend_data.is_symlink():
+        raise SystemExit(f"Refusing symlink BACKEND_DATA_DIR: {_relative(raw_backend_data)}")
+    backend_data = raw_backend_data.resolve()
+    backend_root = BACKEND_ROOT.expanduser().resolve()
+    protected = {
+        Path("/").resolve(),
+        Path.home().resolve(),
+        PROJECT_ROOT.expanduser().resolve(),
+        backend_root,
+    }
+    if backend_data in protected:
+        raise SystemExit(f"Refusing protected BACKEND_DATA_DIR: {_relative(backend_data)}")
+    try:
+        backend_data.relative_to(backend_root)
+    except ValueError as exc:
+        raise SystemExit(f"BACKEND_DATA_DIR is outside backend root: {_relative(backend_data)}") from exc
+    return backend_data
+
+
 def _validate_runtime_dirs(paths: list[Path]) -> list[Path]:
-    backend_data = BACKEND_DATA_DIR.resolve()
+    backend_data = _validate_backend_data_dir()
     forbidden = {PROJECT_ROOT.resolve(), BACKEND_ROOT.resolve(), backend_data}
     safe_paths: list[Path] = []
     for raw_path in paths:
@@ -218,9 +267,20 @@ def _validate_backup_dir(backup_dir: Path | None, runtime_dirs: list[Path], *, a
 def _runtime_dirs_for_scope(scope: Scope, *, clean_files: bool) -> list[Path]:
     if not clean_files:
         return []
-    if scope not in {"files", "all-runtime"}:
-        raise SystemExit("--clean-files requires --scope files or --scope all-runtime")
-    return _validate_runtime_dirs(RUNTIME_DIRS)
+    if scope not in {"files", "agent", "all-runtime"}:
+        raise SystemExit("--clean-files requires --scope files, agent, or all-runtime")
+    files_dirs = [
+        BACKEND_DATA_DIR / "uploads",
+        BACKEND_DATA_DIR / "workspaces",
+        BACKEND_DATA_DIR / ".tmp_downloads",
+        BACKEND_DATA_DIR / ".tmp_exports",
+    ]
+    agent_dirs = [BACKEND_DATA_DIR / "agent"]
+    if scope == "files":
+        return _validate_runtime_dirs(files_dirs)
+    if scope == "agent":
+        return _validate_runtime_dirs(agent_dirs)
+    return _validate_runtime_dirs(files_dirs + agent_dirs)
 
 
 async def _table_names(conn: asyncpg.Connection) -> list[str]:
@@ -234,6 +294,50 @@ async def _table_names(conn: asyncpg.Connection) -> list[str]:
         """
     )
     return [str(row["table_name"]) for row in rows]
+
+
+async def _foreign_key_edges(conn: asyncpg.Connection) -> list[tuple[str, str]]:
+    rows = await conn.fetch(
+        """
+        SELECT referenced_table.relname AS referenced_table,
+               dependent_table.relname AS dependent_table
+        FROM pg_constraint constraint_info
+        JOIN pg_class dependent_table ON dependent_table.oid = constraint_info.conrelid
+        JOIN pg_namespace dependent_schema ON dependent_schema.oid = dependent_table.relnamespace
+        JOIN pg_class referenced_table ON referenced_table.oid = constraint_info.confrelid
+        JOIN pg_namespace referenced_schema ON referenced_schema.oid = referenced_table.relnamespace
+        WHERE constraint_info.contype = 'f'
+          AND dependent_schema.nspname = 'public'
+          AND referenced_schema.nspname = 'public'
+        ORDER BY referenced_table.relname, dependent_table.relname
+        """
+    )
+    return [
+        (str(row["referenced_table"]), str(row["dependent_table"]))
+        for row in rows
+    ]
+
+
+def _fk_dependency_closure(
+    seed_tables: list[str],
+    edges: list[tuple[str, str]],
+    available_tables: list[str],
+) -> list[str]:
+    dependents_by_referenced: dict[str, list[str]] = {}
+    available_set = set(available_tables)
+    for referenced_table, dependent_table in edges:
+        if referenced_table in available_set and dependent_table in available_set:
+            dependents_by_referenced.setdefault(referenced_table, []).append(dependent_table)
+
+    affected = set(seed_tables)
+    pending = list(seed_tables)
+    while pending:
+        current = pending.pop(0)
+        for dependent_table in dependents_by_referenced.get(current, []):
+            if dependent_table not in affected:
+                affected.add(dependent_table)
+                pending.append(dependent_table)
+    return [table for table in available_tables if table in affected]
 
 
 def _archive_runtime_dirs(paths: list[Path], backup_dir: Path) -> list[str]:
@@ -279,7 +383,7 @@ async def reset_runtime_data(
     cfg = _db_config()
     _validate_db_safety(cfg, allow_non_local_db=allow_non_local_db)
     _validate_confirm(cfg, apply=apply, confirm=confirm)
-    _validate_db_backup(db_backup, apply=apply)
+    _validate_db_backup(db_backup, apply=apply, database_name=cfg.name)
     runtime_dirs = _runtime_dirs_for_scope(scope, clean_files=clean_files)
     _validate_backup_dir(backup_dir, runtime_dirs, apply=apply, clean_files=clean_files)
 
@@ -296,15 +400,24 @@ async def reset_runtime_data(
         allowed_tables = SCOPE_TABLES[scope]
         truncate_tables = [table for table in allowed_tables if table in available_set]
         skipped_tables = [table for table in allowed_tables if table not in available_set]
+        fk_edges = await _foreign_key_edges(conn)
+        affected_tables = _fk_dependency_closure(truncate_tables, fk_edges, available_tables)
+        offending_tables = sorted(set(affected_tables) - set(allowed_tables))
         archived_dirs: list[str] = []
         cleared_dirs: list[str] = []
+
+        if apply and offending_tables:
+            raise SystemExit(
+                "Refusing reset because FK dependency closure reaches tables outside "
+                f"scope {scope!r}: {', '.join(offending_tables)}"
+            )
 
         if apply:
             if clean_files and backup_dir is not None:
                 archived_dirs = _archive_runtime_dirs(runtime_dirs, backup_dir.expanduser().resolve())
-            if truncate_tables:
-                quoted = ", ".join(_quote_ident(table) for table in truncate_tables)
-                await conn.execute(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE")
+            if affected_tables:
+                quoted = ", ".join(_quote_ident(table) for table in affected_tables)
+                await conn.execute(f"TRUNCATE TABLE {quoted} RESTART IDENTITY RESTRICT")
             if clean_files:
                 cleared_dirs = _clear_runtime_dirs(runtime_dirs)
 
@@ -313,6 +426,8 @@ async def reset_runtime_data(
             "scope": scope,
             "database": cfg.name,
             "truncate_tables": truncate_tables,
+            "affected_tables": affected_tables,
+            "offending_tables": offending_tables,
             "available_tables": available_tables,
             "skipped_tables": skipped_tables,
             "clean_files": clean_files,
@@ -329,12 +444,21 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Safely reset selected development runtime data")
     parser.add_argument("--yes", action="store_true", help="Apply the reset; without this flag the script is dry-run")
     parser.add_argument("--confirm", default="", help='Required with --yes: "RESET <db_name>"')
-    parser.add_argument("--scope", choices=tuple(SCOPE_TABLES), default="all-runtime", help="Runtime data scope")
-    parser.add_argument("--clean-files", action="store_true", help="Archive and clear runtime files for files/all-runtime")
+    parser.add_argument("--scope", choices=tuple(SCOPE_TABLES), default=None, help="Runtime data scope")
+    parser.add_argument(
+        "--clean-files",
+        action="store_true",
+        help="Archive and clear runtime files for files/agent/all-runtime",
+    )
     parser.add_argument("--backup-dir", default="", help="Directory to store runtime file archive before cleaning files")
     parser.add_argument("--db-backup", default="", help="Existing DB backup file or backup directory")
     parser.add_argument("--allow-non-local-db", action="store_true", help="Allow DB hosts outside localhost/127.0.0.1/::1")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.yes and args.scope is None:
+        parser.error("--scope is required with --yes")
+    if args.scope is None:
+        args.scope = "all-runtime"
+    return args
 
 
 def main() -> None:

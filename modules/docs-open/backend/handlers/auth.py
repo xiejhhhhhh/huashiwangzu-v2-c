@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from app.core.exceptions import AuthError, PermissionDenied
 from app.database import get_db
 from app.models.user import User
@@ -95,10 +97,8 @@ def require_docs_permission(min_role: str = "viewer", allow_scoped_token: bool =
 
 
 def _get_base_url(request: Request) -> str:
-    """Build the base URL from the request."""
-    forwarded = request.headers.get("X-Forwarded-Proto", "http")
-    host = request.headers.get("X-Forwarded-Host", request.url.hostname)
-    port = request.url.port
-    if port and port not in (80, 443):
-        return f"{forwarded}://{host}:{port}"
-    return f"{forwarded}://{host}"
+    """Build a trusted base URL without honoring client-controlled forwarded headers."""
+    configured = os.environ.get("DOCS_OPEN_BASE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    return f"{request.url.scheme}://{request.url.netloc}".rstrip("/")

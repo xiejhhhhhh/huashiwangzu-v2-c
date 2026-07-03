@@ -29,6 +29,13 @@ None. Uses framework's `framework_system_task_queues` table (module="scheduler")
 ## How to query/use
 Agent calls `scheduler:create` to schedule future actions, `scheduler:list` to review, `scheduler:cancel` to abort. All via `call_capability("scheduler", "create", {...})`.
 
+## Verification
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/scheduler/sandbox/test_module.py
+python3.14 scripts/check-capability-drift.py
+```
+
 ## Boundaries/notes
 - `scheduled_at` ISO 8601 format; if empty, runs immediately.
 - `recur` supports hourly, daily, weekly, or cron:HH:MM (UTC).

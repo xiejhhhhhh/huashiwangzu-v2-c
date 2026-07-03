@@ -4,10 +4,12 @@ Uses `gh` CLI (must be installed and authenticated).
 Results are structured for consumption by AI agents.
 """
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -55,6 +57,30 @@ def _cache_path() -> Path:
     return _runtime_dir() / "cache.json"
 
 
+def _cache_lock_path() -> Path:
+    return _runtime_dir() / "cache.lock"
+
+
+@contextlib.contextmanager
+def _disk_cache_lock():
+    path = _cache_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except ImportError:
+            logger.warning("fcntl unavailable; github-search disk cache lock is disabled")
+        try:
+            yield
+        finally:
+            try:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                pass
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -86,7 +112,7 @@ def _load_disk_cache() -> dict[str, Any]:
 def _write_disk_cache(data: dict[str, Any]) -> None:
     path = _cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".tmp")
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp_path.write_text(
         json.dumps(data, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
@@ -128,27 +154,28 @@ def _set_cached(cache_key: str, value: CacheValue) -> None:
     expires_at = _utc_now() + _CACHE_TTL
     _memory_cache[cache_key] = (expires_at, value)
 
-    disk_cache = _load_disk_cache()
-    now = _utc_now()
-    fresh_cache: dict[str, JsonValue] = {}
-    for key, item in disk_cache.items():
-        if not isinstance(item, dict):
-            continue
-        expires_at_raw = item.get("expires_at")
-        if not isinstance(expires_at_raw, str):
-            continue
-        try:
-            item_expires_at = datetime.fromisoformat(expires_at_raw)
-        except ValueError:
-            continue
-        if now < item_expires_at:
-            fresh_cache[key] = item
+    with _disk_cache_lock():
+        disk_cache = _load_disk_cache()
+        now = _utc_now()
+        fresh_cache: dict[str, JsonValue] = {}
+        for key, item in disk_cache.items():
+            if not isinstance(item, dict):
+                continue
+            expires_at_raw = item.get("expires_at")
+            if not isinstance(expires_at_raw, str):
+                continue
+            try:
+                item_expires_at = datetime.fromisoformat(expires_at_raw)
+            except ValueError:
+                continue
+            if now < item_expires_at:
+                fresh_cache[key] = item
 
-    fresh_cache[cache_key] = {
-        "expires_at": expires_at.isoformat(),
-        "value": value,
-    }
-    _write_disk_cache(fresh_cache)
+        fresh_cache[cache_key] = {
+            "expires_at": expires_at.isoformat(),
+            "value": value,
+        }
+        _write_disk_cache(fresh_cache)
 
 
 async def _run_gh(args: list[str]) -> str:
@@ -283,8 +310,9 @@ async def get_repo_readme(owner: str, repo: str) -> str | None:
 
 def clear_cache() -> None:
     _memory_cache.clear()
-    try:
-        _cache_path().unlink()
-    except FileNotFoundError:
-        pass
+    with _disk_cache_lock():
+        try:
+            _cache_path().unlink()
+        except FileNotFoundError:
+            pass
     logger.info("Cache cleared")

@@ -61,6 +61,13 @@ When a template has `prompt_language: "en"` and the input prompt contains Chines
 - Each generated file name includes a request suffix to avoid same-millisecond conflicts.
 - Generation, partial persistence, and provider/download failures are recorded in `imagegen_records`; failed validation requests are rejected before generation and are not recorded.
 
+## Verification
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py
+python3.14 scripts/check-capability-drift.py
+```
+
 ## Boundaries/notes
 - Adapters handle auth/signing/request/polling/parsing. They do NOT download URLs or persist to DB.
 - When a template's required credentials are missing, the system auto-downgrades to placeholder (no hard error).

@@ -7,6 +7,7 @@ const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(TEST_DIR, '../..')
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5173'
 const SCREENSHOT_DIR = path.resolve(process.env.HOME || '/tmp', 'Downloads/ui-e2e')
+const MANUAL_SCREENSHOTS_ENABLED = process.env.UI_E2E_SCREENSHOTS === '1'
 const ADMIN_USER = '何焜华'
 const ADMIN_PASS = '123rgE123'
 const TS = Date.now()  // unique suffix to avoid filename conflicts
@@ -19,11 +20,13 @@ const ADMIN_STORAGE_FILE = path.join(TEST_DIR, '.auth/admin.json')
 
 const results = []
 const consoleCollector = []
+const uploadedFilesById = new Map()
 
-function screenshot(page, name) {
+async function screenshot(page, name) {
+  if (!MANUAL_SCREENSHOTS_ENABLED) return ''
   const filePath = path.join(SCREENSHOT_DIR, `${name}.png`)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  page.screenshot({ path: filePath, fullPage: false })
+  await page.screenshot({ path: filePath, fullPage: false })
   return filePath
 }
 
@@ -144,8 +147,14 @@ async function uploadSample(request, token, name, mimeType, content, folderId = 
       folder_id: String(folderId),
     },
   })
-  const body = await uploadResp.json()
-  if (!body.success) throw new Error(`Upload failed: ${body.error}`)
+  const body = await uploadResp.json().catch(() => ({}))
+  if (!uploadResp.ok() || body.success !== true) {
+    throw new Error(`Upload failed: status=${uploadResp.status()}, error=${body.error || JSON.stringify(body).slice(0, 200)}`)
+  }
+  const fileId = fileIdFromUpload(body.data)
+  if (fileId !== undefined && fileId !== null) {
+    uploadedFilesById.set(String(fileId), { fileId, fileName: name })
+  }
   return body.data
 }
 
@@ -156,6 +165,17 @@ function fileIdFromUpload(data) {
 function responseItems(body) {
   const items = body?.data?.items || body?.data || []
   return Array.isArray(items) ? items : []
+}
+
+function responseItemsOrThrow(body, context) {
+  if (body?.success !== true) {
+    throw new Error(`${context} failed: ${body?.error || JSON.stringify(body).slice(0, 200)}`)
+  }
+  const items = body?.data?.items ?? body?.data
+  if (!Array.isArray(items)) {
+    throw new Error(`${context} returned non-list data: ${JSON.stringify(body?.data).slice(0, 200)}`)
+  }
+  return items
 }
 
 function fileItemMatches(item, fileId, fileName) {
@@ -183,14 +203,20 @@ async function readActiveFileItems(request, token, fileName) {
     headers: { Authorization: `Bearer ${token}` },
   })
   const searchBody = await searchResp.json().catch(() => ({}))
-  const searchItems = responseItems(searchBody)
-  if (searchResp.ok() && searchBody?.success !== false && searchItems.length > 0) return searchItems
+  if (!searchResp.ok()) {
+    throw new Error(`Active file search failed: status=${searchResp.status()}, body=${JSON.stringify(searchBody).slice(0, 200)}`)
+  }
+  const searchItems = responseItemsOrThrow(searchBody, 'Active file search')
+  if (searchItems.length > 0) return searchItems
 
   const listResp = await request.get(`${BASE_URL}/api/files/list?folder_id=0&page=1&page_size=200`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   const listBody = await listResp.json().catch(() => ({}))
-  return listResp.ok() && listBody?.success !== false ? responseItems(listBody) : []
+  if (!listResp.ok()) {
+    throw new Error(`Active file list failed: status=${listResp.status()}, body=${JSON.stringify(listBody).slice(0, 200)}`)
+  }
+  return responseItemsOrThrow(listBody, 'Active file list')
 }
 
 async function readRecycleItems(request, token) {
@@ -198,7 +224,10 @@ async function readRecycleItems(request, token) {
     headers: { Authorization: `Bearer ${token}` },
   })
   const recycleBody = await recycleResp.json().catch(() => ({}))
-  return recycleResp.ok() && recycleBody?.success !== false ? responseItems(recycleBody) : []
+  if (!recycleResp.ok()) {
+    throw new Error(`Recycle list failed: status=${recycleResp.status()}, body=${JSON.stringify(recycleBody).slice(0, 200)}`)
+  }
+  return responseItemsOrThrow(recycleBody, 'Recycle list')
 }
 
 async function waitForActiveFileState(request, token, fileId, fileName, expectedVisible) {
@@ -230,6 +259,19 @@ async function waitForDeletedAndRecycled(request, token, fileId, fileName) {
     intervals: [250, 500, 1000],
   }).toBe('true:true')
   return state
+}
+
+async function waitForRecycleFileState(request, token, fileId, fileName, expectedVisible) {
+  let visible = false
+  await expect.poll(async () => {
+    const recycleItems = await readRecycleItems(request, token)
+    visible = recycleItems.some(item => recycleItemMatches(item, fileId, fileName))
+    return visible
+  }, {
+    timeout: 10000,
+    intervals: [250, 500, 1000],
+  }).toBe(expectedVisible)
+  return visible
 }
 
 // Minimal PDF content
@@ -297,7 +339,7 @@ test.describe('Scene 1: Login + Desktop Shell', () => {
     await expect(page.locator('.desktop-shell-container')).toBeVisible()
     await expect(page.locator('.desktop-taskbar')).toBeVisible()
     const errors = consoleCollector.filter(e => e.startsWith('error:'))
-    const ss = screenshot(page, '1.1-admin-desktop')
+    const ss = await screenshot(page, '1.1-admin-desktop')
     results.push({ scenario: '1.1 Admin login', passed: errors.length === 0, screenshot: ss, consoleErrors: [...consoleCollector] })
     expect(errors.length).toBe(0)
   })
@@ -307,7 +349,7 @@ test.describe('Scene 1: Login + Desktop Shell', () => {
     await openLauncher(page)
     await expect(page.locator('.desktop-launcher-grid')).toBeVisible()
     const appCount = await page.locator('.desktop-launcher-app-item').count()
-    const ss = screenshot(page, '1.2-launcher')
+    const ss = await screenshot(page, '1.2-launcher')
     results.push({ scenario: '1.2 Launcher apps', passed: appCount > 0, screenshot: ss, consoleErrors: [...consoleCollector] })
     expect(appCount).toBeGreaterThan(0)
   })
@@ -316,7 +358,7 @@ test.describe('Scene 1: Login + Desktop Shell', () => {
   test('1.3 Viewer role login', async ({ page }) => {
     await gotoDesktop(page)
     await expect(page.locator('.desktop-shell-container')).toBeVisible()
-    const ss = screenshot(page, '1.3-viewer-desktop')
+    const ss = await screenshot(page, '1.3-viewer-desktop')
     results.push({ scenario: '1.3 Viewer login', passed: true, screenshot: ss, consoleErrors: [...consoleCollector] })
   })
 
@@ -370,7 +412,7 @@ test.describe('Scene 2: All Apps Open (Component Mapping)', () => {
       await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
       // Close windows after each app to stay under the 30-window limit
       await closeAllWindows(page)
-      const ss = screenshot(page, `2.1-${appKey}`)
+      const ss = await screenshot(page, `2.1-${appKey}`)
       const errors = consoleCollector.filter(e =>
         e.startsWith('error:') && (
           e.includes('component') || e.includes('not found') ||
@@ -444,7 +486,7 @@ test.describe('Scene 3: File Opening & Viewers', () => {
       }
 
       await page.waitForSelector('.desktop-window', { timeout: 8000 }).catch(() => {})
-      const ss = screenshot(page, `3.1-${fileType}`)
+      const ss = await screenshot(page, `3.1-${fileType}`)
       const hasWindow = await page.locator('.desktop-window').count()
       results.push({
         scenario: `3.1 ${info.label}`,
@@ -479,7 +521,7 @@ test.describe('Scene 3: File Opening & Viewers', () => {
     const windowCount = await page.locator('.desktop-window').count()
     const contentArea = page.locator('.desktop-window .window-content .window-content-padding')
     const hasContent = await contentArea.count() > 0
-    const ss = screenshot(page, '3.4-text-editor')
+    const ss = await screenshot(page, '3.4-text-editor')
     results.push({
       scenario: '3.4 text-editor edit',
       passed: windowCount > 0 && hasContent,
@@ -571,7 +613,7 @@ test.describe('Scene 5: Key Interaction Flows', () => {
     await agentItem.first().click()
     await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
 
-    const ss = screenshot(page, '5.1-agent-chat')
+    const ss = await screenshot(page, '5.1-agent-chat')
     results.push({ scenario: '5.1 Agent chat', passed: true, screenshot: ss, consoleErrors: [...consoleCollector] })
   })
 
@@ -619,32 +661,61 @@ test.describe('Scene 5: Key Interaction Flows', () => {
 
     // Restore
     let restored = false
+    let restoredActiveVisible = false
+    let recycleGoneAfterRestore = false
     let restoreError = ''
+    let recycleItemId = null
+    let originId = null
     if (deleteState.inRecycle) {
-      const recycleId = deleteState.recycleItem?.id
+      recycleItemId = deleteState.recycleItem?.id
       const itemType = deleteState.recycleItem?.item_type || 'file'
-      if (recycleId === undefined || recycleId === null) {
+      originId = deleteState.recycleItem?.origin_id ?? deleteState.recycleItem?.file_id ?? deleteState.recycleItem?.original_file_id ?? null
+      if (recycleItemId === undefined || recycleItemId === null) {
         restoreError = `Recycle item has no id: ${JSON.stringify(deleteState.recycleItem).slice(0, 200)}`
       } else {
         const restoreResp = await request.post(`${BASE_URL}/api/recycle/restore`, {
           headers: { Authorization: `Bearer ${pageToken}`, 'Content-Type': 'application/json' },
-          data: { id: recycleId, item_type: itemType },
+          data: { id: recycleItemId, item_type: itemType },
         })
         const restoreBody = await restoreResp.json().catch(() => ({}))
         restored = restoreResp.ok() && restoreBody.success === true
         restoreError = restored ? '' : (restoreBody.error || `restore status ${restoreResp.status()}`)
+        originId = restoreBody?.data?.origin_id ?? originId
+        if (restored) {
+          try {
+            restoredActiveVisible = await waitForActiveFileState(request, pageToken, fileId, fileName, true)
+            const recycleStillVisible = await waitForRecycleFileState(request, pageToken, fileId, fileName, false)
+            recycleGoneAfterRestore = recycleStillVisible === false
+          } catch (e) {
+            restoreError = restoreError || `Restore state did not settle: ${e.message}`
+          }
+        }
       }
     }
 
-    const ss = screenshot(page, '5.2-recycle')
-    const passed = deletedByApi && deleteState.deleted && deleteState.inRecycle
+    const ss = await screenshot(page, '5.2-recycle')
+    const passed = uploadVisible && deletedByApi && deleteState.deleted && deleteState.inRecycle && restored && restoredActiveVisible && recycleGoneAfterRestore
+    const notes = [
+      `uploadVisible=${uploadVisible}`,
+      `deletedByApi=${deletedByApi}`,
+      `deleteState.deleted=${deleteState.deleted}`,
+      `deleteState.inRecycle=${deleteState.inRecycle}`,
+      `restored=${restored}`,
+      `restoredActiveVisible=${restoredActiveVisible}`,
+      `recycleGoneAfterRestore=${recycleGoneAfterRestore}`,
+      `fileId=${fileId ?? 'none'}`,
+      `recycleItemId=${recycleItemId ?? 'none'}`,
+      `originId=${originId ?? 'none'}`,
+      `error=${delBody.error || waitError || restoreError || 'none'}`,
+    ].join(', ')
     results.push({
       scenario: '5.2 File delete+recycle',
       passed,
       screenshot: ss,
       consoleErrors: [...consoleCollector],
-      notes: `Upload visible: ${uploadVisible}, delete API: ${deletedByApi}, active gone: ${deleteState.deleted}, in recycle: ${deleteState.inRecycle}, restored: ${restored}, recycle_id: ${deleteState.recycleItem?.id || 'none'}, error: ${delBody.error || waitError || restoreError || 'none'}`,
+      notes,
     })
+    expect(passed, notes).toBe(true)
   })
 
   test('5.3 Knowledge base - upload file and check analysis', async ({ page, request }) => {
@@ -680,7 +751,7 @@ test.describe('Scene 5: Key Interaction Flows', () => {
     const regOk = regBody.success === true
     const regError = regBody.error || ''
 
-    const ss = screenshot(page, '5.3-knowledge-upload')
+    const ss = await screenshot(page, '5.3-knowledge-upload')
     results.push({
       scenario: '5.3 Knowledge base upload',
       passed: regOk,
@@ -708,7 +779,7 @@ test.describe('Scene 5: Key Interaction Flows', () => {
     await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
     const hasImageGenApp = await page.locator('.image-gen-app').count() > 0
     const hasImageGenTitle = await page.locator('.desktop-window').filter({ hasText: IMAGE_GEN_APP.title }).count() > 0
-    const ss = screenshot(page, '5.4-image-gen')
+    const ss = await screenshot(page, '5.4-image-gen')
     results.push({
       scenario: '5.4 image-gen',
       passed: hasImageGenApp || hasImageGenTitle,
@@ -751,23 +822,112 @@ test.describe('Scene 5: Key Interaction Flows', () => {
 test.describe('Cleanup', () => {
   test('Delete all e2e test files', async ({ request }) => {
     const token = await getAuthToken(request)
-    const listResp = await request.get(`${BASE_URL}/api/files/list?folder_id=0&page_size=100`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    const listBody = await listResp.json()
-    const items = listBody?.data?.items || []
-    const pattern = `e2e-${TS}`
-    const e2eFiles = items.filter(i => (i.name || i.file_name || '').toLowerCase().startsWith(pattern))
-    let deleted = 0
-    for (const f of e2eFiles) {
-      const resp = await request.post(`${BASE_URL}/api/files/delete`, {
+    const trackedFiles = Array.from(uploadedFilesById.values())
+    const cleanupFailures = []
+    const softDeletedFileIds = new Set()
+    let alreadyInactive = 0
+    let permanentlyDeleted = 0
+
+    for (const trackedFile of trackedFiles) {
+      const { fileId, fileName } = trackedFile
+      let activeItems = []
+      try {
+        activeItems = await readActiveFileItems(request, token, fileName)
+      } catch (e) {
+        cleanupFailures.push(`active query failed for fileId=${fileId}: ${e.message}`)
+        continue
+      }
+
+      const activeItem = activeItems.find(item => fileItemMatches(item, fileId, fileName))
+      if (!activeItem) {
+        alreadyInactive++
+        continue
+      }
+
+      const activeFileId = activeItem.id ?? fileId
+      const deleteResp = await request.post(`${BASE_URL}/api/files/delete`, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        data: { id: f.id, type: 'file' },
+        data: { id: activeFileId, type: 'file' },
       })
-      const body = await resp.json()
-      if (body.success) deleted++
+      const deleteBody = await deleteResp.json().catch(() => ({}))
+      if (deleteResp.ok() && deleteBody.success === true) {
+        softDeletedFileIds.add(String(fileId))
+      } else {
+        cleanupFailures.push(`soft delete failed for fileId=${fileId}: status=${deleteResp.status()}, error=${deleteBody.error || JSON.stringify(deleteBody).slice(0, 200)}`)
+      }
     }
-    results.push({ scenario: 'Cleanup e2e files', passed: true, consoleErrors: [], notes: `Deleted ${deleted}/${e2eFiles.length} files` })
+
+    let recycleItems = []
+    if (softDeletedFileIds.size > 0) {
+      try {
+        await expect.poll(async () => {
+          recycleItems = await readRecycleItems(request, token)
+          return Array.from(softDeletedFileIds).every(fileId =>
+            recycleItems.some(item => recycleItemMatches(item, fileId, uploadedFilesById.get(fileId)?.fileName))
+          )
+        }, {
+          timeout: 10000,
+          intervals: [250, 500, 1000],
+        }).toBe(true)
+      } catch (e) {
+        cleanupFailures.push(`recycle list did not include all soft-deleted files: ${e.message}`)
+      }
+    }
+
+    try {
+      recycleItems = await readRecycleItems(request, token)
+    } catch (e) {
+      cleanupFailures.push(`recycle query failed after soft delete: ${e.message}`)
+      recycleItems = []
+    }
+
+    const trackedRecycleItems = recycleItems.filter(item =>
+      trackedFiles.some(({ fileId, fileName }) => recycleItemMatches(item, fileId, fileName))
+    )
+    const seenRecycleItemIds = new Set()
+    for (const recycleItem of trackedRecycleItems) {
+      const recycleItemId = recycleItem?.id
+      const itemType = recycleItem?.item_type || 'file'
+      const originId = recycleItem?.origin_id ?? recycleItem?.file_id ?? recycleItem?.original_file_id ?? null
+      if (recycleItemId === undefined || recycleItemId === null) {
+        cleanupFailures.push(`recycle item has no recycleItemId: ${JSON.stringify(recycleItem).slice(0, 200)}`)
+        continue
+      }
+      if (seenRecycleItemIds.has(String(recycleItemId))) continue
+      seenRecycleItemIds.add(String(recycleItemId))
+
+      const permanentResp = await request.post(`${BASE_URL}/api/recycle/delete-permanently`, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        data: { id: recycleItemId, item_type: itemType },
+      })
+      const permanentBody = await permanentResp.json().catch(() => ({}))
+      if (permanentResp.ok() && permanentBody.success === true) {
+        permanentlyDeleted++
+      } else {
+        cleanupFailures.push(`permanent delete failed for recycleItemId=${recycleItemId}, originId=${originId}: status=${permanentResp.status()}, error=${permanentBody.error || JSON.stringify(permanentBody).slice(0, 200)}`)
+      }
+    }
+
+    if (seenRecycleItemIds.size > 0) {
+      try {
+        await expect.poll(async () => {
+          const remainingRecycleItems = await readRecycleItems(request, token)
+          return remainingRecycleItems.some(item =>
+            trackedFiles.some(({ fileId, fileName }) => recycleItemMatches(item, fileId, fileName))
+          )
+        }, {
+          timeout: 10000,
+          intervals: [250, 500, 1000],
+        }).toBe(false)
+      } catch (e) {
+        cleanupFailures.push(`recycle items still visible after permanent delete: ${e.message}`)
+      }
+    }
+
+    const cleanupPassed = cleanupFailures.length === 0
+    const notes = `trackedFileIds=${trackedFiles.map(f => f.fileId).join(',') || 'none'}, softDeleted=${softDeletedFileIds.size}, alreadyInactive=${alreadyInactive}, recycleItems=${seenRecycleItemIds.size}, permanentlyDeleted=${permanentlyDeleted}, errors=${cleanupFailures.join(' | ') || 'none'}`
+    results.push({ scenario: 'Cleanup e2e files', passed: cleanupPassed, consoleErrors: [], notes })
+    expect(cleanupPassed, notes).toBe(true)
   })
 })
 

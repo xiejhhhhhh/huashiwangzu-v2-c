@@ -3,6 +3,16 @@ import asyncio
 from dev_toolkit import smoke
 
 
+class _FakeResponse:
+    def __init__(self, status_code: int, data: dict) -> None:
+        self.status_code = status_code
+        self._data = data
+        self.text = str(data)
+
+    def json(self) -> dict:
+        return self._data
+
+
 def test_smoke_queue_gate_is_zero_tolerance_for_new_failures() -> None:
     assert smoke._no_new_queue_failures(failed_now=10, baseline_failed=10)
     assert not smoke._no_new_queue_failures(failed_now=11, baseline_failed=10)
@@ -19,8 +29,8 @@ def test_smoke_samples_queue_before_business_steps(monkeypatch) -> None:
     async def fake_probe(method: str, path: str, body: dict | None = None, role: str = "admin") -> dict:
         if path == "/api/tasks/worker/status":
             order.append("queue_status")
-            return {"data": {"data": {"failed": 7, "pending": 1, "oldest_waiting_seconds": 0}}}
-        return {"data": {"success": True, "data": {}}}
+            return {"status": 200, "data": {"data": {"failed": 7, "pending": 1, "oldest_waiting_seconds": 0}}}
+        return {"status": 200, "data": {"success": True, "data": {}}}
 
     async def fake_group() -> None:
         order.append("business")
@@ -45,3 +55,65 @@ def test_smoke_samples_queue_before_business_steps(monkeypatch) -> None:
 
     assert order[0] == "queue_status"
     assert order.index("queue_status") < order.index("business")
+    assert order.count("settle:1") == 1
+
+
+def test_ensure_token_caches_by_role(monkeypatch) -> None:
+    smoke._TOKEN_CACHE.clear()
+    login_calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            pass
+
+        async def post(self, path: str, json: dict) -> _FakeResponse:
+            login_calls.append(json["username"])
+            return _FakeResponse(200, {"data": {"access_token": f"token-{len(login_calls)}"}})
+
+    monkeypatch.setattr(smoke.httpx, "AsyncClient", FakeClient)
+
+    first = asyncio.run(smoke._ensure_token("admin"))
+    second = asyncio.run(smoke._ensure_token("admin"))
+
+    assert first == "token-1"
+    assert second == "token-1"
+    assert login_calls == ["何焜华"]
+
+
+def test_probe_refreshes_cached_token_once_on_401(monkeypatch) -> None:
+    smoke._TOKEN_CACHE.clear()
+    smoke._TOKEN_CACHE["admin"] = "stale"
+    seen_auth: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            pass
+
+        async def post(self, path: str, json: dict) -> _FakeResponse:
+            return _FakeResponse(200, {"data": {"access_token": "fresh"}})
+
+        async def request(self, method: str, path: str, headers: dict, **kwargs) -> _FakeResponse:
+            seen_auth.append(headers["Authorization"])
+            if len(seen_auth) == 1:
+                return _FakeResponse(401, {"success": False, "error": "expired"})
+            return _FakeResponse(200, {"success": True, "data": {"ok": True}})
+
+    monkeypatch.setattr(smoke.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(smoke.probe("GET", "/api/health"))
+
+    assert result["status"] == 200
+    assert seen_auth == ["Bearer stale", "Bearer fresh"]
+    assert smoke._TOKEN_CACHE["admin"] == "fresh"

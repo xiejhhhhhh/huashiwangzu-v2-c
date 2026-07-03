@@ -29,7 +29,7 @@
   "public_actions": [
     {
       "action": "generate",
-      "description": "生成图片：多服务商模板生图，支持LiblibAI星流/GPTStore/占位图降级",
+      "description": "生成图片：根据提示词生成产品图、海报、配图等（多服务商模板，支持LiblibAI星流/GPTStore/占位图降级）",
       "parameters": {
         "prompt": {
           "type": "string",
@@ -65,13 +65,13 @@
     },
     {
       "action": "list_templates",
-      "description": "列出可用生图模板",
+      "description": "列出可用生图模板（服务商+模型），含凭据是否齐全标识",
       "parameters": {},
       "min_role": "viewer"
     },
     {
       "action": "usage_history",
-      "description": "查询当前用户生图消耗记录",
+      "description": "查询本人的生图历史记录，含积分消耗",
       "parameters": {
         "limit": {
           "type": "integer",

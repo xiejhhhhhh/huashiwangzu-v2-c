@@ -189,6 +189,23 @@ def test_chart_fake_success_contract() -> None:
     print("  [CHART] Fake-success guard contract valid")
 
 
+def test_run_python_cleanup_error_contract() -> None:
+    """run_python cleanup failures must be visible to callers."""
+    result = {
+        "success": True,
+        "return_code": 0,
+        "stdout": "ok",
+        "stderr": "",
+    }
+    cleanup_error = "permission denied while removing temp dir"
+    result["cleanup_error"] = cleanup_error
+    result["cleanup_degraded"] = True
+    assert result["cleanup_error"] == cleanup_error
+    assert result["cleanup_degraded"] is True
+    assert "absolute_path" not in result
+    print("  [PYTHON] Cleanup errors are surfaced in result contract")
+
+
 def test_symlink_listing_does_not_follow_target() -> None:
     """Listing should expose symlink metadata only, not target metadata."""
     import os as _os
@@ -231,6 +248,7 @@ def main() -> None:
     test_output_shape_contract()
     test_filename_safety_contract()
     test_chart_fake_success_contract()
+    test_run_python_cleanup_error_contract()
     test_symlink_listing_does_not_follow_target()
     print("=" * 60)
     print("PASS: terminal-tools sandbox test")

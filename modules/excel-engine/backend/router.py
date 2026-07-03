@@ -106,6 +106,12 @@ def _is_write_operation(module: str, method: str) -> bool:
     )
 
 
+def _unlink_temp_file(file_path: str | Path | None) -> None:
+    if not file_path:
+        return
+    Path(file_path).unlink(missing_ok=True)
+
+
 # Setup temp dir
 _init_temp = os.path.join(os.path.dirname(__file__), '..', 'temp_files')
 os.makedirs(_init_temp, exist_ok=True)
@@ -429,8 +435,13 @@ async def _handle_export(
 
         fd, tmp_path = tempfile.mkstemp(suffix='.xlsx')
         os.close(fd)
-        success = generate_xlsx(tmp_path, all_sheet_data)
+        try:
+            success = generate_xlsx(tmp_path, all_sheet_data)
+        except Exception:
+            _unlink_temp_file(tmp_path)
+            raise
         if not success:
+            _unlink_temp_file(tmp_path)
             return {'code': 1, 'msg': '导出失败'}
 
         return {'code': 0, 'file': tmp_path, 'filename': f'{state_key}.xlsx'}
@@ -447,8 +458,11 @@ async def _handle_export(
     elif method == 'csv':
         fd, tmp_path = tempfile.mkstemp(suffix='.csv')
         os.close(fd)
-        csv_content = generate_csv(tmp_path, state, sheet)
-        return {'code': 0, 'csv': csv_content}
+        try:
+            csv_content = generate_csv(tmp_path, state, sheet)
+            return {'code': 0, 'csv': csv_content}
+        finally:
+            _unlink_temp_file(tmp_path)
     elif method == 'save_version':
         version = await _save_version_record(db, state_key, state, owner_id, params.get('version_name'))
         return {'code': 0, 'version': version}
@@ -780,6 +794,8 @@ async def download_file(state_key: str, db: AsyncSession = Depends(get_db),
                         user: User = Depends(require_permission("viewer"))):
     """Download generated XLSX file"""
     from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+
     state_owner_id = await _resolve_state_owner_id(db, state_key, user.id)
     state = await read_state_full(db, state_key, owner_id=state_owner_id)
     result = await _handle_export('download', state, state_key, 'Sheet1', {}, db, state_owner_id)
@@ -789,7 +805,8 @@ async def download_file(state_key: str, db: AsyncSession = Depends(get_db),
     if not os.path.exists(file_path):
         raise NotFound('File not found')
     return FileResponse(file_path, filename=result.get('filename', 'export.xlsx'),
-                        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        background=BackgroundTask(_unlink_temp_file, file_path))
 
 
 # ── Cross-module capabilities ──
@@ -1166,6 +1183,7 @@ async def _export_xlsx_capability(params: dict, caller: str) -> dict:
     state_key = params.get('state_key', '')
     sheet = params.get('sheet', 'Sheet1')
     folder_id = params.get('folder_id')
+    temp_path: Path | None = None
 
     async with AsyncSessionLocal() as db:
         state_owner_id = await _resolve_state_owner_id(db, state_key, user_id)
@@ -1176,31 +1194,32 @@ async def _export_xlsx_capability(params: dict, caller: str) -> dict:
             raise ValueError(result.get('msg', 'Export failed'))
 
         file_path = result.get('file', '')
-        p = Path(file_path)
-        if not p.exists():
+        temp_path = Path(file_path)
+        if not temp_path.exists():
             raise ValueError("Export file not found")
 
-        content_bytes = p.read_bytes()
-        upload_result = await upload_file(
-            db, io.BytesIO(content_bytes),
-            f"{state_key}.xlsx", user_id, folder_id,
-        )
-        wb = await find_workbook(db, state_key, owner_id=state_owner_id)
-        artifact = await create_artifact(
-            db,
-            user_id,
-            name=state_key,
-            extension="xlsx",
-            content=content_bytes,
-            folder_id=folder_id,
-            source_module="excel-engine",
-            source_object_type="workbook",
-            source_object_id=wb['id'] if wb else None,
-            file_id=upload_result['id'],
-            conflict_policy="auto_rename",
-        )
-
-        p.unlink(missing_ok=True)
+        try:
+            content_bytes = temp_path.read_bytes()
+            upload_result = await upload_file(
+                db, io.BytesIO(content_bytes),
+                f"{state_key}.xlsx", user_id, folder_id,
+            )
+            wb = await find_workbook(db, state_key, owner_id=state_owner_id)
+            artifact = await create_artifact(
+                db,
+                user_id,
+                name=state_key,
+                extension="xlsx",
+                content=content_bytes,
+                folder_id=folder_id,
+                source_module="excel-engine",
+                source_object_type="workbook",
+                source_object_id=wb['id'] if wb else None,
+                file_id=upload_result['id'],
+                conflict_policy="auto_rename",
+            )
+        finally:
+            _unlink_temp_file(temp_path)
 
     return {
         'file_id': upload_result['id'],
@@ -1218,6 +1237,7 @@ async def _publish_to_desktop_capability(params: dict, caller: str) -> dict:
     state_key = params.get('state_key', '')
     sheet = params.get('sheet', 'Sheet1')
     target_file_id = params.get('target_file_id')
+    temp_path: Path | None = None
 
     async with AsyncSessionLocal() as db:
         state_owner_id = await _resolve_state_owner_id(db, state_key, user_id)
@@ -1228,39 +1248,40 @@ async def _publish_to_desktop_capability(params: dict, caller: str) -> dict:
             raise ValueError(result.get('msg', 'Export failed'))
 
         file_path = result.get('file', '')
-        p = Path(file_path)
-        if not p.exists():
+        temp_path = Path(file_path)
+        if not temp_path.exists():
             raise ValueError("Export file not found")
 
-        content_bytes = p.read_bytes()
-        wb = await find_workbook(db, state_key, owner_id=state_owner_id)
+        try:
+            content_bytes = temp_path.read_bytes()
+            wb = await find_workbook(db, state_key, owner_id=state_owner_id)
 
-        if target_file_id:
-            file_result = await replace_file_content(db, int(target_file_id), user_id, content_bytes)
-            artifact_name = file_result.get('name') or state_key
-        else:
-            wb_name = wb['name'] if wb else state_key
-            file_result = await upload_file(
-                db, io.BytesIO(content_bytes),
-                f"{wb_name}.xlsx", user_id, params.get('folder_id'),
+            if target_file_id:
+                file_result = await replace_file_content(db, int(target_file_id), user_id, content_bytes)
+                artifact_name = file_result.get('name') or state_key
+            else:
+                wb_name = wb['name'] if wb else state_key
+                file_result = await upload_file(
+                    db, io.BytesIO(content_bytes),
+                    f"{wb_name}.xlsx", user_id, params.get('folder_id'),
+                )
+                artifact_name = file_result.get('name') or wb_name
+
+            artifact = await create_artifact(
+                db,
+                user_id,
+                name=artifact_name,
+                extension='xlsx',
+                content=content_bytes,
+                folder_id=params.get('folder_id'),
+                source_module='excel-engine',
+                source_object_type='workbook',
+                source_object_id=wb['id'] if wb else None,
+                file_id=file_result.get('id', file_result.get('file_id')),
+                conflict_policy='auto_rename',
             )
-            artifact_name = file_result.get('name') or wb_name
-
-        artifact = await create_artifact(
-            db,
-            user_id,
-            name=artifact_name,
-            extension='xlsx',
-            content=content_bytes,
-            folder_id=params.get('folder_id'),
-            source_module='excel-engine',
-            source_object_type='workbook',
-            source_object_id=wb['id'] if wb else None,
-            file_id=file_result.get('id', file_result.get('file_id')),
-            conflict_policy='auto_rename',
-        )
-
-        p.unlink(missing_ok=True)
+        finally:
+            _unlink_temp_file(temp_path)
 
     return {
         'file_id': file_result.get('id', file_result.get('file_id')),

@@ -67,6 +67,7 @@ async def _run_python(params: dict, caller: str) -> dict:
     run_id = uuid.uuid4().hex[:12]
     run_dir = workspace / f".da_{run_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    response: dict | None = None
 
     try:
         imported_files = []
@@ -76,9 +77,11 @@ async def _run_python(params: dict, caller: str) -> dict:
                 try:
                     file_id = int(fid)
                 except (TypeError, ValueError):
-                    return {"success": False, "error": f"Invalid input file id: {fid}"}
+                    response = {"success": False, "error": f"Invalid input file id: {fid}"}
+                    return response
                 if file_id <= 0:
-                    return {"success": False, "error": f"Invalid input file id: {fid}"}
+                    response = {"success": False, "error": f"Invalid input file id: {fid}"}
+                    return response
                 from app.core.exceptions import AppException, NotFound
                 from app.database import AsyncSessionLocal
                 from app.services.file_preview_service import _resolve_storage_path
@@ -87,10 +90,12 @@ async def _run_python(params: dict, caller: str) -> dict:
                     try:
                         file_record = await check_file_access(db, file_id, user_id)
                     except (NotFound, AppException) as exc:
-                        return {"success": False, "error": f"Input file {file_id} access denied: {exc}"}
+                        response = {"success": False, "error": f"Input file {file_id} access denied: {exc}"}
+                        return response
                     src_path = _resolve_storage_path(file_record)
                     if not src_path or not src_path.exists():
-                        return {"success": False, "error": f"Input file {file_id} not found on disk"}
+                        response = {"success": False, "error": f"Input file {file_id} not found on disk"}
+                        return response
                     source_name = (
                         f"{file_record.name}.{file_record.extension}"
                         if file_record.extension else file_record.name
@@ -115,15 +120,16 @@ async def _run_python(params: dict, caller: str) -> dict:
             argv = ["sandbox-exec", "-p", profile, sys.executable, str(script_path)]
             cwd = str(run_dir)
         else:
-            return {
+            response = {
                 "success": False,
                 "error": "当前平台无可用沙盒(sandbox-exec)，run_python 已禁用。当前实现需要 macOS sandbox-exec。",
                 "code_preview": code[:200],
             }
+            return response
 
         result = _run_process_capped(argv, cwd, timeout, safe_env)
         if result["timed_out"]:
-            return {
+            response = {
                 "success": False,
                 "error": f"Execution timed out after {timeout}s",
                 "timed_out": True,
@@ -134,8 +140,9 @@ async def _run_python(params: dict, caller: str) -> dict:
                 "stderr_truncated": result["stderr_truncated"],
                 "imported_files": imported_files,
             }
+            return response
         if result["error"]:
-            return {
+            response = {
                 "success": False,
                 "error": result["error"],
                 "return_code": result["return_code"],
@@ -145,6 +152,7 @@ async def _run_python(params: dict, caller: str) -> dict:
                 "stderr_truncated": result["stderr_truncated"],
                 "imported_files": imported_files,
             }
+            return response
 
         charts = []
         chart_upload_errors = []
@@ -168,7 +176,7 @@ async def _run_python(params: dict, caller: str) -> dict:
                     chart_upload_errors.append({"name": fpath.name, "error": str(exc)})
                     logger.warning("user=%s failed to upload chart %s: %s", user_id, fpath.name, exc)
 
-        return {
+        response = {
             "success": result["return_code"] == 0,
             "return_code": result["return_code"],
             "stdout": result["stdout"],
@@ -180,8 +188,15 @@ async def _run_python(params: dict, caller: str) -> dict:
             "chart_upload_errors": chart_upload_errors,
             "imported_files": imported_files,
         }
+        return response
     finally:
-        shutil.rmtree(str(run_dir), ignore_errors=True)
+        try:
+            shutil.rmtree(str(run_dir))
+        except Exception as exc:
+            logger.warning("user=%s run_python cleanup failed for %s: %s", user_id, run_id, exc)
+            if response is not None:
+                response["cleanup_error"] = str(exc)
+                response["cleanup_degraded"] = True
 
 
 # ═══════════════════════════════════════════════════════════════════════

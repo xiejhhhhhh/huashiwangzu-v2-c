@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .init_db import _run_startup_init
 from .services import file_lifecycle_service, pipeline_service  # noqa: F401
+from .services.chunk_rebuild_service import rebuild_document_chunks
 from .services.dashboard_service import get_dashboard_stats
 from .services.document_service import (
     enqueue_pipeline_task,
@@ -999,59 +1000,14 @@ async def api_chunk_document(
     user: User = Depends(require_permission("editor")),
 ):
     """Re-chunk a parsed document using the specified strategy (title_aware/structure_aware/fixed_size)."""
-    await get_live_document_or_raise(db, payload.document_id, user.id)
-    from sqlalchemy import delete as sa_delete
-
-    from ..ir_models import from_legacy_blocks
-    from ..models import KbChunk, KbDocument
-    from .services.chunking_service import chunk_document
-    from .services.search_service import get_document_chunks
-
-    # Read existing chunks as DocumentIr
-    current_chunks = await get_document_chunks(db, payload.document_id, owner_id=user.id)
-    ir_blocks = []
-    for ch in current_chunks:
-        bt = ch.get("block_type", "段落")
-        if bt in ("标题",):
-            block_type = "heading"
-        else:
-            block_type = "paragraph"
-        ir_blocks.append({"type": block_type, "text": ch.get("text", ""), "page": ch.get("page")})
-
-    if not ir_blocks:
-        return ApiResponse(data={"error": "No chunks to re-chunk", "chunks": 0})
-
-    doc_ir = from_legacy_blocks(file_id=0, fmt="", blocks=ir_blocks)
-
-    # Delete old chunks and store new ones
-    await db.execute(sa_delete(KbChunk).where(KbChunk.document_id == payload.document_id))
-    await db.commit()
-
-    new_chunks = chunk_document(doc_ir, strategy=payload.strategy, max_chars=payload.max_chars)
-    stored = 0
-    for i, ch in enumerate(new_chunks):
-        record = KbChunk(
-            document_id=payload.document_id,
-            owner_id=user.id,
-            page=ch.get("page"),
-            chunk_index=i,
-            block_type=ch.get("block_type", "段落"),
-            text=ch.get("text", ""),
-            keywords="",
-        )
-        db.add(record)
-        stored += 1
-        if stored % 50 == 0:
-            await db.flush()
-    await db.commit()
-
-    dr = await db.execute(select(KbDocument).where(KbDocument.id == payload.document_id))
-    doc = dr.scalar_one_or_none()
-    if doc:
-        doc.total_chunks = stored
-
-    await db.commit()
-    return ApiResponse(data={"chunks": stored, "strategy": payload.strategy})
+    result = await rebuild_document_chunks(
+        db,
+        document_id=payload.document_id,
+        owner_id=user.id,
+        strategy=payload.strategy,
+        max_chars=payload.max_chars,
+    )
+    return ApiResponse(data=result)
 
 
 # ── Export endpoint ────────────────────────────────────────────────

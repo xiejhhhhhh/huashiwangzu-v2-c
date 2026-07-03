@@ -221,6 +221,31 @@ def test_code_search_accepts_empty_results_and_caches_success() -> None:
         _restore_runtime(runtime_dir, previous_runtime)
 
 
+def test_disk_cache_uses_lock_and_unique_tmp_files() -> None:
+    client, runtime_dir, previous_runtime = _with_client()
+    original_replace = client.os.replace
+    replace_sources: list[Path] = []
+    try:
+        def tracking_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+            replace_sources.append(Path(src))
+            original_replace(src, dst)
+
+        client.os.replace = tracking_replace
+        client._write_disk_cache({"one": {"expires_at": datetime.now(timezone.utc).isoformat(), "value": []}})
+        client._write_disk_cache({"two": {"expires_at": datetime.now(timezone.utc).isoformat(), "value": []}})
+
+        assert len(replace_sources) == 2
+        assert replace_sources[0].name != replace_sources[1].name
+        assert all(path.name.startswith("cache.json.") and path.name.endswith(".tmp") for path in replace_sources)
+
+        client._set_cached("repos:lock-test:1", [_repo_fixture()])
+        assert client._cache_lock_path().exists()
+        assert not list(Path(runtime_dir.name).glob("*.tmp"))
+    finally:
+        client.os.replace = original_replace
+        _restore_runtime(runtime_dir, previous_runtime)
+
+
 def test_router_error_semantics_use_exceptions_not_data_errors() -> None:
     router, runtime_dir, previous_runtime = _with_router()
     try:
@@ -298,6 +323,7 @@ def main() -> None:
         test_repository_search_distinguishes_empty_from_failure,
         test_successful_repository_results_are_cached,
         test_code_search_accepts_empty_results_and_caches_success,
+        test_disk_cache_uses_lock_and_unique_tmp_files,
         test_router_error_semantics_use_exceptions_not_data_errors,
         test_search_output_contract_shape,
     ]

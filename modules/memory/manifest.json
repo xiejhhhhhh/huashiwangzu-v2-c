@@ -27,7 +27,7 @@
   "public_actions": [
     {
       "action": "save",
-      "description": "保存一条记忆",
+      "description": "保存一段记忆（事实/偏好/约定），自动提取摘要和向量用于语义检索",
       "parameters": {
         "text": {
           "type": "string",
@@ -46,7 +46,7 @@
     },
     {
       "action": "recall",
-      "description": "语义检索召回记忆（向量语义召回 + 重排 + 可选顺链扩展）",
+      "description": "语义检索自己的记忆（向量语义召回 + 重排 + 可选顺链扩展），不再仅靠关键词",
       "parameters": {
         "query": {
           "type": "string",
@@ -91,7 +91,7 @@
     },
     {
       "action": "fuse",
-      "description": "将多条记忆融合成贴合查询的一段简报",
+      "description": "将多条记忆融合成贴合查询的一段简报（即时融合，on-demand）",
       "parameters": {
         "query": {
           "type": "string",
@@ -106,7 +106,7 @@
     },
     {
       "action": "rethink",
-      "description": "整条重写一条记忆",
+      "description": "整条重写一条记忆（自编辑工具，如用户纠正错误时）",
       "parameters": {
         "id": {
           "type": "integer",
@@ -159,13 +159,13 @@
     },
     {
       "action": "dream",
-      "description": "触发记忆自优化（去重合并＋建链＋衰减）",
+      "description": "触发记忆自优化（去重合并 + 建链 + 衰减），后台运行不阻塞",
       "parameters": {},
       "min_role": "editor"
     },
     {
       "action": "save_experience",
-      "description": "保存一条成功经验（包含触发条件、有序步骤、工具列表）",
+      "description": "保存一条成功经验（包含触发条件、有序步骤、工具列表），自动向量化并去重",
       "parameters": {
         "trigger_condition": {
           "type": "string",
@@ -192,7 +192,7 @@
     },
     {
       "action": "match_experience",
-      "description": "匹配经验",
+      "description": "语义匹配当前用户输入相关的成功经验（纯语义，零硬编码规则）",
       "parameters": {
         "query": {
           "type": "string",
@@ -214,7 +214,7 @@
     },
     {
       "action": "experience_feedback",
-      "description": "反馈经验执行结果：成功则权重+1，失败则失败次数+1并记录注释",
+      "description": "反馈经验执行结果：成功则权重 +1，失败则失败次数 +1 并记录注释",
       "parameters": {
         "experience_id": {
           "type": "integer",
@@ -240,13 +240,13 @@
     },
     {
       "action": "overview_stats",
-      "description": "管理概览：记忆和经验的全量聚合统计",
+      "description": "Admin overview: aggregated memory & experience statistics (total_count, with_embedding, avg_confidence, link_count, experience counts, etc.)",
       "parameters": {},
       "min_role": "admin"
     },
     {
       "action": "backfill_embeddings",
-      "description": "安全回填历史记忆向量，支持 dry-run、limit、owner 和可选 dream 建链",
+      "description": "Admin governance: safely backfill missing memory record embeddings with dry-run, owner, limit, and optional dream linking",
       "parameters": {
         "dry_run": {
           "type": "boolean",
@@ -273,7 +273,7 @@
     },
     {
       "action": "backfill_links",
-      "description": "安全回填历史记忆之间缺失的语义链接，默认 dry-run",
+      "description": "Admin governance: backfill missing memory_links between existing memory records using vector similarity. Dry-run safe.",
       "parameters": {
         "dry_run": {
           "type": "boolean",
@@ -292,7 +292,7 @@
     },
     {
       "action": "backfill_chunk_embeddings",
-      "description": "安全回填 chunk 级记忆缺失向量，默认 dry-run",
+      "description": "Admin governance: safely backfill missing memory_chunk embeddings with dry-run support",
       "parameters": {
         "dry_run": {
           "type": "boolean",
@@ -311,7 +311,7 @@
     },
     {
       "action": "recall_stable_rules",
-      "description": "获取当前用户所有活跃的稳定规则记忆（项目边界、用户偏好、硬约束等）",
+      "description": "获取当前用户所有活跃的稳定规则记忆（项目边界、用户偏好、硬约束等），按优先级降序返回",
       "parameters": {
         "rule_types": {
           "type": "array",
@@ -325,7 +325,7 @@
     },
     {
       "action": "recall_chunk",
-      "description": "语义检索 chunk 级记忆（带 provenance 溯源信息）",
+      "description": "语义检索 chunk 级记忆（带 provenance 溯源信息），返回最小粒度段落",
       "parameters": {
         "query": {
           "type": "string",
@@ -340,7 +340,7 @@
     },
     {
       "action": "save_stable_rule",
-      "description": "保存一条稳定规则记忆（项目边界/用户偏好/硬约束/长期规则）",
+      "description": "保存一条稳定规则记忆（项目边界/用户偏好/硬约束/长期规则），不参与向量衰减",
       "parameters": {
         "rule_type": {
           "type": "string",

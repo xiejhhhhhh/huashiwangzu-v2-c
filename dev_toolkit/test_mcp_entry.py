@@ -28,6 +28,9 @@ REQUIRED_TOOLS = {
     "opencode_sdk_messages",
     "opencode_sdk_prompt",
     "release_gate",
+    "tool_job_notifications",
+    "tool_job_status",
+    "tool_job_submit",
 }
 
 

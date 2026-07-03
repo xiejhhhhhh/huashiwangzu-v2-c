@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -18,6 +19,7 @@ BACKEND = ROOT / "backend"
 MODULE_BACKEND = ROOT / "modules" / "docs-open" / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
+os.environ.setdefault("JWT_SECRET", "docs-open-sandbox-secret")
 
 
 def load_module(name: str, path: Path) -> ModuleType:
@@ -31,6 +33,8 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 validators = load_module("docs_open_validators", MODULE_BACKEND / "validators.py")
 models = load_module("docs_open_models", MODULE_BACKEND / "models.py")
+auth_handlers = load_module("docs_open_auth_handlers", MODULE_BACKEND / "handlers" / "auth.py")
+embed_handlers = load_module("docs_open_embed_handlers", MODULE_BACKEND / "handlers" / "embed.py")
 
 
 def assert_raises(fn: Callable[[], object], message_part: str) -> None:
@@ -133,6 +137,52 @@ def test_scoped_token_auth_boundary_contract() -> None:
     print("  [AUTH] Scoped token boundary contract documented")
 
 
+class _FakeUrl:
+    scheme = "http"
+    netloc = "127.0.0.1:33000"
+
+
+class _FakeRequest:
+    url = _FakeUrl()
+    headers = {
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Host": "evil.example",
+    }
+
+
+def test_base_url_does_not_trust_forwarded_headers() -> None:
+    previous = os.environ.pop("DOCS_OPEN_BASE_URL", None)
+    try:
+        assert auth_handlers._get_base_url(_FakeRequest()) == "http://127.0.0.1:33000"
+        os.environ["DOCS_OPEN_BASE_URL"] = "https://docs.internal.example/"
+        assert auth_handlers._get_base_url(_FakeRequest()) == "https://docs.internal.example"
+    finally:
+        if previous is None:
+            os.environ.pop("DOCS_OPEN_BASE_URL", None)
+        else:
+            os.environ["DOCS_OPEN_BASE_URL"] = previous
+    print("  [AUTH] Base URL ignores untrusted forwarded headers")
+
+
+def test_embed_html_escapes_server_injected_values() -> None:
+    html = embed_handlers._generate_embed_html(
+        file_id=7,
+        file_name='bad"><script>alert(1)</script>',
+        extension="txt",
+        doc_info={"category": "text", "editor": "text-editor"},
+        base_url="http://127.0.0.1:33000",
+        token="tok'</script><script>alert(2)</script>",
+        client_id='client"bad',
+        open_id="1",
+        is_editable=True,
+    )
+    assert "bad&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "tok'</script><script>" not in html
+    assert "<\\/script><script>" in html
+    assert "\"X-Client-Id\": \"client\\\"bad\"" in html
+    print("  [EMBED] HTML and JS interpolations are escaped")
+
+
 def main() -> None:
     print("=" * 60)
     print("docs-open sandbox contract test")
@@ -143,6 +193,8 @@ def main() -> None:
     test_token_hash_contract()
     test_capability_output_shape_contract()
     test_scoped_token_auth_boundary_contract()
+    test_base_url_does_not_trust_forwarded_headers()
+    test_embed_html_escapes_server_injected_values()
     print("=" * 60)
     print("PASS: docs-open sandbox contract test")
 

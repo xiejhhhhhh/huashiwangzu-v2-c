@@ -64,10 +64,14 @@ try:
     from dev_toolkit.opencode_tools import handle_tool as opencode_handle_tool
     from dev_toolkit.opencode_tools import handles_tool as opencode_handles_tool
     from dev_toolkit.opencode_tools import tool_definitions as opencode_tool_definitions
+    from dev_toolkit.process_tools import create_subprocess_exec_group, terminate_process_tree
     from dev_toolkit.quick_fix import QuickFixError
     from dev_toolkit.release_response import build_release_gate_response as build_release_gate_payload
     from dev_toolkit.response_shaping import ResponseShapeOptions, dumps_response
     from dev_toolkit.sql_guard import check_sql_readonly, readonly_psql_env
+    from dev_toolkit.tool_job_tools import handle_tool as tool_job_handle_tool
+    from dev_toolkit.tool_job_tools import handles_tool as tool_job_handles_tool
+    from dev_toolkit.tool_job_tools import tool_definitions as tool_job_tool_definitions
     from dev_toolkit.tool_usage_tools import handle_tool as tool_usage_handle_tool
     from dev_toolkit.tool_usage_tools import handles_tool as tool_usage_handles_tool
     from dev_toolkit.tool_usage_tools import record_tool_usage
@@ -119,10 +123,14 @@ except ModuleNotFoundError:
     from opencode_tools import handle_tool as opencode_handle_tool
     from opencode_tools import handles_tool as opencode_handles_tool
     from opencode_tools import tool_definitions as opencode_tool_definitions
+    from process_tools import create_subprocess_exec_group, terminate_process_tree
     from quick_fix import QuickFixError
     from release_response import build_release_gate_response as build_release_gate_payload
     from response_shaping import ResponseShapeOptions, dumps_response
     from sql_guard import check_sql_readonly, readonly_psql_env
+    from tool_job_tools import handle_tool as tool_job_handle_tool
+    from tool_job_tools import handles_tool as tool_job_handles_tool
+    from tool_job_tools import tool_definitions as tool_job_tool_definitions
     from tool_usage_tools import handle_tool as tool_usage_handle_tool
     from tool_usage_tools import handles_tool as tool_usage_handles_tool
     from tool_usage_tools import record_tool_usage
@@ -185,15 +193,18 @@ async def _run_command_json(
     timeout: int = 120,
 ) -> dict[str, Any]:
     started = time.time()
+    proc: asyncio.subprocess.Process | None = None
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_exec_group(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(cwd),
+            cwd=cwd,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        if proc is not None:
+            await terminate_process_tree(proc)
         return {
             "success": False,
             "timeout": True,
@@ -204,6 +215,10 @@ async def _run_command_json(
             "stdout": "",
             "stderr": "",
         }
+    except asyncio.CancelledError:
+        if proc is not None:
+            await terminate_process_tree(proc)
+        raise
     out = stdout.decode(errors="replace")
     err = stderr.decode(errors="replace")
     return {
@@ -787,22 +802,29 @@ async def _smoke_all(skip_ui: bool = False) -> str:
     if skip_ui:
         env["SMOKE_SKIP_UI"] = "1"
     started = time.time()
+    proc: asyncio.subprocess.Process | None = None
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_exec_group(
             _project_python(),
             str(REPO_ROOT / "dev_toolkit" / "smoke.py"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(REPO_ROOT),
+            cwd=REPO_ROOT,
             env=env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=360)
     except asyncio.TimeoutError:
+        if proc is not None:
+            await terminate_process_tree(proc)
         return json.dumps(
             {"success": False, "clean_pass": False, "verdict": "TIMEOUT", "timeout": True, "timeout_seconds": 360},
             ensure_ascii=False,
             indent=2,
         )
+    except asyncio.CancelledError:
+        if proc is not None:
+            await terminate_process_tree(proc)
+        raise
     output = stdout.decode(errors="replace") + stderr.decode(errors="replace")
     summary = _extract_prefixed_json(output, "SMOKE_JSON:")
     verdict = summary.get("verdict") if summary else ("PASS" if proc.returncode == 0 else "FAIL")
@@ -838,17 +860,6 @@ def _build_release_gate_response(
     return build_release_gate_payload(output, returncode, skip_ui, duration_seconds)
 
 
-async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
-    if proc.returncode is not None:
-        return
-    proc.terminate()
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-
-
 async def _release_gate(skip_ui: bool = False, mode: str = "preflight") -> str:
     """Run dev_toolkit/release_gate.py and return its verdict."""
     if mode not in {"preflight", "full"}:
@@ -876,18 +887,18 @@ async def _release_gate(skip_ui: bool = False, mode: str = "preflight") -> str:
             cmd.append("--preflight")
         if skip_ui:
             cmd.append("--skip-ui")
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_exec_group(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(REPO_ROOT),
+            cwd=REPO_ROOT,
             env=env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         output = stdout.decode(errors="replace") + stderr.decode(errors="replace")
     except asyncio.TimeoutError:
         if proc is not None:
-            await _terminate_process(proc)
+            await terminate_process_tree(proc)
         return json.dumps(
             {
                 "success": False,
@@ -902,6 +913,10 @@ async def _release_gate(skip_ui: bool = False, mode: str = "preflight") -> str:
             ensure_ascii=False,
             indent=2,
         )
+    except asyncio.CancelledError:
+        if proc is not None:
+            await terminate_process_tree(proc)
+        raise
     return json.dumps(
         _build_release_gate_response(
             output=output,
@@ -921,17 +936,24 @@ async def _module_sandbox_matrix(check: bool = False) -> str:
     if check:
         cmd.append("--check")
     cmd.append("--json")
+    proc: asyncio.subprocess.Process | None = None
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_exec_group(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(REPO_ROOT),
+            cwd=REPO_ROOT,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
         output = stdout.decode(errors="replace")
     except asyncio.TimeoutError:
+        if proc is not None:
+            await terminate_process_tree(proc)
         return json.dumps({"success": False, "timeout": True, "timeout_seconds": 300}, ensure_ascii=False, indent=2)
+    except asyncio.CancelledError:
+        if proc is not None:
+            await terminate_process_tree(proc)
+        raise
     try:
         data = json.loads(output)
     except json.JSONDecodeError:
@@ -1713,6 +1735,7 @@ async def list_tools() -> list[Tool]:
         *insight_tool_definitions(),
         *worktree_tool_definitions(),
         *tool_usage_tool_definitions(),
+        *tool_job_tool_definitions(),
         *agent_board_tool_definitions(),
         *opencode_tool_definitions(),
         *opencode_pty_tool_definitions(),
@@ -1753,6 +1776,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await worktree_handle_tool(_run_command_json, REPO_ROOT, name, arguments)
         elif tool_usage_handles_tool(name):
             result = await tool_usage_handle_tool(REPO_ROOT, TOOL_USAGE_PATH, name, arguments)
+        elif tool_job_handles_tool(name):
+            result = await tool_job_handle_tool(REPO_ROOT, name, arguments)
         elif agent_board_handles_tool(name):
             result = await agent_board_handle_tool(REPO_ROOT, name, arguments)
         elif opencode_handles_tool(name):
