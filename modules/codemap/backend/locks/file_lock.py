@@ -20,9 +20,7 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
 
 logger = logging.getLogger("v2.codemap").getChild("file_lock")
 
@@ -31,7 +29,10 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 LOCK_FILE = DATA_DIR / "locks.json"
 OS_LOCK_FILE = DATA_DIR / "locks.json.lock"
 _LOCK_FILE_LOCK = threading.Lock()
-T = TypeVar("T")
+
+
+class LockStoreError(RuntimeError):
+    """Raised when the persisted lock store cannot be trusted."""
 
 
 def _ensure_data_dir() -> None:
@@ -39,13 +40,26 @@ def _ensure_data_dir() -> None:
 
 
 def _read_locks() -> dict:
+    if not LOCK_FILE.exists():
+        return {}
     try:
-        if LOCK_FILE.exists():
-            with open(LOCK_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read lock file, starting fresh: %s", exc)
-    return {}
+        with open(LOCK_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise LockStoreError("lock file is corrupt; refusing to ignore active locks") from exc
+    except OSError as exc:
+        raise LockStoreError(f"failed to read lock file: {exc}") from exc
+    if not isinstance(data, dict):
+        raise LockStoreError("lock file must contain a JSON object")
+    for path, lock in data.items():
+        if (
+            not isinstance(path, str)
+            or not isinstance(lock, dict)
+            or not isinstance(lock.get("agent_id"), str)
+            or not isinstance(lock.get("expires_at"), (int, float))
+        ):
+            raise LockStoreError("lock file contains malformed lock entries")
+    return data
 
 
 def _write_locks(locks: dict) -> bool:
@@ -56,7 +70,17 @@ def _write_locks(locks: dict) -> bool:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(locks, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, str(LOCK_FILE))
+            try:
+                dir_fd = os.open(str(DATA_DIR), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                logger.debug("Could not fsync lock directory", exc_info=True)
         except Exception:
             try:
                 os.unlink(tmp_path)
@@ -103,7 +127,7 @@ def _expire_locks(locks: dict) -> None:
         del locks[p]
 
 
-def _with_locked_locks(mutator: Callable[[dict], T]) -> T:
+def _with_locked_locks(mutator) -> dict:
     """Run *mutator* while holding thread and process locks."""
     _ensure_data_dir()
     with _LOCK_FILE_LOCK:
@@ -111,6 +135,9 @@ def _with_locked_locks(mutator: Callable[[dict], T]) -> T:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:
                 return mutator(_read_locks())
+            except LockStoreError as exc:
+                logger.error("Lock store unavailable: %s", exc)
+                return {"success": False, "error": str(exc)}
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
@@ -150,18 +177,19 @@ def check_lock(path: str) -> dict:
     """Check if *path* is locked."""
     try:
         norm_path = _normalize_path(path)
-    except ValueError:
-        return {"locked": False, "owner": None, "remaining_ttl": 0.0}
+    except ValueError as exc:
+        return {"success": False, "error": str(exc), "locked": False, "owner": None, "remaining_ttl": 0.0}
 
     def _mutate(locks: dict) -> dict:
         _expire_locks(locks)
-        _write_locks(locks)
+        if not _write_locks(locks):
+            return {"success": False, "error": "Failed to persist expired lock cleanup"}
         lock = locks.get(norm_path)
         if lock and lock.get("expires_at", 0) > time.time():
             remaining = lock["expires_at"] - time.time()
-            return {"locked": True, "owner": lock.get("agent_id", ""),
+            return {"success": True, "locked": True, "owner": lock.get("agent_id", ""),
                     "remaining_ttl": round(remaining, 1)}
-        return {"locked": False, "owner": None, "remaining_ttl": 0.0}
+        return {"success": True, "locked": False, "owner": None, "remaining_ttl": 0.0}
 
     return _with_locked_locks(_mutate)
 
@@ -188,7 +216,8 @@ def list_locks() -> dict:
     """List all active locks."""
     def _mutate(locks: dict) -> dict:
         _expire_locks(locks)
-        _write_locks(locks)
+        if not _write_locks(locks):
+            return {"success": False, "error": "Failed to persist expired lock cleanup", "locks": [], "count": 0}
         now = time.time()
         result = [
             {"path": p, "agent_id": lk["agent_id"],
@@ -197,6 +226,6 @@ def list_locks() -> dict:
             for p, lk in locks.items()
             if lk.get("expires_at", 0) > now
         ]
-        return {"locks": result, "count": len(result)}
+        return {"success": True, "locks": result, "count": len(result)}
 
     return _with_locked_locks(_mutate)

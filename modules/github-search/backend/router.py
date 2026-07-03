@@ -4,17 +4,27 @@ Cross-module capabilities:
   github-search:search      — Search GitHub repos with ranking
   github-search:search_code — Search code on GitHub
 """
+import asyncio
+import json
 import logging
+import os
 import re as _re
+import tempfile
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
+from app.core.exceptions import AppException, RateLimitError, ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.module_registry import register_capability
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .services.github_client import (
+    GitHubClientError,
     get_repo_readme,
     search_code,
     search_repositories,
@@ -23,6 +33,118 @@ from .services.github_client import (
 logger = logging.getLogger("v2.github-search")
 
 router = APIRouter(prefix="/api/github-search", tags=["github-search"])
+
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_MAX_CALLS = 30
+_RUNTIME_DIR_ENV = "GITHUB_SEARCH_RUNTIME_DIR"
+
+
+@contextmanager
+def _locked_file(lock_path: Path):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        yield
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        handle.close()
+
+
+def _runtime_dir() -> Path:
+    configured = os.environ.get(_RUNTIME_DIR_ENV)
+    if configured:
+        return Path(configured)
+    return Path(tempfile.gettempdir()) / "huashiwangzu_v2_github_search"
+
+
+def _rate_limit_path() -> Path:
+    return _runtime_dir() / "rate_limits.json"
+
+
+def _load_rate_state(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Ignoring invalid github-search rate limit file: %s", exc)
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_rate_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(
+        json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, path)
+
+
+def _enforce_rate_limit(caller: str, action: str) -> None:
+    path = _rate_limit_path()
+    now = time.time()
+    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
+    state_key = f"{caller}:{action}"
+
+    with _locked_file(path.with_suffix(".lock")):
+        state = _load_rate_state(path)
+        raw_timestamps = state.get(state_key, [])
+        timestamps = [
+            value for value in raw_timestamps
+            if isinstance(value, (int, float)) and value >= window_start
+        ]
+        if len(timestamps) >= _RATE_LIMIT_MAX_CALLS:
+            retry_after = max(1, int(timestamps[0] + _RATE_LIMIT_WINDOW_SECONDS - now))
+            raise RateLimitError(
+                f"github-search rate limit exceeded; retry after {retry_after}s",
+            )
+        timestamps.append(now)
+        state[state_key] = timestamps
+        _write_rate_state(path, state)
+
+
+def _parse_limit(value: object, *, default: int = 5) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValidationError("limit must be an integer between 1 and 10")
+    if value < 1 or value > 10:
+        raise ValidationError("limit must be between 1 and 10")
+    return value
+
+
+def _normalize_language(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError("language must be a string")
+    normalized = value.strip()
+    return normalized or None
+
+
+def _raise_client_error(exc: GitHubClientError) -> None:
+    if exc.code == "github_rate_limited":
+        raise RateLimitError(str(exc)) from exc
+    if exc.code == "github_query_invalid":
+        raise ValidationError(str(exc)) from exc
+    if exc.code in {"github_cli_missing", "github_auth_required"}:
+        raise AppException(str(exc), code=exc.code.upper(), status_code=503) from exc
+    if exc.code == "github_timeout":
+        raise AppException(str(exc), code="GITHUB_TIMEOUT", status_code=504) from exc
+    raise AppException(str(exc), code=exc.code.upper(), status_code=502) from exc
 
 
 def _extract_owner_repo(url: str) -> tuple[str, str] | None:
@@ -35,7 +157,7 @@ def _extract_owner_repo(url: str) -> tuple[str, str] | None:
     return None
 
 
-def _format_repo_result(repo: dict) -> dict:
+def _format_repo_result(repo: dict[str, Any]) -> dict[str, Any]:
     owner, repo_name = _extract_owner_repo(repo.get("fullName", repo.get("url", ""))) or ("", "")
     license_info = repo.get("license")
     if isinstance(license_info, dict):
@@ -58,23 +180,28 @@ def _format_repo_result(repo: dict) -> dict:
 async def _cap_search(params: dict, caller: str) -> dict:
     """Search GitHub repositories with ranking."""
     query = (params.get("query") or "").strip()
-    limit = int(params.get("limit", 5))
     if not query:
-        return {"results": [], "error": "query is required"}
+        raise ValidationError("query is required")
 
-    limit = max(1, min(limit, 10))
-    repos = await search_repositories(query, limit)
-    if not repos:
-        return {"results": [], "error": "search failed or no results"}
+    limit = _parse_limit(params.get("limit", 5))
+    _enforce_rate_limit(caller, "search")
+    try:
+        repos = await search_repositories(query, limit)
+    except GitHubClientError as exc:
+        _raise_client_error(exc)
 
     results = [_format_repo_result(r) for r in repos]
     enriched = []
     for r in results:
         owner_repo = _extract_owner_repo(r["url"])
         if owner_repo:
-            readme = await get_repo_readme(owner_repo[0], owner_repo[1])
-            if readme:
-                r["readme_preview"] = readme[:500]
+            try:
+                readme = await get_repo_readme(owner_repo[0], owner_repo[1])
+            except GitHubClientError as exc:
+                logger.info("Skipping README preview for %s: %s", r["url"], exc)
+            else:
+                if readme:
+                    r["readme_preview"] = readme[:500]
         enriched.append(r)
 
     return {
@@ -88,16 +215,16 @@ async def _cap_search(params: dict, caller: str) -> dict:
 async def _cap_search_code(params: dict, caller: str) -> dict:
     """Search code on GitHub."""
     query = (params.get("query") or "").strip()
-    language = params.get("language") or None
-    limit = int(params.get("limit", 5))
-
     if not query:
-        return {"results": [], "error": "query is required"}
+        raise ValidationError("query is required")
 
-    limit = max(1, min(limit, 10))
-    items = await search_code(query, language, limit)
-    if items is None:
-        return {"results": [], "error": "search failed"}
+    language = _normalize_language(params.get("language"))
+    limit = _parse_limit(params.get("limit", 5))
+    _enforce_rate_limit(caller, "search_code")
+    try:
+        items = await search_code(query, language, limit)
+    except GitHubClientError as exc:
+        _raise_client_error(exc)
 
     results = []
     for item in items:
@@ -124,12 +251,13 @@ async def _cap_search_code(params: dict, caller: str) -> dict:
 
 class SearchRequest(BaseModel):
     query: str
-    limit: int = 5
+    limit: int = Field(default=5, ge=1, le=10)
+
 
 class SearchCodeRequest(BaseModel):
     query: str
     language: str | None = None
-    limit: int = 5
+    limit: int = Field(default=5, ge=1, le=10)
 
 
 @router.get("/health")
@@ -206,17 +334,18 @@ register_capability(
 )
 
 # ── Startup health check ──────────────────────────────────────────────
-import asyncio
-
-
 @router.on_event("startup")
 async def _verify_gh_cli():
-    result = await asyncio.create_subprocess_exec(
-        "gh", "--version",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await result.communicate()
+    try:
+        result = await asyncio.create_subprocess_exec(
+            "gh", "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await result.communicate()
+    except FileNotFoundError:
+        logger.warning("gh CLI not found — github-search module will be unavailable")
+        return
     if result.returncode == 0:
         logger.info("gh CLI verified: %s", stdout.decode().strip())
     else:

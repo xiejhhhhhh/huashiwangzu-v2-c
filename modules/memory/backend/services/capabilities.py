@@ -34,9 +34,16 @@ async def _cap_save(params: dict, caller: str) -> dict:
         db.add(memory)
         await db.commit()
         await db.refresh(memory)
-    await memory_service._update_embedding(memory.id, text)
-    await memory_service._enqueue_post_save(memory.id, text, source)
-    return {"success": True, "data": {"id": memory.id}}
+    embedding_updated = await memory_service._update_embedding(memory.id, text)
+    post_save_enqueued = await memory_service._enqueue_post_save(memory.id, text, source)
+    return {
+        "success": True,
+        "data": {
+            "id": memory.id,
+            "embedding_updated": embedding_updated,
+            "post_save_enqueued": post_save_enqueued,
+        },
+    }
 
 
 async def _cap_recall(params: dict, caller: str) -> dict:
@@ -99,9 +106,17 @@ async def _cap_rethink(params: dict, caller: str) -> dict:
             memory.tags = tags
         memory.source = "rethink"
         await db.commit()
-    await memory_service._update_embedding(mem_id, text)
-    await memory_service._enqueue_post_save(mem_id, text, "rethink")
-    return {"success": True, "data": {"id": mem_id, "status": "rethought"}}
+    embedding_updated = await memory_service._update_embedding(mem_id, text)
+    post_save_enqueued = await memory_service._enqueue_post_save(mem_id, text, "rethink")
+    return {
+        "success": True,
+        "data": {
+            "id": mem_id,
+            "status": "rethought",
+            "embedding_updated": embedding_updated,
+            "post_save_enqueued": post_save_enqueued,
+        },
+    }
 
 
 async def _cap_replace(params: dict, caller: str) -> dict:
@@ -122,12 +137,21 @@ async def _cap_replace(params: dict, caller: str) -> dict:
             raise PermissionDenied("只能编辑自己的记忆")
         if old_text not in memory.text:
             raise ValidationError("未找到要替换的文本")
-        memory.text = memory.text.replace(old_text, new_text, 1)
+        new_memory_text = memory.text.replace(old_text, new_text, 1)
+        memory.text = new_memory_text
         memory.source = "edit"
         await db.commit()
-    await memory_service._update_embedding(mem_id, memory.text)
-    await memory_service._enqueue_post_save(mem_id, memory.text, "edit")
-    return {"success": True, "data": {"id": mem_id, "status": "replaced"}}
+    embedding_updated = await memory_service._update_embedding(mem_id, new_memory_text)
+    post_save_enqueued = await memory_service._enqueue_post_save(mem_id, new_memory_text, "edit")
+    return {
+        "success": True,
+        "data": {
+            "id": mem_id,
+            "status": "replaced",
+            "embedding_updated": embedding_updated,
+            "post_save_enqueued": post_save_enqueued,
+        },
+    }
 
 
 async def _cap_insert(params: dict, caller: str) -> dict:
@@ -143,12 +167,21 @@ async def _cap_insert(params: dict, caller: str) -> dict:
             raise NotFound("记忆不存在")
         if memory.owner_id != owner_id:
             raise PermissionDenied("只能编辑自己的记忆")
-        memory.text += "\n" + text
+        new_memory_text = memory.text + "\n" + text
+        memory.text = new_memory_text
         memory.source = "edit"
         await db.commit()
-    await memory_service._update_embedding(mem_id, memory.text)
-    await memory_service._enqueue_post_save(mem_id, memory.text, "edit")
-    return {"success": True, "data": {"id": mem_id, "status": "inserted"}}
+    embedding_updated = await memory_service._update_embedding(mem_id, new_memory_text)
+    post_save_enqueued = await memory_service._enqueue_post_save(mem_id, new_memory_text, "edit")
+    return {
+        "success": True,
+        "data": {
+            "id": mem_id,
+            "status": "inserted",
+            "embedding_updated": embedding_updated,
+            "post_save_enqueued": post_save_enqueued,
+        },
+    }
 
 
 async def _cap_list(params: dict, caller: str) -> dict:
@@ -236,11 +269,13 @@ async def _cap_match_experience(params: dict, caller: str) -> dict:
 
 
 async def _cap_experience_feedback(params: dict, caller: str) -> dict:
-    experience_id = params.get("experience_id")
-    success = params.get("success", True)
-    note = params.get("note")
-    if not experience_id:
+    experience_id = experience_service._coerce_optional_positive_int(params.get("experience_id"), "experience_id")
+    if experience_id is None:
         raise ValidationError("experience_id required")
+    success = experience_service._coerce_bool(params.get("success", True), "success")
+    note = params.get("note")
+    if note is not None and not isinstance(note, str):
+        raise ValidationError("note must be a string")
     owner_id = memory_service._parse_user_id(caller)
     is_system = caller.startswith("system:")
     if not owner_id and not is_system:
@@ -434,19 +469,26 @@ async def _cap_recall_stable_rules(params: dict, caller: str) -> dict:
         stmt = stmt.order_by(MemoryStableRule.priority.desc())
         r = await db.execute(stmt)
         items = r.scalars().all()
-    return {"success": True, "data": [
-        {
-            "id": m.id,
-            "rule_type": m.rule_type,
-            "content": m.content,
-            "priority": m.priority,
-            "active": m.active,
-            "source": m.source,
-            "hit_count": m.hit_count,
-            "created_at": m.created_at.isoformat() if m.created_at else None,
-        }
-        for m in items
-    ]}
+        data = []
+        if items:
+            for item in items:
+                await db.execute(
+                    text("UPDATE memory_stable_rules SET hit_count = hit_count + 1 WHERE id = :id"),
+                    {"id": item.id},
+                )
+                item.hit_count = (item.hit_count or 0) + 1
+                data.append({
+                    "id": item.id,
+                    "rule_type": item.rule_type,
+                    "content": item.content,
+                    "priority": item.priority,
+                    "active": item.active,
+                    "source": item.source,
+                    "hit_count": item.hit_count,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                })
+            await db.commit()
+    return {"success": True, "data": data}
 
 
 async def _cap_recall_chunk(params: dict, caller: str) -> dict:
@@ -458,13 +500,14 @@ async def _cap_recall_chunk(params: dict, caller: str) -> dict:
     await memory_service._ensure_init()
     async with AsyncSessionLocal() as db:
         query_vec = await embedding_service._compute_embedding(query)
+        items = []
         if query_vec and len(query) > 3:
             vec_literal = embedding_service._vector_literal(query_vec)
             if not vec_literal:
                 return {"success": True, "data": []}
             sql = text("""
                 SELECT id, memory_record_id, owner_id, text, summary, source, provenance,
-                       conversation_id, chunk_index, confidence,
+                       conversation_id, chunk_index, confidence, access_count,
                        start_char, end_char, created_at,
                        (1 - (embedding <=> CAST(:query_vec AS vector(1024)))) AS similarity
                 FROM memory_chunks
@@ -476,13 +519,12 @@ async def _cap_recall_chunk(params: dict, caller: str) -> dict:
             """)
             r = await db.execute(sql, {"owner_id": owner_id, "limit": limit, "query_vec": vec_literal})
             rows = r.mappings().all()
-            items = []
             for row in rows:
                 d = dict(row)
                 if isinstance(d.get("created_at"), datetime):
                     d["created_at"] = d["created_at"].isoformat()
                 items.append(d)
-        else:
+        if not items:
             keyword = f"%{query}%"
             stmt = (
                 select(MemoryChunk)
@@ -506,8 +548,17 @@ async def _cap_recall_chunk(params: dict, caller: str) -> dict:
                 "start_char": m.start_char,
                 "end_char": m.end_char,
                 "similarity": 0.0,
+                "access_count": m.access_count,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             } for m in r.scalars().all()]
+        if items:
+            for item in items:
+                await db.execute(
+                    text("UPDATE memory_chunks SET access_count = access_count + 1 WHERE owner_id = :owner_id AND id = :id"),
+                    {"owner_id": owner_id, "id": item["id"]},
+                )
+                item["access_count"] = (item.get("access_count") or 0) + 1
+            await db.commit()
     return {"success": True, "data": items}
 
 

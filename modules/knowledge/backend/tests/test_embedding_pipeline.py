@@ -7,6 +7,7 @@
 """
 import asyncio
 import importlib
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -14,18 +15,25 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+SEED_PASS = "admin123"
+
+os.environ.setdefault("JWT_SECRET", "test-secret-for-knowledge-embedding-pipeline")
+os.environ.setdefault("V2_SEED_DEFAULT_PASSWORD", SEED_PASS)
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
+BACKEND_ROOT = REPO_ROOT / "backend"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal, engine, init_db
 from app.main import app
 from sqlalchemy import select, text
 
-SEED_PASS = "admin123"
-
 _PIPELINE_TIMEOUT = 120  # 管线最多等 120 秒
 _POLL_INTERVAL = 3       # 每 3 秒轮询一次
+_FRAMEWORK_READY = False
 
 
 def _uid():
@@ -41,9 +49,37 @@ def _load_knowledge_service(service_name: str):
 
 
 async def _login(client, username="admin"):
+    await _ensure_framework_ready()
     resp = await client.post("/api/login", json={"username": username, "password": SEED_PASS})
     assert resp.status_code == 200
     return resp.json()["data"]["access_token"]
+
+
+async def _ensure_framework_ready() -> None:
+    global _FRAMEWORK_READY
+    if _FRAMEWORK_READY:
+        return
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    await init_db()
+    from app.models.user import User
+    from app.services.auth import hash_password
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.username == "admin").order_by(User.id).limit(1)
+        )
+        if not result.scalar_one_or_none():
+            db.add(User(
+                username="admin",
+                password_hash=hash_password(SEED_PASS),
+                display_name="Administrator",
+                email="admin@huashiwangzu.test",
+                role="admin",
+                enabled=True,
+            ))
+            await db.commit()
+    _FRAMEWORK_READY = True
 
 
 async def _cleanup_kb_doc(document_id: int):
@@ -608,6 +644,6 @@ async def test_fusion_falls_back_when_llm_returns_empty_text(monkeypatch):
         return {"content": '{"fused_text":"","page_summary":"","confidence":0.95}'}
 
     monkeypatch.setattr(fusion_service.gateway_router, "chat", fake_chat)
-    fused = await fusion_service._llm_fuse({1: raw_text, 2: "同页 OCR 文本"})
+    fused = await fusion_service._llm_fuse(None, {1: raw_text, 2: "同页 OCR 文本"})
     assert fused["fused_text"] == raw_text
     assert fused["page_summary"] == raw_text[:120]

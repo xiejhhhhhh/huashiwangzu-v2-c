@@ -492,7 +492,7 @@ export const modules = {
 
 // ── Module-specific: scheduler API ──────────────────────────────────
 
-const BASE = '/api/scheduler'
+const BASE = '/scheduler'
 
 export const scheduler = {
   async create(params: { title: string; scheduled_at?: string; recur?: string; action_description: string }): Promise<CreateTaskResult> {

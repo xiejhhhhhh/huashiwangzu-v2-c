@@ -1,8 +1,9 @@
 """DB models for wechat-writer module."""
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, JSON, text
+
 from app.models.base import Base
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, text
 
 
 class WechatDraft(Base):

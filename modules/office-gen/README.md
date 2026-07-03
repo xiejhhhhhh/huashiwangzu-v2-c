@@ -10,10 +10,10 @@ Generates and converts office documents (`docx`, `xlsx`, `pptx`, `pdf`) from str
 
 | Capability | Parameters | Returns | min_role |
 |---|---|---|---|
-| `office-gen:docx` | `filename`, non-empty `content`, optional `folder_id` | framework file info `{file_id, name, extension, size, mime_type, deduplicated}` | editor |
-| `office-gen:xlsx` | `filename`, non-empty `sheets`, optional `folder_id` | framework file info | editor |
-| `office-gen:pptx` | `filename`, non-empty `slides`, optional `folder_id` | framework file info | editor |
-| `office-gen:pdf` | `filename`, non-empty `content`, optional `folder_id` | framework file info | editor |
+| `office-gen:docx` | `filename`, non-empty `content` or Content IR `blocks`/`content_ir`, optional `folder_id` | framework file info `{file_id, name, extension, size, mime_type, deduplicated}` | editor |
+| `office-gen:xlsx` | `filename`, non-empty `sheets` or Content IR sheet `blocks`/`content_ir`, optional `folder_id` | framework file info | editor |
+| `office-gen:pptx` | `filename`, non-empty `slides` or Content IR slide `blocks`/`content_ir`, optional `folder_id` | framework file info | editor |
+| `office-gen:pdf` | `filename`, non-empty `content` or Content IR `blocks`/`content_ir`, optional `folder_id` | framework file info | editor |
 | `office-gen:convert` | `file_id`, `target_format` | new framework file info | editor |
 | `office-gen:generate_to_artifact` | `format`, `filename`, matching non-empty `content`/`sheets`/`slides`, optional `folder_id` | `{artifact_id, file_id, content_package_id, content_package_status, content_package_error, format, name, extension, size, status}` | editor |
 | `office-gen:replace_existing` | `format`, `target_file_id`, matching non-empty `content`/`sheets`/`slides` | `{file_id, content_package_id, content_package_status, content_package_error, name, size, format, status}` | editor |
@@ -22,7 +22,7 @@ Generates and converts office documents (`docx`, `xlsx`, `pptx`, `pdf`) from str
 Content blocks accept both legacy Chinese block names and Content IR English block names:
 
 ```text
-heading/标题, paragraph/段落, table/表格, image/图片, page_break/分页
+heading/标题, paragraph/段落, list, code, table/表格, image/图片, page_break/分页
 ```
 
 Table aliases:
@@ -30,9 +30,12 @@ Table aliases:
 ```text
 header/table_header/表头
 rows/table_rows/行
+data.headers/data.columns + data.rows
 ```
 
-XLSX sheets accept string columns or Content IR-style column objects such as `{name: "amount"}`. PPTX slides accept normal `{title, bullets}` or Content IR-style `{name, elements}`.
+XLSX sheets accept string columns, Content IR-style column objects such as `{name: "amount"}`, or spreadsheet IR blocks shaped as `sheet.children[].table`. PPTX slides accept normal `{title, bullets}`, `{name, elements}`, or presentation IR `slide.children`.
+
+The low-level generators and capability entrypoints reject empty `content`/`sheets`/`slides` and blocks that render no text/table/image content. Conversion also rejects zero-byte LibreOffice outputs, so successful responses should always point at a non-empty artifact or framework file.
 
 ## HTTP Endpoints
 

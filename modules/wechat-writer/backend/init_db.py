@@ -1,9 +1,12 @@
 """Initialize DB tables and default prompts for wechat-writer module."""
 
+import asyncio
 import logging
-from sqlalchemy import text as sa_text
+
+from app.database import AsyncSessionLocal, engine
 from app.models.base import Base
-from app.database import engine
+from sqlalchemy import text as sa_text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("v2.wechat_writer").getChild("init_db")
 
@@ -113,49 +116,76 @@ DEFAULT_PROMPTS = [
 ]
 
 
-def _init_db():
-    """Create tables and seed default prompts if needed."""
+async def ensure_wechat_tables() -> None:
+    """Create this module's tables using SQLAlchemy async engine."""
+    wechat_tables = [table for name, table in Base.metadata.tables.items() if name.startswith("wechat_")]
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=wechat_tables))
+    logger.info("Ensured %d wechat_* tables exist: %s", len(wechat_tables), ", ".join(WECHAT_TABLES))
+
+
+async def seed_default_prompts(db: AsyncSession) -> int:
+    """Insert default prompts once. Existing active global prompts are preserved."""
+    seeded = 0
+    for prompt_data in DEFAULT_PROMPTS:
+        result = await db.execute(
+            sa_text(
+                "SELECT id FROM wechat_prompts "
+                "WHERE key = :key AND owner_id = 0 AND deleted = false LIMIT 1"
+            ),
+            {"key": prompt_data["key"]},
+        )
+        if result.scalar_one_or_none():
+            continue
+        db.add(
+            WechatPrompt(
+                owner_id=0,
+                key=prompt_data["key"],
+                name=prompt_data["name"],
+                content=prompt_data["content"],
+                description=prompt_data.get("description", ""),
+                category=prompt_data["category"],
+            )
+        )
+        seeded += 1
+    await db.commit()
+    logger.info("Ensured default wechat prompts (seeded=%d)", seeded)
+    return seeded
+
+
+async def run_init(db: AsyncSession | None = None) -> None:
+    """Startup initialization entrypoint for tests, sandbox, and router import."""
+    await ensure_wechat_tables()
+    if db is not None:
+        await seed_default_prompts(db)
+        return
+    async with AsyncSessionLocal() as session:
+        await seed_default_prompts(session)
+
+
+def _run_startup_init() -> asyncio.Task[None] | None:
+    """Run module startup init safely whether an event loop is already running."""
     try:
-        wechat_tables = [t for n, t in Base.metadata.tables.items() if n.startswith("wechat_")]
-        import asyncio
-        async def _create():
-            async with engine.begin() as conn:
-                await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=wechat_tables))
-        asyncio.run(_create())
-        logger.info("Tables created/verified: %s", ", ".join(WECHAT_TABLES))
-    except Exception as exc:
-        logger.warning("Table creation skipped (may already exist): %s", exc)
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        task = loop.create_task(run_init())
+
+        def _log_task_result(done_task: asyncio.Task[None]) -> None:
+            try:
+                done_task.result()
+            except Exception as exc:
+                logger.warning("Wechat-writer startup init failed: %s", exc)
+
+        task.add_done_callback(_log_task_result)
+        logger.info("Scheduled wechat-writer startup init on running event loop")
+        return task
 
     try:
-        from app.database import AsyncSessionLocal
-        import asyncio
-
-        async def _seed_prompts():
-            async with AsyncSessionLocal() as db:
-                for dp in DEFAULT_PROMPTS:
-                    r = await db.execute(
-                        sa_text(
-                            "SELECT id FROM wechat_prompts WHERE key = :key AND owner_id = 0 AND deleted = false LIMIT 1"
-                        ),
-                        {"key": dp["key"]},
-                    )
-                    if r.scalar_one_or_none():
-                        continue
-                    prompt = WechatPrompt(
-                        owner_id=0,
-                        key=dp["key"],
-                        name=dp["name"],
-                        content=dp["content"],
-                        description=dp.get("description", ""),
-                        category=dp["category"],
-                    )
-                    db.add(prompt)
-                await db.commit()
-                logger.info("Default prompts seeded")
-
-        asyncio.run(_seed_prompts())
+        asyncio.run(run_init())
+        logger.info("Wechat-writer startup init complete")
     except Exception as exc:
-        logger.warning("Prompt seeding skipped: %s", exc)
-
-
-_run_startup_init = _init_db
+        logger.warning("Wechat-writer startup init failed: %s", exc)
+    return None

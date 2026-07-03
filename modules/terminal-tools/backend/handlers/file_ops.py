@@ -10,9 +10,9 @@ Capabilities:
 
 from __future__ import annotations
 
-import io
 import logging
 import os
+import shutil
 
 from app.core.exceptions import NotFound, PermissionDenied
 
@@ -89,10 +89,11 @@ async def _read_file(params: dict, caller: str) -> dict:
         if truncated:
             raw = raw[:_MAX_FILE_READ_BYTES]
         content = raw.decode("utf-8")
+        safe_path = _workspace_relative_path(target, _user_workspace(user_id))
     except UnicodeDecodeError:
         return {
             "success": True,
-            "path": path,
+            "path": _workspace_relative_path(target, _user_workspace(user_id)),
             "size": size,
             "binary": True,
             "content": None,
@@ -104,7 +105,7 @@ async def _read_file(params: dict, caller: str) -> dict:
 
     return {
         "success": True,
-        "path": path,
+        "path": safe_path,
         "size": size,
         "content": content,
         "binary": False,
@@ -139,12 +140,13 @@ async def _list_workspace(params: dict, caller: str) -> dict:
                 if len(items) >= _MAX_LIST_ITEMS:
                     truncated = True
                     break
-                stat = entry.stat()
+                stat = entry.stat(follow_symlinks=False)
                 items.append({
                     "name": entry.name,
-                    "is_dir": entry.is_dir(),
-                    "is_file": entry.is_file(),
-                    "size": stat.st_size if entry.is_file() else 0,
+                    "is_dir": entry.is_dir(follow_symlinks=False),
+                    "is_file": entry.is_file(follow_symlinks=False),
+                    "is_symlink": entry.is_symlink(),
+                    "size": stat.st_size if entry.is_file(follow_symlinks=False) else 0,
                     "modified_at": stat.st_mtime,
                 })
     except Exception as exc:
@@ -172,7 +174,10 @@ async def _publish(params: dict, caller: str) -> dict:
     user_id = _resolve_user_id(caller)
     path = params.get("path", "").strip()
     display_name = params.get("filename", "").strip()
-    folder_id = int(params.get("folder_id", 0)) if params.get("folder_id") else None
+    try:
+        folder_id = int(params.get("folder_id", 0)) if params.get("folder_id") else None
+    except (TypeError, ValueError):
+        return {"success": False, "error": "folder_id must be an integer"}
 
     if not path:
         return {"success": False, "error": "No path provided"}
@@ -188,20 +193,16 @@ async def _publish(params: dict, caller: str) -> dict:
     if not source.is_file():
         return {"success": False, "error": f"Not a file: {path}", "path": path}
 
-    try:
-        file_bytes = source.read_bytes()
-    except Exception as exc:
-        return {"success": False, "error": f"Read failed: {exc}", "path": path}
-
     filename = _safe_external_filename(display_name, source.name) if display_name else source.name
     target_folder = folder_id if (folder_id and folder_id > 0) else None
 
     try:
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
-            result = await file_upload_service.upload_file(
-                db, io.BytesIO(file_bytes), filename, user_id, target_folder,
-            )
+            with source.open("rb") as source_handle:
+                result = await file_upload_service.upload_file(
+                    db, source_handle, filename, user_id, target_folder,
+                )
     except Exception as exc:
         return {"success": False, "error": f"Publish failed: {exc}", "path": path}
 
@@ -225,7 +226,10 @@ async def _import(params: dict, caller: str) -> dict:
     from app.services import file_preview_service, file_service
 
     user_id = _resolve_user_id(caller)
-    file_id = int(params.get("file_id", 0))
+    try:
+        file_id = int(params.get("file_id", 0))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "file_id must be a positive integer"}
     target_path = params.get("target_path", "").strip()
 
     if file_id <= 0:
@@ -242,11 +246,6 @@ async def _import(params: dict, caller: str) -> dict:
         if not storage_path:
             return {"success": False, "error": "File on disk not found — storage path invalid"}
 
-        try:
-            file_bytes = storage_path.read_bytes()
-        except Exception as exc:
-            return {"success": False, "error": f"Read disk file failed: {exc}"}
-
     if target_path:
         filename = target_path
     else:
@@ -257,7 +256,8 @@ async def _import(params: dict, caller: str) -> dict:
     try:
         target = _resolve_workspace_path(user_id, filename)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(file_bytes)
+        with storage_path.open("rb") as source_handle, target.open("wb") as target_handle:
+            shutil.copyfileobj(source_handle, target_handle)
     except ValueError:
         logger.warning("user=%s blocked import target path escape: %s", user_id, filename)
         return {"success": False, "error": _workspace_boundary_error(), "path": filename}

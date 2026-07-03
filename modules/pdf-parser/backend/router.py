@@ -1,3 +1,4 @@
+from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
@@ -17,6 +18,25 @@ class ParseRequest(BaseModel):
     file_id: int
 
 
+def _require_positive_file_id(params: dict) -> int:
+    try:
+        file_id = int(params.get("file_id", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("file_id must be a positive integer") from exc
+    if file_id <= 0:
+        raise ValidationError("file_id must be a positive integer")
+    return file_id
+
+
+def _ensure_non_empty_parse_result(result: dict) -> None:
+    blocks = result.get("blocks")
+    resources = result.get("resources")
+    if not isinstance(blocks, list) or not isinstance(resources, list):
+        raise ValidationError("PDF parser returned an invalid result shape")
+    if not blocks and not resources:
+        raise ValidationError("PDF parsing produced no content blocks or embedded resources")
+
+
 async def _parse(params: dict, caller: str) -> dict:
     """Parse PDF file into unified content blocks. Called via cross-module capability."""
     import base64
@@ -24,6 +44,7 @@ async def _parse(params: dict, caller: str) -> dict:
     import pdfplumber
 
     allowed = {"pdf"}
+    file_id = _require_positive_file_id(params)
 
     def parse_file(file_id, _file, full_path, _ext):
         blocks = []
@@ -43,7 +64,7 @@ async def _parse(params: dict, caller: str) -> dict:
                         block_type = "heading" if pno == 1 and len(lines) <= 5 else "paragraph"
                         blocks.append({"type": block_type, "text": block_text, "page": pno, "resource_ref": None})
 
-                tables = page.extract_tables()
+                tables = page.extract_tables() or []
                 for table in tables:
                     if not table:
                         continue
@@ -126,7 +147,8 @@ async def _parse(params: dict, caller: str) -> dict:
             "resource_diagnostics": resource_diagnostics,
         }
 
-    result = await run_uploaded_file_capability(params, caller, allowed, parse_file)
+    result = await run_uploaded_file_capability({"file_id": file_id}, caller, allowed, parse_file)
+    _ensure_non_empty_parse_result(result)
     return await store_extracted_resources_with_diagnostics(result, caller=caller, parser="pdf-parser")
 
 

@@ -4,7 +4,7 @@
   "icon": "Globe",
   "icon_asset": "",
   "category": "tools",
-  "component_key": null,
+  "component_key": "",
   "route_prefix": "/api/browser-tools",
   "permissions": ["viewer", "editor", "admin"],
   "sort_order": 700,
@@ -34,6 +34,8 @@
       "description": "在隔离浏览器中打开 URL。适用于 JS 渲染页面、登录态页面。Cookie/localStorage 不返回给调用方。",
       "parameters": {
         "url": "要打开的 URL",
+        "width": "视口宽度（默认 1280）",
+        "height": "视口高度（默认 720）",
         "session_id": "已有会话 ID（可选）",
         "timeout": "超时秒数（默认 30s）"
       },
@@ -61,7 +63,8 @@
       "parameters": {
         "session_id": "浏览器会话 ID",
         "selector": "CSS 选择器",
-        "text": "可见文本匹配"
+        "text": "可见文本匹配",
+        "timeout": "超时秒数（默认 30s）"
       },
       "min_role": "viewer"
     },
@@ -71,7 +74,8 @@
       "parameters": {
         "session_id": "浏览器会话 ID",
         "selector": "CSS 选择器定位输入框",
-        "text": "要输入的文本"
+        "text": "要输入的文本",
+        "timeout": "超时秒数（默认 30s）"
       },
       "min_role": "viewer"
     },
@@ -81,7 +85,8 @@
       "parameters": {
         "session_id": "浏览器会话 ID",
         "selector": "等待元素出现的 CSS 选择器",
-        "timeout": "超时秒数（默认 30s）"
+        "timeout": "超时秒数（默认 30s）",
+        "wait_for_navigation": "是否等待页面导航完成"
       },
       "min_role": "viewer"
     },
@@ -96,10 +101,10 @@
     },
     {
       "action": "download",
-      "description": "下载文件到工作区。支持浏览器上下文或直链 HTTP 下载。",
+      "description": "下载文件到工作区。支持浏览器上下文下载或直链 HTTP 下载；session_id 与 url 至少提供一个。",
       "parameters": {
-        "session_id": "浏览器会话 ID",
-        "url": "下载 URL",
+        "session_id": "浏览器会话 ID（可选，用浏览器上下文下载）",
+        "url": "下载 URL（可选，用直链 HTTP 下载）",
         "timeout": "超时秒数（默认 30s）"
       },
       "min_role": "viewer"

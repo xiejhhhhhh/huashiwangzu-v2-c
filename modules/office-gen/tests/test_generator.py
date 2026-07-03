@@ -11,6 +11,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 # ── Build package hierarchy for "modules/office-gen/backend/" ──
 # Since the directory has a hyphen, we use the normalized name "office_gen"
 
@@ -91,9 +93,8 @@ class TestDocxGenerator:
         assert _check_docx(data)
 
     def test_empty_content(self):
-        data = gen.generate_docx({"filename": "empty", "content": []})
-        assert len(data) > 50
-        assert _check_docx(data)
+        with pytest.raises(ValueError, match="content must be a non-empty array"):
+            gen.generate_docx({"filename": "empty", "content": []})
 
     def test_alignment(self):
         data = gen.generate_docx({
@@ -117,6 +118,18 @@ class TestDocxGenerator:
         doc = __import__("docx").Document(io.BytesIO(data))
         assert "Content IR Title" in [p.text for p in doc.paragraphs]
         assert "Paragraph from Content IR" in [p.text for p in doc.paragraphs]
+        assert doc.tables[0].cell(1, 1).text == "0"
+
+    def test_content_ir_blocks_alias_and_data_fields(self):
+        data = gen.generate_docx({
+            "filename": "content_ir_alias",
+            "blocks": [
+                {"type": "heading", "data": {"text": "Alias Title", "level": 2}},
+                {"type": "table", "data": {"headers": ["Name", "Count"], "rows": [{"Name": "Beta", "Count": 0}]}},
+            ],
+        })
+        doc = __import__("docx").Document(io.BytesIO(data))
+        assert "Alias Title" in [p.text for p in doc.paragraphs]
         assert doc.tables[0].cell(1, 1).text == "0"
 
 
@@ -146,8 +159,8 @@ class TestXlsxGenerator:
         assert wb.sheetnames == ["Page1", "Page2"]
 
     def test_empty_sheets(self):
-        data = gen.generate_xlsx({"filename": "empty", "sheets": []})
-        assert _check_xlsx(data)
+        with pytest.raises(ValueError, match="sheets must be a non-empty array"):
+            gen.generate_xlsx({"filename": "empty", "sheets": []})
 
     def test_content_ir_column_dicts_and_row_dicts(self):
         data = gen.generate_xlsx({
@@ -160,6 +173,29 @@ class TestXlsxGenerator:
         })
         wb = __import__("openpyxl").load_workbook(io.BytesIO(data))
         ws = wb["Sheet1"]
+        assert ws["A1"].value == "item"
+        assert ws["B2"].value == "0"
+
+    def test_content_ir_sheet_blocks_with_child_table(self):
+        data = gen.generate_xlsx({
+            "filename": "ir_sheet_blocks",
+            "content_ir": {
+                "content_type": "spreadsheet",
+                "blocks": [{
+                    "type": "sheet",
+                    "data": {"name": "Data"},
+                    "children": [{
+                        "type": "table",
+                        "data": {
+                            "headers": [{"name": "item"}, {"name": "count"}],
+                            "rows": [{"item": "Beta", "count": 0}],
+                        },
+                    }],
+                }],
+            },
+        })
+        wb = __import__("openpyxl").load_workbook(io.BytesIO(data))
+        ws = wb["Data"]
         assert ws["A1"].value == "item"
         assert ws["B2"].value == "0"
 
@@ -177,8 +213,8 @@ class TestPptxGenerator:
         assert _check_pptx(data)
 
     def test_empty_slides(self):
-        data = gen.generate_pptx({"filename": "empty", "slides": []})
-        assert _check_pptx(data)
+        with pytest.raises(ValueError, match="slides must be a non-empty array"):
+            gen.generate_pptx({"filename": "empty", "slides": []})
 
     def test_content_ir_slide_elements(self):
         data = gen.generate_pptx({
@@ -195,6 +231,26 @@ class TestPptxGenerator:
         assert prs.slides[0].shapes.title.text == "Content IR Slide"
         slide_text = "\n".join(shape.text for shape in prs.slides[0].shapes if hasattr(shape, "text"))
         assert "First point" in slide_text
+
+    def test_content_ir_slide_blocks_with_children(self):
+        data = gen.generate_pptx({
+            "filename": "ir_deck_blocks",
+            "content_ir": {
+                "content_type": "presentation",
+                "blocks": [{
+                    "type": "slide",
+                    "data": {"title": "IR Child Slide"},
+                    "children": [
+                        {"type": "heading", "data": {"text": "Child heading"}},
+                        {"type": "paragraph", "text": "Child paragraph", "level": 1},
+                    ],
+                }],
+            },
+        })
+        prs = __import__("pptx").Presentation(io.BytesIO(data))
+        assert prs.slides[0].shapes.title.text == "IR Child Slide"
+        slide_text = "\n".join(shape.text for shape in prs.slides[0].shapes if hasattr(shape, "text"))
+        assert "Child heading" in slide_text
 
 
 class TestPdfGenerator:
@@ -221,8 +277,8 @@ class TestPdfGenerator:
         assert _check_pdf(data)
 
     def test_empty_content_pdf(self):
-        data = gen.generate_pdf({"filename": "empty", "content": []})
-        assert _check_pdf(data)
+        with pytest.raises(ValueError, match="content must be a non-empty array"):
+            gen.generate_pdf({"filename": "empty", "content": []})
 
     def test_content_ir_english_pdf_blocks(self):
         data = gen.generate_pdf({
@@ -231,6 +287,17 @@ class TestPdfGenerator:
                 {"type": "heading", "text": "PDF IR Title", "data": {"level": 1}},
                 {"type": "paragraph", "text": "PDF paragraph"},
                 {"type": "table", "header": ["Name", "Count"], "rows": [["Alpha", 0]]},
+            ],
+        })
+        assert len(data) > 500
+        assert _check_pdf(data)
+
+    def test_content_ir_pdf_blocks_alias_and_data_table(self):
+        data = gen.generate_pdf({
+            "filename": "ir_pdf_alias",
+            "blocks": [
+                {"type": "heading", "data": {"text": "PDF Alias Title", "level": 1}},
+                {"type": "table", "data": {"headers": ["Name", "Count"], "rows": [{"Name": "Beta", "Count": 0}]}},
             ],
         })
         assert len(data) > 500

@@ -1,25 +1,58 @@
 """FastAPI router for douyin-delivery module."""
 
 import logging
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
+from app.services.file_reader import resolve_caller_user_id as resolve_user_id
 from app.services.module_registry import register_capability
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
-from .services import (
-    generate_script, generate_ad_copy, validate_content, analyze_campaign,
-    list_products, create_product, update_product, delete_product,
-    list_scripts, save_script, get_script, update_script, delete_script,
-    list_ad_copies, save_ad_copy, update_ad_copy, delete_ad_copy,
-    list_campaigns, create_campaign, update_campaign, delete_campaign,
-    list_prompts, save_prompt, delete_prompt, resolve_user_id,
+from .delivery_services import (
+    cleanup_marked_data,
+    create_account,
+    create_delivery_task,
+    create_material,
+    delete_account,
+    delete_delivery_task,
+    delete_material,
+    list_accounts,
+    list_delivery_tasks,
+    list_materials,
+    mark_delivery_task_status,
+    update_account,
+    update_delivery_task,
+    update_material,
 )
 from .init_db import _run_startup_init
+from .services import (
+    analyze_campaign,
+    create_campaign,
+    create_product,
+    delete_ad_copy,
+    delete_campaign,
+    delete_product,
+    delete_prompt,
+    delete_script,
+    generate_ad_copy,
+    generate_script,
+    get_script,
+    list_ad_copies,
+    list_campaigns,
+    list_products,
+    list_prompts,
+    list_scripts,
+    save_ad_copy,
+    save_prompt,
+    save_script,
+    update_ad_copy,
+    update_campaign,
+    update_product,
+    update_script,
+    validate_content,
+)
 
 logger = logging.getLogger("v2.douyin_delivery").getChild("router")
 router = APIRouter(prefix="/api/douyin-delivery", tags=["douyin-delivery"])
@@ -146,6 +179,70 @@ class CampaignUpdateRequest(BaseModel):
     ad_copy_ids: list | None = None
     notes: str | None = None
     performance_metrics: dict | None = None
+
+class AccountCreateRequest(BaseModel):
+    channel: str = "local_push"
+    account_name: str
+    external_account_id: str = ""
+    status: str = "active"
+    notes: str = ""
+
+class AccountUpdateRequest(BaseModel):
+    channel: str | None = None
+    account_name: str | None = None
+    external_account_id: str | None = None
+    status: str | None = None
+    notes: str | None = None
+
+class MaterialCreateRequest(BaseModel):
+    title: str
+    material_type: str = "video"
+    channel: str = ""
+    source_file_id: int | None = None
+    content_url: str = ""
+    content_text: str = ""
+    status: str = "draft"
+    notes: str = ""
+    metadata_json: dict | None = None
+
+class MaterialUpdateRequest(BaseModel):
+    title: str | None = None
+    material_type: str | None = None
+    channel: str | None = None
+    source_file_id: int | None = None
+    content_url: str | None = None
+    content_text: str | None = None
+    status: str | None = None
+    notes: str | None = None
+    metadata_json: dict | None = None
+
+class DeliveryTaskCreateRequest(BaseModel):
+    task_type: str = "publish_script"
+    target_type: str = "campaign"
+    target_id: int | None = None
+    status: str = "pending"
+    priority: int = 5
+    payload: dict | None = None
+    result_payload: dict | None = None
+    error_message: str = ""
+
+class DeliveryTaskUpdateRequest(BaseModel):
+    task_type: str | None = None
+    target_type: str | None = None
+    target_id: int | None = None
+    status: str | None = None
+    priority: int | None = None
+    payload: dict | None = None
+    result_payload: dict | None = None
+    error_message: str | None = None
+
+class DeliveryTaskStatusRequest(BaseModel):
+    status: str
+    error_message: str = ""
+    result_payload: dict | None = None
+
+class CleanupRequest(BaseModel):
+    marker: str
 
 class PromptSaveRequest(BaseModel):
     key: str
@@ -387,6 +484,171 @@ async def api_delete_campaign(
     return ApiResponse(data={"deleted": True})
 
 
+# ── Account CRUD ─────────────────────────────────────────────────
+
+@router.get("/accounts")
+async def api_list_accounts(
+    channel: str | None = Query(default=None),
+    user: User = Depends(require_permission("viewer")),
+):
+    result = await list_accounts(user.id, channel)
+    return ApiResponse(data=result)
+
+
+@router.post("/accounts")
+async def api_create_account(
+    payload: AccountCreateRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await create_account(payload.model_dump(exclude_none=True), user.id)
+    return ApiResponse(data=result)
+
+
+@router.put("/accounts/{account_id}")
+async def api_update_account(
+    account_id: int,
+    payload: AccountUpdateRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await update_account(account_id, payload.model_dump(exclude_none=True), user.id)
+    if not result:
+        from app.core.exceptions import NotFound
+        raise NotFound("Account not found")
+    return ApiResponse(data=result)
+
+
+@router.delete("/accounts/{account_id}")
+async def api_delete_account(
+    account_id: int,
+    user: User = Depends(require_permission("editor")),
+):
+    ok = await delete_account(account_id, user.id)
+    if not ok:
+        from app.core.exceptions import NotFound
+        raise NotFound("Account not found")
+    return ApiResponse(data={"deleted": True})
+
+
+# ── Material CRUD ────────────────────────────────────────────────
+
+@router.get("/materials")
+async def api_list_materials(
+    material_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    user: User = Depends(require_permission("viewer")),
+):
+    result = await list_materials(user.id, material_type, status)
+    return ApiResponse(data=result)
+
+
+@router.post("/materials")
+async def api_create_material(
+    payload: MaterialCreateRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await create_material(payload.model_dump(exclude_none=True), user.id)
+    return ApiResponse(data=result)
+
+
+@router.put("/materials/{material_id}")
+async def api_update_material(
+    material_id: int,
+    payload: MaterialUpdateRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await update_material(material_id, payload.model_dump(exclude_none=True), user.id)
+    if not result:
+        from app.core.exceptions import NotFound
+        raise NotFound("Material not found")
+    return ApiResponse(data=result)
+
+
+@router.delete("/materials/{material_id}")
+async def api_delete_material(
+    material_id: int,
+    user: User = Depends(require_permission("editor")),
+):
+    ok = await delete_material(material_id, user.id)
+    if not ok:
+        from app.core.exceptions import NotFound
+        raise NotFound("Material not found")
+    return ApiResponse(data={"deleted": True})
+
+
+# ── Delivery Task CRUD/status ────────────────────────────────────
+
+@router.get("/delivery-tasks")
+async def api_list_delivery_tasks(
+    status: str | None = Query(default=None),
+    task_type: str | None = Query(default=None),
+    user: User = Depends(require_permission("viewer")),
+):
+    result = await list_delivery_tasks(user.id, status, task_type)
+    return ApiResponse(data=result)
+
+
+@router.post("/delivery-tasks")
+async def api_create_delivery_task(
+    payload: DeliveryTaskCreateRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await create_delivery_task(payload.model_dump(exclude_none=True), user.id)
+    return ApiResponse(data=result)
+
+
+@router.put("/delivery-tasks/{task_id}")
+async def api_update_delivery_task(
+    task_id: int,
+    payload: DeliveryTaskUpdateRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await update_delivery_task(task_id, payload.model_dump(exclude_none=True), user.id)
+    if not result:
+        from app.core.exceptions import NotFound
+        raise NotFound("Delivery task not found")
+    return ApiResponse(data=result)
+
+
+@router.post("/delivery-tasks/{task_id}/status")
+async def api_mark_delivery_task_status(
+    task_id: int,
+    payload: DeliveryTaskStatusRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await mark_delivery_task_status(
+        task_id,
+        user.id,
+        payload.status,
+        payload.error_message,
+        payload.result_payload,
+    )
+    if not result:
+        from app.core.exceptions import NotFound
+        raise NotFound("Delivery task not found")
+    return ApiResponse(data=result)
+
+
+@router.delete("/delivery-tasks/{task_id}")
+async def api_delete_delivery_task(
+    task_id: int,
+    user: User = Depends(require_permission("editor")),
+):
+    ok = await delete_delivery_task(task_id, user.id)
+    if not ok:
+        from app.core.exceptions import NotFound
+        raise NotFound("Delivery task not found")
+    return ApiResponse(data={"deleted": True})
+
+
+@router.post("/cleanup")
+async def api_cleanup_marked_data(
+    payload: CleanupRequest,
+    user: User = Depends(require_permission("editor")),
+):
+    result = await cleanup_marked_data(user.id, payload.marker)
+    return ApiResponse(data=result)
+
+
 # ── Prompt CRUD ─────────────────────────────────────────────────
 
 @router.get("/prompts")
@@ -443,6 +705,28 @@ async def _cap_validate_content(params: dict, caller: str) -> dict:
     return await validate_content(content, owner_id)
 
 
+async def _cap_create_delivery_task(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    return await create_delivery_task(params, owner_id)
+
+
+async def _cap_mark_task_failed(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    task_id = int(params.get("task_id", 0) or 0)
+    error_message = str(params.get("error_message", "") or "")
+    result = await mark_delivery_task_status(task_id, owner_id, "failed", error_message, params.get("result_payload"))
+    if not result:
+        from app.core.exceptions import NotFound
+        raise NotFound("Delivery task not found")
+    return result
+
+
+async def _cap_cleanup_marked_data(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    marker = str(params.get("marker", "") or "")
+    return await cleanup_marked_data(owner_id, marker)
+
+
 register_capability(
     "douyin-delivery", "generate_script", _cap_generate_script,
     description="根据产品/卖点生成抖音口播脚本（含钩子/痛点/卖点/信任/引导）",
@@ -469,5 +753,35 @@ register_capability(
     description="校验投放内容中的成分/功效表述是否科学准确",
     brief="内容校验",
     parameters={"content": {"type": "string", "description": "需要校验的文本"}},
+    min_role="editor",
+)
+register_capability(
+    "douyin-delivery", "create_delivery_task", _cap_create_delivery_task,
+    description="创建抖音投递任务，返回可审计的 pending/running/succeeded/failed 状态记录",
+    brief="创建投递任务",
+    parameters={
+        "task_type": {"type": "string", "description": "publish_script/publish_ad_copy/sync_metrics/review_content"},
+        "target_type": {"type": "string", "description": "script/ad_copy/campaign/material"},
+        "target_id": {"type": "integer", "description": "目标逻辑 ID"},
+        "payload": {"type": "object", "description": "投递参数"},
+    },
+    min_role="editor",
+)
+register_capability(
+    "douyin-delivery", "mark_task_failed", _cap_mark_task_failed,
+    description="把投递任务标记为 failed，并写入 error_message，禁止语义失败假成功",
+    brief="标记投递失败",
+    parameters={
+        "task_id": {"type": "integer", "description": "投递任务 ID"},
+        "error_message": {"type": "string", "description": "失败原因"},
+        "result_payload": {"type": "object", "description": "可选失败上下文"},
+    },
+    min_role="editor",
+)
+register_capability(
+    "douyin-delivery", "cleanup_marked_data", _cap_cleanup_marked_data,
+    description="按 marker 清理当前用户测试数据，marker 至少 6 字符",
+    brief="清理测试数据",
+    parameters={"marker": {"type": "string", "description": "测试数据标记，至少 6 字符"}},
     min_role="editor",
 )

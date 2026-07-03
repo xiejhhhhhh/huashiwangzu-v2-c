@@ -32,8 +32,7 @@
       "description": "搜索 GitHub 开源项目，按活跃度和质量排序。输入关键词即可，自动过滤归档和不活跃项目。",
       "parameters": {
         "query": "搜索关键词，支持 GitHub 搜索语法（如 language:python stars:>100）",
-        "limit": "返回结果数量（默认5，最大10）",
-        "search_code": "是否同时搜索仓库内代码（默认false）"
+        "limit": "返回结果数量（默认5，最大10）"
       },
       "min_role": "viewer"
     },

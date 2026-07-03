@@ -62,7 +62,7 @@ async def extract_entities_from_text(
         return {"entities": entities, "relationships": relationships}
     except Exception as e:
         logger.warning("Entity extraction failed: %s", e)
-        return {"entities": [], "relationships": []}
+        return {"entities": [], "relationships": [], "errors": [str(e)]}
 
 
 async def fuse_page_text(
@@ -106,6 +106,8 @@ async def process_document_entities(
     返回统计：{"entities_found": int, "relationships_found": int, "errors": [...]}
     """
     from ..models import (
+        KbChunk,
+        KbChunkEntity,
         KbEntityDictionary,
         KbEvidence,
         KbGovernanceCandidate,
@@ -138,6 +140,7 @@ async def process_document_entities(
         result = await extract_entities_from_text(combined, db=db)
         all_entities.extend(result.get("entities", []))
         all_relationships.extend(result.get("relationships", []))
+        stats["errors"].extend(result.get("errors", []))
         processed_pages += 1
 
         # 小延迟避免 API 限流
@@ -268,24 +271,60 @@ async def process_document_entities(
         db.add(edge)
         stats["relationships_found"] += 1
 
-    # 保存证据
+    chunks_r = await db.execute(
+        select(KbChunk)
+        .where(KbChunk.document_id == document_id, KbChunk.owner_id == owner_id)
+        .order_by(KbChunk.page, KbChunk.chunk_index)
+    )
+    page_to_chunks: dict[int, list[int]] = {}
+    for ch in chunks_r.scalars().all():
+        page_to_chunks.setdefault(ch.page or 0, []).append(ch.id)
+
+    seen_evidence_key: set[tuple[int, int]] = set()
+    seen_chunk_entity_key: set[tuple[int, int]] = set()
+
+    # 保存证据与 chunk-entity 关联。旧版本曾写 chunk_id=0，导致证据链不可追溯。
     for ent in all_entities:
         name = ent.get("name", "")
         entity_id = entity_name_to_id.get(name)
         if not entity_id:
             continue
+        page = 0
+        description_prefix = (ent.get("description") or "").strip()[:20]
+        for block in blocks:
+            text = (block.get("text") or "").strip()
+            if text and (name in text or (description_prefix and description_prefix in text)):
+                page = block.get("page") or 0
+                break
+        chunk_ids = page_to_chunks.get(page, [])
         evidence_text = ent.get("description", "")
         if evidence_text and len(evidence_text) >= 5:
-            evidence = KbEvidence(
+            ev_key = (entity_id, page)
+            if ev_key not in seen_evidence_key:
+                seen_evidence_key.add(ev_key)
+                evidence = KbEvidence(
+                    owner_id=owner_id,
+                    entity_id=entity_id,
+                    document_id=document_id,
+                    chunk_id=chunk_ids[0] if chunk_ids else 0,
+                    page=page,
+                    excerpt=evidence_text[:500],
+                    confidence=0.7,
+                    status="pending",
+                )
+                db.add(evidence)
+        for cid in chunk_ids:
+            ce_key = (entity_id, cid)
+            if ce_key in seen_chunk_entity_key:
+                continue
+            seen_chunk_entity_key.add(ce_key)
+            db.add(KbChunkEntity(
                 owner_id=owner_id,
+                chunk_id=cid,
                 entity_id=entity_id,
                 document_id=document_id,
-                chunk_id=0,  # 暂无精确 chunk 关联
-                excerpt=evidence_text[:500],
                 confidence=0.7,
-                status="pending",
-            )
-            db.add(evidence)
+            ))
 
     stats["entities_found"] = len(seen_entities)
     await db.commit()
@@ -365,7 +404,11 @@ async def process_document_entities_from_fusions(
     # 读取所有页融合正文
     r = await db.execute(
         select(KbPageFusion)
-        .where(KbPageFusion.document_id == document_id, KbPageFusion.fused_text != "")
+        .where(
+            KbPageFusion.document_id == document_id,
+            KbPageFusion.owner_id == owner_id,
+            KbPageFusion.fused_text != "",
+        )
         .order_by(KbPageFusion.page)
     )
     fusions = r.scalars().all()
@@ -389,6 +432,7 @@ async def process_document_entities_from_fusions(
         all_entities.extend(page_ents)
         entity_page.extend([pf.page] * len(page_ents))
         all_relationships.extend(result.get("relationships", []))
+        stats["errors"].extend(result.get("errors", []))
         processed_pages += 1
 
         if processed_pages % 3 == 0 and len(fusions) > 3:
@@ -477,7 +521,7 @@ async def process_document_entities_from_fusions(
     # 每块携带 page 号。查询本文档所有 chunk 建立 page→[chunk_id] 映射。
     chunks_r = await db.execute(
         select(KbChunk)
-        .where(KbChunk.document_id == document_id)
+        .where(KbChunk.document_id == document_id, KbChunk.owner_id == owner_id)
         .order_by(KbChunk.page, KbChunk.chunk_index)
     )
     all_doc_chunks = chunks_r.scalars().all()
@@ -565,6 +609,9 @@ async def process_document_entities_from_fusions(
             db.add(edge)
 
     stats["relationships_found"] = len(seen_relations)
+    if processed_pages > 0 and not seen_entities and stats["errors"]:
+        stats["status"] = "degraded"
+        stats["reason"] = "entity_extraction_failed"
     await db.commit()
     logger.info("Fusion-entity extraction doc_id=%d: %d entities, %d relationships", document_id, stats["entities_found"], stats["relationships_found"])
     return stats
@@ -639,15 +686,23 @@ async def get_graph_context(db: AsyncSession, owner_id: int, entity_id: int) -> 
     }
 
 
-async def get_page_fusion(db: AsyncSession, document_id: int, page: int) -> dict | None:
+async def get_page_fusion(
+    db: AsyncSession,
+    document_id: int,
+    page: int,
+    owner_id: int | None = None,
+) -> dict | None:
     """获取页级融合内容。"""
     from ..models import KbPageFusion
 
+    stmt = select(KbPageFusion).where(
+        KbPageFusion.document_id == document_id,
+        KbPageFusion.page == page,
+    )
+    if owner_id is not None:
+        stmt = stmt.where(KbPageFusion.owner_id == owner_id)
     r = await db.execute(
-        select(KbPageFusion).where(
-            KbPageFusion.document_id == document_id,
-            KbPageFusion.page == page,
-        )
+        stmt
     )
     pf = r.scalar_one_or_none()
     if not pf:

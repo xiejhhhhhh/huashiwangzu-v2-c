@@ -500,7 +500,7 @@ async def _backfill_missing_memory_links(
     return result
 
 
-async def _enqueue_post_save(memory_id: int, content: str, source: str | None) -> None:
+async def _enqueue_post_save(memory_id: int, content: str, source: str | None) -> bool:
     try:
         from app.database import AsyncSessionLocal
         from app.models.system import SystemTaskQueue
@@ -519,5 +519,7 @@ async def _enqueue_post_save(memory_id: int, content: str, source: str | None) -
             )
             eq_db.add(task)
             await eq_db.commit()
+            return True
     except Exception as e:
         logger.warning("Post-save enqueue failed (non-fatal): %s", e)
+    return False

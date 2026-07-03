@@ -53,9 +53,14 @@ async def http_save(
     db.add(memory)
     await db.commit()
     await db.refresh(memory)
-    await memory_service._update_embedding(memory.id, text)
-    await memory_service._enqueue_post_save(memory.id, text, req.source)
-    return ApiResponse(data={"id": memory.id, "status": "saved"})
+    embedding_updated = await memory_service._update_embedding(memory.id, text)
+    post_save_enqueued = await memory_service._enqueue_post_save(memory.id, text, req.source)
+    return ApiResponse(data={
+        "id": memory.id,
+        "status": "saved",
+        "embedding_updated": embedding_updated,
+        "post_save_enqueued": post_save_enqueued,
+    })
 
 
 @router.post("/recall")
@@ -143,9 +148,15 @@ async def http_rethink(
         memory.tags = req.tags
     memory.source = "rethink"
     await db.commit()
-    await memory_service._update_embedding(memory.id, text)
-    await memory_service._enqueue_post_save(memory.id, text, "rethink")
-    return ApiResponse(data={"id": memory.id, "status": "rethought", "old_text": old_text})
+    embedding_updated = await memory_service._update_embedding(memory.id, text)
+    post_save_enqueued = await memory_service._enqueue_post_save(memory.id, text, "rethink")
+    return ApiResponse(data={
+        "id": memory.id,
+        "status": "rethought",
+        "old_text": old_text,
+        "embedding_updated": embedding_updated,
+        "post_save_enqueued": post_save_enqueued,
+    })
 
 
 @router.post("/replace")
@@ -169,9 +180,14 @@ async def http_replace(
     memory.text = new_memory_text
     memory.source = "edit"
     await db.commit()
-    await memory_service._update_embedding(memory.id, new_memory_text)
-    await memory_service._enqueue_post_save(memory.id, new_memory_text, "edit")
-    return ApiResponse(data={"id": memory.id, "status": "replaced"})
+    embedding_updated = await memory_service._update_embedding(memory.id, new_memory_text)
+    post_save_enqueued = await memory_service._enqueue_post_save(memory.id, new_memory_text, "edit")
+    return ApiResponse(data={
+        "id": memory.id,
+        "status": "replaced",
+        "embedding_updated": embedding_updated,
+        "post_save_enqueued": post_save_enqueued,
+    })
 
 
 @router.post("/insert")
@@ -191,9 +207,14 @@ async def http_insert(
     memory.text = new_memory_text
     memory.source = "edit"
     await db.commit()
-    await memory_service._update_embedding(memory.id, new_memory_text)
-    await memory_service._enqueue_post_save(memory.id, new_memory_text, "edit")
-    return ApiResponse(data={"id": memory.id, "status": "inserted"})
+    embedding_updated = await memory_service._update_embedding(memory.id, new_memory_text)
+    post_save_enqueued = await memory_service._enqueue_post_save(memory.id, new_memory_text, "edit")
+    return ApiResponse(data={
+        "id": memory.id,
+        "status": "inserted",
+        "embedding_updated": embedding_updated,
+        "post_save_enqueued": post_save_enqueued,
+    })
 
 
 @router.post("/dream")

@@ -17,6 +17,11 @@ declare global {
         openApp?: (appId: string, opts?: Record<string, unknown>) => void
       }
     }
+
+    /** Desktop event bus exposed for framework-integrated modules */
+    __DESKTOP_EVENT_BUS__?: {
+      emit: (name: string, payload: Record<string, unknown>) => void
+    }
   }
 }
 

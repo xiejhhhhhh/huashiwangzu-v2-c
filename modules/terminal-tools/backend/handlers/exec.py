@@ -15,6 +15,7 @@ from .sandbox import (
     _build_sandbox_profile,
     _check_dangerous_command,
     _check_path_escape,
+    _coerce_timeout,
     _resolve_user_id,
     _run_process_capped,
     _safe_env,
@@ -40,13 +41,10 @@ async def _exec(params: dict, caller: str) -> dict:
     workspace = _user_workspace(user_id)
     workspace_real = os.path.realpath(str(workspace))
     command = params.get("command", "").strip()
-    timeout = int(params.get("timeout", _DEFAULT_TIMEOUT))
+    timeout = _coerce_timeout(params.get("timeout", _DEFAULT_TIMEOUT))
 
     if not command:
         return {"success": False, "error": "No command provided"}
-
-    if timeout <= 0 or timeout > 600:
-        timeout = _DEFAULT_TIMEOUT
 
     danger = _check_dangerous_command(command)
     if danger:
@@ -68,8 +66,8 @@ async def _exec(params: dict, caller: str) -> dict:
         return {
             "success": False,
             "error": (
-                "当前平台无可用沙盒(sandbox-exec/bwrap)，exec 已禁用。"
-                "需要 macOS 或安装了 bubblewrap 的 Linux。"
+                "当前平台无可用沙盒(sandbox-exec)，exec 已禁用。"
+                "当前实现需要 macOS sandbox-exec。"
             ),
             "command": command,
         }

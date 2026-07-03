@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..graph.graph import normalize_path
 from ..init_db import ensure_codemap_tables
 from ..models import CodemapFeedback
+from ..validation import validate_feedback_fields
 from . import file_lock
 
 logger = logging.getLogger("v2.codemap").getChild("lock_router")
@@ -62,7 +63,7 @@ async def http_check_lock(
     body: LockPathRequest,
     _user=Depends(require_permission("viewer")),
 ):
-    return ApiResponse(data=file_lock.check_lock(body.path))
+    return _operation_response(file_lock.check_lock(body.path))
 
 
 @router.post("/release-lock")
@@ -75,7 +76,7 @@ async def http_release_lock(
 
 @router.get("/list-locks")
 async def http_list_locks(_user=Depends(require_permission("viewer"))):
-    return ApiResponse(data=file_lock.list_locks())
+    return _operation_response(file_lock.list_locks())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -89,10 +90,14 @@ async def http_report_inaccuracy(
     _user=Depends(require_permission("viewer")),
 ):
     """Agent 实读验证后发现 codemap 不准时，调用此接口记录一条反馈。"""
+    try:
+        path, query_type = validate_feedback_fields(body.path, body.query_type)
+    except ValueError as exc:
+        return ApiResponse(success=False, error=str(exc), data={"path": body.path, "query_type": body.query_type})
     await ensure_codemap_tables(db)
     feedback = CodemapFeedback(
-        path=normalize_path(body.path),
-        query_type=body.query_type,
+        path=path,
+        query_type=query_type,
         codemap_said=body.codemap_said,
         actual=body.actual,
         reason=body.reason,

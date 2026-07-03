@@ -1,12 +1,9 @@
 """知识库治理服务：候选治理、质量审计、实体合并、歧义处理、抽取校准、证据链审查。"""
-import json
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, or_, and_, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.database import AsyncSessionLocal
 
 logger = logging.getLogger("v2.knowledge").getChild("governance")
 
@@ -56,7 +53,7 @@ async def list_governance_candidates(
 
 async def approve_candidate(db: AsyncSession, candidate_id: int, user_id: int) -> bool:
     """审批通过治理候选 → 标记 confirmed。"""
-    from ..models import KbGovernanceCandidate, KbEntityDictionary
+    from ..models import KbEntityDictionary, KbGovernanceCandidate
 
     c_r = await db.execute(
         select(KbGovernanceCandidate).where(KbGovernanceCandidate.id == candidate_id)
@@ -87,7 +84,7 @@ async def approve_candidate(db: AsyncSession, candidate_id: int, user_id: int) -
 
 async def reject_candidate(db: AsyncSession, candidate_id: int, user_id: int) -> bool:
     """驳回治理候选 → 标记 rejected。"""
-    from ..models import KbGovernanceCandidate, KbEntityDictionary
+    from ..models import KbEntityDictionary, KbGovernanceCandidate
 
     c_r = await db.execute(
         select(KbGovernanceCandidate).where(KbGovernanceCandidate.id == candidate_id)
@@ -125,8 +122,11 @@ async def merge_entities(
 ) -> bool:
     """合并实体：源实体 → 目标实体。"""
     from ..models import (
-        KbEntityDictionary, KbEntityAlias, KbChunkEntity,
-        KbEvidence, KbGraphNode, KbEntityMergeLog,
+        KbChunkEntity,
+        KbEntityAlias,
+        KbEntityDictionary,
+        KbEntityMergeLog,
+        KbEvidence,
     )
 
     target_r = await db.execute(
@@ -239,7 +239,7 @@ async def calibrate_extraction(
     user_id: int | None = None,
 ) -> bool:
     """校准抽取结果：修改实体名或类别。"""
-    from ..models import KbGovernanceCandidate, KbEntityDictionary
+    from ..models import KbEntityDictionary, KbGovernanceCandidate
 
     c_r = await db.execute(
         select(KbGovernanceCandidate).where(KbGovernanceCandidate.id == candidate_id)

@@ -6,7 +6,9 @@ All queries are owner-isolated. No Agent should handle base64 or physical paths.
 import io
 import json
 import os
+from copy import deepcopy
 
+from app.core.exceptions import AppException, NotFound, ValidationError
 from app.database import AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.models.user import User
@@ -27,7 +29,7 @@ from app.services.file_upload_service import replace_file_content, upload_file
 from app.services.module_registry import call_capability, register_capability
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 router = APIRouter(prefix="/api/desktop-tools", tags=["desktop-tools"])
 
@@ -49,6 +51,10 @@ _FILE_FIELDS = (
     "updated_at",
 )
 
+MAX_PAGE_SIZE = 100
+MAX_READ_CHARS = 20_000
+MAX_READ_BLOCKS = 80
+
 
 def _file_to_item(file) -> dict:
     return {k: getattr(file, k, None) for k in _FILE_FIELDS}
@@ -68,6 +74,106 @@ def _folder_to_item(folder) -> dict:
     }
 
 
+def _coerce_positive_int(value, field_name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{field_name} must be an integer")
+    if parsed <= 0:
+        raise ValidationError(f"{field_name} must be a positive integer")
+    return parsed
+
+
+def _coerce_non_negative_int(value, field_name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{field_name} must be an integer")
+    if parsed < 0:
+        raise ValidationError(f"{field_name} must be non-negative")
+    return parsed
+
+
+def _coerce_page(value) -> int:
+    return _coerce_positive_int(value if value is not None else 1, "page")
+
+
+def _coerce_page_size(value) -> int:
+    page_size = _coerce_positive_int(value if value is not None else 50, "page_size")
+    if page_size > MAX_PAGE_SIZE:
+        raise ValidationError(f"page_size must be <= {MAX_PAGE_SIZE}")
+    return page_size
+
+
+def _normalize_extension(value) -> str | None:
+    if value is None:
+        return None
+    ext = str(value).strip().lower().lstrip(".")
+    if not ext:
+        return None
+    if "/" in ext or "\\" in ext or ".." in ext:
+        raise ValidationError("extension must be a simple file extension")
+    return ext
+
+
+def _normalize_file_name(value) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise ValidationError("name is required")
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValidationError("name must not contain path separators")
+    return name
+
+
+def _truncate_text(text: str, max_chars: int = MAX_READ_CHARS) -> tuple[str, dict]:
+    original_chars = len(text)
+    truncated = original_chars > max_chars
+    returned = text[:max_chars] if truncated else text
+    return returned, {
+        "truncated": truncated,
+        "content_chars": original_chars,
+        "returned_chars": len(returned),
+        "max_chars": max_chars,
+    }
+
+
+def _limit_blocks(blocks: list[dict], max_chars: int = MAX_READ_CHARS) -> tuple[list[dict], dict]:
+    limited: list[dict] = []
+    used_chars = 0
+    original_chars = 0
+    truncated = len(blocks) > MAX_READ_BLOCKS
+
+    for block in blocks:
+        text = block.get("text")
+        text_len = len(text) if isinstance(text, str) else 0
+        original_chars += text_len
+        if len(limited) >= MAX_READ_BLOCKS:
+            truncated = True
+            continue
+
+        copied = deepcopy(block)
+        if isinstance(text, str):
+            remaining = max_chars - used_chars
+            if remaining <= 0:
+                truncated = True
+                break
+            if text_len > remaining:
+                copied["text"] = text[:remaining]
+                used_chars += remaining
+                truncated = True
+            else:
+                used_chars += text_len
+        limited.append(copied)
+
+    return limited, {
+        "truncated": truncated,
+        "content_chars": original_chars,
+        "returned_chars": used_chars,
+        "max_chars": max_chars,
+        "max_blocks": MAX_READ_BLOCKS,
+    }
+
+
 # =====================================================================
 # Capability: desktop:list_files
 # =====================================================================
@@ -76,64 +182,93 @@ async def _list_files(params: dict, caller: str) -> dict:
     from app.models.file import File, Folder
 
     owner_id = resolve_caller_user_id(caller)
-    folder_id = int(params.get("folder_id", 0))
-    page = int(params.get("page", 1))
-    page_size = int(params.get("page_size", 50))
+    folder_id = _coerce_non_negative_int(params.get("folder_id", 0), "folder_id")
+    page = _coerce_page(params.get("page", 1))
+    page_size = _coerce_page_size(params.get("page_size", 50))
+    offset = (page - 1) * page_size
 
     async with AsyncSessionLocal() as db:
-        folders_result = await db.execute(
-            select(Folder).where(
-                Folder.parent_id == (None if folder_id == 0 else folder_id),
+        if folder_id:
+            folder = await db.get(Folder, folder_id)
+            if not folder or folder.deleted or folder.owner_id != owner_id:
+                raise NotFound("Folder not found")
+
+        folder_cond = Folder.parent_id.is_(None) if folder_id == 0 else Folder.parent_id == folder_id
+        file_cond = File.folder_id.is_(None) if folder_id == 0 else File.folder_id == folder_id
+
+        folder_total = await db.scalar(
+            select(func.count(Folder.id)).where(
+                folder_cond,
                 Folder.owner_id == owner_id,
                 Folder.deleted.is_(False),
-            ).order_by(Folder.name)
-        )
-        folders = folders_result.scalars().all()
-
-        file_query = (
-            select(File).where(
-                File.folder_id.is_(None) if folder_id == 0 else File.folder_id == folder_id,
+            )
+        ) or 0
+        file_total = await db.scalar(
+            select(func.count(File.id)).where(
+                file_cond,
                 File.owner_id == owner_id,
                 File.deleted.is_(False),
-            ).order_by(File.created_at.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-        files_result = await db.execute(file_query)
-        files = files_result.scalars().all()
+            )
+        ) or 0
+
+        folder_limit = max(0, min(page_size, folder_total - offset))
+        folders = []
+        if folder_limit:
+            folders_result = await db.execute(
+                select(Folder).where(
+                    folder_cond,
+                    Folder.owner_id == owner_id,
+                    Folder.deleted.is_(False),
+                ).order_by(Folder.name)
+                .offset(offset)
+                .limit(folder_limit)
+            )
+            folders = folders_result.scalars().all()
+
+        file_offset = max(0, offset - folder_total)
+        file_limit = page_size - len(folders)
+        files = []
+        if file_limit:
+            files_result = await db.execute(
+                select(File).where(
+                    file_cond,
+                    File.owner_id == owner_id,
+                    File.deleted.is_(False),
+                ).order_by(File.created_at.desc())
+                .offset(file_offset)
+                .limit(file_limit)
+            )
+            files = files_result.scalars().all()
 
         items = [_folder_to_item(f) for f in folders] + [_file_to_item(f) for f in files]
 
     return {
         "items": items,
-        "total": len(items),
+        "total": folder_total + file_total,
         "page": page,
         "page_size": page_size,
         "folder_id": folder_id,
     }
 
 
-# =====================================================================
-# Capability: desktop:search_files
-# =====================================================================
 async def _search_files(params: dict, caller: str) -> dict:
     """Search files by keyword / extension. Owner-isolated."""
     from app.models.file import File
 
     owner_id = resolve_caller_user_id(caller)
-    keyword = params.get("keyword", "")
-    extension = params.get("extension")
-    page = int(params.get("page", 1))
-    page_size = int(params.get("page_size", 50))
+    keyword = str(params.get("keyword", "")).strip()
+    extension = _normalize_extension(params.get("extension"))
+    page = _coerce_page(params.get("page", 1))
+    page_size = _coerce_page_size(params.get("page_size", 50))
 
     async with AsyncSessionLocal() as db:
         conds = [File.owner_id == owner_id, File.deleted.is_(False)]
         if keyword:
             conds.append(File.name.ilike(f"%{keyword}%"))
         if extension:
-            ext_clean = extension.strip().lstrip(".")
-            conds.append(File.extension == ext_clean)
+            conds.append(File.extension == extension)
 
+        total = await db.scalar(select(func.count(File.id)).where(*conds)) or 0
         query = (
             select(File)
             .where(*conds)
@@ -148,13 +283,12 @@ async def _search_files(params: dict, caller: str) -> dict:
 
     return {
         "items": items,
-        "total": len(items),
+        "total": total,
         "page": page,
         "page_size": page_size,
         "keyword": keyword,
         "extension": extension,
     }
-
 
 # =====================================================================
 # Capability: desktop:read_file
@@ -174,7 +308,7 @@ _EXT_PARSER_MAP = {
 }
 
 # Pure-text formats that can be read directly (fallback if parser module not available)
-_TEXT_EXTS = {"txt", "md", "markdown", "text", "log", "csv"}
+_TEXT_EXTS = {"txt", "md", "markdown", "text", "log", "csv", "json", "xml", "yaml", "yml"}
 
 
 async def _read_file(params: dict, caller: str) -> dict:
@@ -187,15 +321,10 @@ async def _read_file(params: dict, caller: str) -> dict:
     from app.services.file_service import check_file_access
 
     owner_id = resolve_caller_user_id(caller)
-    file_id = int(params.get("file_id", 0))
-    if file_id <= 0:
-        raise ValueError("file_id must be a positive integer")
+    file_id = _coerce_positive_int(params.get("file_id", 0), "file_id")
 
     async with AsyncSessionLocal() as db:
-        try:
-            file = await check_file_access(db, file_id, owner_id)
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
+        file = await check_file_access(db, file_id, owner_id)
 
         ext = (file.extension or "").lower()
         file_info = {
@@ -219,26 +348,36 @@ async def _read_file(params: dict, caller: str) -> dict:
                     caller_role="viewer",
                 )
                 # Convert unified content blocks to plain text for Agent consumption
+                if isinstance(parse_result, dict) and parse_result.get("success") is False:
+                    raise ValidationError(str(parse_result.get("error") or f"{parser_module}:parse failed"))
                 blocks = parse_result.get("blocks", [])
-                plain_text = "\n\n".join(
-                    b.get("text", "") for b in blocks if b.get("text")
+                if not isinstance(blocks, list):
+                    raise ValidationError(f"Parser module '{parser_module}' returned invalid blocks")
+                limited_blocks, limit_info = _limit_blocks(blocks)
+                plain_text, content_limit_info = _truncate_text(
+                    "\n\n".join(
+                        b.get("text", "") for b in limited_blocks if b.get("text")
+                    )
                 )
+                limit_info["returned_chars"] = content_limit_info["returned_chars"]
                 return {
                     "success": True,
                     "file": file_info,
                     "content": plain_text,
-                    "blocks": blocks,
+                    "blocks": limited_blocks,
                     "parser": parser_module,
+                    "truncated": limit_info["truncated"] or content_limit_info["truncated"],
+                    "limits": limit_info,
                 }
             except Exception as exc:
                 # Parser module not available or error – fallback for text formats
                 if ext not in _TEXT_EXTS:
-                    return {
-                        "success": False,
-                        "error": f"Parser module '{parser_module}' unavailable or failed: {exc}",
-                        "file": file_info,
-                    }
+                    raise ValidationError(
+                        f"Parser module '{parser_module}' unavailable or failed: {exc}"
+                    )
                 # Fall through to direct text read
+        elif ext not in _TEXT_EXTS:
+            raise ValidationError(f"Unsupported file extension for reading: .{ext or 'unknown'}")
 
         # Direct read for pure-text formats
         from pathlib import Path
@@ -246,14 +385,14 @@ async def _read_file(params: dict, caller: str) -> dict:
         from app.config import get_settings
 
         if not file.storage_path:
-            return {"success": False, "error": "File storage path is empty", "file": file_info}
+            raise NotFound("File storage path is empty")
 
         upload_root = Path(get_settings().UPLOAD_DIR).resolve()
         full_path = (upload_root / file.storage_path).resolve()
         if os.path.commonpath([str(upload_root), str(full_path)]) != str(upload_root):
-            return {"success": False, "error": "Invalid file path", "file": file_info}
+            raise AppException("Invalid file path", status_code=400)
         if not full_path.exists() or not full_path.is_file():
-            return {"success": False, "error": "File on disk not found", "file": file_info}
+            raise NotFound("File on disk not found")
 
         ALLOWED_ENCS = ["utf-8", "utf-8-sig", "gbk", "gb2312", "latin-1"]
         raw = full_path.read_bytes()
@@ -267,12 +406,15 @@ async def _read_file(params: dict, caller: str) -> dict:
         if content is None:
             content = raw.decode("utf-8", errors="replace")
 
+        content, limit_info = _truncate_text(content)
         return {
             "success": True,
             "file": file_info,
             "content": content,
             "blocks": [{"type": "paragraph", "text": content}],
             "parser": "direct",
+            "truncated": limit_info["truncated"],
+            "limits": limit_info,
         }
 
 
@@ -332,9 +474,7 @@ async def _get_file(params: dict, caller: str) -> dict:
     """Get a single file's metadata by file_id."""
 
     owner_id = resolve_caller_user_id(caller)
-    file_id = int(params.get("file_id", 0))
-    if file_id <= 0:
-        raise ValueError("file_id must be a positive integer")
+    file_id = _coerce_positive_int(params.get("file_id", 0), "file_id")
 
     async with AsyncSessionLocal() as db:
         file = await check_file_access(db, file_id, owner_id)
@@ -360,14 +500,20 @@ async def _create_file(params: dict, caller: str) -> dict:
     For binary content, use create_file then replace_file_from_artifact.
     """
     owner_id = resolve_caller_user_id(caller)
-    name = params.get("name", "Untitled")
-    extension = params.get("extension", "txt")
+    name = _normalize_file_name(params.get("name", "Untitled"))
+    extension = _normalize_extension(params.get("extension", "txt")) or "txt"
     content = params.get("content", "")
-    folder_id = params.get("folder_id")
+    folder_id = (
+        _coerce_positive_int(params.get("folder_id"), "folder_id")
+        if params.get("folder_id") is not None
+        else None
+    )
+    if not isinstance(content, (str, bytes, bytearray)):
+        raise ValidationError("content must be text or bytes")
 
     async with AsyncSessionLocal() as db:
         result = await upload_file(
-            db, io.BytesIO(content.encode("utf-8") if isinstance(content, str) else content),
+            db, io.BytesIO(content.encode("utf-8") if isinstance(content, str) else bytes(content)),
             f"{name}.{extension}", owner_id, folder_id,
         )
 
@@ -392,19 +538,17 @@ async def _replace_file(params: dict, caller: str) -> dict:
     — use source_artifact_id or source_file_id instead.
     """
     owner_id = resolve_caller_user_id(caller)
-    old_file_id = int(params.get("old_file_id", 0))
+    old_file_id = _coerce_positive_int(params.get("old_file_id", 0), "old_file_id")
     new_content = params.get("new_content", "")
     source_artifact_id = params.get("source_artifact_id")
     source_file_id = params.get("source_file_id")
 
-    if old_file_id <= 0:
-        raise ValueError("old_file_id must be a positive integer")
-
     async with AsyncSessionLocal() as db:
         await check_file_access(db, old_file_id, owner_id)
 
-        if source_artifact_id:
-            artifact = await get_artifact(db, int(source_artifact_id), owner_id)
+        if source_artifact_id is not None:
+            artifact_id = _coerce_positive_int(source_artifact_id, "source_artifact_id")
+            artifact = await get_artifact(db, artifact_id, owner_id)
             if artifact.get("file_id"):
                 content_bytes = await get_file_content_bytes(artifact["file_id"], owner_id)
             elif artifact.get("content_text"):
@@ -412,15 +556,18 @@ async def _replace_file(params: dict, caller: str) -> dict:
             elif artifact.get("content_json"):
                 content_bytes = json.dumps(artifact["content_json"], ensure_ascii=False).encode("utf-8")
             else:
-                raise ValueError("Artifact has no content")
+                raise ValidationError("Artifact has no content")
             result = await replace_file_content(db, old_file_id, owner_id, content_bytes)
-        elif source_file_id:
-            content_bytes = await get_file_content_bytes(int(source_file_id), owner_id)
+        elif source_file_id is not None:
+            source_id = _coerce_positive_int(source_file_id, "source_file_id")
+            content_bytes = await get_file_content_bytes(source_id, owner_id)
             result = await replace_file_content(db, old_file_id, owner_id, content_bytes)
-        elif new_content:
+        elif new_content != "":
+            if not isinstance(new_content, str):
+                raise ValidationError("new_content must be a string")
             result = await replace_file_content(db, old_file_id, owner_id, new_content.encode("utf-8"))
         else:
-            raise ValueError("Provide new_content, source_artifact_id, or source_file_id")
+            raise ValidationError("Provide new_content, source_artifact_id, or source_file_id")
 
     return {
         "old_file_id": old_file_id,
@@ -437,7 +584,7 @@ async def _replace_file(params: dict, caller: str) -> dict:
 async def _delete_file(params: dict, caller: str) -> dict:
     """Soft-delete a file. Supports restore."""
     owner_id = resolve_caller_user_id(caller)
-    file_id = int(params.get("file_id", 0))
+    file_id = _coerce_positive_int(params.get("file_id", 0), "file_id")
 
     async with AsyncSessionLocal() as db:
         await delete_to_trash(db, "file", file_id, owner_id)
@@ -451,11 +598,8 @@ async def _delete_file(params: dict, caller: str) -> dict:
 async def _rename_file(params: dict, caller: str) -> dict:
     """Rename a file."""
     owner_id = resolve_caller_user_id(caller)
-    file_id = int(params.get("file_id", 0))
-    new_name = params.get("new_name", "")
-
-    if not new_name:
-        raise ValueError("new_name is required")
+    file_id = _coerce_positive_int(params.get("file_id", 0), "file_id")
+    new_name = _normalize_file_name(params.get("new_name", ""))
 
     async with AsyncSessionLocal() as db:
         await rename_item(db, "file", file_id, new_name, owner_id)
@@ -469,8 +613,12 @@ async def _rename_file(params: dict, caller: str) -> dict:
 async def _copy_file(params: dict, caller: str) -> dict:
     """Copy a file to a target folder."""
     owner_id = resolve_caller_user_id(caller)
-    file_id = int(params.get("file_id", 0))
-    target_folder_id = params.get("target_folder_id")
+    file_id = _coerce_positive_int(params.get("file_id", 0), "file_id")
+    target_folder_id = (
+        _coerce_positive_int(params.get("target_folder_id"), "target_folder_id")
+        if params.get("target_folder_id") is not None
+        else None
+    )
 
     async with AsyncSessionLocal() as db:
         result = await copy_item(db, "file", file_id, target_folder_id, owner_id)
@@ -484,7 +632,7 @@ async def _copy_file(params: dict, caller: str) -> dict:
 async def _list_versions(params: dict, caller: str) -> dict:
     """List all available versions of a file (via linked artifact)."""
     owner_id = resolve_caller_user_id(caller)
-    artifact_id = int(params.get("artifact_id", 0))
+    artifact_id = _coerce_positive_int(params.get("artifact_id", 0), "artifact_id")
 
     async with AsyncSessionLocal() as db:
         versions = await list_artifact_versions(db, artifact_id, owner_id)
@@ -498,8 +646,8 @@ async def _list_versions(params: dict, caller: str) -> dict:
 async def _restore_version(params: dict, caller: str) -> dict:
     """Restore a file to a previous version."""
     owner_id = resolve_caller_user_id(caller)
-    artifact_id = int(params.get("artifact_id", 0))
-    version_id = int(params.get("version_id", 0))
+    artifact_id = _coerce_positive_int(params.get("artifact_id", 0), "artifact_id")
+    version_id = _coerce_positive_int(params.get("version_id", 0), "version_id")
 
     async with AsyncSessionLocal() as db:
         result = await restore_artifact_version(db, artifact_id, version_id, owner_id)
@@ -515,8 +663,8 @@ async def _replace_file_from_artifact(params: dict, caller: str) -> dict:
     No base64 needed — system handles binary internally.
     """
     owner_id = resolve_caller_user_id(caller)
-    target_file_id = int(params.get("target_file_id", 0))
-    source_artifact_id = int(params.get("source_artifact_id", 0))
+    target_file_id = _coerce_positive_int(params.get("target_file_id", 0), "target_file_id")
+    source_artifact_id = _coerce_positive_int(params.get("source_artifact_id", 0), "source_artifact_id")
 
     async with AsyncSessionLocal() as db:
         result = await svc_replace_from_artifact(
@@ -534,8 +682,12 @@ async def _publish_artifact(params: dict, caller: str) -> dict:
     Creates or replaces a desktop file entry from artifact content.
     """
     owner_id = resolve_caller_user_id(caller)
-    artifact_id = int(params.get("artifact_id", 0))
-    target_file_id = params.get("target_file_id")
+    artifact_id = _coerce_positive_int(params.get("artifact_id", 0), "artifact_id")
+    target_file_id = (
+        _coerce_positive_int(params.get("target_file_id"), "target_file_id")
+        if params.get("target_file_id") is not None
+        else None
+    )
 
     async with AsyncSessionLocal() as db:
         result = await publish_artifact(
@@ -563,7 +715,11 @@ register_capability(
         "properties": {
             "folder_id": {"type": "integer", "description": "Folder ID (0 or omit for root)", "default": 0},
             "page": {"type": "integer", "description": "Page number", "default": 1},
-            "page_size": {"type": "integer", "description": "Items per page", "default": 50},
+            "page_size": {
+                "type": "integer",
+                "description": f"Items per page (max {MAX_PAGE_SIZE})",
+                "default": 50,
+            },
         },
     },
     min_role="viewer",
@@ -579,7 +735,11 @@ register_capability(
             "keyword": {"type": "string", "description": "Search keyword (file name contains)", "default": ""},
             "extension": {"type": "string", "description": "Filter by extension (e.g. pdf, txt)", "default": None},
             "page": {"type": "integer", "description": "Page number", "default": 1},
-            "page_size": {"type": "integer", "description": "Items per page", "default": 50},
+            "page_size": {
+                "type": "integer",
+                "description": f"Items per page (max {MAX_PAGE_SIZE})",
+                "default": 50,
+            },
         },
     },
     min_role="viewer",
@@ -587,7 +747,10 @@ register_capability(
 
 register_capability(
     "desktop-tools", "read_file", _read_file,
-    description="Read file content by file_id. Routes to correct parser. Returns text content.",
+    description=(
+        "Read file content by file_id. Routes to correct parser and returns "
+        f"text content capped at {MAX_READ_CHARS} chars with truncation metadata."
+    ),
     brief="读取文件内容",
     parameters={
         "type": "object",

@@ -21,7 +21,7 @@ from .model_client import final_clean_content, parse_inline_tool_calls
 
 logger = logging.getLogger("v2.agent").getChild("subagent_runner")
 
-READ_ONLY_TOOLS = {"skill_list", "skill_describe", "skill_use"}
+READ_ONLY_TOOLS = {"skill_list", "skill_describe"}
 _READ_PREFIXES = ("knowledge__", "memory__recall", "web-tools__", "desktop-tools__")
 
 SUBAGENT_MAX_ROUNDS = 4
@@ -34,6 +34,29 @@ def _is_read_only_tool(name: str) -> bool:
         if name.startswith(prefix):
             return True
     return False
+
+
+def _is_allowed_without_write(name: str, args: dict) -> bool:
+    if name == "skill_use":
+        target_name = str(args.get("name") or "")
+        return _is_read_only_tool(target_name)
+    return _is_read_only_tool(name)
+
+
+def _tool_result_error(result: object) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    if result.get("success") is False:
+        return str(result.get("error") or "success=false")
+    if result.get("error"):
+        return str(result["error"])
+    inner = result.get("data", result)
+    if isinstance(inner, dict):
+        if inner.get("success") is False:
+            return str(inner.get("error") or "success=false")
+        if inner.get("error"):
+            return str(inner["error"])
+    return None
 
 
 def _j(obj) -> str:
@@ -145,6 +168,7 @@ async def _execute_tool_loop(
     full_content = ""
     rounds_used = 0
     task_error = None
+    tool_error = None
     tool_call_trace: list[dict] = []
     tool_result_trace: list[dict] = []
 
@@ -197,9 +221,10 @@ async def _execute_tool_loop(
                 "arguments": args,
             })
 
-            if not task_write_enabled and not _is_read_only_tool(name):
+            if not task_write_enabled and not _is_allowed_without_write(name, args):
+                blocked_name = str(args.get("name") or name) if name == "skill_use" else name
                 tool_result = {
-                    "error": f"工具 '{name}' 需要写入权限，当前未启用。请在调用时设置 write_enabled=True",
+                    "error": f"工具 '{blocked_name}' 需要写入权限，当前未启用。请在调用时设置 write_enabled=True",
                 }
             elif name == "skill_list":
                 tool_result = await tool_discovery.handle_skill_list(args, caller_role)
@@ -226,6 +251,7 @@ async def _execute_tool_loop(
                 "tool_call_id": tool_call_id,
                 "result": tool_result,
             })
+            tool_error = tool_error or _tool_result_error(tool_result)
 
             messages.append({
                 "role": "tool",
@@ -241,6 +267,8 @@ async def _execute_tool_loop(
                 break
 
     full_content = final_clean_content(full_content)
+    if not full_content and tool_error and not task_error:
+        task_error = tool_error
 
     return {
         "task": task_desc,

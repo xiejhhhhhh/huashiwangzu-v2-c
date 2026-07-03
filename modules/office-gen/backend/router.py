@@ -14,6 +14,7 @@ import io
 import logging
 import os
 
+from app.core.exceptions import ValidationError
 from app.database import AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.models.user import User
@@ -40,7 +41,7 @@ SUPPORTED_GENERATE_FORMATS = {"docx", "xlsx", "pptx", "pdf"}
 def _normalize_format(format_type: object) -> str:
     fmt = str(format_type or "").lower().lstrip(".").strip()
     if fmt not in SUPPORTED_GENERATE_FORMATS:
-        raise ValueError(f"Unsupported format: {fmt or '<empty>'}")
+        raise ValidationError(f"Unsupported format: {fmt or '<empty>'}")
     return fmt
 
 
@@ -49,22 +50,34 @@ def _require_non_empty_list(params: dict, key: str, aliases: tuple[str, ...] = (
         value = params.get(candidate)
         if isinstance(value, list) and value:
             return value
-    raise ValueError(f"{key} must be a non-empty array")
+        content_ir = params.get("content_ir")
+        if isinstance(content_ir, dict):
+            value = content_ir.get(candidate)
+            if isinstance(value, list) and value:
+                return value
+    raise ValidationError(f"{key} must be a non-empty array")
+
+
+def _render_generated_bytes(render) -> bytes:
+    try:
+        return render()
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 def _generate_bytes_for_format(format_type: str, filename: str, params: dict) -> bytes:
     fmt = _normalize_format(format_type)
     if fmt == "xlsx":
-        sheets = _require_non_empty_list(params, "sheets", ("工作表",))
-        return generator.generate_xlsx({"filename": filename, "sheets": sheets})
+        sheets = _require_non_empty_list(params, "sheets", ("工作表", "blocks"))
+        return _render_generated_bytes(lambda: generator.generate_xlsx({"filename": filename, "sheets": sheets}))
     if fmt == "docx":
-        content = _require_non_empty_list(params, "content")
-        return generator.generate_docx({"filename": filename, "content": content})
+        content = _require_non_empty_list(params, "content", ("blocks",))
+        return _render_generated_bytes(lambda: generator.generate_docx({"filename": filename, "content": content}))
     if fmt == "pptx":
-        slides = _require_non_empty_list(params, "slides", ("幻灯片",))
-        return generator.generate_pptx({"filename": filename, "slides": slides})
-    content = _require_non_empty_list(params, "content")
-    return generator.generate_pdf({"filename": filename, "content": content})
+        slides = _require_non_empty_list(params, "slides", ("幻灯片", "blocks"))
+        return _render_generated_bytes(lambda: generator.generate_pptx({"filename": filename, "slides": slides}))
+    content = _require_non_empty_list(params, "content", ("blocks",))
+    return _render_generated_bytes(lambda: generator.generate_pdf({"filename": filename, "content": content}))
 
 
 async def _ensure_content_package(
@@ -178,11 +191,11 @@ async def _save_to_artifact(
 async def _cap_docx(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名文档")
-    content = _require_non_empty_list(params, "content")
+    content = _require_non_empty_list(params, "content", ("blocks",))
     folder_id = params.get("folder_id")
 
     data = {"filename": filename, "content": content}
-    bytes_data = generator.generate_docx(data)
+    bytes_data = _render_generated_bytes(lambda: generator.generate_docx(data))
     result = await _save_file_bytes(bytes_data, filename, "docx", owner_id, folder_id)
     return result
 
@@ -193,11 +206,11 @@ async def _cap_docx(params: dict, caller: str) -> dict:
 async def _cap_xlsx(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名表格")
-    sheets = _require_non_empty_list(params, "sheets", ("工作表",))
+    sheets = _require_non_empty_list(params, "sheets", ("工作表", "blocks"))
     folder_id = params.get("folder_id")
 
     data = {"filename": filename, "sheets": sheets}
-    bytes_data = generator.generate_xlsx(data)
+    bytes_data = _render_generated_bytes(lambda: generator.generate_xlsx(data))
     result = await _save_file_bytes(bytes_data, filename, "xlsx", owner_id, folder_id)
     return result
 
@@ -208,11 +221,11 @@ async def _cap_xlsx(params: dict, caller: str) -> dict:
 async def _cap_pptx(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名演示")
-    slides = _require_non_empty_list(params, "slides", ("幻灯片",))
+    slides = _require_non_empty_list(params, "slides", ("幻灯片", "blocks"))
     folder_id = params.get("folder_id")
 
     data = {"filename": filename, "slides": slides}
-    bytes_data = generator.generate_pptx(data)
+    bytes_data = _render_generated_bytes(lambda: generator.generate_pptx(data))
     result = await _save_file_bytes(bytes_data, filename, "pptx", owner_id, folder_id)
     return result
 
@@ -223,11 +236,11 @@ async def _cap_pptx(params: dict, caller: str) -> dict:
 async def _cap_pdf(params: dict, caller: str) -> dict:
     owner_id = resolve_caller_user_id(caller)
     filename = params.get("filename", "未命名文档")
-    content = _require_non_empty_list(params, "content")
+    content = _require_non_empty_list(params, "content", ("blocks",))
     folder_id = params.get("folder_id")
 
     data = {"filename": filename, "content": content}
-    bytes_data = generator.generate_pdf(data)
+    bytes_data = _render_generated_bytes(lambda: generator.generate_pdf(data))
     result = await _save_file_bytes(bytes_data, filename, "pdf", owner_id, folder_id)
     return result
 
@@ -241,7 +254,7 @@ async def _cap_convert(params: dict, caller: str) -> dict:
     target_format = params.get("target_format", "pdf")
 
     if not file_id:
-        raise ValueError("file_id is required")
+        raise ValidationError("file_id is required")
 
     async with AsyncSessionLocal() as db:
         _, source_path, _ = await read_uploaded_file(
@@ -251,9 +264,12 @@ async def _cap_convert(params: dict, caller: str) -> dict:
             converter.SUPPORTED_FORMATS,
         )
 
-        output_name, output_bytes = await converter.convert_by_file_id(
-            str(source_path), target_format
-        )
+        try:
+            output_name, output_bytes = await converter.convert_by_file_id(
+                str(source_path), target_format
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
     out_ext = target_format.lower().lstrip(".")
     result = await _save_file_bytes(
@@ -461,7 +477,7 @@ async def _cap_replace_existing(params: dict, caller: str) -> dict:
     target_file_id = int(params.get("target_file_id", 0))
 
     if target_file_id <= 0:
-        raise ValueError("target_file_id must be a positive integer")
+        raise ValidationError("target_file_id must be a positive integer")
 
     bytes_data = _generate_bytes_for_format(format_type, filename, params)
 
@@ -496,7 +512,7 @@ async def _cap_export_to_artifact(params: dict, caller: str) -> dict:
     file_id = int(params.get("file_id", 0))
 
     if file_id <= 0:
-        raise ValueError("file_id must be a positive integer")
+        raise ValidationError("file_id must be a positive integer")
 
     async with AsyncSessionLocal() as db:
         from app.services.file_service import check_file_access

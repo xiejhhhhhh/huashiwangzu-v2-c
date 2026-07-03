@@ -1,9 +1,10 @@
 """IM 模块表初始化（幂等，模块加载时跑一次）。"""
 import logging
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import engine
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from .models import ImConversation, ImMessage, ImReadState
-from app.models.base import Base
 
 logger = logging.getLogger("v2.im").getChild("init_db")
 

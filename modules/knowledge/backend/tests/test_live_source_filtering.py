@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal, engine, init_db
 from app.models.file import File
 from modules.knowledge.backend.models import KbChunk, KbDocument
 from modules.knowledge.backend.services import search_service
@@ -31,6 +31,17 @@ from modules.knowledge.backend.services.search_service import (
 
 OWNER_ID = 1
 VECTOR_SIZE = 1024
+_FRAMEWORK_READY = False
+
+
+async def _ensure_framework_ready() -> None:
+    global _FRAMEWORK_READY
+    if _FRAMEWORK_READY:
+        return
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    await init_db()
+    _FRAMEWORK_READY = True
 
 
 async def _cleanup(doc_ids: list[int], file_ids: list[int]) -> None:
@@ -44,6 +55,7 @@ async def _cleanup(doc_ids: list[int], file_ids: list[int]) -> None:
 
 
 async def _create_case(marker: str) -> tuple[dict[str, int], dict[str, int]]:
+    await _ensure_framework_ready()
     vector = [1.0] + [0.0] * (VECTOR_SIZE - 1)
     async with AsyncSessionLocal() as db:
         live_file = File(

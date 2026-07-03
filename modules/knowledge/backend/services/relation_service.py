@@ -5,13 +5,13 @@
 逐边 commit，幂等可重入（已有边跳过，中断只丢当前边）。
 """
 import logging
-from sqlalchemy import select, delete as sa_delete
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
 from app.services.task_worker import register_task_handler
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import KbDocument, KbDocumentProfile, KbFileRelation, KbEntityDictionary, KbChunkEntity, KbGraphEdge
+from ..models import KbChunkEntity, KbDocument, KbDocumentProfile, KbEntityDictionary, KbFileRelation
 
 logger = logging.getLogger("v2.knowledge").getChild("relation")
 

@@ -20,7 +20,14 @@ def _block_type(block: dict, default: str = "段落") -> str:
 
 
 def _block_text(block: dict) -> str:
-    return str(block.get("文本", block.get("text", "")) or "")
+    data = block.get("data") if isinstance(block.get("data"), dict) else {}
+    for key in ("文本", "text", "title", "name", "value"):
+        if key in block and block[key] is not None:
+            return str(block[key])
+    for key in ("text", "title", "name", "value"):
+        if key in data and data[key] is not None:
+            return str(data[key])
+    return ""
 
 
 def _block_level(block: dict) -> int:
@@ -60,14 +67,59 @@ def _is_page_break(block_type: str) -> bool:
 
 
 def _table_header(block: dict) -> list:
-    return block.get("表头", block.get("header", block.get("table_header", []))) or []
+    data = block.get("data") if isinstance(block.get("data"), dict) else {}
+    return (
+        block.get("表头")
+        or block.get("header")
+        or block.get("table_header")
+        or data.get("headers")
+        or data.get("columns")
+        or data.get("header")
+        or []
+    )
 
 
 def _table_rows(block: dict) -> list:
-    rows = block.get("行", block.get("rows", block.get("table_rows", []))) or []
-    if not rows and isinstance(block.get("data"), dict):
-        rows = block["data"].get("rows", []) or []
-    return rows
+    data = block.get("data") if isinstance(block.get("data"), dict) else {}
+    return block.get("行") or block.get("rows") or block.get("table_rows") or data.get("rows") or []
+
+
+def _as_list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _content_blocks(params: dict) -> list:
+    blocks = params.get("content") or params.get("blocks")
+    if not blocks and isinstance(params.get("content_ir"), dict):
+        blocks = params["content_ir"].get("blocks")
+    return _as_list(blocks)
+
+
+def _normalize_row(row, columns: list | None = None) -> list:
+    if isinstance(row, dict):
+        if columns:
+            return [_cell_value(row.get(_cell_value(column))) for column in columns]
+        return [_cell_value(value) for value in row.values()]
+    if isinstance(row, (list, tuple)):
+        return [_cell_value(value) for value in row]
+    return [_cell_value(row)]
+
+
+def _normalize_table_data(block: dict) -> list[list[str]]:
+    header = _table_header(block)
+    rows = _table_rows(block)
+    table_rows: list[list[str]] = []
+    normalized_header = [_cell_value(cell) for cell in header] if header else []
+    if normalized_header:
+        table_rows.append(normalized_header)
+    for row in rows:
+        table_rows.append(_normalize_row(row, header))
+    return [row for row in table_rows if row]
+
+
+def _require_non_empty(name: str, items: list) -> None:
+    if not items:
+        raise ValueError(f"{name} must be a non-empty array")
 
 
 def _cell_value(value) -> str:
@@ -87,7 +139,9 @@ def generate_docx(params: dict) -> bytes:
         raise RuntimeError("python-docx is not installed. Run: pip install python-docx")
 
     doc = Document()
-    content = params.get("content", [])
+    content = _content_blocks(params)
+    _require_non_empty("content", content)
+    rendered_blocks = 0
 
     for block in content:
         block_type = _block_type(block)
@@ -98,26 +152,33 @@ def generate_docx(params: dict) -> bytes:
 
         if _is_heading(block_type):
             doc.add_heading(text, level=min(level, 4))
+            rendered_blocks += 1
         elif _is_paragraph(block_type):
             p = doc.add_paragraph()
             run = p.add_run(text)
             run.bold = bold
             run.font.size = Pt(12)
             _set_alignment(p, align)
+            rendered_blocks += 1
         elif _is_table(block_type):
-            header = _table_header(block)
-            rows = _table_rows(block)
-            if header:
-                rows = [header] + rows
+            rows = _normalize_table_data(block)
             if rows:
-                table = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows) if rows else 0)
+                col_count = max(len(row) for row in rows)
+                table = doc.add_table(rows=len(rows), cols=col_count)
                 table.style = "Light Grid Accent 1"
                 for i, row_data in enumerate(rows):
                     for j, cell_text in enumerate(row_data):
                         if j < len(table.rows[i].cells):
                             table.rows[i].cells[j].text = _cell_value(cell_text)
+                rendered_blocks += 1
         elif _is_image(block_type):
-            _add_image_block(doc, block)
+            if _add_image_block(doc, block):
+                rendered_blocks += 1
+        elif _is_page_break(block_type):
+            doc.add_page_break()
+
+    if rendered_blocks == 0:
+        raise ValueError("content must contain at least one renderable block")
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -132,7 +193,7 @@ def _set_alignment(paragraph, align: str):
     paragraph.alignment = mapping.get(align, WD_ALIGN_PARAGRAPH.LEFT)
 
 
-def _add_image_block(doc, block: dict):
+def _add_image_block(doc, block: dict) -> bool:
     if Cm is None:
         raise RuntimeError("python-docx is not installed. Run: pip install python-docx")
 
@@ -150,10 +211,13 @@ def _add_image_block(doc, block: dict):
                 doc.add_picture(buf, width=Cm(width), height=Cm(height))
             else:
                 doc.add_picture(buf, width=Cm(width))
+            return True
         elif image_path:
             doc.add_picture(image_path, width=Cm(width))
+            return True
     except Exception as exc:
         logger.warning("Failed to add image: %s", exc)
+    return False
 
 
 # ── XLSX generator ──────────────────────────────────────────────────────
@@ -166,20 +230,17 @@ def generate_xlsx(params: dict) -> bytes:
         raise RuntimeError("openpyxl is not installed. Run: pip install openpyxl")
 
     wb = Workbook()
-    # Keep the default sheet if no sheets specified
-    sheets = params.get("工作表", params.get("sheets", []))
-    if not sheets:
-        ws = wb.active
-        ws.title = "Sheet"
-    else:
-        wb.remove(wb.active)
+    sheets = _xlsx_sheets(params)
+    _require_non_empty("sheets", sheets)
+    wb.remove(wb.active)
+    written_cells = 0
     for sheet_spec in sheets:
-        ws = wb.create_sheet(title=sheet_spec.get("表名", sheet_spec.get("name", "Sheet")))
-        columns = sheet_spec.get("列", sheet_spec.get("columns", []))
-        rows = sheet_spec.get("行", sheet_spec.get("rows", []))
+        ws = wb.create_sheet(title=_sheet_name(sheet_spec))
+        columns, rows = _sheet_table_data(sheet_spec)
 
         if columns:
             ws.append([_cell_value(column) for column in columns])
+            written_cells += len(columns)
             for cell in ws[1]:
                 cell.font = Font(bold=True, color="FFFFFF")
                 cell.fill = PatternFill(start_color="2395BC", end_color="2395BC", fill_type="solid")
@@ -193,15 +254,61 @@ def generate_xlsx(params: dict) -> bytes:
             else:
                 row_values = [_cell_value(value) for value in list(row_data)]
             ws.append(row_values)
+            written_cells += len(row_values)
 
         for col in ws.columns:
             max_len = max((len(str(c.value or "")) for c in col), default=8)
             ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
 
+    if written_cells == 0:
+        raise ValueError("sheets must contain at least one row, column, or cell")
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _xlsx_sheets(params: dict) -> list:
+    sheets = params.get("工作表") or params.get("sheets")
+    if not sheets and isinstance(params.get("content_ir"), dict):
+        sheets = params["content_ir"].get("blocks")
+    if not sheets:
+        sheets = params.get("blocks")
+    return _as_list(sheets)
+
+
+def _sheet_name(sheet_spec: dict) -> str:
+    data = sheet_spec.get("data") if isinstance(sheet_spec.get("data"), dict) else {}
+    name = (
+        sheet_spec.get("表名")
+        or sheet_spec.get("name")
+        or sheet_spec.get("title")
+        or sheet_spec.get("text")
+        or data.get("name")
+        or data.get("title")
+        or "Sheet"
+    )
+    return str(name)[:31] or "Sheet"
+
+
+def _sheet_table_data(sheet_spec: dict) -> tuple[list, list]:
+    data = sheet_spec.get("data") if isinstance(sheet_spec.get("data"), dict) else {}
+    columns = sheet_spec.get("列") or sheet_spec.get("columns") or data.get("columns") or data.get("headers") or []
+    rows = sheet_spec.get("行") or sheet_spec.get("rows") or data.get("rows") or []
+    if columns or rows:
+        return _as_list(columns), _as_list(rows)
+
+    children = _as_list(sheet_spec.get("children"))
+    table_blocks = [child for child in children if isinstance(child, dict) and _is_table(_block_type(child))]
+    if table_blocks:
+        first = table_blocks[0]
+        return _table_header(first), _table_rows(first)
+    range_blocks = [child for child in children if isinstance(child, dict) and _block_type(child) == "range"]
+    if range_blocks:
+        range_data = range_blocks[0].get("data") if isinstance(range_blocks[0].get("data"), dict) else {}
+        return _as_list(range_data.get("columns") or range_data.get("headers")), _as_list(range_data.get("rows") or range_data.get("values"))
+    return [], []
 
 
 # ── PPTX generator ──────────────────────────────────────────────────────
@@ -217,28 +324,18 @@ def generate_pptx(params: dict) -> bytes:
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
 
-    slides = params.get("幻灯片", params.get("slides", []))
-    if not slides:
-        layout = prs.slide_layouts[6]
-        slide = prs.slides.add_slide(layout)
-        title = slide.shapes.title
-        if title:
-            title.text = params.get("filename", "Empty Presentation")
+    slides = _pptx_slides(params)
+    _require_non_empty("slides", slides)
+    rendered_slides = 0
     for slide_spec in slides:
         layout = prs.slide_layouts[1]
         slide = prs.slides.add_slide(layout)
         title = slide.shapes.title
-        title_text = slide_spec.get("标题", slide_spec.get("title", slide_spec.get("name", "")))
+        title_text = _slide_title(slide_spec)
         if title:
             title.text = title_text
 
-        bullets = slide_spec.get("要点", slide_spec.get("bullets", []))
-        if not bullets and isinstance(slide_spec.get("elements"), list):
-            bullets = [
-                {"text": elem.get("text", ""), "level": elem.get("level", 0)}
-                for elem in slide_spec["elements"]
-                if isinstance(elem, dict) and elem.get("text")
-            ]
+        bullets = _slide_bullets(slide_spec)
         if bullets:
             body = slide.shapes.placeholders[1]
             tf = body.text_frame
@@ -258,11 +355,54 @@ def generate_pptx(params: dict) -> bytes:
         if notes_text:
             notes_slide = slide.notes_slide
             notes_slide.notes_text_frame.text = notes_text
+        if title_text or bullets or notes_text:
+            rendered_slides += 1
+
+    if rendered_slides == 0:
+        raise ValueError("slides must contain at least one renderable slide")
 
     buf = io.BytesIO()
     prs.save(buf)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _pptx_slides(params: dict) -> list:
+    slides = params.get("幻灯片") or params.get("slides")
+    if not slides and isinstance(params.get("content_ir"), dict):
+        slides = params["content_ir"].get("blocks")
+    if not slides:
+        slides = params.get("blocks")
+    return _as_list(slides)
+
+
+def _slide_title(slide_spec: dict) -> str:
+    data = slide_spec.get("data") if isinstance(slide_spec.get("data"), dict) else {}
+    return str(
+        slide_spec.get("标题")
+        or slide_spec.get("title")
+        or slide_spec.get("name")
+        or slide_spec.get("text")
+        or data.get("title")
+        or data.get("name")
+        or ""
+    )
+
+
+def _slide_bullets(slide_spec: dict) -> list:
+    bullets = slide_spec.get("要点") or slide_spec.get("bullets")
+    if bullets:
+        return _as_list(bullets)
+    elements = slide_spec.get("elements")
+    if not elements:
+        elements = slide_spec.get("children")
+    if not isinstance(elements, list):
+        return []
+    return [
+        {"text": _block_text(elem), "level": _block_level(elem)}
+        for elem in elements
+        if isinstance(elem, dict) and _block_text(elem)
+    ]
 
 
 # ── PDF generator ───────────────────────────────────────────────────────
@@ -286,7 +426,8 @@ def generate_pdf(params: dict) -> bytes:
 
     _register_cn_font(styles)
 
-    content = params.get("content", [])
+    content = _content_blocks(params)
+    _require_non_empty("content", content)
     elements = []
 
     for block in content:
@@ -318,10 +459,7 @@ def generate_pdf(params: dict) -> bytes:
             elements.append(Paragraph(text, style))
 
         elif _is_table(block_type):
-            header = _table_header(block)
-            rows = _table_rows(block)
-            if header:
-                rows = [header] + rows
+            rows = _normalize_table_data(block)
             if rows:
                 col_count = max(len(r) for r in rows) if rows else 1
                 table_data = [[_cell_value(c) for c in r] + [""] * (col_count - len(r)) for r in rows]
@@ -344,6 +482,9 @@ def generate_pdf(params: dict) -> bytes:
 
         elif _is_page_break(block_type):
             elements.append(PageBreak())
+
+    if not elements:
+        raise ValueError("content must contain at least one renderable block")
 
     doc.build(elements)
     buf.seek(0)

@@ -64,6 +64,51 @@ async def run_init() -> None:
             except Exception as e:
                 logger.warning("ALTER non-fatal: %s", e)
 
+        chunk_alters = [
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS owner_id INTEGER",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS memory_record_id INTEGER",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS chunk_index INTEGER DEFAULT 0",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS summary TEXT",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS embedding vector(1024)",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS source VARCHAR(32)",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS conversation_id BIGINT",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS provenance TEXT",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS start_char INTEGER",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS end_char INTEGER",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS confidence FLOAT DEFAULT 1.0",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS access_count INTEGER DEFAULT 0",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE memory_chunks ALTER COLUMN confidence SET DEFAULT 1.0",
+            "ALTER TABLE memory_chunks ALTER COLUMN access_count SET DEFAULT 0",
+            "ALTER TABLE memory_chunks ALTER COLUMN embedding TYPE vector(1024) USING embedding::vector(1024)",
+        ]
+        for alter in chunk_alters:
+            try:
+                await conn.execute(text(alter))
+            except Exception as e:
+                logger.warning("Chunk ALTER non-fatal: %s", e)
+
+        stable_rule_alters = [
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS owner_id INTEGER",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS rule_type VARCHAR(32)",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS content TEXT",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS source VARCHAR(64)",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS hit_count INTEGER DEFAULT 0",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE memory_stable_rules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE memory_stable_rules ALTER COLUMN priority SET DEFAULT 0",
+            "ALTER TABLE memory_stable_rules ALTER COLUMN active SET DEFAULT true",
+            "ALTER TABLE memory_stable_rules ALTER COLUMN hit_count SET DEFAULT 0",
+        ]
+        for alter in stable_rule_alters:
+            try:
+                await conn.execute(text(alter))
+            except Exception as e:
+                logger.warning("Stable rule ALTER non-fatal: %s", e)
+
         orphan_chunk_cleanup_sql = """
             DELETE FROM memory_chunks c
             WHERE c.memory_record_id IS NOT NULL
@@ -73,7 +118,8 @@ async def run_init() -> None:
         """
         orphan_link_cleanup_sql = """
             DELETE FROM memory_links l
-            WHERE NOT EXISTS (
+            WHERE l.from_id = l.to_id
+               OR NOT EXISTS (
                 SELECT 1 FROM memory_records r WHERE r.id = l.from_id
             )
                OR NOT EXISTS (

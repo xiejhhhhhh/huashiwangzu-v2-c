@@ -74,6 +74,112 @@ async def test_subagent_skill_describe_receives_owner_id(
 
 
 @pytest.mark.asyncio
+async def test_subagent_write_guard_blocks_skill_use_write_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from modules.agent.backend.services import subagent_runner
+
+    async def fake_chat(**kwargs: object) -> dict:
+        return {
+            "content": "",
+            "tool_calls": [{
+                "id": "call_write",
+                "type": "function",
+                "function": {
+                    "name": "skill_use",
+                    "arguments": json.dumps({
+                        "name": "agent__update_my_profile",
+                        "args": {"profile_data": {"tone": "formal"}},
+                    }),
+                },
+            }],
+        }
+
+    async def forbidden_handle_skill_use(*args: object, **kwargs: object) -> dict:
+        raise AssertionError("write capability should be blocked before skill_use dispatch")
+
+    monkeypatch.setattr(subagent_runner.gateway_router, "chat", fake_chat)
+    monkeypatch.setattr(
+        subagent_runner.tool_discovery,
+        "handle_skill_use",
+        forbidden_handle_skill_use,
+    )
+
+    result = await subagent_runner._execute_tool_loop(
+        messages=[{"role": "system", "content": "test"}],
+        task_tools=[],
+        max_rounds=1,
+        task_write_enabled=False,
+        caller="user:55",
+        caller_role="viewer",
+        owner_id=55,
+        task_desc="try to update profile",
+    )
+
+    assert result["status"] == "error"
+    assert "写入权限" in result["error"]
+    assert "agent__update_my_profile" in result["error"]
+    assert result["tool_results"][0]["name"] == "skill_use"
+    assert "写入权限" in result["tool_results"][0]["result"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_subagent_write_guard_allows_skill_use_read_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from modules.agent.backend.services import subagent_runner
+
+    call_count = 0
+    captured_params: list[dict] = []
+
+    async def fake_chat(**kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_use",
+                        "arguments": json.dumps({
+                            "name": "knowledge__search",
+                            "args": {"query": "agent"},
+                        }),
+                    },
+                }],
+            }
+        return {"content": "read done", "tool_calls": []}
+
+    async def fake_handle_skill_use(params: dict, caller: str, caller_role: str) -> dict:
+        captured_params.append(params)
+        return {"success": True, "data": {"results": []}}
+
+    monkeypatch.setattr(subagent_runner.gateway_router, "chat", fake_chat)
+    monkeypatch.setattr(
+        subagent_runner.tool_discovery,
+        "handle_skill_use",
+        fake_handle_skill_use,
+    )
+
+    result = await subagent_runner._execute_tool_loop(
+        messages=[{"role": "system", "content": "test"}],
+        task_tools=[],
+        max_rounds=2,
+        task_write_enabled=False,
+        caller="user:55",
+        caller_role="viewer",
+        owner_id=55,
+        task_desc="search knowledge",
+    )
+
+    assert result["status"] == "completed"
+    assert result["conclusion"] == "read done"
+    assert captured_params == [{"name": "knowledge__search", "args": {"query": "agent"}}]
+
+
+@pytest.mark.asyncio
 async def test_spawn_subagent_track_trajectory_persists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

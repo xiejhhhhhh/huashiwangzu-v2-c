@@ -23,13 +23,13 @@ def _load_backend_env() -> None:
 
 _load_backend_env()
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine
+from app.middleware.auth import get_current_user
 from app.models.base import Base
 from app.models.user import User
-from app.middleware.auth import get_current_user
 from app.services.module_registry import list_capabilities
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .huashiwangzu_modules_bootstrap import load_knowledge_router
 

@@ -14,8 +14,8 @@
 import asyncio
 import logging
 
-from sqlalchemy import text
 from app.database import AsyncSessionLocal
+from sqlalchemy import text
 
 logger = logging.getLogger("v2.knowledge.cleanup")
 

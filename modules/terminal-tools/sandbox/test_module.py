@@ -38,24 +38,34 @@ def _check_dangerous_command(command: str) -> str | None:
 TRAVERSAL_CMDS = frozenset({
     'cd', 'ls', 'find', 'tree', 'cat', 'less', 'more',
     'head', 'tail', 'nl', 'wc', 'stat', 'du', 'file',
-    'readlink', 'realpath', 'dirname',
+    'readlink', 'realpath', 'dirname', 'cp', 'mv', 'touch',
+    'mkdir', 'rmdir', 'rm', 'tee',
 })
 
 
 def _check_path_escape(command: str, workspace: str) -> str | None:
     import shlex
     try:
-        tokens = shlex.split(command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
     except ValueError:
         return None
     if not tokens:
         return None
-    cmd_name = tokens[0]
-    if cmd_name not in TRAVERSAL_CMDS:
-        return None
     ws_prefix = workspace.rstrip("/") + "/"
-    for arg in tokens[1:]:
-        if arg.startswith("-") or arg in {"&&", "||", ";", "|", ">", ">>", "<"}:
+    separators = {"&&", "||", ";", "|"}
+    cmd_name = ""
+    for arg in tokens:
+        if arg in separators:
+            cmd_name = ""
+            continue
+        if not cmd_name:
+            cmd_name = arg
+            continue
+        if cmd_name not in TRAVERSAL_CMDS:
+            continue
+        if arg.startswith("-") or arg in {">", ">>", "<"}:
             continue
         if arg == "~" or arg.startswith("~/"):
             return f"Path escape blocked: '{arg}' resolves outside workspace"
@@ -99,17 +109,20 @@ def test_path_escape_detection() -> None:
     try:
         inside = ["ls .", "cat test.txt", "head subdir/file.txt", "ls -la"]
         escaping = ["ls ../", "cat ../../etc/passwd", "find ~/Documents", "ls /etc"]
+        compound_escaping = [
+            "echo ok; cat /etc/passwd",
+            "printf ok|wc /etc/passwd",
+            "cat /etc/passwd && ls .",
+        ]
         for cmd in inside:
             msg = _check_path_escape(cmd, workspace)
             assert msg is None, f"Should allow workspace-internal path: {cmd}"
             print(f"  [INSIDE] Allowed: {cmd}")
-        for cmd in escaping:
+        for cmd in escaping + compound_escaping:
             msg = _check_path_escape(cmd, workspace)
-            if msg is not None:
-                print(f"  [ESCAPE] Blocked: {cmd[:40]} → {msg[:40]}...")
-                assert workspace not in msg, "Error message must not leak host workspace path"
-            else:
-                print(f"  [ESCAPE] Allowed (non-traversal cmd): {cmd}")
+            assert msg is not None, f"Should block path escape: {cmd}"
+            print(f"  [ESCAPE] Blocked: {cmd[:40]} → {msg[:40]}...")
+            assert workspace not in msg, "Error message must not leak host workspace path"
     finally:
         _os.rmdir(workspace)
 
@@ -176,6 +189,38 @@ def test_chart_fake_success_contract() -> None:
     print("  [CHART] Fake-success guard contract valid")
 
 
+def test_symlink_listing_does_not_follow_target() -> None:
+    """Listing should expose symlink metadata only, not target metadata."""
+    import os as _os
+    import pathlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="ws_link_") as workspace:
+        outside = pathlib.Path(tempfile.mkdtemp(prefix="outside_target_"))
+        try:
+            target_file = outside / "secret.txt"
+            target_file.write_text("secret", encoding="utf-8")
+            link_path = pathlib.Path(workspace) / "linked-secret.txt"
+            link_path.symlink_to(target_file)
+
+            with _os.scandir(workspace) as entries:
+                entry = next(entries)
+                stat = entry.stat(follow_symlinks=False)
+                shape = {
+                    "is_file": entry.is_file(follow_symlinks=False),
+                    "is_dir": entry.is_dir(follow_symlinks=False),
+                    "is_symlink": entry.is_symlink(),
+                    "size": stat.st_size if entry.is_file(follow_symlinks=False) else 0,
+                }
+            assert shape["is_symlink"] is True
+            assert shape["is_file"] is False
+            assert shape["size"] == 0
+            print("  [SYMLINK] Listing does not follow symlink targets")
+        finally:
+            target_file.unlink(missing_ok=True)
+            outside.rmdir()
+
+
 def main() -> None:
     print("=" * 60)
     print("terminal-tools sandbox test")
@@ -186,6 +231,7 @@ def main() -> None:
     test_output_shape_contract()
     test_filename_safety_contract()
     test_chart_fake_success_contract()
+    test_symlink_listing_does_not_follow_target()
     print("=" * 60)
     print("PASS: terminal-tools sandbox test")
 

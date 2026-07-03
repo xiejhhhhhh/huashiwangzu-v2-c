@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+import uuid
 
 from app.core.exceptions import AppException, ValidationError
 from app.database import AsyncSessionLocal, engine
@@ -31,6 +32,12 @@ from .providers.base import GenSpec
 logger = logging.getLogger("v2.image-gen").getChild("router")
 
 router = APIRouter(prefix="/api/image-gen", tags=["image-gen"])
+
+MIN_IMAGE_DIMENSION = 256
+MAX_IMAGE_DIMENSION = 2048
+MAX_IMAGE_COUNT = 4
+MIN_STEPS = 1
+MAX_STEPS = 100
 
 # ---------------------------------------------------------------------------
 # imagegen_records table (lightweight cost tracking)
@@ -107,6 +114,71 @@ async def _translate_to_english(chinese_prompt: str) -> str:
     return chinese_prompt
 
 
+def _parse_bounded_int(value: object, field_name: str, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{field_name} must be an integer") from exc
+    if parsed < minimum or parsed > maximum:
+        raise ValidationError(f"{field_name} must be between {minimum} and {maximum}")
+    return parsed
+
+
+def _dimensions_from_aspect_ratio(aspect_ratio: str) -> tuple[int, int]:
+    normalized = aspect_ratio.strip().lower()
+    aspect_map = {
+        "square": (1024, 1024),
+        "portrait": (768, 1024),
+        "landscape": (1280, 720),
+        "1:1": (1024, 1024),
+        "3:4": (768, 1024),
+        "16:9": (1280, 720),
+    }
+    if normalized in aspect_map:
+        return aspect_map[normalized]
+
+    if ":" not in normalized:
+        raise ValidationError("Invalid aspect_ratio; expected square, portrait, landscape, or W:H")
+    try:
+        raw_w, raw_h = normalized.split(":", 1)
+        ratio_w, ratio_h = float(raw_w), float(raw_h)
+    except ValueError as exc:
+        raise ValidationError("Invalid aspect_ratio; expected numeric W:H") from exc
+    if ratio_w <= 0 or ratio_h <= 0:
+        raise ValidationError("Invalid aspect_ratio; values must be positive")
+
+    if ratio_w >= ratio_h:
+        width = 1024
+        height = round(width * ratio_h / ratio_w)
+    else:
+        height = 1024
+        width = round(height * ratio_w / ratio_h)
+    width = max(MIN_IMAGE_DIMENSION, min(MAX_IMAGE_DIMENSION, width))
+    height = max(MIN_IMAGE_DIMENSION, min(MAX_IMAGE_DIMENSION, height))
+    return width, height
+
+
+def _resolve_dimensions(size: str, aspect_ratio: str | None) -> tuple[int, int]:
+    if aspect_ratio:
+        return _dimensions_from_aspect_ratio(aspect_ratio)
+
+    match = re.match(r"^(\d+)\s*[xX]\s*(\d+)$", size)
+    if not match:
+        raise ValidationError("Invalid size format; expected e.g. 1024x1024, or provide aspect_ratio")
+
+    width, height = int(match.group(1)), int(match.group(2))
+    if (
+        width < MIN_IMAGE_DIMENSION
+        or width > MAX_IMAGE_DIMENSION
+        or height < MIN_IMAGE_DIMENSION
+        or height > MAX_IMAGE_DIMENSION
+    ):
+        raise ValidationError(
+            f"size dimensions must be between {MIN_IMAGE_DIMENSION} and {MAX_IMAGE_DIMENSION}"
+        )
+    return width, height
+
+
 # ---------------------------------------------------------------------------
 # Core capability: generate
 # ---------------------------------------------------------------------------
@@ -115,37 +187,15 @@ async def _generate(params: dict, caller: str) -> dict:
     prompt = str(params.get("prompt", "")).strip()
     size = str(params.get("size", "1024x1024")).strip()
     aspect_ratio = str(params.get("aspect_ratio", "")).strip() or None
-    count = int(params.get("count", 1))
-    steps = int(params.get("steps", 30))
+    count = _parse_bounded_int(params.get("count", 1), "count", 1, MAX_IMAGE_COUNT)
+    steps = _parse_bounded_int(params.get("steps", 30), "steps", MIN_STEPS, MAX_STEPS)
     template_key = str(params.get("template", "")).strip() or get_default_template()
 
     if not prompt:
         raise ValidationError("prompt is required")
 
     user_id = resolve_caller_user_id(caller)
-
-    match = re.match(r"^(\d+)\s*[xX]\s*(\d+)$", size)
-    if not match and not aspect_ratio:
-        raise ValidationError("Invalid size format; expected e.g. 1024x1024, or provide aspect_ratio")
-
-    width, height = 1024, 1024
-    if match:
-        width, height = int(match.group(1)), int(match.group(2))
-    else:
-        ar_map = {"square": (1024, 1024), "portrait": (768, 1024), "landscape": (1280, 720)}
-        ar_map.update({"1:1": (1024, 1024), "3:4": (768, 1024), "16:9": (1280, 720)})
-        if aspect_ratio in ar_map:
-            width, height = ar_map[aspect_ratio]
-        elif aspect_ratio and ":" in aspect_ratio:
-            try:
-                parts = aspect_ratio.split(":")
-                ar_w, ar_h = float(parts[0]), float(parts[1])
-                if ar_h > 0:
-                    height = 1024
-                    width = int(height * ar_w / ar_h)
-                    width = max(512, min(2048, width))
-            except (ValueError, IndexError):
-                pass
+    width, height = _resolve_dimensions(size, aspect_ratio)
 
     try:
         provider, template_cfg, is_placeholder = resolve_provider(template_key)
@@ -166,6 +216,7 @@ async def _generate(params: dict, caller: str) -> dict:
         height=height,
         count=count,
         steps=steps,
+        aspect_ratio=aspect_ratio,
         template_config=template_cfg,
     )
 
@@ -204,11 +255,16 @@ async def _generate(params: dict, caller: str) -> dict:
     from app.services.file_upload_service import upload_file
 
     ts = int(time.time() * 1000)
+    request_suffix = uuid.uuid4().hex[:8]
     results = []
     file_ids: list[int] = []
+    persist_errors: list[str] = []
+    generated_placeholder = is_placeholder
     async with AsyncSessionLocal() as db:
         for idx, gen_result in enumerate(gen_results):
             image_bytes = gen_result.image_bytes
+            result_placeholder = is_placeholder or bool(gen_result.meta.get("placeholder"))
+            generated_placeholder = generated_placeholder or result_placeholder
 
             if image_bytes is None and gen_result.image_url:
                 import httpx
@@ -218,31 +274,40 @@ async def _generate(params: dict, caller: str) -> dict:
                         resp.raise_for_status()
                         image_bytes = resp.content
                 except Exception as e:
+                    err = f"download failed for image {idx + 1}: {e}"
+                    persist_errors.append(err)
                     logger.warning("Failed to download image from URL %s: %s", gen_result.image_url, e)
                     continue
 
             if image_bytes is None:
+                persist_errors.append(f"image {idx + 1} returned no bytes or URL")
                 continue
 
-            filename = f"image-gen_{ts}_{idx+1}.png"
+            filename = f"image-gen_{ts}_{request_suffix}_{idx + 1}.png"
             file_obj = io.BytesIO(image_bytes)
-            upload_result = await upload_file(
-                db, file_obj, filename, user_id, folder_id=None,
-            )
+            try:
+                upload_result = await upload_file(
+                    db, file_obj, filename, user_id, folder_id=None,
+                )
+            except Exception as e:
+                err = f"save failed for image {idx + 1}: {e}"
+                persist_errors.append(err)
+                logger.warning("Failed to save generated image %d: %s", idx + 1, e)
+                continue
             file_ids.append(upload_result["id"])
             entry: dict = {
                 "type": "image",
                 "file_id": upload_result["id"],
                 "name": upload_result["name"],
                 "size": upload_result["size"],
-                "placeholder": is_placeholder,
+                "placeholder": result_placeholder,
             }
-            if is_placeholder:
+            if result_placeholder:
                 entry["explanation"] = "占位图，真实生成待接入"
             results.append(entry)
 
     if not results:
-        error_msg = "image generation produced no downloadable images"
+        error_msg = "; ".join(persist_errors) or "image generation produced no downloadable images"
         await _save_record(
             owner_id=user_id, template=template_key, prompt=spec.prompt,
             image_count=0, file_ids=None, status="failed", error_msg=error_msg,
@@ -258,17 +323,22 @@ async def _generate(params: dict, caller: str) -> dict:
     await _save_record(
         owner_id=user_id, template=template_key, prompt=spec.prompt,
         image_count=len(results), file_ids=file_ids,
-        status="placeholder" if is_placeholder else "success",
+        status="partial" if persist_errors else ("placeholder" if generated_placeholder else "success"),
+        error_msg="; ".join(persist_errors) if persist_errors else None,
         points_cost=points_cost, balance_after=balance,
     )
 
-    return {
+    response = {
         "images": results,
-        "placeholder": is_placeholder,
+        "placeholder": generated_placeholder,
         "template": template_key,
         "points_cost": points_cost,
         "balance": balance,
     }
+    if persist_errors:
+        response["error"] = "部分图片保存失败，已返回可用结果"
+        response["detail"] = "; ".join(persist_errors)
+    return response
 
 
 async def _save_record(

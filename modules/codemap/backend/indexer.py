@@ -17,10 +17,15 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any
 
-from .graph.graph import (CallEdge, CapabilityEdge, CodeGraph, DbTableEdge,
-                       ImportEdge, get_graph)
+from .graph.graph import (
+    CallEdge,
+    CapabilityEdge,
+    CodeGraph,
+    DbTableEdge,
+    ImportEdge,
+    get_graph,
+)
 
 logger = logging.getLogger("v2.codemap").getChild("indexer")
 
@@ -450,17 +455,8 @@ class _PythonVisitor(ast.NodeVisitor):
 def _parse_python(file_path: str, graph: CodeGraph) -> None:
     """Parse a Python file using ast and populate the graph."""
     abs_path = _resolve_path(file_path)
-    try:
-        source = abs_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.debug("Cannot read %s: %s", file_path, exc)
-        return
-
-    try:
-        tree = ast.parse(source, filename=str(abs_path))
-    except SyntaxError as exc:
-        logger.debug("Syntax error in %s: %s", file_path, exc)
-        return
+    source = abs_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(abs_path))
 
     layer, mod_key = _detect_layer(file_path)
     lang = _detect_language(file_path)
@@ -504,8 +500,8 @@ def _ensure_ts_parser():
         if _ts_parser is not None:
             return _ts_parser
         try:
-            from tree_sitter import Language, Parser
             import tree_sitter_typescript
+            from tree_sitter import Language, Parser
         except ImportError as exc:
             logger.warning("tree-sitter-typescript not available, TS/Vue parsing disabled: %s", exc)
             _ts_parser = False
@@ -802,22 +798,14 @@ def _add_ts_import(graph: CodeGraph, source: str, target: str,
 
 def _parse_typescript(file_path: str, graph: CodeGraph) -> None:
     abs_path = _resolve_path(file_path)
-    try:
-        source = abs_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.debug("Cannot read %s: %s", file_path, exc)
-        return
+    source = abs_path.read_text(encoding="utf-8")
     _parse_typescript_source(source, file_path, graph)
 
 
 def _parse_vue(file_path: str, graph: CodeGraph) -> None:
     """Parse a Vue SFC: extract <script> blocks, parse as TypeScript."""
     abs_path = _resolve_path(file_path)
-    try:
-        source = abs_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.debug("Cannot read %s: %s", file_path, exc)
-        return
+    source = abs_path.read_text(encoding="utf-8")
 
     layer, mod_key = _detect_layer(file_path)
     graph._ensure_file_node(file_path, layer, mod_key, "vue")

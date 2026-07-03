@@ -13,7 +13,7 @@ from typing import Any
 
 from app.core.exceptions import NotFound
 from app.models.system import SystemTaskQueue
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -71,11 +71,21 @@ async def find_latest_pipeline_task(
     document_id: int,
 ) -> SystemTaskQueue | None:
     """Find the newest kb_pipeline task whose parameters name document_id."""
+    document_id_value = int(document_id)
+    # Narrow in SQL first. Historical queue rows store parameters as text JSON, so
+    # keep the final Python parser as the contract check while avoiding a full
+    # table scan on every status poll.
+    needle_with_space = f'"document_id": {document_id_value}'
+    needle_without_space = f'"document_id":{document_id_value}'
     result = await db.execute(
         select(SystemTaskQueue)
         .where(
             SystemTaskQueue.module == "knowledge",
             SystemTaskQueue.task_type == "kb_pipeline",
+            or_(
+                SystemTaskQueue.parameters.contains(needle_with_space),
+                SystemTaskQueue.parameters.contains(needle_without_space),
+            ),
         )
         .order_by(SystemTaskQueue.id.desc())
     )

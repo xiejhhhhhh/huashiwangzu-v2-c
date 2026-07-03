@@ -30,20 +30,21 @@ async def call_export_adapter(
                 f"user:{owner_id}",
                 "editor",
             )
-            file_id = None
-            if isinstance(result, dict):
-                file_id = result.get("file_id")
-            if file_id:
-                from app.models.file import File
-                file_record = await db.get(File, file_id)
-                if file_record:
-                    from app.services.file_preview_service import _resolve_storage_path
-                    safe_path = _resolve_storage_path(file_record)
-                    if safe_path:
-                        return {"file_path": str(safe_path), "file_id": file_id}
-            return result
         except Exception as e:
             logger.warning("Export adapter %s failed: %s. Falling back to text.", adapter_type, e)
+            return {"fallback": True}
+
+        file_id = None
+        if isinstance(result, dict):
+            file_id = result.get("file_id")
+        if file_id:
+            from app.services.file_preview_service import _resolve_storage_path
+            from app.services.file_service import check_file_access
+
+            file_record = await check_file_access(db, file_id, owner_id)
+            safe_path = _resolve_storage_path(file_record)
+            if safe_path:
+                return {"file_path": str(safe_path), "file_id": file_id}
+        return result
 
     return {"fallback": True}
-

@@ -37,6 +37,7 @@ from .indexer import get_indexer
 from .init_db import ensure_codemap_tables
 from .locks import file_lock
 from .models import CodemapFeedback
+from .validation import validate_feedback_fields
 from .watcher import get_watcher
 
 logger = logging.getLogger("v2.codemap").getChild("router")
@@ -125,8 +126,32 @@ class ListFeedbackRequest(BaseModel):
 
 def _check_ready() -> dict | None:
     graph = get_graph()
-    if not graph.ready:
-        return {"success": False, "error": "索引构建中，请稍后重试", "data": {"status": "indexing"}}
+    if graph.ready:
+        return None
+    stats = graph.stats()
+    build_error = stats.get("build_error")
+    if build_error:
+        error = f"索引不可用: {build_error}"
+    else:
+        error = "索引构建中，请稍后重试"
+    return {
+        "success": False,
+        "error": error,
+        "data": {
+            "status": stats.get("index_status", "building"),
+            "build_error": build_error,
+        },
+    }
+
+
+def _cap_ready_error() -> dict | None:
+    not_ready = _check_ready()
+    if not_ready:
+        return {
+            "success": False,
+            "error": str(not_ready["error"]),
+            "data": not_ready.get("data"),
+        }
     return None
 
 async def _load_path_feedback(db: AsyncSession, path: str) -> tuple[int, str]:
@@ -240,10 +265,13 @@ async def _enrich_stats_with_db(stats: dict, db: AsyncSession) -> dict:
 @router.get("/health")
 async def health(_user=Depends(require_permission("viewer"))):
     graph = get_graph()
+    stats = graph.stats()
     return ApiResponse(data={
         "module": "codemap",
-        "status": "ok",
+        "status": "ok" if stats.get("index_status") != "unavailable" else "degraded",
         "index_ready": graph.ready,
+        "index_status": stats.get("index_status"),
+        "build_error": stats.get("build_error"),
         "file_count": len(graph._files),
     })
 
@@ -346,9 +374,10 @@ async def http_rebuild(
 # ── Cross-module capability handlers ───────────────────────────────────────
 
 async def _cap_get_file(params: dict, caller: str) -> dict:
+    not_ready = _cap_ready_error()
+    if not_ready:
+        return not_ready
     graph = get_graph()
-    if not graph.ready:
-        return {"success": False, "error": "索引构建中"}
     path = normalize_path(params.get("path", ""))
     result = graph.get_file(path)
     if result is None:
@@ -366,9 +395,10 @@ async def _cap_get_file(params: dict, caller: str) -> dict:
 
 
 async def _cap_impact(params: dict, caller: str) -> dict:
+    not_ready = _cap_ready_error()
+    if not_ready:
+        return not_ready
     graph = get_graph()
-    if not graph.ready:
-        return {"success": False, "error": "索引构建中"}
     path = normalize_path(params.get("path", ""))
     symbol = params.get("symbol")
     result = graph.impact(path, symbol)
@@ -388,9 +418,10 @@ async def _cap_impact(params: dict, caller: str) -> dict:
 
 
 async def _cap_check_boundary(params: dict, caller: str) -> dict:
+    not_ready = _cap_ready_error()
+    if not_ready:
+        return not_ready
     graph = get_graph()
-    if not graph.ready:
-        return {"success": False, "error": "索引构建中"}
     result = graph.check_boundary(path=params.get("path"), module_key=params.get("module_key"))
     error = _graph_error(result)
     if error:
@@ -399,9 +430,10 @@ async def _cap_check_boundary(params: dict, caller: str) -> dict:
 
 
 async def _cap_module_map(params: dict, caller: str) -> dict:
+    not_ready = _cap_ready_error()
+    if not_ready:
+        return not_ready
     graph = get_graph()
-    if not graph.ready:
-        return {"success": False, "error": "索引构建中"}
     result = graph.module_map(params.get("module_key", ""))
     error = _graph_error(result)
     if error:
@@ -410,9 +442,10 @@ async def _cap_module_map(params: dict, caller: str) -> dict:
 
 
 async def _cap_search(params: dict, caller: str) -> dict:
+    not_ready = _cap_ready_error()
+    if not_ready:
+        return not_ready
     graph = get_graph()
-    if not graph.ready:
-        return {"success": False, "error": "索引构建中"}
     keyword = str(params.get("keyword", ""))
     if not keyword.strip():
         return {"success": False, "error": "keyword is required"}
@@ -467,11 +500,12 @@ async def _cap_list_locks(params: dict, caller: str) -> dict:
 
 async def _cap_report_inaccuracy(params: dict, caller: str) -> dict:
     try:
+        path, query_type = validate_feedback_fields(params.get("path", ""), params.get("query_type", ""))
         async with AsyncSessionLocal() as db:
             await _ensure_tables_once(db)
             feedback = CodemapFeedback(
-                path=normalize_path(params.get("path", "")),
-                query_type=params.get("query_type", ""),
+                path=path,
+                query_type=query_type,
                 codemap_said=params.get("codemap_said", ""),
                 actual=params.get("actual", ""),
                 reason=params.get("reason", ""),

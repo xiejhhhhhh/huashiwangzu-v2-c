@@ -7,7 +7,6 @@ import logging
 import os
 import shutil
 import tempfile
-from pathlib import Path
 
 logger = logging.getLogger("v2.office-gen").getChild("converter")
 
@@ -117,4 +116,6 @@ async def convert_by_file_id(
         output_name = os.path.basename(output_path)
         with open(output_path, "rb") as f:
             content = f.read()
+        if not content:
+            raise RuntimeError(f"Conversion produced an empty output file: {output_name}")
     return output_name, content

@@ -77,6 +77,7 @@ graph_module = _load_module_from_path(
 indexer_module = _load_backend_module("indexer")
 boundary_module = _load_backend_module("boundary_engine")
 init_db_module = _load_backend_module("init_db")
+validation_module = _load_backend_module("validation")
 file_lock_module = _load_module_from_path(
     "codemap.backend.locks.file_lock",
     _BACKEND_DIR / "locks" / "file_lock.py",
@@ -313,6 +314,19 @@ class TestCodeGraphIsolated:
         stats = graph.stats()
         assert stats["ready"] is False
         assert stats["file_count"] == 0
+        assert stats["index_status"] == "building"
+        assert stats["confidence"] == 0
+
+    def test_finish_build_empty_index_is_not_ready(self):
+        graph = CodeGraph()
+        graph.begin_build()
+        graph.finish_build(0)
+        stats = graph.stats()
+        assert stats["ready"] is False
+        assert stats["index_status"] == "unavailable"
+        assert stats["index_empty"] is True
+        assert stats["build_error"] == "scan found no source files"
+        assert stats["confidence"] == 0
 
     def test_impact_simple(self):
         graph = CodeGraph()
@@ -585,6 +599,43 @@ class TestFileLockPersistence:
         assert outside["success"] is False
         assert outside["error"] == "path must be inside repository root"
 
+    def test_check_lock_invalid_path_fails_closed(self):
+        result = file_lock_module.check_lock("/tmp/outside-repo-file.py")
+        assert result["success"] is False
+        assert result["locked"] is False
+
+    def test_corrupt_lock_store_fails_closed(self):
+        file_lock_module.LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        file_lock_module.LOCK_FILE.write_text("{not-json", encoding="utf-8")
+        result = file_lock_module.acquire_lock("modules/codemap/README.md", "agent-a", ttl=60)
+        assert result["success"] is False
+        assert "corrupt" in result["error"]
+        assert file_lock_module.LOCK_FILE.read_text(encoding="utf-8") == "{not-json"
+
+
+class TestInputValidation:
+    """Tests for public input validation shared by HTTP and capabilities."""
+
+    def test_feedback_requires_non_empty_path_and_type(self):
+        with pytest.raises(ValueError, match="path is required"):
+            validation_module.validate_feedback_fields("", "impact")
+        with pytest.raises(ValueError, match="query_type is required"):
+            validation_module.validate_feedback_fields("modules/codemap/README.md", "")
+
+    def test_feedback_rejects_paths_outside_repo(self):
+        with pytest.raises(ValueError, match="inside repository root"):
+            validation_module.validate_feedback_fields("../../outside.py", "impact")
+        with pytest.raises(ValueError, match="inside repository root"):
+            validation_module.validate_feedback_fields("/tmp/outside.py", "impact")
+
+    def test_feedback_normalizes_valid_path(self):
+        path, query_type = validation_module.validate_feedback_fields(
+            "./modules//codemap/README.md/",
+            " verification ",
+        )
+        assert path == "modules/codemap/README.md"
+        assert query_type == "verification"
+
 
 class TestIndexerFullBuild:
     """Tests that build a complete mini index from a temporary project."""
@@ -614,6 +665,15 @@ class TestIndexerFullBuild:
         assert self.graph.ready is True
         stats = self.graph.stats()
         assert stats["file_count"] > 0
+
+    def test_parse_failure_is_recorded_and_not_indexed_as_success(self):
+        broken = self.tmp / "modules" / "agent" / "backend" / "broken.py"
+        broken.write_text("def broken(:\n", encoding="utf-8")
+        self.indexer.update_file("modules/agent/backend/broken.py")
+        stats = self.graph.stats()
+        assert self.graph.get_file("modules/agent/backend/broken.py") is None
+        assert stats["parse_fail_count"] >= 1
+        assert self.graph.get_file_failure("modules/agent/backend/broken.py")
 
     def test_get_file_python(self):
         result = self.graph.get_file("modules/agent/backend/router.py")

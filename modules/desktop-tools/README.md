@@ -10,12 +10,23 @@ A **bridge module** that exposes the framework's desktop/file capabilities to th
 | `desktop-tools:search_files` | Search files by keyword / extension | Framework file service |
 | `desktop-tools:read_file` | Read file content (routes to format parsers) | Parser modules via `call_capability` |
 | `desktop-tools:list_apps` | List desktop applications | Framework app registry |
+| `desktop-tools:get_file` | Get one file's metadata | Framework file service |
+| `desktop-tools:create_file` | Create a text file in the framework file system | Framework upload service |
+| `desktop-tools:replace_file` | Replace file content from text, artifact, or another file | Framework file/content services |
+| `desktop-tools:delete_file` | Soft-delete a file to trash | Framework file service |
+| `desktop-tools:rename_file` | Rename a file | Framework file service |
+| `desktop-tools:copy_file` | Copy a file within the current user's file space | Framework file ops service |
+| `desktop-tools:list_versions` | List artifact versions | Framework artifact service |
+| `desktop-tools:restore_version` | Restore an artifact version | Framework artifact service |
+| `desktop-tools:replace_file_from_artifact` | Replace a desktop file from artifact content | Framework artifact service |
+| `desktop-tools:publish_artifact` | Publish an artifact as a desktop file | Framework artifact service |
+| `desktop-tools:refresh` | Return a desktop refresh acknowledgement | Stateless bridge |
 
 ## Key Design
 
 ### Owner Isolation
 
-All capabilities enforce **owner isolation** — a caller can only access their own files/apps. The `caller` string (e.g. `"user:42"`) is parsed to extract the user ID, and all database queries filter by `owner_id`.
+All capabilities enforce **owner isolation**. File reads use framework `check_file_access`, so owner and shared-file permissions are respected before disk reads. File mutations call the framework write/delete/rename/copy services, which enforce owner or write access. The `caller` string (e.g. `"user:42"`) is parsed to extract the user ID.
 
 ### Read File Pipeline
 
@@ -34,6 +45,9 @@ Parser mapping:
 | `xlsx`, `xls`, `csv` | `xlsx-parser` |
 | `pptx` | `pptx-parser` |
 | `txt`, `md`, `markdown`, `text`, `log` | `text-parser` (or direct read fallback) |
+| `json`, `xml`, `yaml`, `yml` | Direct text read |
+
+Output is capped to protect Agent context. `read_file` returns at most 20000 text characters and at most 80 content blocks, with `truncated` and `limits` metadata when content is clipped. Parser failures for non-text formats raise a real unified API error instead of returning a fake-success payload.
 
 ### Stateless Bridge
 
@@ -52,7 +66,7 @@ The Agent's `tool_discovery.build_tools(role)` calls `list_capabilities(role)` w
 
 ```bash
 # Run sandbox test
-cd modules/desktop-tools && python3 sandbox/test_module.py
+PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py
 
 # Check capabilities are registered (requires running backend)
 curl http://127.0.0.1:33000/api/modules/capabilities | jq
@@ -79,6 +93,6 @@ npm install
 npm run dev
 
 # Backend sandbox test
-cd modules/desktop-tools
-python3 sandbox/test_module.py
+cd /path/to/华世王镞_v2
+PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py
 ```

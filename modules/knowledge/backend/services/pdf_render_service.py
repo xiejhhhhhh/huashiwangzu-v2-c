@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 from app.config import get_settings
-from app.services.file_service import check_file_access
 from app.database import AsyncSessionLocal
+from app.services.file_service import check_file_access
 
 logger = logging.getLogger("v2.knowledge").getChild("pdf_render")
 

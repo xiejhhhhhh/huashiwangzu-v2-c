@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.exceptions import NotFound, ValidationError
 from app.services.content.package_service import ContentPackageService
-from app.services.file_service import get_file_record
+from app.services.file_service import check_file_access, get_file_record
 from app.services.file_upload_service import upload_file_from_path
 
 logger = logging.getLogger("v2.content").getChild("export")
@@ -97,7 +97,7 @@ class ContentExportService:
                         File.name == filename.rsplit(".", 1)[0],
                         File.extension == fmt,
                         File.owner_id == pkg_info["owner_id"],
-                        not File.deleted,
+                        File.deleted.is_(False),
                     )
                 )
                 existing = r.scalar_one_or_none()
@@ -291,6 +291,7 @@ class ContentExportService:
         file_record = await get_file_record(db, file_id)
         if not file_record:
             raise NotFound(f"Source file {file_id} not found")
+        await check_file_access(db, file_id, owner_id or pkg_info["owner_id"])
 
         from app.services.file_preview_service import _resolve_storage_path
         safe_path = _resolve_storage_path(file_record)

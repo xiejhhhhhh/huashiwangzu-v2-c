@@ -26,6 +26,14 @@ Parse PDF files into unified content blocks via pdfplumber.
 ## Verification
 
 ```bash
+# Sandbox parser test with the backend runtime dependencies
+cd modules/pdf-parser/sandbox
+../../../backend/.venv/bin/python test_module.py
+../../../backend/.venv/bin/python -m pytest test_module.py
+
+# Sandbox frontend build
+npm run build
+
 # Health check
 curl http://127.0.0.1:33000/api/pdf-parser/health
 
@@ -35,4 +43,3 @@ curl -X POST http://127.0.0.1:33000/api/pdf-parser/parse \
   -H "Authorization: Bearer <token>" \
   -d '{"file_id": <id>}'
 ```
-

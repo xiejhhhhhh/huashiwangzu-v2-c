@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.core.exceptions import ConflictError, NotFound, PermissionDenied, ValidationError
+from app.core.exceptions import AppException, ConflictError, NotFound, PermissionDenied, ValidationError
 from app.database import AsyncSessionLocal, get_db
 from app.middleware.auth import require_permission
 from app.models.system import SystemTaskQueue
@@ -19,6 +19,8 @@ logger = logging.getLogger("v2.scheduler").getChild("router")
 
 router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 _FAILURE_STATUSES = {"failed", "error"}
+_ALLOWED_RECUR = {"hourly", "daily", "weekly"}
+_CANCELLABLE_STATUSES = {"pending"}
 
 
 class CreateSchedulerRequest(BaseModel):
@@ -32,42 +34,140 @@ class CancelSchedulerRequest(BaseModel):
     task_id: int
 
 
+def _normalize_required_text(value: object, field_name: str, max_length: int = 256) -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"{field_name} 必须是字符串")
+    normalized = value.strip()
+    if not normalized:
+        raise ValidationError(f"{field_name} 不能为空")
+    if len(normalized) > max_length:
+        raise ValidationError(f"{field_name} 不能超过 {max_length} 个字符")
+    return normalized
+
+
+def _parse_scheduled_at(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValidationError("scheduled_at 必须是 ISO 8601 字符串")
+    try:
+        scheduled_dt = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValidationError("scheduled_at 格式无效，请使用 ISO 8601") from None
+    if scheduled_dt.tzinfo is None:
+        scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+    return scheduled_dt.astimezone(timezone.utc)
+
+
+def _validate_recur(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValidationError("recur 必须是字符串")
+    recur = value.strip().lower()
+    if recur in _ALLOWED_RECUR:
+        return recur
+    if not recur.startswith("cron:"):
+        raise ValidationError("recur 仅支持 hourly/daily/weekly 或 cron:HH:MM")
+    parts = recur.split(":")
+    if len(parts) != 3:
+        raise ValidationError("cron 表达式必须是 cron:HH:MM")
+    try:
+        hour = int(parts[1])
+        minute = int(parts[2])
+    except ValueError:
+        raise ValidationError("cron 表达式必须使用数字小时和分钟") from None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValidationError("cron 时间必须在 00:00 到 23:59 之间")
+    return f"cron:{hour:02d}:{minute:02d}"
+
+
+def _parse_positive_task_id(value: object) -> int:
+    if not isinstance(value, int) or value <= 0:
+        raise ValidationError("task_id 必须是正整数")
+    return value
+
+
+def _encode_task_parameters(title: str, action_description: str, creator_id: int) -> str:
+    return json.dumps({
+        "title": title,
+        "action_description": action_description,
+        "creator_id": creator_id,
+    }, ensure_ascii=False)
+
+
+def _decode_task_parameters(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("Invalid scheduler task parameters JSON ignored")
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _task_to_dict(task: SystemTaskQueue) -> dict:
+    params = _decode_task_parameters(task.parameters)
+    return {
+        "id": task.id,
+        "title": params.get("title", ""),
+        "action_description": params.get("action_description", ""),
+        "status": task.status,
+        "scheduled_at": task.scheduled_at.isoformat() if task.scheduled_at else None,
+        "recur": task.recur,
+        "next_run_at": task.next_run_at.isoformat() if task.next_run_at else None,
+        "result": task.result,
+        "error_message": task.error_message,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+
+async def _create_scheduler_task(
+    db: AsyncSession,
+    *,
+    title: object,
+    action_description: object,
+    creator_id: int,
+    scheduled_at: object = None,
+    recur: object = None,
+) -> SystemTaskQueue:
+    normalized_title = _normalize_required_text(title, "title")
+    normalized_action = _normalize_required_text(
+        action_description, "action_description", max_length=4000,
+    )
+    scheduled_dt = _parse_scheduled_at(scheduled_at)
+    normalized_recur = _validate_recur(recur)
+    task = SystemTaskQueue(
+        task_type="scheduled_agent_job",
+        parameters=_encode_task_parameters(normalized_title, normalized_action, creator_id),
+        status="pending",
+        module="scheduler",
+        creator_id=creator_id,
+        scheduled_at=scheduled_dt,
+        recur=normalized_recur,
+        next_run_at=scheduled_dt,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
 @router.post("/create")
 async def http_create(
     req: CreateSchedulerRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("editor")),
 ):
-    scheduled_dt = None
-    if req.scheduled_at:
-        try:
-            scheduled_dt = datetime.fromisoformat(req.scheduled_at)
-            if scheduled_dt.tzinfo is None:
-                scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            raise ValidationError("scheduled_at 格式无效，请使用 ISO 8601")
-
-    if req.recur and req.recur not in ("hourly", "daily", "weekly"):
-        if not req.recur.startswith("cron:"):
-            raise ValidationError("recur 仅支持 hourly/daily/weekly 或 cron:HH:MM")
-
-    task = SystemTaskQueue(
-        task_type="scheduled_agent_job",
-        parameters=json.dumps({
-            "title": req.title,
-            "action_description": req.action_description,
-            "creator_id": current_user.id,
-        }, ensure_ascii=False),
-        status="pending",
-        module="scheduler",
+    task = await _create_scheduler_task(
+        db,
+        title=req.title,
+        action_description=req.action_description,
         creator_id=current_user.id,
-        scheduled_at=scheduled_dt,
+        scheduled_at=req.scheduled_at,
         recur=req.recur,
-        next_run_at=scheduled_dt,
     )
-    db.add(task)
-    await db.commit()
-    await db.refresh(task)
     return ApiResponse(data={"id": task.id, "status": "created"})
 
 
@@ -84,18 +184,7 @@ async def http_list(
     ).order_by(SystemTaskQueue.created_at.desc())
     r = await db.execute(stmt)
     tasks = r.scalars().all()
-    return ApiResponse(data=[{
-        "id": t.id,
-        "title": json.loads(t.parameters or "{}").get("title", "") if t.parameters else "",
-        "action_description": json.loads(t.parameters or "{}").get("action_description", "") if t.parameters else "",
-        "status": t.status,
-        "scheduled_at": t.scheduled_at.isoformat() if t.scheduled_at else None,
-        "recur": t.recur,
-        "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
-        "result": t.result,
-        "error_message": t.error_message,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
-    } for t in tasks])
+    return ApiResponse(data=[_task_to_dict(t) for t in tasks])
 
 
 @router.post("/cancel")
@@ -104,13 +193,14 @@ async def http_cancel(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("editor")),
 ):
-    task = await db.get(SystemTaskQueue, req.task_id)
+    task_id = _parse_positive_task_id(req.task_id)
+    task = await db.get(SystemTaskQueue, task_id)
     if not task or task.module != "scheduler":
         raise NotFound("任务不存在")
     if task.creator_id != current_user.id:
         raise PermissionDenied("只能取消自己的任务")
-    if task.status in ("completed", "failed"):
-        raise ConflictError("任务已结束，无法取消")
+    if task.status not in _CANCELLABLE_STATUSES:
+        raise ConflictError("只能取消 pending 状态的定时任务")
     task.status = "cancelled"
     await db.commit()
     return ApiResponse(data={"id": task.id, "status": "cancelled"})
@@ -119,42 +209,24 @@ async def http_cancel(
 # ── Cross-module capability: handler for scheduled_agent_job ──────────────────
 
 async def _cap_create(params: dict, caller: str) -> dict:
-    title = params.get("title", "")
-    action_desc = params.get("action_description", "")
     try:
         owner_id = resolve_caller_user_id(caller)
     except PermissionDenied:
         return {"success": False, "error": "无法解析调用者身份"}
     if not owner_id:
         return {"success": False, "error": "无法解析调用者身份"}
-    scheduled_at_str = params.get("scheduled_at")
-    scheduled_dt = None
-    if scheduled_at_str:
-        try:
-            scheduled_dt = datetime.fromisoformat(scheduled_at_str)
-            if scheduled_dt.tzinfo is None:
-                scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            return {"success": False, "error": "scheduled_at 格式无效"}
-    recur = params.get("recur")
     async with AsyncSessionLocal() as db:
-        task = SystemTaskQueue(
-            task_type="scheduled_agent_job",
-            parameters=json.dumps({
-                "title": title,
-                "action_description": action_desc,
-                "creator_id": owner_id,
-            }, ensure_ascii=False),
-            status="pending",
-            module="scheduler",
-            creator_id=owner_id,
-            scheduled_at=scheduled_dt,
-            recur=recur,
-            next_run_at=scheduled_dt,
-        )
-        db.add(task)
-        await db.commit()
-        await db.refresh(task)
+        try:
+            task = await _create_scheduler_task(
+                db,
+                title=params.get("title"),
+                action_description=params.get("action_description"),
+                creator_id=owner_id,
+                scheduled_at=params.get("scheduled_at"),
+                recur=params.get("recur"),
+            )
+        except AppException as exc:
+            return {"success": False, "error": str(exc)}
     return {"success": True, "data": {"id": task.id}}
 
 
@@ -174,13 +246,7 @@ async def _cap_list(params: dict, caller: str) -> dict:
         ).order_by(SystemTaskQueue.created_at.desc())
         r = await db.execute(stmt)
         tasks = r.scalars().all()
-    return {"success": True, "data": [
-        {"id": t.id, "title": json.loads(t.parameters or "{}").get("title", ""),
-         "status": t.status, "scheduled_at": t.scheduled_at.isoformat() if t.scheduled_at else None,
-         "recur": t.recur, "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
-         "result": t.result, "error_message": t.error_message}
-        for t in tasks
-    ]}
+    return {"success": True, "data": [_task_to_dict(t) for t in tasks]}
 
 
 def _stringify_error(value: object) -> str:
@@ -228,7 +294,10 @@ def _agent_failure_message(result: object) -> str | None:
 
 
 async def _cap_cancel(params: dict, caller: str) -> dict:
-    task_id = params.get("task_id")
+    try:
+        task_id = _parse_positive_task_id(params.get("task_id"))
+    except AppException as exc:
+        return {"success": False, "error": str(exc)}
     try:
         owner_id = resolve_caller_user_id(caller)
     except PermissionDenied:
@@ -239,8 +308,8 @@ async def _cap_cancel(params: dict, caller: str) -> dict:
             return {"success": False, "error": "任务不存在"}
         if task.creator_id != owner_id:
             return {"success": False, "error": "只能取消自己的任务"}
-        if task.status in ("completed", "failed"):
-            return {"success": False, "error": "任务已结束"}
+        if task.status not in _CANCELLABLE_STATUSES:
+            return {"success": False, "error": "只能取消 pending 状态的定时任务"}
         task.status = "cancelled"
         await db.commit()
     return {"success": True, "data": {"id": task_id, "status": "cancelled"}}

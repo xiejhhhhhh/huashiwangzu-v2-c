@@ -28,6 +28,14 @@ _SEARCH_TIMEOUT = 10
 _FETCH_TIMEOUT = 15
 _MAX_FETCH_CHARS = 8000
 _MAX_CONTENT_LENGTH = 5 * 1024 * 1024  # 5MB
+_MAX_QUERY_CHARS = 500
+_MAX_URL_CHARS = 2048
+_MAX_TITLE_CHARS = 500
+_MAX_SEARCH_TITLE_CHARS = 300
+_MAX_SEARCH_SNIPPET_CHARS = 1000
+_MAX_SEARCH_URL_CHARS = 2048
+_TEXT_CONTENT_MARKERS = ("text", "html", "json", "xml", "javascript", "x-www-form-urlencoded")
+_BINARY_CONTENT_MARKERS = ("application/octet-stream", "application/pdf", "image/", "audio/", "video/")
 
 # Proxy from env: WEB_TOOLS_PROXY=http://127.0.0.1:4780
 # Default to ClashX proxy on macOS (common local proxy)
@@ -55,7 +63,7 @@ def _err(data: dict[str, Any], message: str) -> dict[str, Any]:
 
 def _web_response(result: dict[str, Any]) -> ApiResponse[dict[str, Any]]:
     if result.get("success") is False:
-        return ApiResponse(success=False, data=result, error=str(result.get("error") or "Web tool failed"))
+        raise ValidationError(str(result.get("error") or "Web tool failed"))
     return ApiResponse(data=result)
 
 
@@ -66,7 +74,37 @@ def _bounded_int(value: Any, default: int, minimum: int, maximum: int, name: str
         parsed = int(value)
     except (TypeError, ValueError):
         return None, f"{name} must be an integer"
-    return max(minimum, min(parsed, maximum)), None
+    if parsed < minimum or parsed > maximum:
+        return None, f"{name} must be between {minimum} and {maximum}"
+    return parsed, None
+
+
+def _trim_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def _is_binary_content_type(content_type: str) -> bool:
+    ct = content_type.lower()
+    if not ct:
+        return False
+    if any(marker in ct for marker in _TEXT_CONTENT_MARKERS):
+        return False
+    return any(marker in ct for marker in _BINARY_CONTENT_MARKERS)
+
+
+def _decode_content(content: bytes, encoding: str | None) -> str:
+    candidates = [encoding, "utf-8", "gb18030", "latin-1"]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return content.decode(candidate)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return content.decode("utf-8", errors="replace")
 
 
 async def _cap_search(params: dict, caller: str) -> dict:
@@ -77,6 +115,8 @@ async def _cap_search(params: dict, caller: str) -> dict:
         return _err({"results": []}, top_k_error)
     if not query:
         return _err({"results": []}, "query is required")
+    if len(query) > _MAX_QUERY_CHARS:
+        return _err({"results": []}, f"query too long ({len(query)} chars > {_MAX_QUERY_CHARS})")
 
     import asyncio
 
@@ -106,10 +146,14 @@ async def _cap_search(params: dict, caller: str) -> dict:
             continue
         results = []
         for r in rows:
+            raw_url = _trim_text(r.get("href", ""), _MAX_SEARCH_URL_CHARS)
+            parsed_url = urllib.parse.urlsplit(raw_url)
+            if parsed_url.scheme not in {"http", "https"} or parsed_url.username or parsed_url.password:
+                continue
             results.append({
-                "title": r.get("title", ""),
-                "url": r.get("href", ""),
-                "snippet": r.get("body", ""),
+                "title": _trim_text(r.get("title", ""), _MAX_SEARCH_TITLE_CHARS),
+                "url": raw_url,
+                "snippet": _trim_text(r.get("body", ""), _MAX_SEARCH_SNIPPET_CHARS),
             })
         return _ok({"results": results, "error": None})
 
@@ -124,6 +168,11 @@ async def _cap_fetch(params: dict, caller: str) -> dict:
         return _err({"url": url, "title": "", "text": "", "truncated": False}, max_chars_error)
     if not url:
         return _err({"url": url, "title": "", "text": "", "truncated": False}, "url is required")
+    if len(url) > _MAX_URL_CHARS:
+        return _err(
+            {"url": url[:_MAX_URL_CHARS], "title": "", "text": "", "truncated": False},
+            f"url too long ({len(url)} chars > {_MAX_URL_CHARS})",
+        )
 
     # SSRF check via public helper
     try:
@@ -146,44 +195,70 @@ async def _cap_fetch(params: dict, caller: str) -> dict:
         client: httpx.AsyncClient,
         method: Literal["HEAD", "GET"],
         start_url: str,
-    ) -> httpx.Response:
+        *,
+        stream: bool = False,
+    ) -> tuple[httpx.Response, str]:
         current_url = start_url
         for _ in range(8):
             try:
                 current_url = validate_safe_url(current_url)
             except ValidationError as exc:
                 raise ValidationError(exc.message) from exc
-            resp = await client.request(method, current_url, timeout=10 if method == "HEAD" else _FETCH_TIMEOUT)
+            request = client.build_request(method, current_url, timeout=10 if method == "HEAD" else _FETCH_TIMEOUT)
+            resp = await client.send(request, stream=stream)
             if resp.is_redirect:
                 location = resp.headers.get("location")
+                await resp.aclose()
                 if not location:
                     raise ValidationError("redirect target missing")
                 current_url = urllib.parse.urljoin(current_url, location)
                 continue
-            return resp
+            return resp, current_url
         raise ValidationError("too many redirects")
 
     try:
         async with httpx.AsyncClient(**client_kwargs) as client:
             # Head request first to check content type and size
-            head_resp = await _request_checked(client, "HEAD", url)
+            head_resp, _ = await _request_checked(client, "HEAD", url)
             ct = (head_resp.headers.get("content-type") or "").lower()
             cl = head_resp.headers.get("content-length")
-            if cl and int(cl) > _MAX_CONTENT_LENGTH:
+            if cl:
+                try:
+                    content_length = int(cl)
+                except ValueError:
+                    content_length = None
+                if content_length is not None and content_length > _MAX_CONTENT_LENGTH:
+                    return _err(
+                        {"url": url, "title": "", "text": "", "truncated": False},
+                        f"content too large ({content_length} bytes > 5MB)",
+                    )
+            if _is_binary_content_type(ct):
                 return _err(
                     {"url": url, "title": "", "text": "", "truncated": False},
-                    f"content too large ({cl} bytes > 5MB)",
+                    f"blocked binary content type: {ct}",
                 )
-            if "text" not in ct and "html" not in ct and "json" not in ct and "xml" not in ct:
-                for bt in ("application/octet-stream", "application/pdf", "image/", "audio/", "video/"):
-                    if bt in ct:
-                        return _err(
-                            {"url": url, "title": "", "text": "", "truncated": False},
-                            f"blocked binary content type: {ct}",
-                        )
 
-            resp = await _request_checked(client, "GET", url)
-            resp.raise_for_status()
+            resp, fetched_url = await _request_checked(client, "GET", url, stream=True)
+            try:
+                resp.raise_for_status()
+                get_ct = (resp.headers.get("content-type") or "").lower()
+                if _is_binary_content_type(get_ct):
+                    return _err(
+                        {"url": fetched_url, "title": "", "text": "", "truncated": False},
+                        f"blocked binary content type: {get_ct}",
+                    )
+
+                chunks = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    if len(chunks) + len(chunk) > _MAX_CONTENT_LENGTH:
+                        return _err(
+                            {"url": fetched_url, "title": "", "text": "", "truncated": False},
+                            f"content too large (> {_MAX_CONTENT_LENGTH} bytes)",
+                        )
+                    chunks.extend(chunk)
+                content = bytes(chunks)
+            finally:
+                await resp.aclose()
     except ValidationError as exc:
         return _err({"url": url, "title": "", "text": "", "truncated": False}, exc.message)
     except httpx.TimeoutException:
@@ -191,17 +266,27 @@ async def _cap_fetch(params: dict, caller: str) -> dict:
     except Exception as exc:
         return _err({"url": url, "title": "", "text": "", "truncated": False}, f"fetch failed: {exc}")
 
-    # Parse HTML
+    get_ct = (resp.headers.get("content-type") or "").lower()
+    if get_ct and "html" not in get_ct and "xml" not in get_ct:
+        text = _decode_content(content, resp.charset_encoding)
+        text = _re.sub(r'\s+', ' ', text).strip()
+        truncated = False
+        if len(text) > max_chars:
+            text = text[:max_chars]
+            truncated = True
+        return _ok({"url": fetched_url, "title": "", "text": text, "truncated": truncated, "error": None})
+
+    # Parse HTML/XML-like content
     try:
-        tree = lxml_html.fromstring(resp.content)
+        tree = lxml_html.fromstring(content)
     except Exception as exc:
-        return _err({"url": url, "title": "", "text": "", "truncated": False}, f"parse failed: {exc}")
+        return _err({"url": fetched_url, "title": "", "text": "", "truncated": False}, f"parse failed: {exc}")
 
     # Extract title
     title = ""
     title_el = tree.find(".//title")
     if title_el is not None and title_el.text:
-        title = title_el.text.strip()
+        title = _trim_text(title_el.text, _MAX_TITLE_CHARS)
 
     # Remove unwanted elements
     for tag in ("script", "style", "nav", "footer", "header", "aside", "noscript",
@@ -225,7 +310,7 @@ async def _cap_fetch(params: dict, caller: str) -> dict:
         text = text[:max_chars]
         truncated = True
 
-    return _ok({"url": url, "title": title, "text": text, "truncated": truncated, "error": None})
+    return _ok({"url": fetched_url, "title": title, "text": text, "truncated": truncated, "error": None})
 
 
 # ── HTTP endpoints for direct testing ──────────────────────────────────

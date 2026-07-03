@@ -1,133 +1,89 @@
-"""Sandbox test for markdown-parser module.
-
-Validates Markdown parsing into unified blocks (heading, paragraph, list, code, table) and image resources.
-"""
-import re
+"""Sandbox test for markdown-parser production parser."""
+import importlib.util
+import os
+import sys
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
-SDIR = Path(__file__).resolve().parent / "samples"
-
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
-CODE_FENCE_RE = re.compile(r"^`{3,}\s*(\w*)$")
-LIST_ITEM_RE = re.compile(r"^(\s*)[-*+]\s+")
-ORDERED_LIST_RE = re.compile(r"^(\s*)\d+[.)]\s+")
-IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-
-
-def parse_md(path: Path) -> dict[str, object]:
-    content = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
-    lines = content.splitlines(keepends=False)
-    blocks = []
-    resources = []
-    resource_counter = 0
-    in_code = False
-    code_lines = []
-    para_lines = []
-    list_lines = []
-    in_list = False
-
-    def flush_para() -> None:
-        nonlocal para_lines
-        if para_lines:
-            text = "\n".join(para_lines).strip()
-            if text:
-                blocks.append({"type": "paragraph", "text": text, "page": None, "resource_ref": None})
-            para_lines = []
-
-    def flush_code() -> None:
-        nonlocal code_lines
-        if code_lines:
-            blocks.append({"type": "code", "text": "\n".join(code_lines), "page": None, "resource_ref": None})
-            code_lines = []
-
-    def flush_list() -> None:
-        nonlocal list_lines
-        if list_lines:
-            blocks.append({"type": "list", "text": "\n".join(list_lines), "page": None, "resource_ref": None})
-            list_lines = []
-
-    for line in lines:
-        if CODE_FENCE_RE.match(line):
-            flush_para()
-            flush_list()
-            if in_code:
-                flush_code()
-                in_code = False
-            else:
-                in_code = True
-            continue
-        if in_code:
-            code_lines.append(line)
-            continue
-        m = HEADING_RE.match(line)
-        if m:
-            flush_para()
-            flush_list()
-            blocks.append({"type": "heading", "text": m.group(2).strip(), "page": None, "resource_ref": None})
-            continue
-        if LIST_ITEM_RE.match(line) or ORDERED_LIST_RE.match(line):
-            flush_para()
-            in_list = True
-            list_lines.append(line)
-            continue
-        if in_list:
-            if line.strip() == "":
-                flush_list()
-                in_list = False
-                continue
-            list_lines.append(line)
-            continue
-        if line.strip() == "":
-            flush_para()
-            continue
-        para_lines.append(line)
-
-    flush_para()
-    flush_code()
-    flush_list()
-
-    for img_match in IMAGE_RE.finditer(content):
-        resource_counter += 1
-        blocks.append({"type": "image", "text": img_match.group(1) or "", "page": None, "resource_ref": resource_counter})
-        resources.append({
-            "id": resource_counter,
-            "type": "image",
-            "file_storage_id": None,
-            "text_desc": f"Markdown image: {img_match.group(2)} ({img_match.group(1) or ''})",
-        })
-
-    return {"file_id": 0, "format": "markdown", "blocks": blocks, "resources": resources}
+MODULE_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = MODULE_DIR.parents[1]
+BACKEND_DIR = REPO_ROOT / "backend"
+SAMPLE_DIR = Path(__file__).resolve().parent / "samples"
 
 
-def validate(result: dict[str, object], label: str) -> None:
-    assert all(k in result for k in ("file_id", "format", "blocks", "resources"))
+def load_router_module() -> ModuleType:
+    os.environ.setdefault("JWT_SECRET", "markdown-parser-sandbox-test-secret")
+
+    backend_path = str(BACKEND_DIR)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
+    router_path = MODULE_DIR / "backend" / "router.py"
+    spec = importlib.util.spec_from_file_location("markdown_parser_router", router_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load router module from {router_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate(result: dict[str, Any], label: str) -> None:
+    assert set(result) == {"file_id", "format", "blocks", "resources"}
     blocks = result["blocks"]
     resources = result["resources"]
     assert isinstance(blocks, list)
     assert isinstance(resources, list)
-    for b in blocks:
-        assert isinstance(b, dict)
-        assert all(k in b for k in ("type", "text", "page", "resource_ref"))
+    for block in blocks:
+        assert isinstance(block, dict)
+        assert set(block) == {"type", "text", "page", "resource_ref"}
+    for resource in resources:
+        assert isinstance(resource, dict)
+        assert set(resource) == {"id", "type", "file_storage_id", "text_desc"}
     print(f"  [{label}] Validation PASS ({len(blocks)} blocks, {len(resources)} resources)")
+
+
+def test_invalid_file_ids() -> None:
+    router = load_router_module()
+    for bad_file_id in (0, -1, "abc", True, None):
+        try:
+            router._require_file_id({"file_id": bad_file_id})
+        except router.ValidationError:
+            pass
+        else:
+            raise AssertionError(f"Expected ValidationError for file_id={bad_file_id!r}")
+
+
+def test_parse_sample() -> None:
+    sample = SAMPLE_DIR / "sample.md"
+    assert sample.exists(), f"Sample not found: {sample}"
+
+    router = load_router_module()
+    result = router.parse_markdown_content(sample.read_text(encoding="utf-8"), file_id=1)
+    validate(result, "sample.md")
+
+    blocks = result["blocks"]
+    assert result["format"] == "markdown"
+    assert any(block["type"] == "heading" for block in blocks), "Expected heading block"
+    assert any(block["type"] == "paragraph" for block in blocks), "Expected paragraph block"
+    assert any(block["type"] == "list" for block in blocks), "Expected list block"
+    assert any(block["type"] == "code" and "not a heading" in block["text"] for block in blocks), "Expected fenced code block"
+    assert any(block["type"] == "table" and "Name" in block["text"] for block in blocks), "Expected table block"
+    assert any(block["type"] == "image" and block["resource_ref"] == 1 for block in blocks), "Expected image block"
+    assert len(result["resources"]) == 1
+    assert not any(block["type"] == "paragraph" and block["text"].startswith("![") for block in blocks)
+
+    code_block = next(block for block in blocks if block["type"] == "code")
+    assert "```" not in code_block["text"], "Code block should not include fence markers"
+    assert any(block["text"] == "After code." for block in blocks), "Expected text after code fence"
 
 
 def main() -> None:
     print("=" * 60)
     print("markdown-parser sandbox test")
     print("=" * 60)
-    sample = SDIR / "sample.md"
-    assert sample.exists(), f"Sample not found: {sample}"
-
-    result = parse_md(sample)
-    for b in result["blocks"]:
-        text = b["text"][:60]
-        print(f"  [{b['type']}] {text}")
-
-    validate(result, "sample.md")
-    assert result["format"] == "markdown"
-    assert any(b["type"] == "heading" for b in result["blocks"]), "Expected at least one heading"
-    assert any(b["type"] == "paragraph" for b in result["blocks"]), "Expected at least one paragraph"
-
+    test_invalid_file_ids()
+    test_parse_sample()
     print("PASS: markdown-parser sandbox test")
 
 

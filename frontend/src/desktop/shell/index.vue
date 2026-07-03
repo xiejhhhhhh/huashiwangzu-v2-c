@@ -57,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineAsyncComponent, ref, computed, unref } from 'vue'
+import { defineAsyncComponent, ref, computed, unref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
@@ -68,13 +68,12 @@ import { useUserStore } from '@/platform/stores/user'
 import { useDesktopEventBus } from '@/desktop/events/use-desktop-event-bus'
 import desktopEmitter from '@/desktop/events'
 
-// 暴露 event bus 到全局，供 agent 等模块触发桌面刷新
-;(window as any).__DESKTOP_EVENT_BUS__ = desktopEmitter
 import SelectionBox from '@/desktop/selection/SelectionBox.vue'
 import { useDesktopShellDropUpload } from './use-desktop-shell-drop-upload'
 import { useDesktopRootFiles } from './use-desktop-root-files'
 import { useDesktopAppLoading } from './use-desktop-app-loading'
 import { useDesktopPointer } from './use-desktop-pointer'
+import { useCommandRegistry } from './use-command-registry'
 import { buildFileMenu, buildFolderMenu } from '@/desktop/context-menu/file-context-menu'
 import { buildDesktopShellIconMenu as buildAppIconMenu, buildDesktopShellBlankMenu } from '@/desktop/context-menu/desktop-shell-context-menu'
 import { buildRecycleBinMenu, buildRecycleBinItemMenu } from '@/desktop/context-menu/file-context-menu'
@@ -93,6 +92,10 @@ const desktopWindowFrame = defineAsyncComponent(() => import('@/desktop/window-m
 const desktopTaskbar = defineAsyncComponent(() => import('@/desktop/taskbar/desktop-taskbar.vue'))
 const desktopLauncher = defineAsyncComponent(() => import('@/desktop/launcher/desktop-launcher.vue'))
 const desktopRightSidebar = defineAsyncComponent(() => import('@/desktop/shell/desktop-right-sidebar.vue'))
+
+// 暴露 event bus 到全局，供 agent 等模块触发桌面刷新
+window.__DESKTOP_EVENT_BUS__ = desktopEmitter as Window['__DESKTOP_EVENT_BUS__']
+
 const windowManager = useWindowManager()
 const { isEditorOrAbove: canBusinessWrite, currentRole } = usePermission()
 const contextMenu = useContextMenu()
@@ -101,13 +104,16 @@ const { emit, on } = useDesktopEventBus()
 const { isDragActive, onDragEnter, onDragLeave, onDrop } = useDesktopShellDropUpload()
 const { desktopFileList, openDesktopEntry } = useDesktopRootFiles()
 const { creatableFormats } = useCreatableFormats()
-const { desktopAppList, launcherAppList, sidebarAppList, trayAppList, registryError, loading, desktopContainerRef, retryLoadRegistry, updateContainerSize } = useDesktopAppLoading(currentRole)
+const { allAppList, desktopAppList, launcherAppList, sidebarAppList, trayAppList, registryError, loading, desktopContainerRef, retryLoadRegistry, updateContainerSize } = useDesktopAppLoading(currentRole)
 const { handleDesktopMouseDown } = useDesktopPointer()
+const { registerAllApps } = useCommandRegistry(handleOpenApp, handleLauncherCommand)
 
 const showLauncher = ref(false); const showRightSidebar = ref(false); const rightSidebarAppKey = ref('desktop')
 const canWrite = computed(() => canBusinessWrite.value)
 
 const wallpaper = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0f172a"/><stop offset="50%" stop-color="#1d4ed8"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient><radialGradient id="r" cx="30%" cy="20%" r="60%"><stop offset="0%" stop-color="rgba(191,219,254,0.35)"/><stop offset="100%" stop-color="rgba(15,23,42,0)"/></radialGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><rect width="100%" height="100%" fill="url(#r)"/></svg>')
+
+watch(allAppList, apps => registerAllApps(apps), { immediate: true })
 
 function getSourceFolderId(key: string): number | null {
   const el = document.querySelector(`[data-selection-key="${key}"]`)

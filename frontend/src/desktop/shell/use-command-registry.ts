@@ -7,10 +7,15 @@ export function useCommandRegistry(
   openAppFn: (appKey: string) => void,
   executeCommandFn: (command: string) => void,
 ) {
-  const disposables: IDisposable[] = []
+  const builtinDisposables: IDisposable[] = []
+  let appDisposables: IDisposable[] = []
 
   getAppOpener().setOpenApp(openAppFn)
   getAppOpener().setExecuteAction((appKey: string) => openAppFn(appKey))
+
+  function disposeMany(items: IDisposable[]) {
+    for (const d of items) d.dispose()
+  }
 
   function registerBuiltinCommands() {
     const builtins: Array<{ id: string; title: string; description?: string; icon?: string; handler: () => void }> = [
@@ -20,7 +25,7 @@ export function useCommandRegistry(
       { id: 'builtin:logout', title: '退出登录', description: '注销当前用户', icon: '🚪', handler: () => executeCommandFn('logout') },
     ]
     for (const c of builtins) {
-      disposables.push(
+      builtinDisposables.push(
         commandRegistry.register(
           { id: c.id, title: c.title, description: c.description, icon: c.icon, category: '系统工具' },
           c.handler,
@@ -31,9 +36,11 @@ export function useCommandRegistry(
   }
 
   function registerAllApps(appList: AppRegistryEntry[]) {
+    disposeMany(appDisposables)
+    appDisposables = []
     for (const app of appList) {
       const ds = commandRegistry.registerAppEntry(app)
-      disposables.push(...ds)
+      appDisposables.push(...ds)
     }
   }
 
@@ -42,7 +49,9 @@ export function useCommandRegistry(
   })
 
   onUnmounted(() => {
-    for (const d of disposables) d.dispose()
+    disposeMany(builtinDisposables)
+    disposeMany(appDisposables)
+    appDisposables = []
   })
 
   return { registerAllApps, commandRegistry }

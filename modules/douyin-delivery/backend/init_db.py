@@ -1,15 +1,44 @@
 """Initialize DB tables and default prompts for douyin-delivery module."""
 
 import logging
-from sqlalchemy import text as sa_text
-from app.models.base import Base
+
 from app.database import engine
+from app.models.base import Base
+from sqlalchemy import text as sa_text
 
 logger = logging.getLogger("v2.douyin_delivery").getChild("init_db")
 
-from .models import DouyinProduct, DouyinScript, DouyinAdCopy, DouyinCampaign, DouyinPrompt
+from .models import (
+    DouyinAccount,
+    DouyinAdCopy,
+    DouyinCampaign,
+    DouyinDeliveryTask,
+    DouyinMaterial,
+    DouyinProduct,
+    DouyinPrompt,
+    DouyinScript,
+)
 
-DOUYIN_TABLES = ["douyin_products", "douyin_scripts", "douyin_ad_copies", "douyin_campaigns", "douyin_prompts"]
+DOUYIN_TABLES = [
+    "douyin_products",
+    "douyin_scripts",
+    "douyin_ad_copies",
+    "douyin_campaigns",
+    "douyin_accounts",
+    "douyin_materials",
+    "douyin_delivery_tasks",
+    "douyin_prompts",
+]
+DOUYIN_MODEL_CLASSES = (
+    DouyinProduct,
+    DouyinScript,
+    DouyinAdCopy,
+    DouyinCampaign,
+    DouyinAccount,
+    DouyinMaterial,
+    DouyinDeliveryTask,
+    DouyinPrompt,
+)
 
 CHANNEL_LABELS = {
     "local_push": "本地推",
@@ -178,8 +207,9 @@ def _init_db():
         logger.warning("Table creation skipped (may already exist): %s", exc)
 
     try:
-        from app.database import AsyncSessionLocal
         import asyncio
+
+        from app.database import AsyncSessionLocal
 
         async def _seed_prompts():
             async with AsyncSessionLocal() as db:

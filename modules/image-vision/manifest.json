@@ -29,11 +29,19 @@
   "public_actions": [
     {
       "action": "describe",
-      "description": "Generate text description of image via vision model",
+      "description": "Analyze image locally first, then use the vision model only when semantic detail is needed",
       "parameters": {
         "file_id": {
           "type": "int",
           "description": "File ID in file storage"
+        },
+        "analysis_mode": {
+          "type": "string",
+          "description": "auto | local | semantic. Defaults to auto."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Optional semantic focus when VLM is used"
         }
       },
       "min_role": "viewer"

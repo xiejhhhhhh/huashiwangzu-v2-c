@@ -16,11 +16,12 @@ Dangerous commands are intercepted.  Execution has timeout + output caps.
 import logging
 from typing import Any
 
+from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .handlers.exec import _exec
 from .handlers.file_ops import _import, _list_workspace, _publish, _read_file, _write_file
@@ -35,7 +36,7 @@ _DEFAULT_TIMEOUT = 60
 
 def _terminal_response(result: dict[str, Any]) -> ApiResponse[dict[str, Any]]:
     if result.get("success") is False:
-        return ApiResponse(success=False, data=result, error=str(result.get("error") or "Terminal tool failed"))
+        raise ValidationError(str(result.get("error") or "Terminal tool failed"))
     return ApiResponse(data=result)
 
 
@@ -72,7 +73,7 @@ class ImportFileRequest(BaseModel):
 
 class RunPythonRequest(BaseModel):
     code: str
-    input_files: list[int] = []
+    input_files: list[int] = Field(default_factory=list)
     timeout: int = _DEFAULT_TIMEOUT
 
 

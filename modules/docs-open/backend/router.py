@@ -7,6 +7,7 @@ This module delegates to existing editors via framework public APIs
 and registered capabilities. It does NOT rewrite any editor.
 """
 from pathlib import Path
+from urllib.parse import urlencode
 
 from app.config import get_settings
 from app.core.exceptions import AppException, NotFound, PermissionDenied
@@ -22,14 +23,24 @@ from app.services.file_service import (
 )
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .handlers.auth import _get_base_url, get_authenticated_user, require_docs_permission
+from .handlers.auth import _get_base_url, get_bearer_authenticated_user, require_docs_permission
 from .handlers.content import _read_content, _write_content
 from .handlers.embed import _generate_embed_html, _get_doc_type
 from .models import DocsOpenToken
 from .token_service import check_doc_access, create_token, validate_token
+from .validators import (
+    access_mode_for_mode,
+    normalize_client_id,
+    normalize_doc_type,
+    normalize_expiry_hours,
+    normalize_mode,
+    normalize_positive_int,
+    normalize_title,
+    normalize_token_scope,
+)
 
 router = APIRouter(prefix="/api/docs", tags=["docs-open"])
 
@@ -37,10 +48,10 @@ router = APIRouter(prefix="/api/docs", tags=["docs-open"])
 # ── Schemas ──
 
 class TokenRequest(BaseModel):
-    client_id: str = "default"
+    client_id: str = Field("default", min_length=1, max_length=64)
     open_id: int | None = None
     scope: dict | None = None
-    expiry_hours: int = 2
+    expiry_hours: int = Field(2, ge=1, le=24)
 
 
 class OpenRequest(BaseModel):
@@ -49,8 +60,8 @@ class OpenRequest(BaseModel):
 
 
 class CreateDocRequest(BaseModel):
-    title: str
-    doc_type: str = "txt"
+    title: str = Field(..., min_length=1, max_length=255)
+    doc_type: str = Field("txt", max_length=16)
     folder_id: int | None = None
 
 
@@ -74,7 +85,7 @@ async def _require_file_access_for_request(
     x_access_token = request.headers.get("X-Access-Token")
     if x_client_id and x_open_id and x_access_token:
         token_record = await validate_token(db, x_access_token, x_client_id, x_open_id)
-        if int(x_open_id) != user.id:
+        if normalize_positive_int(x_open_id, "open_id") != user.id:
             raise PermissionDenied("Open-Id mismatch")
         if not check_doc_access(token_record, file_id, mode):
             raise PermissionDenied("Token does not have access to this document")
@@ -97,26 +108,24 @@ async def issue_token(
     Forced to current user: open_id cannot be specified by the client.
     scope.doc_ids are validated one by one via framework_check_file_access.
     """
-    scope = body.scope or {}
-    doc_ids = scope.get("doc_ids")
-    if doc_ids is not None:
-        if not isinstance(doc_ids, list):
-            raise PermissionDenied("scope.doc_ids must be a list")
-        for fid in doc_ids:
-            await framework_check_file_access(db, int(fid), user.id)
-    edit_doc_ids = scope.get("edit_doc_ids")
-    if edit_doc_ids is not None:
-        if not isinstance(edit_doc_ids, list):
-            raise PermissionDenied("scope.edit_doc_ids must be a list")
-        for fid in edit_doc_ids:
-            await framework_check_file_write_access(db, int(fid), user.id)
+    if body.open_id is not None and body.open_id != user.id:
+        raise PermissionDenied("open_id must match the authenticated user")
+
+    client_id = normalize_client_id(body.client_id)
+    scope = normalize_token_scope(body.scope)
+    expiry_hours = normalize_expiry_hours(body.expiry_hours)
+
+    for fid in scope.get("doc_ids", []):
+        await framework_check_file_access(db, fid, user.id)
+    for fid in scope.get("edit_doc_ids", []):
+        await framework_check_file_write_access(db, fid, user.id)
 
     result = await create_token(
         db,
-        client_id=body.client_id,
+        client_id=client_id,
         open_id=user.id,
         scope=scope,
-        expiry_hours=body.expiry_hours,
+        expiry_hours=expiry_hours,
     )
     return ApiResponse(data=result)
 
@@ -134,7 +143,8 @@ async def open_document(
 
     Simulates Tencent Docs /openapi/drive/v2/files endpoint shape.
     """
-    if body.mode == "edit":
+    mode = normalize_mode(body.mode)
+    if mode == "edit":
         file = await framework_check_file_write_access(db, body.file_id, user.id)
         token_scope = {"doc_ids": [body.file_id], "edit_doc_ids": [body.file_id]}
     else:
@@ -153,10 +163,13 @@ async def open_document(
         expiry_hours=2,
     )
 
-    embed_url = f"{base}/api/docs/embed/{body.file_id}"
-    embed_url += f"?token={issue_doc_token['access_token']}"
-    embed_url += f"&client_id=docs-open&open_id={user.id}"
-    embed_url += f"&mode={body.mode}"
+    embed_query = urlencode({
+        "token": issue_doc_token["access_token"],
+        "client_id": "docs-open",
+        "open_id": str(user.id),
+        "mode": mode,
+    })
+    embed_url = f"{base}/api/docs/embed/{body.file_id}?{embed_query}"
 
     content_url = f"{base}/api/docs/{body.file_id}/content"
 
@@ -187,24 +200,25 @@ async def create_document(
 
     Delegates to office-gen for office files, or creates a plain text file.
     """
-    ext = body.doc_type.lower().lstrip(".")
+    title = normalize_title(body.title)
+    ext = normalize_doc_type(body.doc_type)
 
     if ext in ("docx", "xlsx", "pptx", "pdf"):
         try:
             from app.services.module_registry import call_capability
             gen_params = {
-                "filename": body.title,
+                "filename": title,
                 "content": [{"type": "paragraph", "text": ""}],
             }
             if ext == "xlsx":
                 gen_params = {
-                    "filename": body.title,
+                    "filename": title,
                     "sheets": [{"name": "Sheet1", "columns": ["A"], "rows": [[""]]}],
                 }
             elif ext == "pptx":
                 gen_params = {
-                    "filename": body.title,
-                    "slides": [{"title": body.title, "bullets": [""]}],
+                    "filename": title,
+                    "slides": [{"title": title, "bullets": [""]}],
                 }
             result = await call_capability(
                 "office-gen", ext,
@@ -218,7 +232,7 @@ async def create_document(
     else:
         from app.services import file_create_service
         result = await file_create_service.create_file(
-            db, body.title, ext, user.id, body.folder_id,
+            db, title, ext, user.id, body.folder_id,
         )
         file_id = result["id"]
 
@@ -227,11 +241,17 @@ async def create_document(
         db, client_id="docs-open", open_id=user.id,
         scope={"doc_ids": [file_id], "edit_doc_ids": [file_id]}, expiry_hours=2,
     )
-    embed_url = f"{base}/api/docs/embed/{file_id}?token={issue_doc_token['access_token']}&client_id=docs-open&open_id={user.id}&mode=edit"
+    embed_query = urlencode({
+        "token": issue_doc_token["access_token"],
+        "client_id": "docs-open",
+        "open_id": str(user.id),
+        "mode": "edit",
+    })
+    embed_url = f"{base}/api/docs/embed/{file_id}?{embed_query}"
 
     return ApiResponse(data={
         "id": str(file_id),
-        "title": body.title,
+        "title": title,
         "type": ext,
         "embed_url": embed_url,
         "content_url": f"{base}/api/docs/{file_id}/content",
@@ -245,7 +265,7 @@ async def get_content(
     file_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_docs_permission("viewer")),
+    user: User = Depends(require_docs_permission("viewer", allow_scoped_token=True)),
 ):
     """Get structured JSON content of a document.
 
@@ -265,7 +285,7 @@ async def write_content(
     body: ContentWriteRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_docs_permission("editor")),
+    user: User = Depends(require_docs_permission("editor", allow_scoped_token=True)),
 ):
     """Write structured JSON content back to a document.
 
@@ -294,7 +314,7 @@ async def export_document(
     """
     file = await framework_check_file_write_access(db, file_id, user.id)
     ext = (file.extension or "").lower().lstrip(".")
-    target = body.target_format.lower().lstrip(".")
+    target = normalize_doc_type(body.target_format)
 
     if ext in ("docx", "xlsx", "pptx", "pdf") or target in ("pdf", "docx", "xlsx", "pptx"):
         try:
@@ -334,9 +354,9 @@ async def embed_document(
     - Routes to the correct editor based on document format
     - Can be iframed into any internal page/dashboard/Agent card
     """
-    token_info = await validate_token(db, token, client_id, open_id)
-    token_record = token_info
-    access_mode = "edit" if mode == "edit" else "read"
+    mode = normalize_mode(mode)
+    token_record = await validate_token(db, token, client_id, open_id)
+    access_mode = access_mode_for_mode(mode)
     if not check_doc_access(token_record, file_id, access_mode):
         raise PermissionDenied("Token does not have access to this document")
 
@@ -381,18 +401,17 @@ async def get_file_raw(
     1. Query-parameter token triple (?token=&client_id=&open_id=) for iframe src
     2. JWT Bearer header (from desktop shell, via get_authenticated_user)
     """
-    if token and client_id and open_id:
+    has_token_part = bool(token or client_id or open_id)
+    if has_token_part:
+        if not (token and client_id and open_id):
+            raise PermissionDenied("Incomplete token triple")
         token_record = await validate_token(db, token, client_id, open_id)
         if not check_doc_access(token_record, file_id, "read"):
             raise PermissionDenied("Token does not have access to this document")
-        await framework_check_file_access(db, file_id, int(open_id))
+        file = await framework_check_file_access(db, file_id, normalize_positive_int(open_id, "open_id"))
     else:
-        user = await get_authenticated_user(request, db)
-        await framework_check_file_access(db, file_id, user.id)
-
-    file = await db.get(File, file_id)
-    if not file or file.deleted:
-        raise NotFound("File not found")
+        user = await get_bearer_authenticated_user(request, db)
+        file = await framework_check_file_access(db, file_id, user.id)
 
     settings = get_settings()
     storage_root = Path(settings.UPLOAD_DIR).resolve()

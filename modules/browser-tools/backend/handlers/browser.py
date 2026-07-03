@@ -12,12 +12,15 @@ Security guarantees:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
+import socket
 import tempfile
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from app.core.exceptions import ValidationError
 from app.core.url_safety import validate_safe_url
@@ -34,6 +37,42 @@ _MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 _MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024  # 5 MB
 _MAX_BODY_BYTES = 512 * 1024  # 512 KB text extraction limit
 
+_BLOCKED_HOSTNAMES = {
+    "localhost",
+    "metadata.google.internal",
+    "metadata.goog",
+}
+_ALWAYS_BLOCKED_IPS = {
+    ipaddress.ip_address(addr)
+    for addr in (
+        "169.254.169.254",
+        "169.254.170.2",
+        "169.254.169.253",
+        "100.100.100.200",
+        "fd00:ec2::254",
+        "::ffff:169.254.169.254",
+        "::ffff:169.254.170.2",
+        "::ffff:169.254.169.253",
+        "::ffff:100.100.100.200",
+    )
+}
+_ALWAYS_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::ffff:169.254.0.0/112"),
+]
+_BLOCKED_PRIVATE_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("::/128"),
+]
+
 
 def _get_workspace_path(caller: str) -> Path:
     """Resolve user workspace path from caller identity."""
@@ -45,11 +84,82 @@ def _get_workspace_path(caller: str) -> Path:
 
 def _is_blocked_url(url: str) -> tuple[bool, str]:
     """Check URL against blocklist. Returns (blocked, reason)."""
+    if not isinstance(url, str) or not url.strip():
+        return True, "URL is required"
+
+    url = url.strip()
     try:
-        validate_safe_url(url)
-    except ValidationError as exc:
-        return True, exc.message
+        parsed = urlparse(url)
+    except Exception as exc:
+        return True, f"Invalid URL: {exc}"
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return True, "Only http/https URLs are allowed"
+
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not hostname:
+        return True, "URL has no hostname"
+    if parsed.username or parsed.password:
+        return True, "URL with embedded credentials is not allowed"
+    if hostname in _BLOCKED_HOSTNAMES:
+        return True, "URL targets a blocked internal address"
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip = None
+
+    if ip is not None:
+        reason = _blocked_ip_reason(ip, target="targets")
+        if reason:
+            return True, reason
+        if not ip.is_global:
+            return True, "URL targets a private/internal address"
+        return False, ""
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return True, f"DNS resolution failed for: {hostname}"
+
+    has_global_address = False
+    for _family, _, _, _, sockaddr in addr_info:
+        ip_str = sockaddr[0].split("%", 1)[0]
+        try:
+            resolved = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return True, f"Unparseable IP for hostname {hostname}"
+        reason = _blocked_ip_reason(resolved, target="resolves to")
+        if reason:
+            return True, reason
+        if resolved.is_global:
+            has_global_address = True
+
+    if not has_global_address:
+        try:
+            validate_safe_url(url)
+        except ValidationError as exc:
+            return True, exc.message
+        except Exception as exc:
+            return True, str(exc)
     return False, ""
+
+
+def _blocked_ip_reason(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    *,
+    target: str,
+) -> str:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
+        return f"URL {target} a blocked internal address"
+    if any(ip in net for net in _BLOCKED_PRIVATE_NETWORKS):
+        return f"URL {target} a private/internal address"
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+        return f"URL {target} a private/internal address"
+    return ""
 
 
 def _sanitize_text(text: str, max_bytes: int = _MAX_BODY_BYTES) -> str:
@@ -58,6 +168,20 @@ def _sanitize_text(text: str, max_bytes: int = _MAX_BODY_BYTES) -> str:
     if len(encoded) > max_bytes:
         return encoded[:max_bytes].decode("utf-8", errors="ignore") + "\n...（内容已截断）"
     return text
+
+
+def _viewport_from_params(params: dict) -> dict[str, int]:
+    def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(params.get(name, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    return {
+        "width": _bounded_int("width", 1280, 320, 3840),
+        "height": _bounded_int("height", 720, 240, 2160),
+    }
 
 
 def _ok(data: dict) -> dict:
@@ -141,8 +265,9 @@ def _get_existing_session(session_id: str | None, caller: str) -> tuple[dict | N
     if not session_id or session_id not in _sessions:
         return None, "no active session, call open first"
     session = _sessions[session_id]
-    if session.get("caller") != caller:
+    if "caller" in session and session.get("caller") != caller:
         return None, "session belongs to another caller"
+    session.setdefault("caller", caller)
     session["last_access"] = time.time()
     return session, None
 
@@ -264,6 +389,7 @@ async def _open(params: dict, caller: str) -> dict:
     try:
         session = await _get_or_create_session(params.get("session_id"), caller)
         page = session["page"]
+        await page.set_viewport_size(_viewport_from_params(params))
 
         await page.goto(url, wait_until="domcontentloaded",
                         timeout=params.get("timeout", 30) * 1000)
@@ -360,6 +486,7 @@ async def _click(params: dict, caller: str) -> dict:
     try:
         page = session["page"]
         timeout = params.get("timeout", 30) * 1000
+        await _ensure_allowed_current_url(page)
 
         if selector:
             await page.click(selector, timeout=timeout)
@@ -415,6 +542,7 @@ async def _wait_for(params: dict, caller: str) -> dict:
         timeout = params.get("timeout", 30) * 1000
         selector = params.get("selector", "")
         wait_nav = params.get("wait_for_navigation", False)
+        await _ensure_allowed_current_url(page)
 
         if wait_nav:
             await page.wait_for_load_state("networkidle", timeout=timeout)
@@ -477,9 +605,10 @@ async def _download(params: dict, caller: str) -> dict:
     if not url and not session_id:
         return _err("url or session_id is required")
 
-    blocked, reason = _is_blocked_url(url)
-    if blocked:
-        return _err(reason)
+    if url:
+        blocked, reason = _is_blocked_url(url)
+        if blocked:
+            return _err(reason)
 
     try:
         workspace = _get_workspace_path(caller)

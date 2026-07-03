@@ -1,5 +1,12 @@
 import api from './index'
 
+export interface DesktopAppPublicAction {
+  action: string
+  description: string
+  parameters: Record<string, unknown>
+  min_role?: string
+}
+
 /** Desktop app item type used by frontend components */
 export interface DesktopAppItem {
   app_id: string
@@ -30,11 +37,7 @@ export interface DesktopAppItem {
     canRunBackground: boolean
     canBeCalledByOther: boolean
   }
-  public_actions?: Array<{
-    action: string
-    description: string
-    paramSchema: Record<string, unknown>
-  }>
+  public_actions?: DesktopAppPublicAction[] | null
   enabled?: boolean
 }
 

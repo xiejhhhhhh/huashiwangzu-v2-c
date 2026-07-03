@@ -1,8 +1,9 @@
 """IM 模块自己的表。im_ 前缀，不加外键。"""
 from datetime import datetime, timezone
-from sqlalchemy import BigInteger, Integer, JSON, String, Text, DateTime, BigInteger
-from sqlalchemy.orm import Mapped, mapped_column
+
 from app.models.base import Base, TimestampMixin
+from sqlalchemy import JSON, BigInteger, DateTime, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 
 class ImConversation(Base, TimestampMixin):

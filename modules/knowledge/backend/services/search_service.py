@@ -71,6 +71,13 @@ def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     vec_b = _normalize_vector(vec_b) or []
     if not vec_a or not vec_b:
         return 0.0
+    if len(vec_a) != len(vec_b):
+        logger.warning(
+            "Vector dimension mismatch skipped in knowledge search: query_dim=%d chunk_dim=%d",
+            len(vec_a),
+            len(vec_b),
+        )
+        return 0.0
     dot = sum(a * b for a, b in zip(vec_a, vec_b))
     norm_a = math.sqrt(sum(a * a for a in vec_a))
     norm_b = math.sqrt(sum(b * b for b in vec_b))

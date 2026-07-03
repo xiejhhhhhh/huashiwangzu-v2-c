@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from app.core.exceptions import ValidationError
 from app.routers import modules as modules_router
 
 
@@ -13,15 +14,15 @@ async def test_module_call_preserves_capability_failure_status(monkeypatch) -> N
 
     monkeypatch.setattr(modules_router, "call_capability", fake_call_capability)
 
-    response = await modules_router.module_call(
-        modules_router.ModuleCallRequest(
-            target_module="demo",
-            action="run",
-            parameters={},
-        ),
-        user=SimpleNamespace(id=1, role="viewer"),
-    )
+    with pytest.raises(ValidationError) as exc_info:
+        await modules_router.module_call(
+            modules_router.ModuleCallRequest(
+                target_module="demo",
+                action="run",
+                parameters={},
+            ),
+            user=SimpleNamespace(id=1, role="viewer"),
+        )
 
-    assert response.success is False
-    assert response.error == "tool failed"
-    assert response.data["success"] is False
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.message == "tool failed"

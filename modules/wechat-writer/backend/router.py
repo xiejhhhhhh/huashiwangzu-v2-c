@@ -1,22 +1,30 @@
 """FastAPI router for wechat-writer module."""
 
 import logging
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
+from app.services.file_reader import resolve_caller_user_id as resolve_user_id
 from app.services.module_registry import register_capability
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
-from .services import (
-    generate_topics, generate_outline, generate_article, validate_content,
-    list_drafts, get_draft, create_draft, update_draft, delete_draft,
-    list_prompts, save_prompt, delete_prompt, resolve_user_id,
-)
 from .init_db import _run_startup_init
+from .services import (
+    create_draft,
+    delete_draft,
+    delete_prompt,
+    generate_article,
+    generate_outline,
+    generate_topics,
+    get_draft,
+    list_drafts,
+    list_prompts,
+    save_prompt,
+    update_draft,
+    validate_content,
+)
 
 logger = logging.getLogger("v2.wechat_writer").getChild("router")
 router = APIRouter(prefix="/api/wechat-writer", tags=["wechat-writer"])

@@ -1,5 +1,8 @@
 import csv
+import io
+from pathlib import Path
 
+from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
@@ -11,70 +14,148 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/csv-parser", tags=["csv-parser"])
 
+MAX_EMITTED_DATA_ROWS = 1000
+DATA_BLOCK_BATCH_SIZE = 50
+MAX_CELL_CHARS = 500
+SNIFFER_SAMPLE_CHARS = 8192
+
 
 class ParseRequest(BaseModel):
     file_id: int
 
 
-def _detect_delimiter(head: str) -> str:
-    if "\t" in head:
-        return "\t"
-    if ";" in head:
-        return ";"
+def _coerce_file_id(params: dict) -> int:
+    try:
+        file_id = int(params.get("file_id", 0))
+    except (TypeError, ValueError):
+        raise ValidationError("file_id must be a positive integer")
+    if file_id <= 0:
+        raise ValidationError("file_id must be a positive integer")
+    return file_id
+
+
+def _delimiter_label(delimiter: str) -> str:
+    if delimiter == "\t":
+        return "tab"
+    if delimiter == ";":
+        return "semicolon"
+    if delimiter == "|":
+        return "pipe"
     return ","
+
+
+def _detect_delimiter(sample: str, ext: str) -> str:
+    if ext == "tsv":
+        return "\t"
+
+    candidate_lines = [line for line in sample.splitlines() if line.strip()]
+    if not candidate_lines:
+        return ","
+    probe = "\n".join(candidate_lines[:20])
+    try:
+        dialect = csv.Sniffer().sniff(probe, delimiters=",\t;|")
+        if dialect.delimiter in {",", "\t", ";", "|"}:
+            return dialect.delimiter
+    except csv.Error:
+        pass
+
+    counts = {
+        delimiter: sum(line.count(delimiter) for line in candidate_lines[:20])
+        for delimiter in (",", "\t", ";", "|")
+    }
+    delimiter, count = max(counts.items(), key=lambda item: item[1])
+    return delimiter if count > 0 else ","
+
+
+def _block(block_type: str, text: str) -> dict[str, object]:
+    return {"type": block_type, "text": text, "page": None, "resource_ref": None}
+
+
+def _trim_cell(cell: str) -> str:
+    normalized = cell.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(normalized) <= MAX_CELL_CHARS:
+        return normalized
+    return f"{normalized[:MAX_CELL_CHARS]}..."
+
+
+def _format_row(line_num: int, row: list[str]) -> str:
+    return f"行{line_num}：" + " | ".join(_trim_cell(cell) for cell in row)
+
+
+def parse_csv_content(content: str, file_id: int, ext: str) -> dict[str, object]:
+    content = content.lstrip("\ufeff")
+    if not content.strip():
+        return {
+            "file_id": file_id,
+            "format": ext,
+            "blocks": [_block("段落", "空CSV/TSV文件：0列 x 0行数据")],
+            "resources": [],
+        }
+
+    delimiter = _detect_delimiter(content[:SNIFFER_SAMPLE_CHARS], ext)
+    reader = csv.reader(io.StringIO(content), delimiter=delimiter, strict=True)
+
+    headers: list[str] = []
+    data_row_count = 0
+    emitted_row_count = 0
+    row_texts: list[str] = []
+    data_blocks: list[dict[str, object]] = []
+
+    try:
+        for physical_line, row in enumerate(reader, start=1):
+            if physical_line == 1:
+                headers = row
+                continue
+
+            data_row_count += 1
+            if emitted_row_count >= MAX_EMITTED_DATA_ROWS:
+                continue
+
+            emitted_row_count += 1
+            row_texts.append(_format_row(physical_line, row))
+            if len(row_texts) >= DATA_BLOCK_BATCH_SIZE:
+                data_blocks.append(_block("表格", "\n".join(row_texts)))
+                row_texts = []
+    except csv.Error as exc:
+        raise ValidationError(f"Invalid CSV content: {exc}")
+
+    if row_texts:
+        data_blocks.append(_block("表格", "\n".join(row_texts)))
+
+    summary = f"表格：{len(headers)}列 x {data_row_count}行数据"
+    summary += f"\n分隔符：{_delimiter_label(delimiter)}"
+    if headers:
+        summary += f"\n表头：{' | '.join(_trim_cell(header) for header in headers)}"
+    if data_row_count > emitted_row_count:
+        omitted = data_row_count - emitted_row_count
+        summary += f"\n仅输出前 {emitted_row_count} 行，剩余 {omitted} 行已省略。"
+
+    blocks = [_block("段落", summary)]
+    if headers:
+        blocks.append(_block("表格", " | ".join(_trim_cell(header) for header in headers)))
+    blocks.extend(data_blocks)
+
+    return {
+        "file_id": file_id,
+        "format": ext,
+        "blocks": blocks,
+        "resources": [],
+    }
+
+
+def parse_csv_path(file_id: int, full_path: Path, ext: str) -> dict[str, object]:
+    content = decode_text_bytes(full_path.read_bytes())
+    return parse_csv_content(content, file_id, ext)
 
 
 async def _parse(params: dict, caller: str) -> dict:
     allowed = {"csv", "tsv"}
+    file_id = _coerce_file_id(params)
 
-    def parse_file(file_id, _file, full_path, ext):
-        content = decode_text_bytes(full_path.read_bytes())
+    def parse_file(file_id: int, _file: object, full_path: Path, ext: str) -> dict[str, object]:
+        return parse_csv_path(file_id, full_path, ext)
 
-        blocks = []
-        lines = content.strip().splitlines()
-        if not lines:
-            return {"file_id": file_id, "format": ext, "blocks": [], "resources": []}
-
-        delimiter = _detect_delimiter(lines[0])
-        reader = csv.reader(lines, delimiter=delimiter)
-
-        rows = list(reader)
-        if not rows:
-            return {"file_id": file_id, "format": ext, "blocks": [], "resources": []}
-
-        headers = rows[0] if rows else []
-        data_rows = rows[1:] if len(rows) > 1 else []
-
-        # Summary block
-        summary = f"表格：{len(headers)}列 x {len(data_rows)}行数据"
-        if headers:
-            summary += f"\n表头：{' | '.join(headers)}"
-        blocks.append({"type": "段落", "text": summary, "page": None, "resource_ref": None})
-
-        # Header block
-        if headers:
-            blocks.append({"type": "表格", "text": " | ".join(headers), "page": None, "resource_ref": None})
-
-        # Data blocks - batch in groups of 50 rows
-        batch_size = 50
-        for start in range(0, len(data_rows), batch_size):
-            batch = data_rows[start:start + batch_size]
-            row_texts = []
-            for i, row in enumerate(batch):
-                line_num = start + i + 2
-                cols = " | ".join(row)
-                row_texts.append(f"行{line_num}：{cols}")
-            block_text = "\n".join(row_texts)
-            blocks.append({"type": "表格", "text": block_text, "page": None, "resource_ref": None})
-
-        return {
-            "file_id": file_id,
-            "format": ext,
-            "blocks": blocks,
-            "resources": [],
-        }
-
-    return await run_uploaded_file_capability(params, caller, allowed, parse_file)
+    return await run_uploaded_file_capability({"file_id": file_id}, caller, allowed, parse_file)
 
 
 @router.get("/health")

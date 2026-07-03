@@ -68,14 +68,14 @@ if (fs.existsSync(MODULES_DIR)) {
     const stat = fs.statSync(path.join(MODULES_DIR, moduleName))
     if (!stat.isDirectory()) continue
 
-	    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'))
-	    const entryFile = manifest.component_key || 'index.vue'
-	    const frontendFile = path.join(MODULES_DIR, moduleName, 'frontend', entryFile)
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'))
+    const entryFile = manifest.component_key || 'index.vue'
+    const frontendFile = path.join(MODULES_DIR, moduleName, 'frontend', entryFile)
 
-	    // 跳过无前端目录的后台模块（如 codemap）
-	    if (!fs.existsSync(frontendFile)) continue
+    // 跳过无前端目录的后台模块（如 codemap）
+    if (!fs.existsSync(frontendFile)) continue
 
-	    const importPath = `@modules/${moduleName}/frontend/${entryFile}`
+    const importPath = `@modules/${moduleName}/frontend/${entryFile}`
 
     entries.push({
       key: `${moduleName}/${entryFile}`,

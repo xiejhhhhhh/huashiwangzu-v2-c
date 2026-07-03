@@ -1,20 +1,55 @@
-"""Sandbox test for desktop-tools module.
+"""Sandbox contract test for the desktop-tools module.
 
-Tests the 4 capabilities by validating handler signatures and parameter shapes.
-Since this is a bridge module (no own data), tests focus on:
-- Handler function existence and calling convention
-- Parameter validation
-- _EXT_PARSER_MAP completeness
-- Owner isolation principle
+This module is a bridge over framework file/app services, so the sandbox test
+imports the real router and validates its public capability contract without
+creating framework data.
 """
+from __future__ import annotations
+
+import os
 import sys
 from pathlib import Path
 
-# Add the module backend dir to path
-BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_ROOT = REPO_ROOT / "backend"
+MODULE_BACKEND = REPO_ROOT / "modules" / "desktop-tools" / "backend"
+sys.path.insert(0, str(BACKEND_ROOT))
+sys.path.insert(0, str(MODULE_BACKEND))
+os.environ.setdefault("JWT_SECRET", "desktop-tools-sandbox-only-secret")
 
-# ── Test: _EXT_PARSER_MAP covers all parser modules ─────────────────
+from app.core.exceptions import ValidationError  # noqa: E402
+from app.services.module_registry import list_capabilities  # noqa: E402
+from router import (  # noqa: E402
+    _EXT_PARSER_MAP,
+    _TEXT_EXTS,
+    MAX_PAGE_SIZE,
+    MAX_READ_BLOCKS,
+    MAX_READ_CHARS,
+    _coerce_page_size,
+    _limit_blocks,
+    _normalize_extension,
+    _normalize_file_name,
+    _truncate_text,
+)
+
+EXPECTED_ACTIONS = {
+    "list_files",
+    "search_files",
+    "read_file",
+    "list_apps",
+    "get_file",
+    "create_file",
+    "replace_file",
+    "delete_file",
+    "rename_file",
+    "copy_file",
+    "list_versions",
+    "restore_version",
+    "replace_file_from_artifact",
+    "publish_artifact",
+    "refresh",
+}
+
 EXPECTED_PARSER_MAP = {
     "pdf": "pdf-parser",
     "docx": "docx-parser",
@@ -29,89 +64,85 @@ EXPECTED_PARSER_MAP = {
     "log": "text-parser",
 }
 
-# ── Simulate the module's constants inline for sandbox test ──────────
-_EXT_PARSER_MAP = {
-    "pdf": "pdf-parser",
-    "docx": "docx-parser",
-    "xlsx": "xlsx-parser",
-    "xls": "xlsx-parser",
-    "csv": "xlsx-parser",
-    "pptx": "pptx-parser",
-    "txt": "text-parser",
-    "md": "text-parser",
-    "markdown": "text-parser",
-    "text": "text-parser",
-    "log": "text-parser",
-}
 
-_TEXT_EXTS = {"txt", "md", "markdown", "text", "log", "csv"}
-
-ALL_PARSER_EXTS = {"pdf", "docx", "xlsx", "xls", "csv", "pptx", "txt", "md", "markdown", "text", "log"}
-
-
-def test_parser_map_completeness():
-    """Every known format extension has a parser mapping."""
-    for ext in ALL_PARSER_EXTS:
-        assert ext in _EXT_PARSER_MAP, f"Missing parser mapping for .{ext}"
-    print(f"  [PARSER MAP] All {len(_EXT_PARSER_MAP)} extensions mapped: OK")
-
-
-def test_text_exts_subset():
-    """All text extensions are a subset of the parser map."""
-    for ext in _TEXT_EXTS:
-        assert ext in _EXT_PARSER_MAP, f"Text ext .{ext} missing from parser map"
-    print(f"  [TEXT EXTS] {len(_TEXT_EXTS)} text fallback extensions: OK")
-
-
-def test_handler_interface():
-    """Validate that handler functions follow the async (params, caller) -> dict signature.
-
-    We test this by checking that the expected handlers can be discovered
-    via the module registration pattern. This simulates what the framework does.
-    """
-    # In sandbox mode we can't import the actual router (needs framework),
-    # so we verify the interface contract is sound.
-    expected_actions = ["list_files", "search_files", "read_file", "list_apps"]
-    for action in expected_actions:
-        print(f"  [HANDLER] desktop-tools:{action} — interface validated")
-    print(f"  [HANDLERS] All {len(expected_actions)} handler interfaces: OK")
-
-
-def test_caller_parse():
-    """Validate the caller string parsing logic (owner isolation principle)."""
-    test_cases = [
-        ("user:42", 42),
-        ("user:1", 1),
-        ("user:999", 999),
-    ]
-    for caller, expected_id in test_cases:
-        _, _, uid_str = caller.partition(":")
-        uid = int(uid_str)
-        assert uid == expected_id, f"Expected {expected_id}, got {uid}"
-        print(f"  [CALLER] '{caller}' -> user:{uid} OK")
-
-    # Negative test
+def _expect_validation_error(fn, message: str) -> None:
     try:
-        caller = "system:daemon"
-        _, _, uid_str = caller.partition(":")
-        int(uid_str)
-        print("  [CALLER] 'system:daemon' parsed (no crash)")
-    except ValueError:
-        print("  [CALLER] 'system:daemon' correctly rejected")
+        fn()
+    except ValidationError:
+        return
+    raise AssertionError(message)
 
 
-def main():
+def test_registered_capabilities() -> None:
+    """Importing the router registers every public action."""
+    capabilities = list_capabilities(role="admin", caller="user:1")
+    actions = {
+        cap["action"]
+        for cap in capabilities
+        if cap["module"] == "desktop-tools"
+    }
+    assert actions == EXPECTED_ACTIONS, actions
+    print(f"  [CAPABILITIES] {len(actions)} desktop-tools actions registered: OK")
+
+
+def test_parser_map_completeness() -> None:
+    """Every delegated parser mapping stays in sync with the router."""
+    assert _EXT_PARSER_MAP == EXPECTED_PARSER_MAP
+    for ext in ("txt", "md", "json", "yaml", "csv"):
+        assert ext in _TEXT_EXTS
+    print(f"  [PARSER MAP] {len(_EXT_PARSER_MAP)} parser mappings: OK")
+
+
+def test_input_guards() -> None:
+    """Path-like names/extensions and oversize pages fail before service calls."""
+    assert _normalize_extension(".TXT") == "txt"
+    assert _normalize_file_name(" report ") == "report"
+    assert _coerce_page_size(MAX_PAGE_SIZE) == MAX_PAGE_SIZE
+
+    _expect_validation_error(
+        lambda: _normalize_extension("../txt"),
+        "path-like extension should be rejected",
+    )
+    _expect_validation_error(
+        lambda: _normalize_file_name("../report"),
+        "path-like file name should be rejected",
+    )
+    _expect_validation_error(
+        lambda: _coerce_page_size(MAX_PAGE_SIZE + 1),
+        "oversized page_size should be rejected",
+    )
+    print("  [GUARDS] path and pagination guards: OK")
+
+
+def test_output_truncation() -> None:
+    """Read output is capped and reports truncation metadata."""
+    text, info = _truncate_text("a" * (MAX_READ_CHARS + 5))
+    assert len(text) == MAX_READ_CHARS
+    assert info["truncated"] is True
+
+    blocks = [
+        {"type": "paragraph", "text": "x" * 500}
+        for _ in range(MAX_READ_BLOCKS + 5)
+    ]
+    limited, block_info = _limit_blocks(blocks, max_chars=1000)
+    assert len(limited) <= MAX_READ_BLOCKS
+    assert block_info["returned_chars"] <= 1000
+    assert block_info["truncated"] is True
+    print("  [TRUNCATION] content and block limits: OK")
+
+
+def main() -> None:
     print("=" * 60)
-    print("desktop-tools sandbox test")
+    print("desktop-tools sandbox contract test")
     print("=" * 60)
 
+    test_registered_capabilities()
     test_parser_map_completeness()
-    test_text_exts_subset()
-    test_handler_interface()
-    test_caller_parse()
+    test_input_guards()
+    test_output_truncation()
 
     print("=" * 60)
-    print("PASS: desktop-tools sandbox test")
+    print("PASS: desktop-tools sandbox contract test")
 
 
 if __name__ == "__main__":

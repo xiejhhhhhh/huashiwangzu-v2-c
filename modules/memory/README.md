@@ -9,7 +9,7 @@ Powers the agent's memory system: stores facts, preferences, conventions, and su
 
 | Capability | Parameters | Returns | min_role |
 |---|---|---|---|
-| `memory:save` | `text` (str), `tags` (str?), `source` (str?) | `{id}` | viewer |
+| `memory:save` | `text` (str), `tags` (str?), `source` (str?) | `{id, embedding_updated, post_save_enqueued}` | viewer |
 | `memory:recall` | `query` (str), `limit` (int?), `expand_chain` (bool?) | `[{id, text, summary, tags, confidence, similarity, ...}]` | viewer |
 | `memory:list` | `limit` (int?), `offset` (int?) | `[{id, text, ...}]` | viewer |
 | `memory:delete` | `id` (int) | `{id, status}` | viewer |
@@ -72,9 +72,21 @@ Agent engine calls memory capabilities during conversations: `save` for facts, `
 - All queries scoped by `owner_id` — users only see their own memories.
 - `memory_records` and `memory_links` tables are shared memory infrastructure; `memory_experiences` is the experience learning subsystem.
 - Deleting or merging a memory also deletes dependent `memory_chunks` and `memory_links`; `run_init()` prunes historical orphan chunks/links and ensures vector indexes for both record and chunk recall.
-- Capability inputs clamp/validate `limit`, `offset`, ids, booleans, stable-rule filters, and non-empty text/query fields so bad tool parameters return structured validation errors instead of HTTP 500.
+- Capability inputs clamp/validate `limit`, `offset`, ids, booleans, stable-rule filters, experience feedback fields, and non-empty text/query fields so bad tool parameters return structured validation errors instead of HTTP 500.
+- Save/edit paths expose `embedding_updated` and `post_save_enqueued` once the module is freshly loaded, making embedding and distillation follow-up health visible instead of silently pretending all downstream work succeeded.
+- `recall_chunk` increments `memory_chunks.access_count`; `recall_stable_rules` increments `memory_stable_rules.hit_count`.
+- Experience matching falls back to keyword search over trigger/steps/tools when embeddings are unavailable or vector search returns no hits.
 
 ## Latest audit notes
+
+2026-07-03 r2 sweep:
+
+- DB reverse audit: `memory_records` 43 total / 20 with embeddings / 23 missing; `memory_chunks` 12 total / all embedded; `memory_links` 50; `memory_stable_rules` 7; `memory_experiences` 0 and confirmed as expected-empty until the experience flow is used.
+- SQL cleanup check after live probes: temporary r2 test rows 0, orphan chunks 0, orphan links 0, self-links 0.
+- Fixed confirmed 500s: bad `memory:experience_feedback` parameters and non-string/list/object `memory:save_experience.steps` now return structured 422 validation errors.
+- Hardened experience chain: strict boolean feedback parsing, positive id coercion, owner id coercion, source conversation id coercion, keyword fallback for match, and note type validation.
+- Hardened recall/governance chain: chunk recall and stable-rule recall now persist hit counters; init now includes idempotent chunk/stable-rule ALTERs and self-link cleanup.
+- Live probes passed for invalid parameter 422s, save/recall/list/delete, save/match/feedback experience, dream, dry-run backfill embeddings/links, and test-data cleanup.
 
 2026-07-03 quality pass:
 

@@ -45,6 +45,7 @@ _MAX_PAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 class OpenRequest(BaseModel):
     url: str
+    session_id: str | None = None
     width: int = 1280
     height: int = 720
     timeout: int = _DEFAULT_TIMEOUT

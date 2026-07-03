@@ -4,7 +4,7 @@
   "icon": "List",
   "icon_asset": "",
   "category": "tools",
-  "component_key": "index.vue",
+  "component_key": "",
   "route_prefix": "/api/desktop-tools",
   "permissions": [
     "viewer",
@@ -43,7 +43,7 @@
           },
           "page_size": {
             "type": "integer",
-            "description": "Items per page"
+            "description": "Items per page (max 100)"
           }
         }
       },
@@ -69,7 +69,7 @@
           },
           "page_size": {
             "type": "integer",
-            "description": "Items per page"
+            "description": "Items per page (max 100)"
           }
         }
       },
@@ -77,7 +77,7 @@
     },
     {
       "action": "read_file",
-      "description": "Read file content by file_id. Routes to format parsers (PDF, DOCX, XLSX, etc.).",
+      "description": "Read file content by file_id. Routes to format parsers (PDF, DOCX, XLSX, etc.) and returns text content capped at 20000 chars with truncation metadata.",
       "parameters": {
         "type": "object",
         "properties": {

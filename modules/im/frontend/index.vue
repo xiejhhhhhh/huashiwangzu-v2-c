@@ -62,7 +62,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { initRuntime, getApiUrl, platform, authHeaders, apiGet, apiPost } from '../runtime'
+import { initRuntime, platform, apiGet, apiPost } from '../runtime'
 
 interface Conversation {
   id: number; conv_type: string; creator_id: number; member_ids: number[]
@@ -73,6 +73,11 @@ interface Message {
 }
 interface UserInfo {
   id: number; username: string; display_name: string
+}
+interface StartConversationResult {
+  conversation_id: number
+  conv_type: string
+  member_ids: number[]
 }
 
 const conversations = ref<Conversation[]>([])
@@ -176,25 +181,14 @@ async function loadUsers() {
 async function startChat(targetUserId: number) {
   showUserPicker.value = false
   try {
-    const result = await apiPost<{ conversation_id: number }>('/im/messages', {
+    const result = await apiPost<StartConversationResult>('/im/conversations', {
       target_user_id: targetUserId,
-      content: '',
     })
-    if (result && result.conversation_id) {
-      activeConvId.value = result.conversation_id
-      await loadMessages(result.conversation_id)
-    }
-    loadConversations()
-  } catch {
-    try {
-      await apiPost('/im/messages', {
-        target_user_id: targetUserId,
-        content: '你好',
-      })
-      loadConversations()
-    } catch (e) {
-      console.error('Failed to start chat', e)
-    }
+    activeConvId.value = result.conversation_id
+    await loadMessages(result.conversation_id)
+    await loadConversations()
+  } catch (e) {
+    console.error('Failed to start chat', e)
   }
 }
 

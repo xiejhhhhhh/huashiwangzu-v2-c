@@ -81,11 +81,20 @@ def test_docx_generation_accepts_content_ir_blocks() -> None:
 def test_xlsx_generation_accepts_content_ir_tables() -> None:
     data = gen.generate_xlsx({
         "filename": "sandbox_sheet",
-        "sheets": [{
-            "name": "Sheet1",
-            "columns": [{"name": "item"}, {"name": "count"}],
-            "rows": [{"item": "Alpha", "count": 0}],
-        }],
+        "content_ir": {
+            "content_type": "spreadsheet",
+            "blocks": [{
+                "type": "sheet",
+                "data": {"name": "Sheet1"},
+                "children": [{
+                    "type": "table",
+                    "data": {
+                        "headers": [{"name": "item"}, {"name": "count"}],
+                        "rows": [{"item": "Alpha", "count": 0}],
+                    },
+                }],
+            }],
+        },
     })
     _assert_xlsx(data)
 
@@ -93,13 +102,17 @@ def test_xlsx_generation_accepts_content_ir_tables() -> None:
 def test_pptx_generation_accepts_content_ir_elements() -> None:
     data = gen.generate_pptx({
         "filename": "sandbox_deck",
-        "slides": [{
-            "name": "Content IR Slide",
-            "elements": [
-                {"type": "heading", "text": "First point"},
-                {"type": "paragraph", "text": "Second point", "level": 1},
-            ],
-        }],
+        "content_ir": {
+            "content_type": "presentation",
+            "blocks": [{
+                "type": "slide",
+                "data": {"title": "Content IR Slide"},
+                "children": [
+                    {"type": "heading", "text": "First point"},
+                    {"type": "paragraph", "text": "Second point", "level": 1},
+                ],
+            }],
+        },
     })
     _assert_pptx(data)
 
@@ -107,13 +120,28 @@ def test_pptx_generation_accepts_content_ir_elements() -> None:
 def test_pdf_generation_accepts_content_ir_blocks() -> None:
     data = gen.generate_pdf({
         "filename": "sandbox_pdf",
-        "content": [
-            {"type": "heading", "text": "PDF Title", "data": {"level": 1}},
-            {"type": "paragraph", "text": "PDF paragraph"},
-            {"type": "table", "header": ["item", "count"], "rows": [["Alpha", 0]]},
+        "blocks": [
+            {"type": "heading", "data": {"text": "PDF Title", "level": 1}},
+            {"type": "paragraph", "data": {"text": "PDF paragraph"}},
+            {"type": "table", "data": {"headers": ["item", "count"], "rows": [{"item": "Alpha", "count": 0}]}},
         ],
     })
     _assert_pdf(data)
+
+
+def test_generators_reject_empty_outputs() -> None:
+    checks = [
+        (gen.generate_docx, {"filename": "empty", "content": []}),
+        (gen.generate_xlsx, {"filename": "empty", "sheets": []}),
+        (gen.generate_pptx, {"filename": "empty", "slides": []}),
+        (gen.generate_pdf, {"filename": "empty", "content": []}),
+    ]
+    for func, payload in checks:
+        try:
+            func(payload)
+        except ValueError:
+            continue
+        raise AssertionError(f"{func.__name__} accepted empty payload")
 
 
 def main() -> None:
@@ -122,6 +150,7 @@ def main() -> None:
         test_xlsx_generation_accepts_content_ir_tables,
         test_pptx_generation_accepts_content_ir_elements,
         test_pdf_generation_accepts_content_ir_blocks,
+        test_generators_reject_empty_outputs,
     ]
     print("=" * 60)
     print("office-gen sandbox test")

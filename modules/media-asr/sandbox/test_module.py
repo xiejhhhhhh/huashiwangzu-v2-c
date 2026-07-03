@@ -1,238 +1,222 @@
-"""Sandbox test for media-asr module.
+"""Sandbox contract tests for the media-asr production module.
 
-Validates core contracts: extract_audio, transcribe_audio, transcribe_video
-parameter schemas and output shapes — without real media processing or DB calls.
+The tests import the real router/service code and stub only DB/media/model
+boundaries, so sandbox failures track production contract drift without
+touching framework uploads or running expensive ASR.
 """
 
+from __future__ import annotations
 
-def test_extract_audio_params_minimal() -> None:
-    """extract_audio action: file_id is the only required parameter."""
-    params = {"file_id": 42}
-    assert "file_id" in params
-    assert isinstance(params["file_id"], int) and params["file_id"] > 0
-    print("  [EXTRACT_AUDIO] Minimal params valid")
+import asyncio
+import importlib.util
+import json
+import os
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+MODULE_ROOT = REPO_ROOT / "modules" / "media-asr"
+BACKEND_DIR = MODULE_ROOT / "backend"
+MANIFEST_PATH = MODULE_ROOT / "manifest.json"
+FRAMEWORK_BACKEND_DIR = REPO_ROOT / "backend"
 
-def test_extract_audio_params_full() -> None:
-    """extract_audio action: all parameters."""
-    params = {
-        "file_id": 42,
-        "sample_rate": 44100,
-        "audio_format": "mp3",
-        "save_file": True,
-        "folder_id": 5,
-    }
-    assert "file_id" in params and isinstance(params["file_id"], int) and params["file_id"] > 0
+if str(FRAMEWORK_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(FRAMEWORK_BACKEND_DIR))
 
-    if "sample_rate" in params:
-        valid_rates = {8000, 11025, 16000, 22050, 32000, 44100, 48000}
-        assert params["sample_rate"] in valid_rates, f"Invalid sample_rate: {params['sample_rate']}"
+os.environ.setdefault("JWT_SECRET", "media-asr-sandbox-test-secret")
 
-    if "audio_format" in params:
-        valid_formats = {"wav", "mp3", "m4a", "flac", "ogg"}
-        assert params["audio_format"] in valid_formats, f"Invalid audio_format: {params['audio_format']}"
-
-    if "save_file" in params:
-        assert isinstance(params["save_file"], bool)
-
-    if "folder_id" in params:
-        assert isinstance(params["folder_id"], int) and params["folder_id"] > 0
-    print("  [EXTRACT_AUDIO] Full params valid")
+from app.core.exceptions import ValidationError
+from app.services import module_registry
 
 
-def test_extract_audio_defaults() -> None:
-    """extract_audio action: default values."""
-    default_sample_rate = 16000
-    assert isinstance(default_sample_rate, int) and default_sample_rate > 0
+def load_router(capture: list[dict] | None = None):
+    package_name = "media_asr_sandbox_backend"
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(BACKEND_DIR)]  # type: ignore[attr-defined]
+    sys.modules[package_name] = package
 
-    default_audio_format = "wav"
-    valid_formats = {"wav", "mp3", "m4a", "flac", "ogg"}
-    assert default_audio_format in valid_formats
+    old_register = module_registry.register_capability
 
-    default_save_file = True
-    assert isinstance(default_save_file, bool)
-    print("  [EXTRACT_AUDIO] Default values valid")
+    def fake_register_capability(module: str, action: str, handler: Callable[..., Any], **kwargs: Any) -> None:
+        if capture is not None:
+            capture.append({
+                "module": module,
+                "action": action,
+                "handler": handler,
+                "min_role": kwargs.get("min_role"),
+                "parameters": kwargs.get("parameters", {}),
+            })
 
-
-def test_extract_audio_output_shape() -> None:
-    """extract_audio action: returns audio file info."""
-    result = {
-        "audio_file_id": 100,
-        "file_id": 42,
-        "format": "wav",
-        "sample_rate": 16000,
-        "duration": 120.5,
-        "size": 3840000,
-        "path": "/data/media-asr/audio/42.wav",
-    }
-    required = {"audio_file_id", "file_id", "format", "sample_rate"}
-    for field in required:
-        assert field in result, f"Missing required field: {field}"
-    assert isinstance(result["audio_file_id"], int)
-    assert isinstance(result["sample_rate"], int)
-    assert isinstance(result["duration"], (int, float))
-    print("  [EXTRACT_AUDIO] Output shape valid")
-
-
-def test_transcribe_audio_params_minimal() -> None:
-    """transcribe_audio action: file_id is required."""
-    params = {"file_id": 42}
-    assert "file_id" in params
-    assert isinstance(params["file_id"], int) and params["file_id"] > 0
-    print("  [TRANSCRIBE_AUDIO] Minimal params valid")
+    module_registry.register_capability = fake_register_capability
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"{package_name}.router",
+            BACKEND_DIR / "router.py",
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[f"{package_name}.router"] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        module_registry.register_capability = old_register
 
 
-def test_transcribe_audio_params_full() -> None:
-    """transcribe_audio action: all parameters."""
-    params = {
-        "file_id": 42,
-        "model": "large-v3",
-        "language": "zh",
-        "save_text": True,
-        "folder_id": 5,
-    }
-    assert "file_id" in params and isinstance(params["file_id"], int) and params["file_id"] > 0
-
-    if "model" in params:
-        valid_models = {"tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo"}
-        assert params["model"] in valid_models, f"Invalid model: {params['model']}"
-
-    if "language" in params:
-        assert isinstance(params["language"], str) and len(params["language"]) > 0
-
-    if "save_text" in params:
-        assert isinstance(params["save_text"], bool)
-
-    if "folder_id" in params:
-        assert isinstance(params["folder_id"], int) and params["folder_id"] > 0
-    print("  [TRANSCRIBE_AUDIO] Full params valid")
+def load_audio_service():
+    package_name = "media_asr_sandbox_backend"
+    if package_name not in sys.modules:
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(BACKEND_DIR)]  # type: ignore[attr-defined]
+        sys.modules[package_name] = package
+    spec = importlib.util.spec_from_file_location(
+        f"{package_name}.services.audio_service",
+        BACKEND_DIR / "services" / "audio_service.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[f"{package_name}.services.audio_service"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def test_transcribe_audio_defaults() -> None:
-    """transcribe_audio action: default values."""
-    default_model = "large-v3"
-    valid_models = {"tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo"}
-    assert default_model in valid_models
+def test_manifest_public_actions_match_registered_capabilities() -> None:
+    captured: list[dict] = []
+    load_router(captured)
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
-    default_save_text = False
-    assert isinstance(default_save_text, bool)
-    print("  [TRANSCRIBE_AUDIO] Default values valid")
+    public_actions = {item["action"]: item for item in manifest["public_actions"]}
+    registered = {item["action"]: item for item in captured if item["module"] == "media-asr"}
 
-
-def test_transcribe_audio_output_shape() -> None:
-    """transcribe_audio action: returns segments with timestamps."""
-    result = {
-        "segments": [
-            {"start": 0.0, "end": 2.5, "text": "Hello world"},
-            {"start": 2.5, "end": 5.0, "text": "This is a test"},
-        ],
-        "language": "en",
-        "duration": 5.0,
-        "model": "large-v3",
-    }
-    assert "segments" in result
-    assert isinstance(result["segments"], list)
-    assert len(result["segments"]) > 0
-    for seg in result["segments"]:
-        assert "start" in seg and "end" in seg and "text" in seg
-        assert isinstance(seg["start"], (int, float)) and seg["start"] >= 0
-        assert isinstance(seg["end"], (int, float)) and seg["end"] > seg["start"]
-        assert isinstance(seg["text"], str) and seg["text"].strip()
-    print("  [TRANSCRIBE_AUDIO] Output shape valid")
+    assert set(public_actions) == {"extract_audio", "transcribe_audio", "transcribe_video"}
+    assert set(public_actions) == set(registered)
+    for action, item in registered.items():
+        assert item["min_role"] == public_actions[action]["min_role"] == "editor"
+        assert set(item["parameters"]) == set(public_actions[action]["parameters"])
 
 
-def test_transcribe_video_params_minimal() -> None:
-    """transcribe_video action: file_id required."""
-    params = {"file_id": 42}
-    assert "file_id" in params
-    assert isinstance(params["file_id"], int) and params["file_id"] > 0
-    print("  [TRANSCRIBE_VIDEO] Minimal params valid")
+def test_production_validators_reject_bad_inputs() -> None:
+    service = load_audio_service()
+
+    assert service.validate_sample_rate(16000) == 16000
+    try:
+        service.validate_sample_rate(11025)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("11025 must not be accepted by production validator")
+
+    assert service.validate_whisper_model("tiny") == "tiny"
+    try:
+        service.validate_whisper_model("unknown-model")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("unknown Whisper model must be rejected before ASR")
+
+    assert service.normalize_language(" zh ") == "zh"
+    assert service.normalize_language("") is None
 
 
-def test_transcribe_video_params_full() -> None:
-    """transcribe_video action: all parameters."""
-    params = {
-        "file_id": 42,
-        "model": "large-v3",
-        "sample_rate": 16000,
-        "language": "en",
-        "save_audio": True,
-        "save_text": True,
-        "folder_id": 5,
-    }
-    assert "file_id" in params and isinstance(params["file_id"], int) and params["file_id"] > 0
+def test_bad_capability_params_fail_before_file_runner() -> None:
+    router = load_router()
+    calls = 0
 
-    if "model" in params:
-        valid_models = {"tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo"}
-        assert params["model"] in valid_models
+    async def fail_if_called(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("file runner should not run for invalid params")
 
-    if "sample_rate" in params:
-        valid_rates = {8000, 11025, 16000, 22050, 32000, 44100, 48000}
-        assert params["sample_rate"] in valid_rates
+    router.run_uploaded_file_capability = fail_if_called
 
-    if "language" in params:
-        assert isinstance(params["language"], str) and len(params["language"]) > 0
+    for params in (
+        {"file_id": "abc"},
+        {"file_id": 0},
+        {"file_id": 1, "sample_rate": "fast"},
+        {"file_id": 1, "folder_id": -1},
+    ):
+        try:
+            asyncio.run(router._extract_audio(params, "user:1"))
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError(f"invalid params were accepted: {params}")
 
-    if "save_audio" in params:
-        assert isinstance(params["save_audio"], bool)
+    try:
+        asyncio.run(router._transcribe_audio({"file_id": 1, "model": "remote/huge"}, "user:1"))
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("unknown model should fail before file runner")
 
-    if "save_text" in params:
-        assert isinstance(params["save_text"], bool)
-
-    if "folder_id" in params:
-        assert isinstance(params["folder_id"], int) and params["folder_id"] > 0
-    print("  [TRANSCRIBE_VIDEO] Full params valid")
+    assert calls == 0
 
 
-def test_transcribe_video_output_shape() -> None:
-    """transcribe_video action: combined output with segments and optional audio info."""
-    result = {
-        "segments": [
-            {"start": 0.0, "end": 3.0, "text": "Video content transcript"},
-        ],
-        "language": "en",
-        "duration": 30.0,
-        "audio_file_id": 100,
+def test_extract_audio_uses_framework_file_runner_and_returns_contract() -> None:
+    router = load_router()
+    observed: dict[str, Any] = {}
+
+    async def fake_extract(_full_path: Path, tmp_path: Path, sample_rate: int, audio_format: str) -> dict:
+        observed["sample_rate"] = sample_rate
+        observed["audio_format"] = audio_format
+        return {
+            "audio_path": tmp_path / f"audio.{audio_format}",
+            "duration_seconds": 2.5,
+            "size": 32000,
+        }
+
+    async def fake_upload(_path: Path, filename: str, owner_id: int, folder_id: int | None) -> int:
+        observed["filename"] = filename
+        observed["owner_id"] = owner_id
+        observed["folder_id"] = folder_id
+        return 9001
+
+    async def fake_file_runner(params: dict, caller: str, allowed_exts: set[str], handler: Callable[..., Any]) -> dict:
+        observed["params"] = params
+        observed["caller"] = caller
+        observed["allowed_exts"] = allowed_exts
+        file = SimpleNamespace(name="clip.mp4")
+        return await handler(params["file_id"], file, Path("/tmp/clip.mp4"), "mp4")
+
+    router.extract_audio_from_video = fake_extract
+    router._upload_with_conflict_retry = fake_upload
+    router.run_uploaded_file_capability = fake_file_runner
+
+    result = asyncio.run(router._extract_audio({
+        "file_id": "42",
+        "sample_rate": "16000",
         "audio_format": "wav",
-        "sample_rate": 16000,
-    }
-    assert "segments" in result
-    assert isinstance(result["segments"], list)
-    for seg in result["segments"]:
-        assert "start" in seg and "end" in seg and "text" in seg
-        assert isinstance(seg["start"], (int, float)) and seg["start"] >= 0
-        assert isinstance(seg["text"], str)
-    if "audio_file_id" in result:
-        assert isinstance(result["audio_file_id"], int)
-    print("  [TRANSCRIBE_VIDEO] Output shape valid")
+        "save_file": True,
+        "folder_id": "7",
+    }, "user:123"))
 
-
-def test_response_shape() -> None:
-    """Unified API response shape contract."""
-    r = {"success": True, "data": {"segments": []}, "error": None}
-    assert all(k in r for k in ("success", "data", "error"))
-    assert r["success"] is True
-    print("  [RESPONSE] Shape valid")
+    assert observed["params"]["file_id"] == 42
+    assert observed["caller"] == "user:123"
+    assert observed["allowed_exts"] == router.VIDEO_EXTS
+    assert observed["sample_rate"] == 16000
+    assert observed["audio_format"] == "wav"
+    assert observed["owner_id"] == 123
+    assert observed["folder_id"] == 7
+    assert observed["filename"] == "clip-audio.wav"
+    assert result["source_file_id"] == 42
+    assert result["audio_file_id"] == 9001
+    assert result["duration_seconds"] == 2.5
+    assert result["resources"] == [{"id": 1, "type": "video", "file_storage_id": 42}]
 
 
 def main() -> None:
-    print("=" * 60)
-    print("media-asr sandbox test")
-    print("=" * 60)
-    test_extract_audio_params_minimal()
-    test_extract_audio_params_full()
-    test_extract_audio_defaults()
-    test_extract_audio_output_shape()
-    test_transcribe_audio_params_minimal()
-    test_transcribe_audio_params_full()
-    test_transcribe_audio_defaults()
-    test_transcribe_audio_output_shape()
-    test_transcribe_video_params_minimal()
-    test_transcribe_video_params_full()
-    test_transcribe_video_output_shape()
-    test_response_shape()
-    print("=" * 60)
-    print("PASS: media-asr sandbox test")
+    tests = [
+        test_manifest_public_actions_match_registered_capabilities,
+        test_production_validators_reject_bad_inputs,
+        test_bad_capability_params_fail_before_file_runner,
+        test_extract_audio_uses_framework_file_runner_and_returns_contract,
+    ]
+    for test in tests:
+        test()
+        print(f"PASS: {test.__name__}")
+    print("PASS: media-asr sandbox production contract tests")
 
 
 if __name__ == "__main__":

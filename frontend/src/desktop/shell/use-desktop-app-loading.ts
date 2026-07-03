@@ -11,6 +11,7 @@ import type { Ref } from 'vue'
 export function useDesktopAppLoading(currentRole: Ref<string>) {
   const windowMgr = useWindowManager()
   const userStore = useUserStore()
+  const allAppList = ref<AppRegistryEntry[]>([])
   const desktopAppList = ref<AppRegistryEntry[]>([])
   const launcherAppList = ref<AppRegistryEntry[]>([])
   const sidebarAppList = ref<AppRegistryEntry[]>([])
@@ -38,6 +39,7 @@ export function useDesktopAppLoading(currentRole: Ref<string>) {
     loading.value = true
     try {
       const allApps = await loadAppRegistry(currentRole.value)
+      allAppList.value = allApps
       desktopAppList.value = allApps.filter(a => a.showOnDesktop)
       launcherAppList.value = allApps.filter(a => a.showInLauncher)
       sidebarAppList.value = allApps.filter(a => a.showInSidebar)
@@ -80,6 +82,7 @@ export function useDesktopAppLoading(currentRole: Ref<string>) {
   })
 
   return {
+    allAppList,
     desktopAppList,
     launcherAppList,
     sidebarAppList,

@@ -42,17 +42,17 @@
         },
         "aspect_ratio": {
           "type": "string",
-          "description": "宽高比，可选 square/portrait/landscape 或 16:9",
+          "description": "宽高比，可选 square/portrait/landscape 或 16:9；传入时优先于 size",
           "default": ""
         },
         "count": {
           "type": "integer",
-          "description": "生成数量",
+          "description": "生成数量，范围 1-4",
           "default": 1
         },
         "steps": {
           "type": "integer",
-          "description": "采样步数",
+          "description": "采样步数，范围 1-100",
           "default": 30
         },
         "template": {

@@ -95,6 +95,7 @@ class CodeGraph:
         self._file_mtimes: dict[str, float] = {}
         self._failed_files: list[dict] = []
         self._total_files_scanned: int = 0
+        self._build_error: str | None = None
 
         # ── Rebuild trigger ──────────────────────────────────────────
         self._reindex_callback: callable | None = None
@@ -201,13 +202,20 @@ class CodeGraph:
             self._file_mtimes.clear()
             self._failed_files.clear()
             self._total_files_scanned = 0
+            self._build_error = None
 
     def finish_build(self, file_count: int) -> None:
         with self._lock:
             self._build_end = time.time()
             self._file_count_at_build = file_count
             self._total_files_scanned = file_count
-            self._ready = True
+            if file_count <= 0:
+                self._build_error = "scan found no source files"
+            elif len(self._files) <= 0:
+                self._build_error = "no files parsed successfully"
+            else:
+                self._build_error = None
+            self._ready = self._build_error is None
 
     @property
     def ready(self) -> bool:
@@ -611,11 +619,20 @@ class CodeGraph:
             freshness_score = max(0, 25 - int(freshness_hours)) if freshness_hours >= 0 else 0
             freshness_score = max(0, min(25, freshness_score))
             parse_score = min(25, int(parse_rate * 0.25))
-            confidence = ready_score + freshness_score + parse_score
+            confidence = 0 if self._build_error or not self._ready else ready_score + freshness_score + parse_score
             confidence = max(0, min(100, confidence))
+            if self._build_error:
+                index_status = "unavailable"
+            elif self._ready:
+                index_status = "ready"
+            else:
+                index_status = "building"
             return {
                 "ready": self._ready,
+                "index_status": index_status,
                 "index_scope": "process-local",
+                "index_empty": len(self._files) == 0,
+                "build_error": self._build_error,
                 "file_count": len(self._files),
                 "file_count_at_build": self._file_count_at_build,
                 "symbol_count": len(self._symbols),

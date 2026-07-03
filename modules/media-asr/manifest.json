@@ -40,7 +40,7 @@
       "description": "Transcribe audio file into timestamped text",
       "parameters": {
         "file_id": {"type": "int", "description": "Audio file ID"},
-        "model": {"type": "string", "description": "Whisper model (default large-v3)"},
+        "model": {"type": "string", "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"},
         "language": {"type": "string", "description": "Language hint (optional)"},
         "save_text": {"type": "bool", "description": "Save transcript as a framework file (default false)"},
         "folder_id": {"type": "int", "description": "Target folder ID for saved transcript"}
@@ -52,7 +52,7 @@
       "description": "Extract audio from video and transcribe in one step",
       "parameters": {
         "file_id": {"type": "int", "description": "Source video file ID"},
-        "model": {"type": "string", "description": "Whisper model (default large-v3)"},
+        "model": {"type": "string", "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"},
         "sample_rate": {"type": "int", "description": "Audio extraction sample rate (default 16000)"},
         "language": {"type": "string", "description": "Language hint (optional)"},
         "save_audio": {"type": "bool", "description": "Save extracted audio as a framework file (default false)"},

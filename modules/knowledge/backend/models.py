@@ -6,10 +6,13 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+KB_TABLE_ARGS_EXTEND = {"extend_existing": True}
+
 
 class KbCatalog(Base, TimestampMixin):
     """知识库目录树。"""
     __tablename__ = "kb_catalogs"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -21,6 +24,7 @@ class KbCatalog(Base, TimestampMixin):
 class KbDocument(Base, TimestampMixin):
     """知识库文档/资料记录。文件本体走框架文件存储，这里只存逻辑引用。"""
     __tablename__ = "kb_documents"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     catalog_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -56,6 +60,7 @@ class KbDocument(Base, TimestampMixin):
 class KbChunk(Base, TimestampMixin):
     """解析后的内容块。每块包含原文、页号、类型、向量。"""
     __tablename__ = "kb_chunks"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -74,6 +79,7 @@ class KbChunk(Base, TimestampMixin):
 class KbPageFusion(Base, TimestampMixin):
     """页级融合：三轮交叉印证后的单页权威描述（第4层）。"""
     __tablename__ = "kb_page_fusions"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -108,6 +114,7 @@ class KbPageFusion(Base, TimestampMixin):
 class KbRawData(Base, TimestampMixin):
     """原始层：多轮独立采集结果，落盘后只读不可变。"""
     __tablename__ = "kb_raw_data"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     file_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -129,6 +136,7 @@ class KbRawData(Base, TimestampMixin):
 class KbEntityDictionary(Base, TimestampMixin):
     """实体词典。"""
     __tablename__ = "kb_entity_dictionary"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -141,6 +149,7 @@ class KbEntityDictionary(Base, TimestampMixin):
 class KbEntityAlias(Base, TimestampMixin):
     """实体别名。"""
     __tablename__ = "kb_entity_aliases"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     entity_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -150,6 +159,7 @@ class KbEntityAlias(Base, TimestampMixin):
 class KbDisambiguation(Base, TimestampMixin):
     """歧义词：同一词形对应多个实体。"""
     __tablename__ = "kb_disambiguation"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     term: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -160,6 +170,7 @@ class KbDisambiguation(Base, TimestampMixin):
 class KbGraphNode(Base, TimestampMixin):
     """知识图谱节点。"""
     __tablename__ = "kb_graph_nodes"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     entity_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -176,6 +187,7 @@ class KbGraphNode(Base, TimestampMixin):
 class KbGraphEdge(Base, TimestampMixin):
     """知识图谱边。"""
     __tablename__ = "kb_graph_edges"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     source_node_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -188,6 +200,7 @@ class KbGraphEdge(Base, TimestampMixin):
 class KbChunkEntity(Base, TimestampMixin):
     """块-实体关联（多对多）。"""
     __tablename__ = "kb_chunk_entities"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -199,6 +212,7 @@ class KbChunkEntity(Base, TimestampMixin):
 class KbEvidence(Base, TimestampMixin):
     """证据：实体在某文档某页的原文依据。"""
     __tablename__ = "kb_evidence"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     entity_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -213,6 +227,7 @@ class KbEvidence(Base, TimestampMixin):
 class KbConclusionEvidence(Base, TimestampMixin):
     """结论-证据关联。"""
     __tablename__ = "kb_conclusion_evidence"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     conclusion: Mapped[str] = mapped_column(Text, nullable=False)
@@ -224,6 +239,7 @@ class KbConclusionEvidence(Base, TimestampMixin):
 class KbEntityMergeLog(Base, TimestampMixin):
     """实体合并记录。"""
     __tablename__ = "kb_entity_merge_log"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     source_entity_ids: Mapped[list] = mapped_column(JSON, default=list)
@@ -235,6 +251,7 @@ class KbEntityMergeLog(Base, TimestampMixin):
 class KbGovernanceCandidate(Base, TimestampMixin):
     """治理候选：待审计/校准的抽取记录。"""
     __tablename__ = "kb_governance_candidates"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -250,6 +267,7 @@ class KbGovernanceCandidate(Base, TimestampMixin):
 class KbDocumentProfile(Base, TimestampMixin):
     """第5层文件画像：文件级主旨/摘要/结构（参考V1 知识_文档画像）。"""
     __tablename__ = "kb_document_profiles"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -282,6 +300,7 @@ class KbDocumentProfile(Base, TimestampMixin):
 class KbFileRelation(Base, TimestampMixin):
     """第7层跨文件动态关联（★华哥最看重）。"""
     __tablename__ = "kb_file_relations"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     source_document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -301,6 +320,7 @@ class KbFileRelation(Base, TimestampMixin):
 class KbPipelineRun(Base, TimestampMixin):
     """一次知识库全链路运行的持久诊断账本。"""
     __tablename__ = "kb_pipeline_runs"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -317,6 +337,7 @@ class KbPipelineRun(Base, TimestampMixin):
 class KbPipelineStageRun(Base, TimestampMixin):
     """Pipeline stage 级运行结果，承接 degraded/失败诊断和扩展指标。"""
     __tablename__ = "kb_pipeline_stage_runs"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
@@ -345,4 +366,5 @@ class KbPipelineStale(Base, TimestampMixin):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     __table_args__ = (
         UniqueConstraint("document_id", "stage", name="uq_kb_pipeline_stale_doc_stage"),
+        KB_TABLE_ARGS_EXTEND,
     )

@@ -1,0 +1,110 @@
+{
+  "key": "media-intelligence",
+  "name": "Media Intelligence",
+  "icon": "View",
+  "icon_asset": "",
+  "category": "tools",
+  "component_key": "index.vue",
+  "route_prefix": "/api/media-intelligence",
+  "permissions": ["viewer", "editor", "admin"],
+  "sort_order": 410,
+  "default_width": 980,
+  "default_height": 720,
+  "singleton": false,
+  "show_in_launcher": true,
+  "show_on_desktop": false,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": false,
+  "supported_formats": ["jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "mp4", "mov", "m4v", "webm", "mkv", "avi"],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "0.1.0",
+  "contract_version": "2.0",
+  "public_actions": [
+    {
+      "action": "analyze_image",
+      "description": "Analyze an uploaded image through local algorithm, small-model, and optional VLM refine layers",
+      "parameters": {
+        "file_id": {"type": "int", "description": "Image file ID"},
+        "include_embedding": {"type": "bool", "description": "Return deterministic placeholder embedding"},
+        "refine": {"type": "bool", "description": "Run VLM refine placeholder"}
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "analyze_video",
+      "description": "Analyze an uploaded video with deterministic metadata, keyframe, summary, and optional VLM refine placeholders",
+      "parameters": {
+        "file_id": {"type": "int", "description": "Video file ID"},
+        "max_keyframes": {"type": "int", "description": "Maximum placeholder keyframes"},
+        "refine": {"type": "bool", "description": "Run VLM refine placeholder"}
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "extract_keyframes",
+      "description": "Extract deterministic placeholder keyframe records from a video file",
+      "parameters": {
+        "file_id": {"type": "int", "description": "Video file ID"},
+        "max_keyframes": {"type": "int", "description": "Maximum keyframes"}
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "ocr",
+      "description": "Run OCR layer contract for image/video files; currently returns deterministic placeholder status",
+      "parameters": {
+        "file_id": {"type": "int", "description": "Image or video file ID"}
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "embed_image",
+      "description": "Return a deterministic placeholder image embedding vector for contract testing",
+      "parameters": {
+        "file_id": {"type": "int", "description": "Image file ID"},
+        "dimensions": {"type": "int", "description": "Embedding vector dimensions, default 32"}
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "detect_objects",
+      "description": "Return deterministic placeholder object detections from media metadata",
+      "parameters": {
+        "file_id": {"type": "int", "description": "Image or video file ID"}
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "summarize_media",
+      "description": "Summarize a media file or existing media-intelligence analysis result",
+      "parameters": {
+        "file_id": {"type": "int", "description": "Image or video file ID"},
+        "analysis": {"type": "object", "description": "Existing analysis result for summary-only mode"}
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "vlm_refine",
+      "description": "Refine an existing media-intelligence analysis result through the VLM layer contract",
+      "parameters": {
+        "analysis": {"type": "object", "description": "Existing media-intelligence analysis result"},
+        "prompt": {"type": "string", "description": "Optional refinement instruction"}
+      },
+      "min_role": "viewer"
+    }
+  ],
+  "permission_declaration": {
+    "default": "viewer",
+    "actions": []
+  },
+  "dependency_declaration": [],
+  "event_handler_declaration": [],
+  "db_migration_declaration": [],
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  }
+}

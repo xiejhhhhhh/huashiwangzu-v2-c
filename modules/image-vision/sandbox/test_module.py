@@ -1,38 +1,74 @@
+"""Sandbox validation for the image-vision local-first analysis path."""
 
-"""Sandbox test for image-vision module (fallback metadata path)."""
-import sys, io
+from __future__ import annotations
+
+import importlib.util
+import sys
 from pathlib import Path
-SAMPLE = Path(__file__).resolve().parent / "samples" / "sample.png"
-if not SAMPLE.exists():
-    print("ERROR: sample.png not found"); sys.exit(1)
+
 from PIL import Image
 
-
-def describe(path):
-    raw = path.read_bytes()
-    img = Image.open(io.BytesIO(raw))
-    ext = path.suffix.lstrip(".").lower()
-    desc = "[Sandbox] %s, %dx%d, mode=%s, %d bytes. Gateway unavailable." % (path.name, img.width, img.height, img.mode, len(raw))
-    b = [{"type":"图片","text":desc,"page":None,"resource_ref":1}]
-    r = [{"id":1,"type":"图片","file_storage_id":0,"text_desc":desc}]
-    return {"file_id":0,"format":ext,"blocks":b,"resources":r}
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+SAMPLE = Path(__file__).resolve().parent / "samples" / "sample.png"
+ANALYZER_PATH = MODULE_ROOT / "backend" / "image_analysis.py"
 
 
-def validate(result):
-    assert all(k in result for k in ("file_id","format","blocks","resources"))
-    assert len(result["blocks"])==1 and result["blocks"][0]["type"]=="图片"
-    assert len(result["resources"])==1 and result["resources"][0]["type"]=="图片"
-    print("  Validation PASS")
+def _load_analyzer():
+    spec = importlib.util.spec_from_file_location("image_vision_local_analysis", ANALYZER_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load image_analysis.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def main():
-    print("="*60); print("image-vision sandbox test"); print("="*60)
-    result = describe(SAMPLE)
-    for b in result["blocks"]:
-        print("  [%s] %s" % (b["type"], b["text"][:80]))
-    for r in result["resources"]:
-        print("  [resource] %s" % r["text_desc"][:80])
-    validate(result)
+def test_local_analysis_contract() -> None:
+    analyzer = _load_analyzer()
+    raw = SAMPLE.read_bytes()
+    result = analyzer.analyze_image_bytes(raw, SAMPLE.name, "png")
+    summary = analyzer.build_local_summary(result)
+
+    assert result["analyzer"] == "pillow-local-v1"
+    assert result["format"] in {"PNG", "png"}
+    assert result["dimensions"]["width"] > 0
+    assert result["dimensions"]["height"] > 0
+    assert result["color"]["dominant_colors"]
+    assert result["hashes"]["average_hash"]
+    assert "本地图片分析" in summary
+
+
+def test_vlm_decision_skips_blank_image() -> None:
+    analyzer = _load_analyzer()
+    blank = Image.new("RGBA", (64, 64), (255, 255, 255, 255))
+    temp = MODULE_ROOT / "sandbox" / "samples" / ".image_vision_blank_tmp.png"
+    try:
+        blank.save(temp)
+        result = analyzer.analyze_image_bytes(temp.read_bytes(), temp.name, "png")
+        decision = analyzer.should_use_vlm(result, "auto")
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+    assert result["quality"]["is_blank_like"] is True
+    assert decision["use_vlm"] is False
+    assert "blank" in decision["reason"]
+
+
+def main() -> None:
+    if not SAMPLE.exists():
+        print("ERROR: sample.png not found")
+        raise SystemExit(1)
+
+    print("=" * 60)
+    print("image-vision sandbox test")
+    print("=" * 60)
+    test_local_analysis_contract()
+    print("  Local analysis contract PASS")
+    test_vlm_decision_skips_blank_image()
+    print("  VLM auto-skip decision PASS")
     print("PASS: image-vision sandbox test")
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()

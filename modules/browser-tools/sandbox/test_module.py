@@ -45,7 +45,7 @@ def _validate_timeout(timeout: Any) -> None:
 # ── Parameter validation per action ────────────────────────────────────
 
 def test_open_params() -> None:
-    """open: url required (http/https), session_id optional, timeout optional."""
+    """open: url required; session_id, viewport and timeout optional."""
     # Valid
     params = {"url": "https://example.com"}
     _validate_url(params["url"])
@@ -54,11 +54,19 @@ def test_open_params() -> None:
     print("  [open] Valid params (url only): PASS")
 
     # With optional session_id
-    params = {"url": "http://example.org", "session_id": "sess_abc123", "timeout": 15}
+    params = {
+        "url": "http://example.org",
+        "session_id": "sess_abc123",
+        "width": 1366,
+        "height": 768,
+        "timeout": 15,
+    }
     _validate_url(params["url"])
     _validate_session_id(params["session_id"], required=False)
+    assert isinstance(params["width"], int) and params["width"] > 0
+    assert isinstance(params["height"], int) and params["height"] > 0
     _validate_timeout(params["timeout"])
-    print("  [open] Valid params (full): PASS")
+    print("  [open] Valid params (reuse session + viewport): PASS")
 
     # Missing url
     _assert_rejected(lambda: _validate_url(""), "  [open] Missing url rejected")
@@ -86,14 +94,12 @@ def test_list_links_params() -> None:
 
 
 def test_click_params() -> None:
-    """click: session_id required, selector OR text (at least one)."""
+    """click: session_id required, selector or text target, timeout optional."""
     # Valid: selector only
     params = {"session_id": "sess_abc", "selector": "#submit-btn"}
     _validate_session_id(params["session_id"])
     assert "selector" in params or "text" in params, "click needs selector or text"
-    assert not (params.get("selector") and params.get("text") and
-                params["selector"] and params["text"]), \
-        "selector and text are mutually exclusive, only one should be set at a time"
+    _validate_timeout(params.get("timeout"))
     print("  [click] Valid (selector only): PASS")
 
     # Valid: text only
@@ -101,6 +107,13 @@ def test_click_params() -> None:
     _validate_session_id(params["session_id"])
     assert "selector" in params or "text" in params, "click needs selector or text"
     print("  [click] Valid (text only): PASS")
+
+    # Both provided: handler uses selector first.
+    params = {"session_id": "sess_abc", "selector": "#btn", "text": "Click", "timeout": 10}
+    _validate_session_id(params["session_id"])
+    assert params["selector"] and params["text"]
+    _validate_timeout(params["timeout"])
+    print("  [click] Valid (selector takes precedence when both provided): PASS")
 
     # Missing both selector and text
     def reject_missing_click_target() -> None:
@@ -111,38 +124,35 @@ def test_click_params() -> None:
 
     _assert_rejected(reject_missing_click_target, "  [click] Missing selector+text rejected")
 
-    # Both provided (manifest says "or" — mutually exclusive)
-    def reject_both_click_targets() -> None:
-        params = {"session_id": "sess_abc", "selector": "#btn", "text": "Click"}
-        _validate_session_id(params["session_id"])
-        both_provided = bool(params.get("selector")) and bool(params.get("text"))
-        assert not both_provided, \
-            "selector and text should not both be provided simultaneously"
-
-    _assert_rejected(reject_both_click_targets, "  [click] Both selector+text rejected (mutually exclusive)")
-
 
 def test_type_params() -> None:
-    """type: session_id, selector, text all required."""
+    """type: session_id and selector required; text string and timeout optional."""
     params = {"session_id": "sess_abc", "selector": "#search-input", "text": "hello world"}
     _validate_session_id(params["session_id"])
     assert isinstance(params.get("selector"), str) and params["selector"].strip(), \
         "type requires a non-empty selector"
-    assert isinstance(params.get("text"), str) and params["text"].strip(), \
-        "type requires non-empty text"
+    assert isinstance(params.get("text"), str), "type text must be a string"
+    _validate_timeout(params.get("timeout"))
     print("  [type] Valid params: PASS")
 
-    # Missing text
-    def reject_missing_text() -> None:
-        params = {"session_id": "sess_abc", "selector": "#input"}
-        assert isinstance(params.get("text"), str) and params["text"].strip(), \
-            "type requires non-empty text"
+    # Empty text is valid: it clears the input.
+    params = {"session_id": "sess_abc", "selector": "#input", "text": "", "timeout": 5}
+    _validate_session_id(params["session_id"])
+    assert isinstance(params["text"], str)
+    _validate_timeout(params["timeout"])
+    print("  [type] Empty text clears input: PASS")
 
-    _assert_rejected(reject_missing_text, "  [type] Missing text rejected")
+    # Missing selector
+    def reject_missing_selector() -> None:
+        params = {"session_id": "sess_abc", "text": "hello"}
+        assert isinstance(params.get("selector"), str) and params["selector"].strip(), \
+            "type requires a non-empty selector"
+
+    _assert_rejected(reject_missing_selector, "  [type] Missing selector rejected")
 
 
 def test_wait_for_params() -> None:
-    """wait_for: session_id, selector required; timeout optional."""
+    """wait_for: session_id required; selector/navigation/fixed wait are supported."""
     params = {"session_id": "sess_abc", "selector": ".loaded"}
     _validate_session_id(params["session_id"])
     assert isinstance(params.get("selector"), str) and params["selector"].strip(), \
@@ -154,6 +164,15 @@ def test_wait_for_params() -> None:
     _validate_session_id(params_full["session_id"])
     _validate_timeout(params_full["timeout"])
     print("  [wait_for] Valid params with timeout: PASS")
+
+    params_nav = {"session_id": "sess_abc", "wait_for_navigation": True}
+    _validate_session_id(params_nav["session_id"])
+    assert isinstance(params_nav["wait_for_navigation"], bool)
+    print("  [wait_for] Valid navigation wait: PASS")
+
+    params_fixed = {"session_id": "sess_abc"}
+    _validate_session_id(params_fixed["session_id"])
+    print("  [wait_for] Valid fixed short wait: PASS")
 
 
 def test_screenshot_params() -> None:
@@ -177,7 +196,7 @@ def test_screenshot_params() -> None:
 
 
 def test_download_params() -> None:
-    """download: session_id required, url optional, timeout optional."""
+    """download: session_id or url required, timeout optional."""
     params = {"session_id": "sess_abc"}
     _validate_session_id(params["session_id"])
     if "url" in params:
@@ -190,6 +209,12 @@ def test_download_params() -> None:
     _validate_url(params["url"])
     _validate_timeout(params["timeout"])
     print("  [download] Valid params (with url): PASS")
+
+    params = {"url": "https://example.com/file.pdf", "timeout": 60}
+    _validate_url(params["url"])
+    _validate_session_id(params.get("session_id"), required=False)
+    _validate_timeout(params["timeout"])
+    print("  [download] Valid params (direct HTTP url only): PASS")
 
     def reject_download_non_http_url() -> None:
         params = {"session_id": "sess_abc", "url": "file:///etc/passwd"}
@@ -206,10 +231,10 @@ def test_close_params() -> None:
     print("  [close] Valid params: PASS")
 
     # Simulate output shape
-    success_result = {"success": True, "session_id": "sess_abc"}
+    success_result = {"success": True, "data": {"session_id": "sess_abc", "closed": True}, "error": None}
     assert isinstance(success_result["success"], bool)
-    assert success_result["session_id"] == "sess_abc"
-    failure_result = {"success": False, "error": "Session not found"}
+    assert success_result["data"]["session_id"] == "sess_abc"
+    failure_result = {"success": False, "data": None, "error": "Session not found"}
     assert failure_result["success"] is False
     print("  [close] Output shape (success/failure): PASS")
 
@@ -218,25 +243,32 @@ def test_output_shapes() -> None:
     """Validate output shapes for screenshot and download."""
     # Screenshot output shape
     screenshot_result = {
-        "file_id": "file_001",
-        "path": "/workspace/screenshots/page.png",
+        "session_id": "sess_abc",
+        "file_path": "data/workspaces/1/screenshot_abc123.png",
+        "filename": "screenshot_abc123.png",
         "size": 245760,
+        "full_page": True,
+        "note": "Use terminal-tools:publish to deliver to desktop",
     }
-    assert isinstance(screenshot_result["file_id"], str)
-    assert isinstance(screenshot_result["path"], str)
+    assert isinstance(screenshot_result["session_id"], str)
+    assert isinstance(screenshot_result["file_path"], str)
+    assert isinstance(screenshot_result["filename"], str)
     assert isinstance(screenshot_result["size"], int) and screenshot_result["size"] >= 0
-    print("  [screenshot] Output shape (file_id, path, size): PASS")
+    assert isinstance(screenshot_result["full_page"], bool)
+    print("  [screenshot] Output shape (file_path, filename, size): PASS")
 
     # Download output shape
     download_result = {
-        "file_id": "file_002",
-        "path": "/workspace/downloads/report.pdf",
+        "session_id": "sess_abc",
+        "file_path": "data/workspaces/1/report.pdf",
+        "filename": "report.pdf",
         "size": 1048576,
+        "note": "Use terminal-tools:publish to deliver to desktop",
     }
-    assert isinstance(download_result["file_id"], str)
-    assert isinstance(download_result["path"], str)
+    assert isinstance(download_result["file_path"], str)
+    assert isinstance(download_result["filename"], str)
     assert isinstance(download_result["size"], int) and download_result["size"] >= 0
-    print("  [download] Output shape (file_id, path, size): PASS")
+    print("  [download] Output shape (file_path, filename, size): PASS")
 
 
 def test_no_cookie_localstorage_return() -> None:
@@ -262,10 +294,16 @@ def test_session_id_flow() -> None:
         _validate_session_id(p.get("session_id"), required=False)
     print("  [session] open accepts optional session_id: PASS")
 
-    # Other actions require session_id
+    # Most session actions require session_id
     for action in ["read_text", "list_links", "click", "type", "wait_for", "screenshot", "close"]:
         _assert_rejected(lambda: _validate_session_id(None), f"  [session] {action} requires session_id")
-    print("  [session] All other actions require session_id: PASS")
+    print("  [session] Session-bound actions require session_id: PASS")
+
+    # download can use a session or a direct URL.
+    direct_download = {"url": "https://example.com/file.pdf"}
+    _validate_url(direct_download["url"])
+    _validate_session_id(direct_download.get("session_id"), required=False)
+    print("  [session] download accepts direct url without session_id: PASS")
 
 
 def main() -> None:

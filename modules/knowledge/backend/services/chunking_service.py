@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Literal
 
-from ..ir_models import DocumentIr, ContentBlock
+from ..ir_models import ContentBlock, DocumentIr
 
 logger = logging.getLogger("v2.knowledge").getChild("chunking")
 

@@ -57,6 +57,19 @@ _PRIVATE_PREFIXES = (
     "http://192.168.",
     "https://192.168.",
 )
+_MAX_QUERY_CHARS = 500
+_MAX_URL_CHARS = 2048
+_MAX_FETCH_CHARS = 8000
+_MAX_SEARCH_TITLE_CHARS = 300
+_MAX_SEARCH_SNIPPET_CHARS = 1000
+_MAX_SEARCH_URL_CHARS = 2048
+
+
+def _validate_bounded_int(value: int, minimum: int, maximum: int, name: str) -> None:
+    if not isinstance(value, int):
+        raise AssertionError(f"{name} must be an integer")
+    if value < minimum or value > maximum:
+        raise AssertionError(f"{name} must be between {minimum} and {maximum}")
 
 
 def _validate_public_url(url: str) -> None:
@@ -90,51 +103,60 @@ def test_search_query_required() -> None:
     query = "Python async programming"
     assert isinstance(query, str) and query.strip(), \
         "query is required and must be a non-empty string"
+    assert len(query) <= _MAX_QUERY_CHARS, "query must stay within max length"
     print("  [search] Valid query accepted: PASS")
+
+    def reject_long_query() -> None:
+        query = "x" * (_MAX_QUERY_CHARS + 1)
+        assert len(query) <= _MAX_QUERY_CHARS, "query too long"
+
+    _assert_rejected(reject_long_query, "  [search] Overlong query rejected")
 
 
 def test_search_top_k_range() -> None:
     """search: top_k optional, default 8, max 20."""
     # Default
     top_k = 8
-    assert 1 <= top_k <= 20, "top_k must be between 1 and 20"
+    _validate_bounded_int(top_k, 1, 20, "top_k")
     print(f"  [search] Default top_k={top_k}: PASS")
 
     # Custom valid
     top_k = 5
-    assert 1 <= top_k <= 20, "top_k must be between 1 and 20"
+    _validate_bounded_int(top_k, 1, 20, "top_k")
     print(f"  [search] Custom top_k={top_k}: PASS")
 
     # Max boundary
     top_k = 20
-    assert 1 <= top_k <= 20, "top_k must be between 1 and 20"
+    _validate_bounded_int(top_k, 1, 20, "top_k")
     print(f"  [search] Max top_k={top_k}: PASS")
 
     # Below minimum
     def reject_zero_top_k() -> None:
-        top_k = 0
-        assert 1 <= top_k <= 20, "top_k must be at least 1"
+        _validate_bounded_int(0, 1, 20, "top_k")
 
     _assert_rejected(reject_zero_top_k, "  [search] top_k=0 rejected")
 
     # Above maximum
     def reject_large_top_k() -> None:
-        top_k = 21
-        assert 1 <= top_k <= 20, "top_k must be at most 20"
+        _validate_bounded_int(21, 1, 20, "top_k")
 
     _assert_rejected(reject_large_top_k, "  [search] top_k=21 rejected")
 
 
 def test_search_output_shape() -> None:
-    """search returns results array with title/link/snippet."""
+    """search returns results array with title/url/snippet."""
     results = [
-        {"title": "Async IO in Python", "link": "https://example.com/async", "snippet": "A guide to async..."},
-        {"title": "Python Concurrency", "link": "https://example.com/concurrency", "snippet": "Comparing approaches..."},
+        {"title": "Async IO in Python", "url": "https://example.com/async", "snippet": "A guide to async..."},
+        {"title": "Python Concurrency", "url": "https://example.com/concurrency", "snippet": "Comparing approaches..."},
     ]
     for item in results:
         assert "title" in item and isinstance(item["title"], str)
-        assert "link" in item and isinstance(item["link"], str)
+        assert len(item["title"]) <= _MAX_SEARCH_TITLE_CHARS
+        assert "url" in item and isinstance(item["url"], str)
+        assert item["url"].startswith(("http://", "https://"))
+        assert len(item["url"]) <= _MAX_SEARCH_URL_CHARS
         assert "snippet" in item and isinstance(item["snippet"], str)
+        assert len(item["snippet"]) <= _MAX_SEARCH_SNIPPET_CHARS
     print(f"  [search] Output shape ({len(results)} results): PASS")
 
 
@@ -153,6 +175,12 @@ def test_fetch_url_required() -> None:
     # Valid public URL
     _validate_public_url("https://example.com/article")
     print("  [fetch] Valid public URL accepted: PASS")
+
+    def reject_long_url() -> None:
+        url = "https://example.com/" + ("a" * _MAX_URL_CHARS)
+        assert len(url) <= _MAX_URL_CHARS, "url too long"
+
+    _assert_rejected(reject_long_url, "  [fetch] Overlong URL rejected")
 
 
 def test_fetch_ssrf_protection() -> None:
@@ -178,36 +206,59 @@ def test_fetch_ssrf_protection() -> None:
 
 def test_fetch_max_chars() -> None:
     """fetch: max_chars optional, default 8000, must be positive."""
-    default_max_chars = 8000
-    assert isinstance(default_max_chars, int) and default_max_chars > 0
+    default_max_chars = _MAX_FETCH_CHARS
+    _validate_bounded_int(default_max_chars, 1, _MAX_FETCH_CHARS, "max_chars")
     print(f"  [fetch] Default max_chars={default_max_chars}: PASS")
 
     # Custom valid
     max_chars = 4000
-    assert max_chars > 0, "max_chars must be positive"
+    _validate_bounded_int(max_chars, 1, _MAX_FETCH_CHARS, "max_chars")
     print(f"  [fetch] Custom max_chars={max_chars}: PASS")
 
     # Invalid negative
     def reject_negative_max_chars() -> None:
-        max_chars = -100
-        assert max_chars > 0, "max_chars must be positive"
+        _validate_bounded_int(-100, 1, _MAX_FETCH_CHARS, "max_chars")
 
     _assert_rejected(reject_negative_max_chars, "  [fetch] Negative max_chars rejected")
 
     # Invalid zero
     def reject_zero_max_chars() -> None:
-        max_chars = 0
-        assert max_chars > 0, "max_chars must be positive"
+        _validate_bounded_int(0, 1, _MAX_FETCH_CHARS, "max_chars")
 
     _assert_rejected(reject_zero_max_chars, "  [fetch] Zero max_chars rejected")
 
+    def reject_large_max_chars() -> None:
+        _validate_bounded_int(_MAX_FETCH_CHARS + 1, 1, _MAX_FETCH_CHARS, "max_chars")
+
+    _assert_rejected(reject_large_max_chars, "  [fetch] Oversized max_chars rejected")
+
 
 def test_fetch_output_shape() -> None:
-    """fetch returns content string."""
-    result = {"content": "Article body text...", "url": "https://example.com/article", "char_count": 1234}
-    assert "content" in result and isinstance(result["content"], str)
-    assert result["char_count"] >= 0
-    print("  [fetch] Output shape (content, url, char_count): PASS")
+    """fetch returns url/title/text/truncated."""
+    result = {
+        "url": "https://example.com/article",
+        "title": "Article title",
+        "text": "Article body text...",
+        "truncated": False,
+        "error": None,
+    }
+    assert result["url"].startswith(("http://", "https://"))
+    assert isinstance(result["title"], str)
+    assert isinstance(result["text"], str)
+    assert isinstance(result["truncated"], bool)
+    assert result["error"] is None
+    print("  [fetch] Output shape (url, title, text, truncated): PASS")
+
+
+def test_fetch_truncation_contract() -> None:
+    """fetch marks truncated when extracted text exceeds max_chars."""
+    max_chars = 12
+    source_text = "0123456789abcdef"
+    text = source_text[:max_chars]
+    truncated = len(source_text) > max_chars
+    assert text == "0123456789ab"
+    assert truncated is True
+    print("  [fetch] Truncation flag contract: PASS")
 
 
 def test_fetch_valid_urls() -> None:
@@ -236,6 +287,7 @@ def main() -> None:
     test_fetch_ssrf_protection()
     test_fetch_max_chars()
     test_fetch_output_shape()
+    test_fetch_truncation_contract()
     test_fetch_valid_urls()
 
     print("=" * 60)

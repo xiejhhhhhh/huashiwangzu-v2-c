@@ -476,7 +476,9 @@ async def api_search(
         r["document_name"] = doc_info.get("name", "")
         r["content_package_id"] = doc_info.get("content_package_id")
         if chunk_id:
-            cr = await db.execute(select(KbChunk.block_id).where(KbChunk.id == chunk_id))
+            cr = await db.execute(
+                select(KbChunk.block_id).where(KbChunk.id == chunk_id, KbChunk.owner_id == user.id)
+            )
             r["block_id"] = cr.scalar_one_or_none()
         else:
             r["block_id"] = None
@@ -513,7 +515,7 @@ async def api_get_page_fusion(
     user: User = Depends(require_permission("viewer")),
 ):
     await get_live_document_or_raise(db, document_id, user.id)
-    result = await get_page_fusion(db, document_id, page)
+    result = await get_page_fusion(db, document_id, page, owner_id=user.id)
     return ApiResponse(data=result)
 
 @router.get("/entities")
@@ -674,7 +676,7 @@ async def _cap_search(params: dict, caller: str) -> dict:
             page = r.get("page")
             chunk_id = r.get("chunk_id")
             if doc_id and page:
-                fusion = await _get_page_fusion(db, doc_id, page)
+                fusion = await _get_page_fusion(db, doc_id, page, owner_id=owner_id)
                 r["page_fusion"] = fusion
             if doc_id and doc_id not in doc_cache:
                 dr = await db.execute(select(KbDocument).where(KbDocument.id == doc_id, KbDocument.owner_id == owner_id))
@@ -688,7 +690,9 @@ async def _cap_search(params: dict, caller: str) -> dict:
             r["content_package_id"] = doc_info.get("content_package_id")
             # Look up block_id from chunk
             if chunk_id:
-                cr = await db.execute(select(KbChunk.block_id).where(KbChunk.id == chunk_id))
+                cr = await db.execute(
+                    select(KbChunk.block_id).where(KbChunk.id == chunk_id, KbChunk.owner_id == owner_id)
+                )
                 r["block_id"] = cr.scalar_one_or_none()
             else:
                 r["block_id"] = None
@@ -712,7 +716,7 @@ async def _cap_get_page_fusion(params: dict, caller: str) -> dict:
     page = int(params.get("page", 1) or 1)
     async with AsyncSessionLocal() as db:
         await get_live_document_or_raise(db, document_id, owner_id)
-        result = await get_page_fusion(db, document_id, page)
+        result = await get_page_fusion(db, document_id, page, owner_id=owner_id)
         return {"page_fusion": result}
 
 async def _cap_get_entity_dictionary(params: dict, caller: str) -> dict:

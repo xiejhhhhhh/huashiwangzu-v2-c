@@ -1,3 +1,4 @@
+from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
@@ -8,13 +9,13 @@ from app.services.parser_resource_diagnostics import (
 )
 from app.services.uploaded_file_runner import run_uploaded_file_capability
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/pptx-parser", tags=["pptx-parser"])
 
 
 class ParseRequest(BaseModel):
-    file_id: int
+    file_id: int = Field(gt=0)
 
 
 async def _parse(params: dict, caller: str) -> dict:
@@ -22,11 +23,19 @@ async def _parse(params: dict, caller: str) -> dict:
     import hashlib
 
     from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
 
     allowed = {"pptx"}
+    file_id = params.get("file_id")
+    if not isinstance(file_id, int) or file_id <= 0:
+        raise ValidationError("file_id must be a positive integer")
 
     def parse_file(file_id, _file, full_path, _ext):
-        prs = Presentation(str(full_path))
+        try:
+            prs = Presentation(str(full_path))
+        except Exception as exc:
+            raise ValidationError(f"Failed to parse PPTX file: {exc}") from exc
+
         blocks = []
         resources = []
         resource_diagnostics = []
@@ -42,7 +51,7 @@ async def _parse(params: dict, caller: str) -> dict:
                             continue
                         block_type = "heading" if ("title" in str(shape.name).lower() or "标题" in str(shape.name)) else "paragraph"
                         blocks.append({"type": block_type, "text": text, "page": pno, "resource_ref": None})
-                if shape.shape_type and "picture" in str(shape.shape_type).lower():
+                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                     resource_counter += 1
                     mime_type = "image/png"
                     extract_diagnostic_recorded = False

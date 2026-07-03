@@ -35,6 +35,21 @@ export interface SearchResultItem {
 
 type Listener = (id: string) => void
 
+let openAppFn: ((appKey: string) => void) | null = null
+let executeActionFn: ((appKey: string, action: string, params?: Record<string, unknown>) => unknown) | null = null
+
+const appOpener = {
+  setOpenApp(fn: (appKey: string) => void) { openAppFn = fn },
+  setExecuteAction(fn: (appKey: string, action: string, params?: Record<string, unknown>) => unknown) { executeActionFn = fn },
+  openApp(appKey: string) { openAppFn?.(appKey) },
+  executeAction(appKey: string, action: string, params?: Record<string, unknown>) { return executeActionFn?.(appKey, action, params) },
+}
+
+function getSearchResultType(id: string): SearchResultItem['type'] {
+  if (!id.startsWith('app:')) return 'command'
+  return id.split(':').length > 2 ? 'action' : 'app'
+}
+
 class CommandRegistry {
   private _commands = new Map<string, CommandEntry[]>()
   private _listeners = new Set<Listener>()
@@ -103,7 +118,7 @@ class CommandRegistry {
           seen.add(entry.id)
           results.push({
             id: entry.id,
-            type: 'command',
+            type: getSearchResultType(entry.id),
             title: entry.title,
             description: entry.description,
             icon: entry.icon,
@@ -119,7 +134,7 @@ class CommandRegistry {
           seen.add(entry.id)
           results.push({
             id: entry.id,
-            type: 'command',
+            type: getSearchResultType(entry.id),
             title: entry.title,
             description: entry.description,
             icon: entry.icon,
@@ -188,15 +203,7 @@ class CommandRegistry {
 }
 
 function getAppOpener() {
-  let openAppFn: ((appKey: string) => void) | null = null
-  let executeActionFn: ((appKey: string, action: string, params?: Record<string, unknown>) => unknown) | null = null
-
-  return {
-    setOpenApp(fn: (appKey: string) => void) { openAppFn = fn },
-    setExecuteAction(fn: (appKey: string, action: string, params?: Record<string, unknown>) => unknown) { executeActionFn = fn },
-    openApp(appKey: string) { openAppFn?.(appKey) },
-    executeAction(appKey: string, action: string, params?: Record<string, unknown>) { return executeActionFn?.(appKey, action, params) },
-  }
+  return appOpener
 }
 
 export const commandRegistry = new CommandRegistry()

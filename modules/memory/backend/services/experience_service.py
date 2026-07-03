@@ -53,6 +53,40 @@ def _coerce_match_limit(raw: object, default: int = 2) -> int:
     return limit
 
 
+def _coerce_bool(raw: object, name: str) -> bool:
+    if not isinstance(raw, bool):
+        raise ValidationError(f"{name} must be boolean")
+    return raw
+
+
+def _coerce_optional_positive_int(raw: object, name: str) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be an integer") from exc
+    if value <= 0:
+        raise ValidationError(f"{name} must be positive")
+    return value
+
+
+def _normalize_json_text(raw: object, name: str) -> str:
+    if isinstance(raw, (list, dict)):
+        return json.dumps(raw, ensure_ascii=False)
+    if isinstance(raw, str):
+        if not raw.strip():
+            raise ValidationError(f"{name} cannot be empty")
+        return raw
+    raise ValidationError(f"{name} must be a string, list, or object")
+
+
+def _normalize_optional_json_text(raw: object, name: str) -> str | None:
+    if raw in (None, ""):
+        return None
+    return _normalize_json_text(raw, name)
+
+
 def _resolve_experience_write_scope(
     caller: str,
     caller_owner_id: int | None,
@@ -64,6 +98,7 @@ def _resolve_experience_write_scope(
         scope = EXPERIENCE_SCOPE_GLOBAL if _is_system_caller(caller) and not caller_owner_id else EXPERIENCE_SCOPE_USER
     if scope not in EXPERIENCE_SCOPES:
         raise ValidationError("scope must be user/team/global")
+    target_owner_id = _coerce_optional_positive_int(requested_owner_id, "owner_id")
 
     if scope == EXPERIENCE_SCOPE_GLOBAL:
         if not _is_system_caller(caller):
@@ -73,14 +108,14 @@ def _resolve_experience_write_scope(
     if scope == EXPERIENCE_SCOPE_TEAM:
         if not _is_system_caller(caller):
             raise PermissionDenied("团队经验必须由系统通路写入")
-        if not requested_owner_id:
+        if not target_owner_id:
             raise ValidationError("team scope requires owner_id")
-        return int(requested_owner_id), EXPERIENCE_SCOPE_TEAM
+        return target_owner_id, EXPERIENCE_SCOPE_TEAM
 
     if caller_owner_id:
         return caller_owner_id, EXPERIENCE_SCOPE_USER
-    if _is_system_caller(caller) and requested_owner_id:
-        return int(requested_owner_id), EXPERIENCE_SCOPE_USER
+    if _is_system_caller(caller) and target_owner_id:
+        return target_owner_id, EXPERIENCE_SCOPE_USER
     raise PermissionDenied("无法解析调用者身份")
 
 
@@ -136,11 +171,10 @@ async def _save_experience(
     owner_id: int | None = None,
     scope: str = EXPERIENCE_SCOPE_USER,
 ) -> dict:
-    if isinstance(steps, (list, dict)):
-        steps = json.dumps(steps, ensure_ascii=False)
-    if isinstance(tools_used, (list, dict)):
-        tools_used = json.dumps(tools_used, ensure_ascii=False)
-    if not (trigger_condition or "").strip() or not (steps or "").strip():
+    steps = _normalize_json_text(steps, "steps")
+    tools_used = _normalize_optional_json_text(tools_used, "tools_used")
+    source_conversation_id = _coerce_optional_positive_int(source_conversation_id, "source_conversation_id")
+    if not (trigger_condition or "").strip():
         raise ValidationError("trigger_condition and steps required")
 
     scope_owner_sql, scope_owner_params = _scope_owner_condition(scope, owner_id)
@@ -321,6 +355,40 @@ async def _match_experience(
     else:
         rows = []
 
+    if not rows:
+        keyword = f"%{query}%"
+        fallback_sql = text(f"""
+            SELECT id, owner_id, COALESCE(scope, 'global') AS scope,
+                   trigger_condition, steps, tools_used,
+                   success_weight, fail_count, fail_notes,
+                   source_conversation_id, created_at, updated_at,
+                   0.0 AS similarity,
+                   CASE COALESCE(scope, 'global')
+                       WHEN 'user' THEN 0
+                       WHEN 'team' THEN 1
+                       ELSE 2
+                   END AS scope_rank
+            FROM memory_experiences
+            WHERE active = true
+              AND {access_sql}
+              AND (
+                  trigger_condition ILIKE :keyword
+                  OR steps ILIKE :keyword
+                  OR tools_used ILIKE :keyword
+              )
+            ORDER BY scope_rank ASC,
+                     (success_weight - fail_count * :penalty) DESC,
+                     updated_at DESC
+            LIMIT :limit
+        """)
+        r = await db.execute(fallback_sql, {
+            **access_params,
+            "keyword": keyword,
+            "penalty": EXPERIENCE_FAIL_PENALTY,
+            "limit": limit,
+        })
+        rows = r.mappings().all()
+
     results = []
     for row in rows:
         d = dict(row)
@@ -344,6 +412,12 @@ async def _experience_feedback(
     owner_id: int | None = None,
     team_owner_ids: list[int] | None = None,
 ) -> dict:
+    experience_id = _coerce_optional_positive_int(experience_id, "experience_id")
+    if experience_id is None:
+        raise ValidationError("experience_id required")
+    success = _coerce_bool(success, "success")
+    if note is not None and not isinstance(note, str):
+        raise ValidationError("note must be a string")
     access_sql, access_params = _access_condition(owner_id, team_owner_ids or [])
     if success:
         result = await db.execute(

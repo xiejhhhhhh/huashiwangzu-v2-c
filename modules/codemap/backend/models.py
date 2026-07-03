@@ -1,8 +1,7 @@
 """Codemap 模块自己的表。表名 codemap_ 前缀，不加外键到框架表。"""
-from datetime import datetime, timezone
-from sqlalchemy import Integer, String, Text, DateTime
-from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin
+from sqlalchemy import Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 
 class CodemapFeedback(Base, TimestampMixin):

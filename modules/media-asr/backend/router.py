@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, ValidationError
 from app.database import AsyncSessionLocal
 from app.middleware.auth import require_permission
 from app.models.user import User
@@ -18,9 +18,11 @@ from .services.audio_service import (
     build_segment_blocks,
     copy_temp_file,
     extract_audio_from_video,
+    normalize_language,
     transcribe_audio_file,
     validate_audio_format,
     validate_sample_rate,
+    validate_whisper_model,
 )
 
 router = APIRouter(prefix="/api/media-asr", tags=["media-asr"])
@@ -60,10 +62,12 @@ class TranscribeVideoRequest(BaseModel):
 # ── Capability Implementations ────────────────────────────────────
 
 async def _extract_audio(params: dict, caller: str) -> dict:
-    sample_rate = validate_sample_rate(int(params.get("sample_rate", 16000)))
-    audio_format = validate_audio_format(str(params.get("audio_format", "wav")))
+    file_id = _required_positive_int(params, "file_id")
+    sample_rate = validate_sample_rate(_int_param(params, "sample_rate", 16000))
+    audio_format = validate_audio_format(str(params.get("audio_format") or "wav"))
     save_file = _as_bool(params.get("save_file", True), True)
-    folder_id = _as_optional_int(params.get("folder_id"))
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
+    checked_params = {**params, "file_id": file_id}
 
     user_id = resolve_caller_user_id(caller)
 
@@ -96,14 +100,16 @@ async def _extract_audio(params: dict, caller: str) -> dict:
                 "resources": [{"id": 1, "type": "video", "file_storage_id": file_id}],
             }
 
-    return await run_uploaded_file_capability(params, caller, VIDEO_EXTS, handler)
+    return await run_uploaded_file_capability(checked_params, caller, VIDEO_EXTS, handler)
 
 
 async def _transcribe_audio(params: dict, caller: str) -> dict:
-    model = str(params.get("model", "large-v3"))
-    language = params.get("language")
+    file_id = _required_positive_int(params, "file_id")
+    model = validate_whisper_model(str(params.get("model") or "large-v3"))
+    language = normalize_language(params.get("language"))
     save_text = _as_bool(params.get("save_text", False), False)
-    folder_id = _as_optional_int(params.get("folder_id"))
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
+    checked_params = {**params, "file_id": file_id}
 
     user_id = resolve_caller_user_id(caller)
 
@@ -137,19 +143,22 @@ async def _transcribe_audio(params: dict, caller: str) -> dict:
             "metadata": {
                 "segment_count": len(segments),
                 "text_file_id": text_file_id,
+                "duration_seconds": result.get("duration_seconds"),
             },
         }
 
-    return await run_uploaded_file_capability(params, caller, AUDIO_EXTS, handler)
+    return await run_uploaded_file_capability(checked_params, caller, AUDIO_EXTS, handler)
 
 
 async def _transcribe_video(params: dict, caller: str) -> dict:
-    model = str(params.get("model", "large-v3"))
-    sample_rate = validate_sample_rate(int(params.get("sample_rate", 16000)))
-    language = params.get("language")
+    file_id = _required_positive_int(params, "file_id")
+    model = validate_whisper_model(str(params.get("model") or "large-v3"))
+    sample_rate = validate_sample_rate(_int_param(params, "sample_rate", 16000))
+    language = normalize_language(params.get("language"))
     save_audio = _as_bool(params.get("save_audio", False), False)
     save_text = _as_bool(params.get("save_text", False), False)
-    folder_id = _as_optional_int(params.get("folder_id"))
+    folder_id = _optional_positive_int(params.get("folder_id"), "folder_id")
+    checked_params = {**params, "file_id": file_id}
 
     user_id = resolve_caller_user_id(caller)
 
@@ -204,10 +213,11 @@ async def _transcribe_video(params: dict, caller: str) -> dict:
             "metadata": {
                 "segment_count": len(segments),
                 "sample_rate": sample_rate,
+                "duration_seconds": transcribe_result.get("duration_seconds"),
             },
         }
 
-    return await run_uploaded_file_capability(params, caller, VIDEO_EXTS, handler)
+    return await run_uploaded_file_capability(checked_params, caller, VIDEO_EXTS, handler)
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -224,11 +234,33 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
-def _as_optional_int(value: Any) -> int | None:
+def _int_param(params: dict, name: str, default: int) -> int:
+    value = params.get(name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be an integer") from exc
+
+
+def _required_positive_int(params: dict, name: str) -> int:
+    if params.get(name) in (None, ""):
+        raise ValidationError(f"{name} is required")
+    value = _int_param(params, name, 0)
+    if value <= 0:
+        raise ValidationError(f"{name} must be a positive integer")
+    return value
+
+
+def _optional_positive_int(value: Any, name: str) -> int | None:
     if value in (None, ""):
         return None
-    parsed = int(value)
-    return parsed if parsed > 0 else None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be an integer") from exc
+    if parsed <= 0:
+        raise ValidationError(f"{name} must be a positive integer")
+    return parsed
 
 
 async def _upload_with_conflict_retry(
@@ -315,7 +347,7 @@ register_capability(
     brief="音频转文字",
     parameters={
         "file_id": {"type": "int", "description": "Audio file ID"},
-        "model": {"type": "string", "description": "Whisper model: large-v3 / large-v2 / medium (default large-v3)"},
+        "model": {"type": "string", "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"},
         "language": {"type": "string", "description": "Language hint (optional, e.g. zh, en)"},
         "save_text": {"type": "bool", "description": "Save transcript as a framework text file (default false)"},
         "folder_id": {"type": "int", "description": "Target folder ID for saved transcript"},
@@ -329,7 +361,7 @@ register_capability(
     brief="视频转文字",
     parameters={
         "file_id": {"type": "int", "description": "Source video file ID"},
-        "model": {"type": "string", "description": "Whisper model (default large-v3)"},
+        "model": {"type": "string", "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"},
         "sample_rate": {"type": "int", "description": "Audio extraction sample rate (default 16000)"},
         "language": {"type": "string", "description": "Language hint (optional)"},
         "save_audio": {"type": "bool", "description": "Save extracted audio as a framework file (default false)"},

@@ -26,6 +26,8 @@ const capabilities = ref([
   'terminal-tools:list_workspace',
   'terminal-tools:publish',
   'terminal-tools:import',
+  'terminal-tools:run_python',
+  'terminal-tools:chart',
 ])
 </script>
 

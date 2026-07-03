@@ -1,3 +1,7 @@
+import importlib.util
+from pathlib import Path
+
+from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
@@ -5,6 +9,17 @@ from app.services.module_registry import register_capability
 from app.services.uploaded_file_runner import run_uploaded_file_capability
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+
+_PARSER_CORE_PATH = Path(__file__).with_name("parser_core.py")
+_PARSER_CORE_SPEC = importlib.util.spec_from_file_location("xlsx_parser_core", _PARSER_CORE_PATH)
+if _PARSER_CORE_SPEC is None or _PARSER_CORE_SPEC.loader is None:
+    raise RuntimeError("Failed to load xlsx parser core")
+_parser_core = importlib.util.module_from_spec(_PARSER_CORE_SPEC)
+_PARSER_CORE_SPEC.loader.exec_module(_parser_core)
+
+SpreadsheetParseError = _parser_core.SpreadsheetParseError
+parse_spreadsheet_file = _parser_core.parse_spreadsheet_file
+SUPPORTED_EXTS = _parser_core.SUPPORTED_EXTS
 
 router = APIRouter(prefix="/api/xlsx-parser", tags=["xlsx-parser"])
 
@@ -14,60 +29,16 @@ class ParseRequest(BaseModel):
 
 
 async def _parse(params: dict, caller: str) -> dict:
-    import csv as csv_module
-    import io
+    def parse_file(file_id: int, _file: object, full_path: Path, ext: str) -> dict:
+        try:
+            return parse_spreadsheet_file(file_id, full_path, ext)
+        except SpreadsheetParseError as exc:
+            raise ValidationError(str(exc)) from exc
 
-    import openpyxl
-
-    allowed = {"xlsx", "xls", "csv"}
-
-    def parse_file(file_id, _file, full_path, ext):
-        blocks = []
-
-        if ext in ("xlsx", "xls"):
-            wb = openpyxl.load_workbook(full_path, read_only=True, data_only=True)
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                rows = []
-                row_count = 0
-                for row in ws.iter_rows(values_only=True):
-                    cells = [str(c).strip() if c is not None else "" for c in row]
-                    row_text = " | ".join(cells)
-                    if row_text.strip():
-                        rows.append(row_text)
-                        row_count += 1
-                    if row_count > 5000:
-                        rows.append("[... truncated at 5000 rows]")
-                        break
-                if rows:
-                    block_text = f"[Sheet: {sheet_name}]\n" + "\n".join(rows)
-                    blocks.append({"type": "table", "text": block_text, "page": None, "resource_ref": None})
-            wb.close()
-        elif ext == "csv":
-            raw = full_path.read_bytes()
-            try:
-                content = raw.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                content = raw.decode("gbk", errors="replace")
-            reader = csv_module.reader(io.StringIO(content))
-            rows = []
-            for i, row in enumerate(reader):
-                cells = [c.strip() for c in row]
-                rows.append(" | ".join(cells))
-                if i >= 5000:
-                    rows.append("[... truncated at 5000 rows]")
-                    break
-            if rows:
-                blocks.append({"type": "表格", "text": "\n".join(rows), "page": None, "resource_ref": None})
-
-        return {
-            "file_id": file_id,
-            "format": ext,
-            "blocks": blocks,
-            "resources": [],
-        }
-
-    return await run_uploaded_file_capability(params, caller, allowed, parse_file)
+    try:
+        return await run_uploaded_file_capability(params, caller, SUPPORTED_EXTS, parse_file)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 @router.get("/health")
@@ -85,6 +56,6 @@ register_capability(
     "xlsx-parser", "parse", _parse,
     description="Parse XLSX/CSV files into unified content blocks",
     brief="解析 XLSX 文档",
-    parameters={"file_id": {"type": "int"}},
+    parameters={"file_id": {"type": "int", "description": "File ID in file storage"}},
     min_role="viewer",
 )

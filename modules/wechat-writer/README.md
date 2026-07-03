@@ -82,3 +82,13 @@ modules/wechat-writer/
 默认提示词（5条）在 `init_db.py` 的 `DEFAULT_PROMPTS` 中，启动时自动写入 `wechat_prompts` 表。用户可通过前端「提示词管理」页面实时编辑。
 
 当前写作模型：`deepseek-v4-flash`（可通过 `WRITING_PROFILE` 在 `services.py` 中切换）。
+
+## 验收命令
+
+```bash
+cd /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2
+backend/.venv/bin/python -m ruff check modules/wechat-writer/backend/init_db.py modules/wechat-writer/backend/router.py modules/wechat-writer/backend/services.py modules/wechat-writer/sandbox/test_module.py
+PYTHONPATH=backend:. backend/.venv/bin/python -m pytest modules/wechat-writer/sandbox/test_module.py
+```
+
+`sandbox/test_module.py` 不调用真实模型网关或数据库；它会在 running event loop 中真调用 `_run_startup_init()`，用假 `run_init()` 验证模块启动初始化不会再触发 `asyncio.run()` 的协程未 await 警告。

@@ -2,6 +2,7 @@
 Agent 不硬编码任何模块工具——有什么技能就有什么工具。
 渐进式工具发现：只暴露 3 个元工具（skill_list/skill_describe/skill_use），
 模型需先查再调，默认 token 恒定不随模块膨胀。"""
+import logging
 import re
 import time
 
@@ -9,6 +10,7 @@ from app.services.module_registry import call_capability, list_capabilities
 
 # 工具名用 module__action（function name 不能含冒号）
 SEP = "__"
+logger = logging.getLogger("v2.agent").getChild("services.tool_discovery")
 
 
 def build_tools(role: str) -> list[dict]:
@@ -260,8 +262,8 @@ async def record_skill_invocation(
                 owner_id=owner_id if owner_id is not None else _parse_owner_id(caller),
                 error_detail=error_detail,
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("record_skill_invocation failed (non-fatal): %s", exc)
 
 
 async def _handle_write_ir_with_correction(args: dict, caller: str, caller_role: str) -> dict:

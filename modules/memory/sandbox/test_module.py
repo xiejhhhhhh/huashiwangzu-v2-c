@@ -323,7 +323,17 @@ def test_memory_quality_guard_source_contracts() -> None:
     assert "DELETE FROM memory_chunks WHERE memory_record_id = :id" in memory_src
     assert ":note_payload IS NULL" not in experience_src
     assert '"has_note": note_payload is not None' in experience_src
+    assert "def _coerce_bool" in experience_src
+    assert "def _normalize_json_text" in experience_src
+    assert "trigger_condition ILIKE :keyword" in experience_src
+    assert "experience_id = experience_service._coerce_optional_positive_int" in capability_src
+    assert "success = experience_service._coerce_bool" in capability_src
+    assert "UPDATE memory_stable_rules SET hit_count = hit_count + 1" in capability_src
+    assert "UPDATE memory_chunks SET access_count = access_count + 1" in capability_src
     assert "orphan_chunk_cleanup_sql" in init_src
+    assert "l.from_id = l.to_id" in init_src
+    assert "chunk_alters" in init_src
+    assert "stable_rule_alters" in init_src
     assert "ix_memory_chunks_embedding" in init_src
     print("  [QUALITY_GUARDS] Source contracts valid")
 
@@ -344,6 +354,21 @@ def test_backfill_dream_followup_is_degraded() -> None:
     assert result["diagnostic"] == "completed_with_dream_failures"
     assert result["dream_failures"][0]["owner_id"] == 7
     print("  [BACKFILL_EMBEDDINGS] Dream degradation valid")
+
+
+def test_save_edit_responses_expose_async_followup_state() -> None:
+    """Save/edit paths should expose embedding and post-save enqueue state."""
+    module_root = Path(__file__).resolve().parents[1]
+    router_src = (module_root / "backend" / "router.py").read_text(encoding="utf-8")
+    capability_src = (module_root / "backend" / "services" / "capabilities.py").read_text(encoding="utf-8")
+    memory_src = (module_root / "backend" / "services" / "memory_service.py").read_text(encoding="utf-8")
+
+    assert "async def _enqueue_post_save(memory_id: int, content: str, source: str | None) -> bool" in memory_src
+    assert '"embedding_updated": embedding_updated' in router_src
+    assert '"post_save_enqueued": post_save_enqueued' in router_src
+    assert '"embedding_updated": embedding_updated' in capability_src
+    assert '"post_save_enqueued": post_save_enqueued' in capability_src
+    print("  [SAVE_EDIT] Async follow-up state exposed")
 
 
 def test_response_shape() -> None:
@@ -381,6 +406,7 @@ def main() -> None:
     test_backfill_embeddings_output_shape()
     test_memory_quality_guard_source_contracts()
     test_backfill_dream_followup_is_degraded()
+    test_save_edit_responses_expose_async_followup_state()
     test_response_shape()
     print("=" * 60)
     print("PASS: memory sandbox test")

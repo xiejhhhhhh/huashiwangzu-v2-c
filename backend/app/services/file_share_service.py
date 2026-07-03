@@ -160,7 +160,10 @@ async def get_sent_shares(
         select(FileShare, File, User.display_name.label("shared_with_name"))
         .join(File, FileShare.file_id == File.id)
         .join(User, FileShare.shared_with_user_id == User.id)
-        .where(FileShare.shared_by_owner_id == user_id)
+        .where(
+            FileShare.shared_by_owner_id == user_id,
+            File.deleted.is_(False),
+        )
         .order_by(FileShare.created_at.desc())
     )
     total = len((await db.execute(

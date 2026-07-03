@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-from app.config import get_settings
 from app.core.command_safety import check_dangerous_command as _check_dangerous_command
 from app.core.workspace_security import (
     ensure_user_workspace as _user_workspace,
@@ -32,6 +31,7 @@ __all__ = [
     "_build_sandbox_profile",
     "_check_dangerous_command",
     "_check_path_escape",
+    "_coerce_timeout",
     "_resolve_user_id",
     "_resolve_workspace_path",
     "_run_process_capped",
@@ -42,23 +42,10 @@ __all__ = [
     "_workspace_relative_path",
 ]
 
-# ── Workspace configuration ─────────────────────────────────────────────
-_WORKSPACE_ROOT = None
 _MAX_OUTPUT_BYTES = 1 * 1024 * 1024   # 1 MB
 _MAX_FILE_READ_BYTES = 1 * 1024 * 1024  # 1 MB
 _MAX_LIST_ITEMS = 1000
 _DEFAULT_TIMEOUT = 60                  # seconds
-
-
-def _get_workspace_base() -> Path:
-    """Return the root of all user workspaces (backend/data/workspaces/)."""
-    global _WORKSPACE_ROOT
-    if _WORKSPACE_ROOT is None:
-        settings = get_settings()
-        base = Path(settings.UPLOAD_DIR).resolve().parent
-        _WORKSPACE_ROOT = (base / "workspaces").resolve()
-        _WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
-    return _WORKSPACE_ROOT
 
 
 def _resolve_user_id(caller: str) -> int:
@@ -66,45 +53,64 @@ def _resolve_user_id(caller: str) -> int:
     return resolve_caller_user_id(caller)
 
 
+def _coerce_timeout(value: object, default: int = _DEFAULT_TIMEOUT, maximum: int = 600) -> int:
+    """Parse timeout defensively for capability calls that bypass Pydantic."""
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError):
+        return default
+    if timeout <= 0 or timeout > maximum:
+        return default
+    return timeout
+
+
 def _check_path_escape(command: str, workspace_real: str) -> str | None:
     """Check if command tries to access filesystem paths outside the workspace."""
     import shlex
 
     try:
-        tokens = shlex.split(command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
     except ValueError:
         return None
 
     if not tokens:
         return None
 
-    cmd_name = tokens[0]
-    args = tokens[1:]
-
     TRAVERSAL_CMDS = frozenset({
         'cd', 'ls', 'find', 'tree', 'cat', 'less', 'more',
         'head', 'tail', 'nl', 'wc', 'stat', 'du', 'file',
-        'readlink', 'realpath', 'dirname',
+        'readlink', 'realpath', 'dirname', 'cp', 'mv', 'touch',
+        'mkdir', 'rmdir', 'rm', 'tee',
     })
+    SEPARATORS = {'&&', '||', ';', '|'}
 
-    if cmd_name not in TRAVERSAL_CMDS:
-        return None
+    cmd_name = ""
 
-    for arg in args:
-        if arg.startswith('-') or arg in {'&&', '||', ';', '|', '>', '>>', '<'}:
+    for token in tokens:
+        if token in SEPARATORS:
+            cmd_name = ""
             continue
-        if arg == '~' or arg.startswith('~/'):
-            return (f"Path escape blocked: '{arg}' expands to"
+        if not cmd_name:
+            cmd_name = token
+            continue
+        if cmd_name not in TRAVERSAL_CMDS:
+            continue
+        if token.startswith('-') or token in {'>', '>>', '<'}:
+            continue
+        if token == '~' or token.startswith('~/'):
+            return (f"Path escape blocked: '{token}' expands to"
                     " home directory outside workspace")
         try:
-            resolved = os.path.realpath(os.path.join(workspace_real, arg))
+            resolved = os.path.realpath(os.path.join(workspace_real, token))
         except (OSError, ValueError):
             continue
 
         resolved_str = str(resolved)
         ws_prefix = workspace_real.rstrip('/') + '/'
         if not resolved_str.startswith(ws_prefix) and resolved_str != workspace_real:
-            return (f"Path escape blocked: '{arg}' resolves to"
+            return (f"Path escape blocked: '{token}' resolves to"
                     " a location outside workspace")
 
     return None

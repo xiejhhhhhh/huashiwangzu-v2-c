@@ -1,0 +1,6 @@
+project:
+  name: structured-parser
+  formats:
+    - json
+    - yaml
+enabled: true

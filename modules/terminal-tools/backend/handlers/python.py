@@ -7,7 +7,6 @@ Capabilities:
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import shutil
@@ -17,6 +16,7 @@ import uuid
 from .sandbox import (
     _DEFAULT_TIMEOUT,
     _build_sandbox_profile,
+    _coerce_timeout,
     _resolve_user_id,
     _resolve_workspace_path,
     _run_process_capped,
@@ -59,12 +59,10 @@ async def _run_python(params: dict, caller: str) -> dict:
     workspace = _user_workspace(user_id)
     workspace_real = str(workspace.resolve())
     code = params.get("code", "").strip()
-    timeout = int(params.get("timeout", _DEFAULT_TIMEOUT))
+    timeout = _coerce_timeout(params.get("timeout", _DEFAULT_TIMEOUT))
 
     if not code:
         return {"success": False, "error": "No code provided"}
-    if timeout <= 0 or timeout > 600:
-        timeout = _DEFAULT_TIMEOUT
 
     run_id = uuid.uuid4().hex[:12]
     run_dir = workspace / f".da_{run_id}"
@@ -75,7 +73,12 @@ async def _run_python(params: dict, caller: str) -> dict:
         input_file_ids = params.get("input_files", []) or []
         if input_file_ids:
             for fid in input_file_ids:
-                file_id = int(fid)
+                try:
+                    file_id = int(fid)
+                except (TypeError, ValueError):
+                    return {"success": False, "error": f"Invalid input file id: {fid}"}
+                if file_id <= 0:
+                    return {"success": False, "error": f"Invalid input file id: {fid}"}
                 from app.core.exceptions import AppException, NotFound
                 from app.database import AsyncSessionLocal
                 from app.services.file_preview_service import _resolve_storage_path
@@ -114,7 +117,7 @@ async def _run_python(params: dict, caller: str) -> dict:
         else:
             return {
                 "success": False,
-                "error": "当前平台无可用沙盒(sandbox-exec)，run_python 已禁用。需要 macOS 或安装了 bubblewrap 的 Linux。",
+                "error": "当前平台无可用沙盒(sandbox-exec)，run_python 已禁用。当前实现需要 macOS sandbox-exec。",
                 "code_preview": code[:200],
             }
 
@@ -148,13 +151,13 @@ async def _run_python(params: dict, caller: str) -> dict:
         for fpath in run_dir.iterdir():
             if fpath.is_file() and fpath.suffix.lower() in _CHART_EXTENSIONS:
                 try:
-                    file_bytes = fpath.read_bytes()
                     from app.database import AsyncSessionLocal
                     from app.services import file_upload_service
                     async with AsyncSessionLocal() as db:
-                        upload_result = await file_upload_service.upload_file(
-                            db, io.BytesIO(file_bytes), fpath.name, user_id, None,
-                        )
+                        with fpath.open("rb") as chart_handle:
+                            upload_result = await file_upload_service.upload_file(
+                                db, chart_handle, fpath.name, user_id, None,
+                            )
                         charts.append({
                             "file_id": upload_result["id"],
                             "name": upload_result["name"],

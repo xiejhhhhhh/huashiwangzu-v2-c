@@ -77,7 +77,8 @@ export interface AppRegistryEntry {
   publicActions?: Array<{
     action: string
     description: string
-    paramSchema: Record<string, unknown>
+    parameters: Record<string, unknown>
+    minRole?: string
   }>
   /** Whether enabled, defaults to enabled */
   enabled?: boolean

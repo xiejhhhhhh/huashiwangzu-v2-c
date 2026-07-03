@@ -1,16 +1,15 @@
 """Service layer for wechat-writer module."""
 
-import json
 import logging
 from datetime import datetime, timezone
-from sqlalchemy import select, update, delete
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text as sa_text
 
+from app.core.exceptions import AppException, ValidationError
 from app.database import AsyncSessionLocal
 from app.gateway.service import chat as gateway_chat
-from app.services.file_reader import resolve_caller_user_id as resolve_user_id
 from app.services.prompt_helpers import load_prompt_with_fallback
+from sqlalchemy import select
+from sqlalchemy import text as sa_text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import WechatDraft, WechatPrompt
 
@@ -18,6 +17,31 @@ logger = logging.getLogger("v2.wechat_writer").getChild("services")
 
 MODULE_KEY = "wechat-writer"
 WRITING_PROFILE = "deepseek-v4-flash"
+ALLOWED_DRAFT_STATUSES = {"draft", "published", "archived"}
+
+
+def _require_text(value: str | None, field_name: str, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValidationError(f"{field_name}不能为空")
+    if len(text) > max_chars:
+        raise ValidationError(f"{field_name}不能超过 {max_chars} 字")
+    return text
+
+
+def _normalize_status(status: str | None) -> str:
+    value = str(status or "draft").strip() or "draft"
+    if value not in ALLOWED_DRAFT_STATUSES:
+        raise ValidationError(f"草稿状态不合法: {value}")
+    return value
+
+
+def _ensure_gateway_success(result: dict, action: str) -> None:
+    error = result.get("error")
+    if error:
+        raise AppException(f"{action}失败: {error}", status_code=502)
+
+
 # ── Prompt helpers ──────────────────────────────────────────────
 
 async def get_prompt(db: AsyncSession, key: str, owner_id: int = 0) -> str | None:
@@ -25,7 +49,7 @@ async def get_prompt(db: AsyncSession, key: str, owner_id: int = 0) -> str | Non
         select(WechatPrompt).where(
             WechatPrompt.key == key,
             WechatPrompt.owner_id.in_([0, owner_id]),
-            WechatPrompt.deleted == False,
+            WechatPrompt.deleted.is_(False),
         ).order_by(WechatPrompt.owner_id.desc()).limit(1)
     )
     prompt = r.scalar_one_or_none()
@@ -55,7 +79,8 @@ DEFAULT_FALLBACKS = {
 
 # ── Topic generation ────────────────────────────────────────────
 
-async def generate_topics(direction: str, owner_id: int) -> list[dict]:
+async def generate_topics(direction: str, owner_id: int) -> dict:
+    direction = _require_text(direction, "创作方向", 1000)
     async with AsyncSessionLocal() as db:
         system_prompt = await _load_prompt_with_fallback(db, "persona_system", owner_id)
         user_prompt = await _load_prompt_with_fallback(db, "topic_generation", owner_id, direction=direction)
@@ -65,12 +90,15 @@ async def generate_topics(direction: str, owner_id: int) -> list[dict]:
         {"role": "user", "content": user_prompt},
     ]
     result = await gateway_chat(messages, profile_key=WRITING_PROFILE)
+    _ensure_gateway_success(result, "生成选题")
     return {"topics": result.get("content", ""), "raw": result}
 
 
 # ── Outline generation ──────────────────────────────────────────
 
 async def generate_outline(topic: str, direction: str, owner_id: int) -> dict:
+    topic = _require_text(topic, "选题标题", 500)
+    direction = str(direction or "").strip()[:1000]
     async with AsyncSessionLocal() as db:
         system_prompt = await _load_prompt_with_fallback(db, "persona_system", owner_id)
         user_prompt = await _load_prompt_with_fallback(db, "outline_generation", owner_id, topic=topic, direction=direction)
@@ -80,21 +108,28 @@ async def generate_outline(topic: str, direction: str, owner_id: int) -> dict:
         {"role": "user", "content": user_prompt},
     ]
     result = await gateway_chat(messages, profile_key=WRITING_PROFILE)
+    _ensure_gateway_success(result, "生成大纲")
     return {"outline": result.get("content", ""), "raw": result}
 
 
 # ── Article generation ──────────────────────────────────────────
 
 async def generate_article(topic: str, outline: str, direction: str, owner_id: int) -> dict:
+    topic = _require_text(topic, "选题标题", 500)
+    outline = _require_text(outline, "文章大纲", 12000)
+    direction = str(direction or "").strip()[:1000]
     async with AsyncSessionLocal() as db:
         system_prompt = await _load_prompt_with_fallback(db, "persona_system", owner_id)
         user_prompt = await _load_prompt_with_fallback(db, "article_generation", owner_id, topic=topic, outline=outline)
+        if direction:
+            user_prompt = f"{user_prompt}\n\n创作方向补充：{direction}"
 
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     result = await gateway_chat(messages, profile_key=WRITING_PROFILE)
+    _ensure_gateway_success(result, "生成文章")
     return {"article": result.get("content", ""), "raw": result}
 
 
@@ -103,6 +138,7 @@ async def generate_article(topic: str, outline: str, direction: str, owner_id: i
 async def validate_content(content: str, owner_id: int) -> dict:
     from app.services.module_registry import call_capability
 
+    content = _require_text(content, "校验内容", 12000)
     try:
         kb_result = await call_capability(
             "knowledge", "search",
@@ -129,6 +165,7 @@ async def validate_content(content: str, owner_id: int) -> dict:
         {"role": "user", "content": validation_prompt},
     ]
     ai_review = await gateway_chat(messages, profile_key=WRITING_PROFILE)
+    _ensure_gateway_success(ai_review, "内容校验")
 
     return {
         "has_knowledge_base_results": has_knowledge,
@@ -146,7 +183,7 @@ async def list_drafts(owner_id: int, page: int = 1, page_size: int = 20) -> dict
         r = await db.execute(
             select(WechatDraft).where(
                 WechatDraft.owner_id == owner_id,
-                WechatDraft.deleted == False,
+                WechatDraft.deleted.is_(False),
             ).order_by(WechatDraft.updated_at.desc()).offset(offset).limit(page_size)
         )
         items = r.scalars().all()
@@ -169,7 +206,7 @@ async def get_draft(draft_id: int, owner_id: int) -> dict | None:
             select(WechatDraft).where(
                 WechatDraft.id == draft_id,
                 WechatDraft.owner_id == owner_id,
-                WechatDraft.deleted == False,
+                WechatDraft.deleted.is_(False),
             )
         )
         d = r.scalar_one_or_none()
@@ -177,6 +214,7 @@ async def get_draft(draft_id: int, owner_id: int) -> dict | None:
 
 
 async def create_draft(data: dict, owner_id: int) -> dict:
+    status = _normalize_status(data.get("status"))
     async with AsyncSessionLocal() as db:
         draft = WechatDraft(
             owner_id=owner_id,
@@ -186,7 +224,7 @@ async def create_draft(data: dict, owner_id: int) -> dict:
             article_type=data.get("article_type", ""),
             keywords=data.get("keywords"),
             notes=data.get("notes", ""),
-            status=data.get("status", "draft"),
+            status=status,
             version=1,
         )
         db.add(draft)
@@ -196,12 +234,14 @@ async def create_draft(data: dict, owner_id: int) -> dict:
 
 
 async def update_draft(draft_id: int, data: dict, owner_id: int) -> dict | None:
+    if "status" in data:
+        data["status"] = _normalize_status(data.get("status"))
     async with AsyncSessionLocal() as db:
         r = await db.execute(
             select(WechatDraft).where(
                 WechatDraft.id == draft_id,
                 WechatDraft.owner_id == owner_id,
-                WechatDraft.deleted == False,
+                WechatDraft.deleted.is_(False),
             )
         )
         draft = r.scalar_one_or_none()
@@ -227,7 +267,7 @@ async def delete_draft(draft_id: int, owner_id: int) -> bool:
             select(WechatDraft).where(
                 WechatDraft.id == draft_id,
                 WechatDraft.owner_id == owner_id,
-                WechatDraft.deleted == False,
+                WechatDraft.deleted.is_(False),
             )
         )
         draft = r.scalar_one_or_none()
@@ -244,7 +284,7 @@ async def list_prompts(owner_id: int, category: str | None = None) -> list[dict]
     async with AsyncSessionLocal() as db:
         query = select(WechatPrompt).where(
             WechatPrompt.owner_id.in_([0, owner_id]),
-            WechatPrompt.deleted == False,
+            WechatPrompt.deleted.is_(False),
         )
         if category:
             query = query.where(WechatPrompt.category == category)
@@ -258,18 +298,19 @@ async def list_prompts(owner_id: int, category: str | None = None) -> list[dict]
 
 
 async def save_prompt(data: dict, owner_id: int) -> dict:
+    key = _require_text(data.get("key"), "提示词 key", 100)
+    content = _require_text(data.get("content"), "提示词内容", 20000)
     async with AsyncSessionLocal() as db:
-        key = data.get("key", "")
         r = await db.execute(
             select(WechatPrompt).where(
                 WechatPrompt.key == key,
                 WechatPrompt.owner_id == owner_id,
-                WechatPrompt.deleted == False,
+                WechatPrompt.deleted.is_(False),
             )
         )
         existing = r.scalar_one_or_none()
         if existing:
-            existing.content = data.get("content", existing.content)
+            existing.content = content
             existing.name = data.get("name", existing.name)
             existing.description = data.get("description", existing.description)
             existing.category = data.get("category", existing.category)
@@ -282,7 +323,7 @@ async def save_prompt(data: dict, owner_id: int) -> dict:
                 owner_id=owner_id,
                 key=key,
                 name=data.get("name", key),
-                content=data.get("content", ""),
+                content=content,
                 description=data.get("description", ""),
                 category=data.get("category", "custom"),
             )
@@ -298,7 +339,7 @@ async def delete_prompt(prompt_id: int, owner_id: int) -> bool:
             select(WechatPrompt).where(
                 WechatPrompt.id == prompt_id,
                 WechatPrompt.owner_id == owner_id,
-                WechatPrompt.deleted == False,
+                WechatPrompt.deleted.is_(False),
             )
         )
         p = r.scalar_one_or_none()

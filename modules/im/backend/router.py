@@ -7,10 +7,10 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.module_registry import register_capability
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from huashiwangzu_modules.im.init_db import run_init
 from huashiwangzu_modules.im.models import ImConversation, ImMessage, ImReadState
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,30 +18,44 @@ logger = logging.getLogger("v2.im").getChild("router")
 
 router = APIRouter(prefix="/api/im", tags=["im"])
 
+MAX_MESSAGE_PAGE_SIZE = 100
+MAX_MESSAGE_CONTENT_LENGTH = 4000
+
 
 class SendMessageRequest(BaseModel):
-    conversation_id: int | None = None
-    target_user_id: int | None = None
-    content: str
+    conversation_id: int | None = Field(default=None, gt=0)
+    target_user_id: int | None = Field(default=None, gt=0)
+    content: str = Field(..., max_length=MAX_MESSAGE_CONTENT_LENGTH)
+
+
+class StartConversationRequest(BaseModel):
+    target_user_id: int = Field(..., gt=0)
 
 
 class MarkReadRequest(BaseModel):
-    last_read_message_id: int
+    last_read_message_id: int = Field(..., ge=0)
 
 
 def _parse_user_id(caller: str) -> int:
     if caller and caller.startswith("user:"):
-        return int(caller.split(":", 1)[1])
+        try:
+            return int(caller.split(":", 1)[1])
+        except ValueError:
+            return 0
     return 0
 
 
 async def _get_or_create_conversation(db: AsyncSession, user_a: int, user_b: int) -> ImConversation:
     """查找或创建两用户间的单聊会话。"""
+    if user_a == user_b:
+        raise ValidationError("不能给自己发消息")
+    if user_a < 0 or user_b < 0:
+        raise ValidationError("用户ID无效")
     stmt = select(ImConversation).where(ImConversation.conv_type == "single")
     r = await db.execute(stmt)
     existing = r.scalars().all()
     for conv in existing:
-        members = conv.member_ids if isinstance(conv.member_ids, list) else []
+        members = _conversation_members(conv)
         if user_a in members and user_b in members:
             return conv
     conv = ImConversation(
@@ -60,7 +74,13 @@ async def _get_or_create_conversation(db: AsyncSession, user_a: int, user_b: int
 def _conversation_members(conv: ImConversation) -> list[int]:
     if not isinstance(conv.member_ids, list):
         return []
-    return [int(member_id) for member_id in conv.member_ids]
+    members = []
+    for member_id in conv.member_ids:
+        try:
+            members.append(int(member_id))
+        except (TypeError, ValueError):
+            continue
+    return members
 
 
 def _message_to_dict(msg: ImMessage) -> dict:
@@ -74,12 +94,66 @@ def _message_to_dict(msg: ImMessage) -> dict:
     }
 
 
+def _normalize_message_content(content: str) -> str:
+    normalized = content.strip()
+    if not normalized:
+        raise ValidationError("消息内容不能为空")
+    if len(normalized) > MAX_MESSAGE_CONTENT_LENGTH:
+        raise ValidationError(f"消息内容不能超过 {MAX_MESSAGE_CONTENT_LENGTH} 个字符")
+    return normalized
+
+
+def _content_param(params: dict) -> str:
+    content = params.get("content")
+    if not isinstance(content, str):
+        raise ValidationError("content must be a non-empty string")
+    return _normalize_message_content(content)
+
+
+async def _upsert_read_state(
+    db: AsyncSession,
+    user_id: int,
+    conversation_id: int,
+    last_read_message_id: int,
+) -> None:
+    stmt = select(ImReadState).where(
+        ImReadState.user_id == user_id,
+        ImReadState.conversation_id == conversation_id,
+    )
+    r = await db.execute(stmt)
+    read_state = r.scalar_one_or_none()
+    if read_state:
+        read_state.last_read_message_id = max(read_state.last_read_message_id, last_read_message_id)
+        return
+    db.add(ImReadState(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        last_read_message_id=last_read_message_id,
+    ))
+
+
+async def _count_unread_messages(
+    db: AsyncSession,
+    conversation_id: int,
+    user_id: int,
+    last_read_message_id: int,
+) -> int:
+    count_stmt = select(func.count()).select_from(ImMessage).where(
+        ImMessage.conversation_id == conversation_id,
+        ImMessage.id > last_read_message_id,
+        ImMessage.sender_id != user_id,
+    )
+    cr = await db.execute(count_stmt)
+    return cr.scalar() or 0
+
+
 async def _send_text_message_to_conversation(
     db: AsyncSession,
     conversation_id: int,
     sender_id: int,
     content: str,
 ) -> ImMessage:
+    normalized_content = _normalize_message_content(content)
     conv = await db.get(ImConversation, conversation_id)
     if not conv:
         raise NotFound("会话不存在")
@@ -89,24 +163,19 @@ async def _send_text_message_to_conversation(
     msg = ImMessage(
         conversation_id=conversation_id,
         sender_id=sender_id,
-        content=content,
+        content=normalized_content,
         msg_type="text",
         created_at=datetime.now(timezone.utc),
     )
     db.add(msg)
-    await db.commit()
-    await db.refresh(msg)
-    summary = content[:50] + ("..." if len(content) > 50 else "")
+    await db.flush()
+    summary = normalized_content[:50] + ("..." if len(normalized_content) > 50 else "")
     conv.last_message_summary = summary
     conv.last_message_at = datetime.now(timezone.utc)
+    await _upsert_read_state(db, sender_id, conversation_id, int(msg.id))
     await db.commit()
+    await db.refresh(msg)
     return msg
-
-
-async def _ensure_table_init(db: AsyncSession) -> None:
-    tables_exist = await db.execute(select(func.count()).select_from(ImConversation.__table__).limit(0))
-    if tables_exist is None:
-        await run_init(db)
 
 
 @router.get("/conversations")
@@ -122,7 +191,7 @@ async def list_conversations(
 
     result = []
     for conv in convs:
-        members = conv.member_ids if isinstance(conv.member_ids, list) else []
+        members = _conversation_members(conv)
         unread = 0
         read_stmt = select(ImReadState).where(
             ImReadState.user_id == current_user.id,
@@ -131,20 +200,7 @@ async def list_conversations(
         rr = await db.execute(read_stmt)
         read_state = rr.scalar_one_or_none()
         last_read = read_state.last_read_message_id if read_state else 0
-        if last_read > 0:
-            count_stmt = select(func.count()).select_from(ImMessage).where(
-                ImMessage.conversation_id == conv.id,
-                ImMessage.id > last_read,
-            )
-            cr = await db.execute(count_stmt)
-            unread = cr.scalar() or 0
-        else:
-            count_stmt = select(func.count()).select_from(ImMessage).where(
-                ImMessage.conversation_id == conv.id,
-            )
-            cr = await db.execute(count_stmt)
-            total = cr.scalar() or 0
-            unread = total
+        unread = await _count_unread_messages(db, conv.id, current_user.id, last_read)
         result.append({
             "id": conv.id,
             "conv_type": conv.conv_type,
@@ -161,8 +217,8 @@ async def list_conversations(
 @router.get("/conversations/{conv_id}/messages")
 async def get_messages(
     conv_id: int,
-    page: int = 1,
-    page_size: int = 50,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=MAX_MESSAGE_PAGE_SIZE),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("viewer")),
 ):
@@ -170,7 +226,7 @@ async def get_messages(
     conv = await db.get(ImConversation, conv_id)
     if not conv:
         raise NotFound("会话不存在")
-    members = conv.member_ids if isinstance(conv.member_ids, list) else []
+    members = _conversation_members(conv)
     if current_user.id not in members:
         raise PermissionDenied("无权访问该会话")
     offset = max(0, (page - 1) * page_size)
@@ -189,6 +245,21 @@ async def get_messages(
     } for m in reversed(msgs)])
 
 
+@router.post("/conversations")
+async def start_conversation(
+    req: StartConversationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("viewer")),
+):
+    await run_init(db)
+    conv = await _get_or_create_conversation(db, current_user.id, req.target_user_id)
+    return ApiResponse(data={
+        "conversation_id": conv.id,
+        "conv_type": conv.conv_type,
+        "member_ids": _conversation_members(conv),
+    })
+
+
 @router.post("/messages")
 async def send_message(
     req: SendMessageRequest,
@@ -196,6 +267,7 @@ async def send_message(
     current_user: User = Depends(require_permission("viewer")),
 ):
     await run_init(db)
+    content = _normalize_message_content(req.content)
     conv_id = req.conversation_id
     if not conv_id and req.target_user_id:
         if req.target_user_id == current_user.id:
@@ -208,7 +280,7 @@ async def send_message(
         db,
         int(conv_id),
         current_user.id,
-        req.content,
+        content,
     )
     return ApiResponse(data=_message_to_dict(msg))
 
@@ -224,24 +296,18 @@ async def mark_read(
     conv = await db.get(ImConversation, conv_id)
     if not conv:
         raise NotFound("会话不存在")
-    members = conv.member_ids if isinstance(conv.member_ids, list) else []
+    members = _conversation_members(conv)
     if current_user.id not in members:
         raise PermissionDenied("无权操作")
-    stmt = select(ImReadState).where(
-        ImReadState.user_id == current_user.id,
-        ImReadState.conversation_id == conv_id,
-    )
-    r = await db.execute(stmt)
-    rs = r.scalar_one_or_none()
-    if rs:
-        rs.last_read_message_id = max(rs.last_read_message_id, req.last_read_message_id)
-    else:
-        rs = ImReadState(
-            user_id=current_user.id,
-            conversation_id=conv_id,
-            last_read_message_id=req.last_read_message_id,
+    if req.last_read_message_id > 0:
+        msg_stmt = select(ImMessage.id).where(
+            ImMessage.id == req.last_read_message_id,
+            ImMessage.conversation_id == conv_id,
         )
-        db.add(rs)
+        msg_result = await db.execute(msg_stmt)
+        if msg_result.scalar_one_or_none() is None:
+            raise ValidationError("last_read_message_id 不属于该会话")
+    await _upsert_read_state(db, current_user.id, conv_id, req.last_read_message_id)
     await db.commit()
     return ApiResponse(data={"status": "ok"})
 
@@ -265,12 +331,7 @@ async def unread_count(
         rr = await db.execute(read_stmt)
         rs = rr.scalar_one_or_none()
         last_read = rs.last_read_message_id if rs else 0
-        count_stmt = select(func.count()).select_from(ImMessage).where(
-            ImMessage.conversation_id == conv.id,
-            ImMessage.id > last_read,
-        )
-        cr = await db.execute(count_stmt)
-        total += cr.scalar() or 0
+        total += await _count_unread_messages(db, conv.id, current_user.id, last_read)
     return ApiResponse(data={"unread_count": total})
 
 
@@ -297,15 +358,19 @@ async def list_users(
 async def _cap_notify(params: dict, caller: str) -> dict:
     """给指定用户推送一条站内通知。参数: user_id, content, title(可选)。"""
     user_id = params.get("user_id")
-    content = params.get("content", "")
-    title = params.get("title", "")
-    if not user_id or not content:
-        return {"success": False, "error": "user_id and content required"}
+    content = _content_param(params)
+    title = str(params.get("title", "")).strip()
+    try:
+        target_user_id = int(user_id)
+    except (TypeError, ValueError):
+        raise ValidationError("user_id must be a positive integer") from None
+    if target_user_id <= 0:
+        raise ValidationError("user_id must be a positive integer")
     from app.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         await run_init(db)
         system_id = 0
-        conv = await _get_or_create_conversation(db, system_id, int(user_id))
+        conv = await _get_or_create_conversation(db, system_id, target_user_id)
         full_content = f"[{title}] {content}" if title else content
         msg = ImMessage(
             conversation_id=conv.id,
@@ -321,15 +386,19 @@ async def _cap_notify(params: dict, caller: str) -> dict:
         conv.last_message_summary = summary
         conv.last_message_at = datetime.now(timezone.utc)
         await db.commit()
-        return {"success": True, "message_id": msg.id}
+        return {"success": True, "message_id": msg.id, "conversation_id": conv.id}
 
 
 async def _cap_send(params: dict, caller: str) -> dict:
     """让其他模块通过框架给 IM 用户发消息。参数: conversation_id, content。"""
     conv_id = params.get("conversation_id")
-    content = params.get("content", "")
-    if not conv_id or not content:
-        return {"success": False, "error": "conversation_id and content required"}
+    content = _content_param(params)
+    try:
+        conversation_id = int(conv_id)
+    except (TypeError, ValueError):
+        raise ValidationError("conversation_id must be a positive integer") from None
+    if conversation_id <= 0:
+        raise ValidationError("conversation_id must be a positive integer")
     caller_user_id = _parse_user_id(caller)
     if not caller_user_id:
         raise PermissionDenied("im:send requires a user caller")
@@ -338,11 +407,11 @@ async def _cap_send(params: dict, caller: str) -> dict:
         await run_init(db)
         msg = await _send_text_message_to_conversation(
             db,
-            int(conv_id),
+            conversation_id,
             caller_user_id,
             content,
         )
-        return {"success": True, "message_id": msg.id}
+        return {"success": True, "message_id": msg.id, "conversation_id": msg.conversation_id}
 
 
 register_capability(

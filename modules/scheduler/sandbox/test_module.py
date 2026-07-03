@@ -6,6 +6,7 @@ shapes for all public_actions — without creating real scheduled tasks.
 
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 
 
 def _assert_rejected(fn: Callable[[], None], label: str) -> None:
@@ -22,17 +23,38 @@ def _validate_action_description(value: str) -> None:
         "action_description must be a non-empty string"
 
 
+def _validate_title(value: str) -> None:
+    assert isinstance(value, str) and len(value.strip()) > 0, \
+        "title must be a non-empty string"
+
+
+def _validate_recur(value: str | None) -> None:
+    if value in (None, ""):
+        return
+    assert isinstance(value, str), "recur must be a string"
+    if value in {"hourly", "daily", "weekly"}:
+        return
+    assert value.startswith("cron:"), "recur must be hourly/daily/weekly or cron:HH:MM"
+    parts = value.split(":")
+    assert len(parts) == 3, "cron recur must be cron:HH:MM"
+    hour = int(parts[1])
+    minute = int(parts[2])
+    assert 0 <= hour <= 23 and 0 <= minute <= 59, "cron time out of range"
+
+
 def _validate_task_id(value: int) -> None:
     assert isinstance(value, int) and value > 0, "task_id must be a positive integer"
 
 
 def test_create_params() -> None:
-    """create: action_description (string), scheduled_at (string datetime),
-    recur (string optional — cron/interval)."""
+    """create: title/action_description, scheduled_at, and optional recur."""
     params_min = {
+        "title": "Weekly report",
         "action_description": "Send weekly report",
         "scheduled_at": "2026-07-08T09:00:00",
     }
+    assert "title" in params_min
+    _validate_title(params_min["title"])
     assert "action_description" in params_min
     _validate_action_description(params_min["action_description"])
     assert "scheduled_at" in params_min
@@ -41,12 +63,13 @@ def test_create_params() -> None:
     print("  [CREATE] Minimal params valid")
 
     params_recur = {
+        "title": "Weekly report",
         "action_description": "Send weekly report",
         "scheduled_at": "2026-07-08T09:00:00",
-        "recur": "0 9 * * 1",
+        "recur": "cron:09:00",
     }
     assert "recur" in params_recur
-    assert isinstance(params_recur["recur"], str) and len(params_recur["recur"]) > 0
+    _validate_recur(params_recur["recur"])
     print("  [CREATE] With recur param valid")
 
 
@@ -78,6 +101,28 @@ def test_create_params_rejects_empty_action() -> None:
     )
 
 
+def test_create_params_rejects_empty_title() -> None:
+    """Create requires non-empty title."""
+    params = {"title": "", "action_description": "Send report"}
+    assert "title" in params
+    _assert_rejected(
+        lambda: _validate_title(params["title"]),
+        "  [CREATE] Empty title rejected",
+    )
+
+
+def test_create_params_rejects_invalid_recur() -> None:
+    """Create only accepts interval keywords or cron:HH:MM."""
+    _assert_rejected(
+        lambda: _validate_recur("0 9 * * 1"),
+        "  [CREATE] Legacy cron rejected",
+    )
+    _assert_rejected(
+        lambda: _validate_recur("cron:24:00"),
+        "  [CREATE] Out-of-range cron rejected",
+    )
+
+
 def test_list_params() -> None:
     """list: no params."""
     params: dict = {}
@@ -103,13 +148,14 @@ def test_task_output_shape() -> None:
     """Task object output shape contract."""
     task = {
         "id": 1,
+        "title": "Weekly report",
         "action_description": "Send weekly report",
         "scheduled_at": "2026-07-08T09:00:00",
         "recur": None,
         "status": "pending",
         "created_at": "2026-07-01T00:00:00",
     }
-    required = {"id", "action_description", "scheduled_at", "status"}
+    required = {"id", "title", "action_description", "scheduled_at", "status"}
     for field in required:
         assert field in task, f"Missing required field: {field}"
     assert isinstance(task["id"], int)
@@ -121,16 +167,17 @@ def test_task_with_recur_output_shape() -> None:
     """Task with recurrence output shape contract."""
     task = {
         "id": 2,
+        "title": "Daily backup",
         "action_description": "Daily backup",
         "scheduled_at": "2026-07-02T02:00:00",
-        "recur": "0 2 * * *",
+        "recur": "cron:02:00",
         "status": "pending",
         "created_at": "2026-07-01T00:00:00",
     }
-    required = {"id", "action_description", "scheduled_at", "recur", "status"}
+    required = {"id", "title", "action_description", "scheduled_at", "recur", "status"}
     for field in required:
         assert field in task, f"Missing required field: {field}"
-    assert isinstance(task["recur"], str) and len(task["recur"]) > 0
+    _validate_recur(task["recur"])
     print("  [TASK_RECUR] Output shape valid")
 
 
@@ -139,14 +186,14 @@ def test_cancel_output_shape() -> None:
     result = {
         "success": True,
         "data": {
-            "task_id": 5,
+            "id": 5,
             "status": "cancelled",
         },
         "error": None,
     }
     assert result["success"] is True
     data = result["data"]
-    assert "task_id" in data and "status" in data
+    assert "id" in data and "status" in data
     assert data["status"] == "cancelled"
     print("  [CANCEL_OUTPUT] Output shape valid")
 
@@ -156,14 +203,16 @@ def test_list_output_shape() -> None:
     tasks = [
         {
             "id": 1,
+            "title": "Weekly report",
             "action_description": "Send weekly report",
             "scheduled_at": "2026-07-08T09:00:00",
-            "recur": "0 9 * * 1",
+            "recur": "cron:09:00",
             "status": "pending",
             "created_at": "2026-07-01T00:00:00",
         },
         {
             "id": 2,
+            "title": "Daily backup",
             "action_description": "Daily backup",
             "scheduled_at": "2026-07-02T02:00:00",
             "recur": None,
@@ -173,7 +222,8 @@ def test_list_output_shape() -> None:
     ]
     assert isinstance(tasks, list)
     for task in tasks:
-        assert "id" in task and "action_description" in task and "status" in task
+        assert "id" in task and "title" in task and "action_description" in task
+        assert "status" in task
         assert task["status"] in ("pending", "running", "completed", "cancelled", "failed")
     print("  [LIST_OUTPUT] Output shape valid")
 
@@ -186,6 +236,15 @@ def test_response_shape() -> None:
     print("  [RESPONSE] Shape valid")
 
 
+def test_runtime_scheduler_base_path() -> None:
+    """Module runtime must not double-prefix /api."""
+    runtime_path = Path(__file__).resolve().parents[1] / "runtime" / "index.ts"
+    runtime_source = runtime_path.read_text(encoding="utf-8")
+    assert "const BASE = '/scheduler'" in runtime_source
+    assert "const BASE = '/api/scheduler'" not in runtime_source
+    print("  [RUNTIME] Scheduler base path valid")
+
+
 def main() -> None:
     print("=" * 60)
     print("scheduler sandbox test")
@@ -193,6 +252,8 @@ def main() -> None:
     test_create_params()
     test_create_params_rejects_invalid_datetime()
     test_create_params_rejects_empty_action()
+    test_create_params_rejects_empty_title()
+    test_create_params_rejects_invalid_recur()
     test_list_params()
     test_cancel_params()
     test_cancel_params_rejects_zero_id()
@@ -201,6 +262,7 @@ def main() -> None:
     test_cancel_output_shape()
     test_list_output_shape()
     test_response_shape()
+    test_runtime_scheduler_base_path()
     print("=" * 60)
     print("PASS: scheduler sandbox test")
 

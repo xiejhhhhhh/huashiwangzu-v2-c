@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
@@ -25,10 +26,8 @@ async def module_call(payload: ModuleCallRequest, user: User = Depends(require_p
         caller_role=user.role,
     )
     if isinstance(result, dict) and result.get("success") is False:
-        return ApiResponse(
-            success=False,
-            data=result,
-            error=str(result.get("error") or f"{payload.target_module}:{payload.action} failed"),
+        raise ValidationError(
+            str(result.get("error") or f"{payload.target_module}:{payload.action} failed")
         )
     return ApiResponse(data=result)
 

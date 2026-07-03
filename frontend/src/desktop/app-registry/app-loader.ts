@@ -38,6 +38,12 @@ function transformApiToEntry(app: DesktopAppItem): AppRegistryEntry {
   const componentLoader = app.window_type === WINDOW_TYPE_BACKGROUND_SERVICE || !entryKey
     ? backgroundServiceLoader()
     : componentKeyMap[entryKey]
+  const publicActions = app.public_actions?.map(action => ({
+    action: action.action,
+    description: action.description,
+    parameters: action.parameters ?? {},
+    minRole: action.min_role,
+  }))
   return {
     appKey: app.app_id || '',
     appName: app.name || '',
@@ -64,7 +70,7 @@ function transformApiToEntry(app: DesktopAppItem): AppRegistryEntry {
     windowType: app.window_type || 'normal',
     allowMultiple: app.allow_multiple ?? false,
     capabilities: app.capabilities,
-    publicActions: app.public_actions,
+    publicActions,
     enabled: app.enabled ?? true,
   }
 }

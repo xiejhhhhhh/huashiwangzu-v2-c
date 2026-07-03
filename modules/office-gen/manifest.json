@@ -57,7 +57,8 @@
       "description": "Generate a Word (.docx) document from structured JSON and save it to the file system",
       "parameters": {
         "filename": "Output file name (without extension)",
-        "content": "Array of content blocks: {type, level?, text?, bold?, align?, table_header?, table_rows?}"
+        "content": "Non-empty document blocks; also accepts Content IR blocks/content_ir with {type, text, data, children}",
+        "blocks": "Content IR block alias for content"
       },
       "min_role": "editor"
     },
@@ -66,7 +67,8 @@
       "description": "Generate an Excel (.xlsx) spreadsheet from structured JSON and save it to the file system",
       "parameters": {
         "filename": "Output file name (without extension)",
-        "sheets": "Array of sheet objects with name, columns, rows"
+        "sheets": "Non-empty sheet objects with name, columns, rows; also accepts Content IR sheet blocks/content_ir",
+        "blocks": "Content IR sheet block alias for sheets"
       },
       "min_role": "editor"
     },
@@ -75,7 +77,8 @@
       "description": "Generate a PowerPoint (.pptx) presentation from structured JSON and save it to the file system",
       "parameters": {
         "filename": "Output file name (without extension)",
-        "slides": "Array of slide objects with title, bullets, notes"
+        "slides": "Non-empty slide objects with title, bullets, notes; also accepts Content IR slide blocks/content_ir",
+        "blocks": "Content IR slide block alias for slides"
       },
       "min_role": "editor"
     },
@@ -84,7 +87,8 @@
       "description": "Generate a PDF document from structured JSON (same schema as docx) and save it to the file system",
       "parameters": {
         "filename": "Output file name (without extension)",
-        "content": "Array of content blocks: {type, level?, text?, bold?, align?}"
+        "content": "Non-empty document blocks; also accepts Content IR blocks/content_ir with {type, text, data, children}",
+        "blocks": "Content IR block alias for content"
       },
       "min_role": "editor"
     },
@@ -103,7 +107,8 @@
       "parameters": {
         "format": "Output format: xlsx/docx/pptx/pdf",
         "filename": "Output file name (without extension)",
-        "content/sheets/slides": "Content data for the chosen format"
+        "content/sheets/slides": "Non-empty content data for the chosen format",
+        "blocks/content_ir": "Content IR aliases accepted for the chosen format"
       },
       "min_role": "editor"
     },
@@ -113,7 +118,8 @@
       "parameters": {
         "format": "Output format: xlsx/docx/pptx/pdf",
         "target_file_id": "Existing file ID to replace",
-        "content/sheets/slides": "Content data for the chosen format"
+        "content/sheets/slides": "Non-empty content data for the chosen format",
+        "blocks/content_ir": "Content IR aliases accepted for the chosen format"
       },
       "min_role": "editor"
     },

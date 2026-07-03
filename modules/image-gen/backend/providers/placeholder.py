@@ -58,7 +58,6 @@ class PlaceholderProvider(ImageProvider):
 
         wbbox = draw.textbbox((0, 0), watermark_text, font=font_small)
         ww = wbbox[2] - wbbox[0]
-        wh = wbbox[3] - wbbox[1]
         wx = (width - ww) // 2
         wy = ty + th + 40
         draw.text((wx, wy), watermark_text, fill=(160, 160, 160), font=font_small)
