@@ -132,6 +132,15 @@ class ContentExportService:
         owner_id: int | None = None,
         conflict_policy: str = "create_version",
     ) -> dict[str, Any]:
+        if target_file_id is not None:
+            return await self._publish_to_target_file(
+                db,
+                package_id,
+                target_file_id,
+                owner_id=owner_id,
+                conflict_policy=conflict_policy,
+            )
+
         export_result = await self.export(db, package_id, owner_id=owner_id)
 
         from app.services.artifact_service import create_artifact
@@ -152,6 +161,127 @@ class ContentExportService:
             "file_id": export_result["file_id"],
             "package_id": package_id,
         }
+
+    async def _publish_to_target_file(
+        self,
+        db: AsyncSession,
+        package_id: int,
+        target_file_id: int,
+        *,
+        owner_id: int | None,
+        conflict_policy: str,
+    ) -> dict[str, Any]:
+        if owner_id is None:
+            raise ValidationError("Publish target requires an authenticated owner")
+
+        from app.services.artifact_service import create_artifact, replace_artifact_content
+        from app.services.file_service import check_file_write_access
+
+        target_file = await check_file_write_access(db, target_file_id, owner_id)
+        pkg_info = await self.package_svc.get_package(
+            db, package_id=package_id, owner_id=owner_id,
+        )
+        file_path, _, fmt, should_cleanup = await self._compile_publish_source(
+            db,
+            pkg_info,
+            owner_id=owner_id,
+            target_extension=target_file.extension,
+        )
+
+        try:
+            content_bytes = file_path.read_bytes()
+            artifact = await create_artifact(
+                db,
+                owner_id=owner_id,
+                name=target_file.name,
+                extension=target_file.extension or fmt,
+                file_id=target_file_id,
+                source_module="content",
+                source_object_type="content_package",
+                source_object_id=package_id,
+                conflict_policy=conflict_policy,
+            )
+            artifact = await replace_artifact_content(
+                db,
+                artifact["id"],
+                owner_id,
+                content=content_bytes,
+                operation_type="publish_replace",
+                operation_summary=f"Published content package {package_id} to target file",
+                create_version=True,
+            )
+        finally:
+            if should_cleanup:
+                try:
+                    file_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        return {
+            "artifact": artifact,
+            "file_id": target_file_id,
+            "target_file_id": target_file_id,
+            "package_id": package_id,
+            "format": target_file.extension or fmt,
+            "status": "replaced",
+            "published": True,
+        }
+
+    async def _compile_publish_source(
+        self,
+        db: AsyncSession,
+        pkg_info: dict[str, Any],
+        *,
+        owner_id: int,
+        target_extension: str | None = None,
+    ) -> tuple[Path, str, str, bool]:
+        fmt = (
+            pkg_info.get("source_extension")
+            or target_extension
+            or "txt"
+        ).lower().strip(".")
+
+        if fmt not in EXPORT_ADAPTER_MAP:
+            if fmt in {"doc", "ppt", "xls"}:
+                fmt = fmt + "x"
+            if fmt not in EXPORT_ADAPTER_MAP:
+                return await self._fallback_source_file(db, pkg_info, owner_id)
+
+        full = await self.package_svc.get_full_package(
+            db, pkg_info["id"], owner_id=owner_id,
+        )
+        content = full.get("content", {})
+        file_path, filename = await self._compile_to_file(
+            db, pkg_info, fmt, content, owner_id,
+        )
+        return file_path, filename, fmt, True
+
+    async def _fallback_source_file(
+        self,
+        db: AsyncSession,
+        pkg_info: dict[str, Any],
+        owner_id: int,
+    ) -> tuple[Path, str, str, bool]:
+        file_id = pkg_info.get("source_file_id")
+        if not file_id:
+            raise ValidationError("No source file to copy")
+
+        file_record = await get_file_record(db, file_id)
+        if not file_record:
+            raise NotFound(f"Source file {file_id} not found")
+        await check_file_access(db, file_id, owner_id)
+
+        from app.services.file_preview_service import _resolve_storage_path
+        safe_path = _resolve_storage_path(file_record)
+        if not safe_path:
+            raise NotFound("Source file not found on disk")
+
+        filename = (
+            f"{file_record.name}.{file_record.extension}"
+            if file_record.extension
+            else file_record.name
+        )
+        return Path(safe_path), filename, file_record.extension or "", False
 
     async def _compile_to_file(
         self, db: AsyncSession,
