@@ -1,10 +1,12 @@
 """Background task handlers for agent module.
 
-Registered with framework task_worker at module load time:
+Registered by bootstrap.register_agent_tasks():
   - profile_evolve: handle_profile_evolve (from profile_evolve module)
   - memory_dream: _handle_memory_dream
   - memory_distill: _handle_memory_distill
   - agent_execute_slow_tool: _handle_slow_tool
+  - workflow_mine: _handle_workflow_mine
+  - agent_context_compact: _handle_context_compact
 """
 
 from __future__ import annotations
@@ -14,19 +16,12 @@ import logging
 import time
 
 from app.services.module_registry import call_capability
-from app.services.task_worker import register_task_handler
 
 from ..services import tool_discovery
-from ..services.profile_evolve import handle_profile_evolve
 
 logger = logging.getLogger("v2.agent").getChild("handlers.tasks")
 
 MEMORY_DISTILL_MODEL_KEY = "deepseek-v4-flash"
-
-
-# ── Profile evolve ──
-
-register_task_handler("profile_evolve", handle_profile_evolve)
 
 
 # ── Memory dream ──
@@ -59,9 +54,6 @@ async def _handle_memory_dream(params: dict) -> dict:
         return {"error": str(e)}
 
 
-register_task_handler("memory_dream", _handle_memory_dream)
-
-
 # ── Memory distill ──
 
 async def _handle_memory_distill(params: dict) -> dict:
@@ -82,9 +74,6 @@ async def _handle_memory_distill(params: dict) -> dict:
     except Exception as e:
         logger.warning("Memory distill handler failed: %s", e)
         return {"error": str(e)}
-
-
-register_task_handler("memory_distill", _handle_memory_distill)
 
 
 # ── Slow tool execution ──
@@ -244,9 +233,6 @@ async def _handle_slow_tool(params: dict) -> dict:
             return {"success": False, "status": "failed", "error": str(persist_exc)}
 
 
-register_task_handler("agent_execute_slow_tool", _handle_slow_tool)
-
-
 # ── Workflow mining ──
 
 async def _handle_workflow_mine(params: dict) -> dict:
@@ -270,9 +256,6 @@ async def _handle_workflow_mine(params: dict) -> dict:
     except Exception as e:
         logger.warning("Workflow mining handler failed: %s", e)
         return {"error": str(e)}
-
-
-register_task_handler("workflow_mine", _handle_workflow_mine)
 
 
 # ── Async context compaction ──
@@ -562,9 +545,6 @@ async def _handle_context_compact(params: dict) -> dict:
             reason = str(result.get("reason", "unknown"))
             await _mark_failed(compaction_id, reason)
             return {"status": "failed", "reason": reason}
-
-
-register_task_handler("agent_context_compact", _handle_context_compact)
 
 
 async def _submit_memory_distill_task(

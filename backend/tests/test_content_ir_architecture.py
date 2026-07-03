@@ -110,6 +110,31 @@ async def _delete_files(db, file_ids: list[int]) -> None:
     await db.commit()
 
 
+async def _delete_artifacts(db, artifact_ids: list[int]) -> None:
+    from app.models.artifact import Artifact, ArtifactOperation, ArtifactVersion
+    from sqlalchemy import delete
+
+    if not artifact_ids:
+        return
+    await db.execute(delete(ArtifactOperation).where(ArtifactOperation.artifact_id.in_(artifact_ids)))
+    await db.execute(delete(ArtifactVersion).where(ArtifactVersion.artifact_id.in_(artifact_ids)))
+    await db.execute(delete(Artifact).where(Artifact.id.in_(artifact_ids)))
+    await db.commit()
+
+
+async def _file_storage_paths(db, file_ids: list[int]) -> list[Path]:
+    from app.config import get_settings
+    from app.models.file import File
+
+    upload_root = Path(get_settings().UPLOAD_DIR).resolve()
+    paths: list[Path] = []
+    for file_id in file_ids:
+        file_rec = await db.get(File, file_id)
+        if file_rec and file_rec.storage_path:
+            paths.append(upload_root / file_rec.storage_path)
+    return paths
+
+
 async def _delete_resources(db, resource_ids: list[int]) -> None:
     from app.config import get_settings
     from app.models.content import Resource, ResourceRef
@@ -1018,6 +1043,224 @@ class TestCompileDownload:
                 await _delete_files(cleanup_db, [file_id])
 
 
+class TestContentPublishTarget:
+    """Tests for publishing ContentPackages to desktop artifacts/files."""
+
+    @pytest.mark.asyncio
+    async def test_publish_with_target_file_replaces_target_without_new_file(self):
+        """target_file_id should replace the target file instead of creating a new one."""
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackage
+        from app.models.file import File
+        from app.services.content.export_service import ContentExportService
+        from sqlalchemy import func, select
+
+        owner_id = 4
+        target_file_id: int | None = None
+        package_id: int | None = None
+        artifact_ids: list[int] = []
+        cleanup_file_ids: list[int] = []
+        cleanup_paths: list[Path] = []
+        new_content = b"published target content"
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+        os.close(tmp_fd)
+        Path(tmp_path).write_bytes(new_content)
+
+        async with AsyncSessionLocal() as db:
+            target = File(
+                name=f"content-publish-target-{uuid.uuid4().hex}",
+                extension="txt",
+                size=3,
+                owner_id=owner_id,
+                storage_path=f"test/missing-{uuid.uuid4().hex}.txt",
+                mime_type="text/plain",
+                md5_hash=hashlib.md5(b"old").hexdigest(),
+                deleted=False,
+            )
+            db.add(target)
+            await db.commit()
+            await db.refresh(target)
+            target_file_id = target.id
+            cleanup_file_ids.append(target_file_id)
+
+            write_result = await write_ir(
+                db,
+                _valid_document_ir(title="Publish Target Test"),
+                owner_id=owner_id,
+                caller=f"user:{owner_id}",
+            )
+            package_id = write_result["package_id"]
+            package = await db.get(ContentPackage, package_id)
+            assert package is not None
+            package.source_extension = "txt"
+            await db.commit()
+            before_files = (await db.execute(select(func.count()).select_from(File))).scalar_one()
+
+            with mock.patch(
+                "app.services.content.export_service.ContentExportService._compile_to_file"
+            ) as mock_compile:
+                mock_compile.return_value = (Path(tmp_path), "compiled.txt")
+                published = await ContentExportService().publish(
+                    db,
+                    package_id,
+                    target_file_id=target_file_id,
+                    owner_id=owner_id,
+                )
+
+            after_files = (await db.execute(select(func.count()).select_from(File))).scalar_one()
+            refreshed = await db.get(File, target_file_id)
+            assert refreshed is not None
+            cleanup_paths.extend(await _file_storage_paths(db, cleanup_file_ids))
+
+        try:
+            assert published["status"] == "replaced"
+            assert published["file_id"] == target_file_id
+            assert published["target_file_id"] == target_file_id
+            assert published["artifact"]["file_id"] == target_file_id
+            artifact_ids.append(published["artifact"]["id"])
+            assert after_files == before_files
+            assert refreshed.size == len(new_content)
+            assert refreshed.md5_hash == hashlib.md5(new_content).hexdigest()
+            assert cleanup_paths
+            assert cleanup_paths[-1].read_bytes() == new_content
+        finally:
+            async with AsyncSessionLocal() as db:
+                await _delete_artifacts(db, artifact_ids)
+                if package_id is not None:
+                    await _delete_content_packages(db, [package_id])
+                cleanup_paths.extend(await _file_storage_paths(db, cleanup_file_ids))
+                await _delete_files(db, cleanup_file_ids)
+            for path in set(cleanup_paths):
+                path.unlink(missing_ok=True)
+            Path(tmp_path).unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_publish_target_without_write_access_fails_without_new_file(self):
+        """A target owned by another user should fail before any publish file is created."""
+        from app.core.exceptions import PermissionDenied
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackage
+        from app.models.file import File
+        from app.services.content.export_service import ContentExportService
+        from sqlalchemy import func, select
+
+        owner_id = 4
+        other_owner_id = 5
+        target_file_id: int | None = None
+        package_id: int | None = None
+        cleanup_file_ids: list[int] = []
+
+        async with AsyncSessionLocal() as db:
+            target = File(
+                name=f"content-publish-denied-{uuid.uuid4().hex}",
+                extension="txt",
+                size=3,
+                owner_id=other_owner_id,
+                storage_path=f"test/missing-{uuid.uuid4().hex}.txt",
+                mime_type="text/plain",
+                md5_hash=hashlib.md5(b"old").hexdigest(),
+                deleted=False,
+            )
+            db.add(target)
+            await db.commit()
+            await db.refresh(target)
+            target_file_id = target.id
+            cleanup_file_ids.append(target_file_id)
+
+            write_result = await write_ir(
+                db,
+                _valid_document_ir(title="Publish Target Denied Test"),
+                owner_id=owner_id,
+                caller=f"user:{owner_id}",
+            )
+            package_id = write_result["package_id"]
+            package = await db.get(ContentPackage, package_id)
+            assert package is not None
+            package.source_extension = "txt"
+            await db.commit()
+            before_files = (await db.execute(select(func.count()).select_from(File))).scalar_one()
+
+            with pytest.raises(PermissionDenied):
+                await ContentExportService().publish(
+                    db,
+                    package_id,
+                    target_file_id=target_file_id,
+                    owner_id=owner_id,
+                )
+
+            after_files = (await db.execute(select(func.count()).select_from(File))).scalar_one()
+
+        try:
+            assert after_files == before_files
+        finally:
+            async with AsyncSessionLocal() as db:
+                if package_id is not None:
+                    await _delete_content_packages(db, [package_id])
+                await _delete_files(db, cleanup_file_ids)
+
+    @pytest.mark.asyncio
+    async def test_publish_without_target_keeps_create_file_behavior(self):
+        """No target_file_id should keep the existing create-new-file publish path."""
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackage
+        from app.models.file import File
+        from app.services.content.export_service import ContentExportService
+        from sqlalchemy import func, select
+
+        owner_id = 4
+        package_id: int | None = None
+        artifact_ids: list[int] = []
+        cleanup_file_ids: list[int] = []
+        cleanup_paths: list[Path] = []
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+        os.close(tmp_fd)
+        Path(tmp_path).write_bytes(b"new publish file")
+
+        async with AsyncSessionLocal() as db:
+            write_result = await write_ir(
+                db,
+                _valid_document_ir(title=f"Publish New File {uuid.uuid4().hex}"),
+                owner_id=owner_id,
+                caller=f"user:{owner_id}",
+            )
+            package_id = write_result["package_id"]
+            package = await db.get(ContentPackage, package_id)
+            assert package is not None
+            package.source_extension = "txt"
+            await db.commit()
+            before_files = (await db.execute(select(func.count()).select_from(File))).scalar_one()
+
+            with mock.patch(
+                "app.services.content.export_service.ContentExportService._compile_to_file"
+            ) as mock_compile:
+                mock_compile.return_value = (Path(tmp_path), f"created-{uuid.uuid4().hex}.txt")
+                published = await ContentExportService().publish(
+                    db,
+                    package_id,
+                    owner_id=owner_id,
+                )
+
+            cleanup_file_ids.append(published["file_id"])
+            cleanup_paths.extend(await _file_storage_paths(db, cleanup_file_ids))
+            after_files = (await db.execute(select(func.count()).select_from(File))).scalar_one()
+
+        try:
+            artifact_ids.append(published["artifact"]["id"])
+            assert published["file_id"] != 0
+            assert published["artifact"]["file_id"] == published["file_id"]
+            assert after_files == before_files + 1
+        finally:
+            async with AsyncSessionLocal() as db:
+                await _delete_artifacts(db, artifact_ids)
+                if package_id is not None:
+                    await _delete_content_packages(db, [package_id])
+                cleanup_paths.extend(await _file_storage_paths(db, cleanup_file_ids))
+                await _delete_files(db, cleanup_file_ids)
+            for path in set(cleanup_paths):
+                path.unlink(missing_ok=True)
+            Path(tmp_path).unlink(missing_ok=True)
+
+
 # ====================================================================
 # 4. Content capability failure semantics
 # ====================================================================
@@ -1025,6 +1268,39 @@ class TestCompileDownload:
 
 class TestContentFailureSemantics:
     """Content capabilities must not wrap parser failures as successful empty content."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_checks_caller_access_before_get_or_create(self):
+        from app.core.exceptions import PermissionDenied
+        from app.database import AsyncSessionLocal
+        from app.models.file import File
+        from app.services.content.pipeline_service import ContentPipelineService
+
+        owner_id = 5
+        caller_id = 4
+        file_id = None
+        async with AsyncSessionLocal() as db:
+            file_rec = File(
+                name=f"pipeline-access-denied-{uuid.uuid4().hex}.txt",
+                extension="txt",
+                size=0,
+                owner_id=owner_id,
+                storage_path="content-pipeline-access-denied-test.txt",
+                mime_type="text/plain",
+                deleted=False,
+            )
+            db.add(file_rec)
+            await db.commit()
+            await db.refresh(file_rec)
+            file_id = file_rec.id
+
+        try:
+            with pytest.raises(PermissionDenied):
+                await ContentPipelineService().run_pipeline(file_id, f"user:{caller_id}")
+        finally:
+            async with AsyncSessionLocal() as db:
+                if file_id is not None:
+                    await _delete_files(db, [file_id])
 
     @pytest.mark.asyncio
     async def test_pipeline_capability_propagates_failed_result(self):
@@ -1103,6 +1379,154 @@ class TestContentFailureSemantics:
             async with AsyncSessionLocal() as db:
                 if file_id is not None:
                     await _delete_files(db, [file_id])
+
+    @pytest.mark.asyncio
+    async def test_get_file_content_skipped_parse_fails_closed(self):
+        from app.database import AsyncSessionLocal
+        from app.models.file import File
+        from app.routers.content import _cap_get_file_content
+
+        owner_id = 4
+        file_id = None
+        async with AsyncSessionLocal() as db:
+            file_rec = File(
+                name=f"lazy-parse-skipped-{uuid.uuid4().hex}.zip",
+                extension="zip",
+                size=0,
+                owner_id=owner_id,
+                storage_path="content-lazy-parse-skipped-test.zip",
+                mime_type="application/zip",
+                deleted=False,
+            )
+            db.add(file_rec)
+            await db.commit()
+            await db.refresh(file_rec)
+            file_id = file_rec.id
+
+        try:
+            result = await _cap_get_file_content({"file_id": file_id}, f"user:{owner_id}")
+
+            assert result["success"] is False
+            assert "Unsupported format" in result["error"]
+            assert result["data"]["status"] == "skipped"
+            assert "blocks" not in result["data"]
+        finally:
+            async with AsyncSessionLocal() as db:
+                if file_id is not None:
+                    await _delete_files(db, [file_id])
+
+    @pytest.mark.asyncio
+    async def test_get_file_content_non_consumable_package_fails_closed(self):
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackage
+        from app.models.file import File
+        from app.routers.content import _cap_get_file_content
+
+        owner_id = 4
+        file_id = None
+        package_id = None
+        async with AsyncSessionLocal() as db:
+            file_rec = File(
+                name=f"non-consumable-package-{uuid.uuid4().hex}.txt",
+                extension="txt",
+                size=0,
+                owner_id=owner_id,
+                storage_path="content-non-consumable-package-test.txt",
+                mime_type="text/plain",
+                deleted=False,
+            )
+            db.add(file_rec)
+            await db.flush()
+            pkg = ContentPackage(
+                owner_id=owner_id,
+                source_file_id=file_rec.id,
+                package_type="text",
+                origin_type="uploaded",
+                source_extension="txt",
+                status="pending",
+            )
+            db.add(pkg)
+            await db.commit()
+            file_id = file_rec.id
+            package_id = pkg.id
+
+        try:
+            with mock.patch(
+                "app.services.content.pipeline_service.ContentPipelineService.run_pipeline",
+                return_value={"package_id": package_id, "status": "pending"},
+            ):
+                result = await _cap_get_file_content({"file_id": file_id}, f"user:{owner_id}")
+
+            assert result["success"] is False
+            assert result["data"]["source"] == "content_package"
+            assert result["data"]["status"] == "pending"
+            assert result["data"]["package_id"] == package_id
+            assert "blocks" not in result["data"]
+        finally:
+            async with AsyncSessionLocal() as db:
+                if package_id is not None:
+                    await _delete_content_packages(db, [package_id])
+                if file_id is not None:
+                    await _delete_files(db, [file_id])
+
+    @pytest.mark.asyncio
+    async def test_get_file_content_empty_consumable_package_fails_closed(self):
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackage, ContentPackageVersion
+        from app.models.file import File
+        from app.routers.content import _cap_get_file_content
+
+        owner_id = 4
+        async with AsyncSessionLocal() as db:
+            file_rec = File(
+                name=f"empty-parsed-package-{uuid.uuid4().hex}.txt",
+                extension="txt",
+                size=0,
+                owner_id=owner_id,
+                storage_path="content-empty-parsed-package-test.txt",
+                mime_type="text/plain",
+                deleted=False,
+            )
+            db.add(file_rec)
+            await db.flush()
+            pkg = ContentPackage(
+                owner_id=owner_id,
+                source_file_id=file_rec.id,
+                package_type="text",
+                origin_type="uploaded",
+                source_extension="txt",
+                status="parsed",
+                manifest_json=json.dumps({"title": file_rec.name}, ensure_ascii=False),
+            )
+            db.add(pkg)
+            await db.flush()
+            version = ContentPackageVersion(
+                package_id=pkg.id,
+                version_no=1,
+                content_json=json.dumps({"manifest": {"title": file_rec.name}, "blocks": []}),
+                operation_type="parse",
+                created_by=owner_id,
+            )
+            db.add(version)
+            await db.flush()
+            pkg.current_version_id = version.id
+            await db.commit()
+            file_id = file_rec.id
+            package_id = pkg.id
+
+        try:
+            result = await _cap_get_file_content({"file_id": file_id}, f"user:{owner_id}")
+
+            assert result["success"] is False
+            assert result["error"] == "Content package contains no consumable blocks"
+            assert result["data"]["source"] == "content_package"
+            assert result["data"]["status"] == "parsed"
+            assert result["data"]["package_id"] == package_id
+            assert "blocks" not in result["data"]
+        finally:
+            async with AsyncSessionLocal() as cleanup_db:
+                await _delete_content_packages(cleanup_db, [package_id])
+                await _delete_files(cleanup_db, [file_id])
 
     @pytest.mark.asyncio
     async def test_get_file_content_returns_degraded_package_body(self):

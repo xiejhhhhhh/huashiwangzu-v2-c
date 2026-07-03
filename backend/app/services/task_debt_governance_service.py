@@ -29,6 +29,29 @@ def _parse_task_parameters(raw: str | None) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _parse_task_result(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _task_result_semantic_failure_reason(result: dict | None) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    if result.get("success") is False:
+        return str(result.get("error") or "Task result success=false")
+    status = result.get("status")
+    if isinstance(status, str) and status.lower() in {"failed", "error"}:
+        return str(result.get("error") or f"Task result status={status}")
+    if result.get("error") not in (None, "") and result.get("success") is not True:
+        return str(result.get("error"))
+    return None
+
+
 def _task_sample(task: SystemTaskQueue, *, params: dict | None = None) -> dict:
     return {
         "id": task.id,
@@ -41,12 +64,45 @@ def _task_sample(task: SystemTaskQueue, *, params: dict | None = None) -> dict:
     }
 
 
+def _completed_semantic_failure_sample(task: SystemTaskQueue, reason: str) -> dict:
+    return {
+        "id": task.id,
+        "task_type": task.task_type,
+        "module": task.module,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "reason": reason,
+        "parameters": _parse_task_parameters(task.parameters),
+    }
+
+
 def _empty_action_summary() -> dict:
     return {
         "retry_once": 0,
         "mark_obsolete": 0,
         "archive_test_debt": 0,
         "manual_review": 0,
+    }
+
+
+def _append_readonly_review_group(
+    plan: dict,
+    *,
+    category: str,
+    action: str,
+    reason: str,
+    count: int,
+    samples: list[dict],
+) -> None:
+    if count <= 0:
+        return
+    plan["summary_by_category"][category] = plan["summary_by_category"].get(category, 0) + count
+    plan["summary_by_action"][action] = plan["summary_by_action"].get(action, 0) + count
+    plan["groups"][category] = {
+        "action": action,
+        "count": count,
+        "reason": reason,
+        "samples": samples,
+        "readonly": True,
     }
 
 
@@ -64,6 +120,53 @@ def _append_plan(plan: dict, classification: dict, *, sample_limit: int) -> None
     bucket["count"] += 1
     if len(bucket["samples"]) < sample_limit:
         bucket["samples"].append(classification["sample"])
+
+
+async def _append_completed_semantic_failure_reviews(
+    db: AsyncSession,
+    plan: dict,
+    *,
+    sample_limit: int,
+    task_ids: list[int] | None,
+    limit: int,
+) -> None:
+    filters = [
+        SystemTaskQueue.status == "completed",
+        SystemTaskQueue.result.is_not(None),
+        SystemTaskQueue.result != "",
+    ]
+    if task_ids:
+        filters.append(SystemTaskQueue.id.in_(task_ids))
+    stmt = (
+        select(SystemTaskQueue)
+        .where(and_(*filters))
+        .order_by(SystemTaskQueue.completed_at.desc().nulls_last(), SystemTaskQueue.id.desc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    count = 0
+    samples = []
+    for task in result.scalars().all():
+        reason = _task_result_semantic_failure_reason(_parse_task_result(task.result))
+        if reason is None:
+            continue
+        count += 1
+        if len(samples) < sample_limit:
+            samples.append(_completed_semantic_failure_sample(task, reason))
+
+    plan["readonly_review"]["completed_semantic_failure_count"] = count
+    plan["readonly_review"]["completed_semantic_failure_samples"] = samples
+    _append_readonly_review_group(
+        plan,
+        category="completed_semantic_failure_manual_review",
+        action="manual_review",
+        reason=(
+            "Task is marked completed, but its result JSON still reports a semantic failure "
+            "(error/status=failed/success=false). Keep the row intact and review manually."
+        ),
+        count=count,
+        samples=samples,
+    )
 
 
 def _document_id_from_task(task: SystemTaskQueue, params: dict) -> int | None:
@@ -253,9 +356,13 @@ def _classify_profile_evolve_debt(
     if error == "Failed to parse profile JSON":
         return {
             "task": task,
-            "action": "retry_once",
-            "category": "profile_evolve_json_soft_failure_retry_once",
-            "reason": "Current profile evolve handler converts unparseable model JSON into skipped/soft failure with a watermark.",
+            "action": "manual_review",
+            "category": "profile_evolve_json_parse_manual_review",
+            "reason": (
+                "Current profile evolve handler returns status=failed with "
+                "error=unparseable_llm_profile_json and retryable=true for unparseable LLM JSON; "
+                "bulk retry can call the model again and create new failed noise."
+            ),
             "sample": sample,
         }
 
@@ -369,12 +476,24 @@ async def govern_task_queue_debt(
         "summary_by_action": _empty_action_summary(),
         "summary_by_category": {},
         "groups": {},
+        "readonly_review": {
+            "completed_semantic_failure_count": 0,
+            "completed_semantic_failure_samples": [],
+            "mutates_completed_rows": False,
+        },
         "safety": {
             "deleted_rows": 0,
             "default_dry_run": True,
             "manual_review_is_noop": True,
         },
     }
+    await _append_completed_semantic_failure_reviews(
+        db,
+        plan,
+        sample_limit=bounded_sample_limit,
+        task_ids=task_ids,
+        limit=bounded_limit,
+    )
     profile_init_seen: set[tuple[str, str]] = set()
     classifications = []
     for task in failed_tasks:

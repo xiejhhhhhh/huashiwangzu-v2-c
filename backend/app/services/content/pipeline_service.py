@@ -16,7 +16,8 @@ from app.database import AsyncSessionLocal
 from app.models.content import ContentPackage
 from app.services.content.package_service import ContentPackageService
 from app.services.content.resource_service import ResourceService
-from app.services.file_service import get_file_record
+from app.services.file_reader import resolve_caller_user_id
+from app.services.file_service import check_file_access
 
 logger = logging.getLogger("v2.content").getChild("pipeline")
 
@@ -39,9 +40,8 @@ class ContentPipelineService:
         self, file_id: int, caller: str,
     ) -> dict[str, Any]:
         async with AsyncSessionLocal() as db:
-            file_record = await get_file_record(db, file_id)
-            if not file_record:
-                raise NotFound(f"File {file_id} not found")
+            caller_user_id = resolve_caller_user_id(caller)
+            file_record = await check_file_access(db, file_id, caller_user_id)
 
             ext = (file_record.extension or "").lower()
             if ext not in SUPPORTED_EXTENSIONS:

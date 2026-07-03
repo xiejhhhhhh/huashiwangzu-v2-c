@@ -21,6 +21,8 @@ export interface KnowledgeDocument {
   total_chunks: number
   total_pages: number
   parse_error: string | null
+  source_available: boolean
+  source_state: string
 }
 
 export interface FrameworkFolder {

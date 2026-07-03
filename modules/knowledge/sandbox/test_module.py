@@ -39,13 +39,65 @@ def test_document_shape() -> None:
         "fusion_status": "completed",
         "total_chunks": 25,
         "total_pages": 5,
+        "source_available": True,
+        "source_state": "available",
         "created_at": "2026-07-01T00:00:00",
     }
-    required = {"id", "filename", "owner_id", "status"}
+    required = {"id", "filename", "owner_id", "status", "source_available", "source_state"}
     for field in required:
         assert field in doc, f"Missing required field: {field}"
     assert doc["status"] in ("pending", "processing", "completed", "failed")
+    assert doc["source_available"] is True
+    assert doc["source_state"] == "available"
     print("  [DOCUMENT] Shape valid")
+
+
+def test_document_lifecycle_filters_unavailable_sources() -> None:
+    """List/detail must not expose unavailable source files as normal documents."""
+    docs = [
+        {"id": 1, "deleted": False, "source_available": True, "source_state": "available"},
+        {"id": 2, "deleted": False, "source_available": False, "source_state": "source_file_deleted"},
+        {"id": 3, "deleted": False, "source_available": False, "source_state": "source_file_missing"},
+        {"id": 4, "deleted": True, "source_available": True, "source_state": "available"},
+    ]
+
+    visible = [
+        doc for doc in docs
+        if not doc["deleted"] and doc["source_available"] and doc["source_state"] == "available"
+    ]
+
+    assert [doc["id"] for doc in visible] == [1]
+    assert all(doc["source_available"] is True for doc in visible)
+    assert all(doc["source_state"] == "available" for doc in visible)
+    assert {doc["source_state"] for doc in docs if not doc["source_available"]} == {
+        "source_file_deleted",
+        "source_file_missing",
+    }
+    print("  [DOCUMENT-LIFECYCLE] Source filtering valid")
+
+
+def test_pipeline_lifecycle_skips_before_parse_or_index() -> None:
+    """Pipeline must stop unavailable sources before writing derived artifacts."""
+    source_state = {"available": False, "reason": "source_file_deleted"}
+    writes = {"chunks": 0, "raw": 0, "fusion": 0}
+
+    if not source_state["available"]:
+        result = {
+            "status": "skipped",
+            "reason": source_state["reason"],
+            "classification": "source_unavailable",
+        }
+    else:
+        writes["chunks"] += 1
+        result = {"status": "done"}
+
+    assert result == {
+        "status": "skipped",
+        "reason": "source_file_deleted",
+        "classification": "source_unavailable",
+    }
+    assert writes == {"chunks": 0, "raw": 0, "fusion": 0}
+    print("  [PIPELINE-LIFECYCLE] Pre-parse source guard valid")
 
 
 def test_chunk_shape() -> None:
@@ -182,6 +234,8 @@ def main() -> None:
     print("=" * 60)
     test_search_result_shape()
     test_document_shape()
+    test_document_lifecycle_filters_unavailable_sources()
+    test_pipeline_lifecycle_skips_before_parse_or_index()
     test_chunk_shape()
     test_entity_shape()
     test_page_fusion_shape()

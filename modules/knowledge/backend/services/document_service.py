@@ -322,6 +322,8 @@ async def register_document(
 
 def document_payload(doc) -> dict:
     """文档 ORM → API payload。"""
+    source_available = (doc.parse_error or "") not in SOURCE_UNAVAILABLE_REASONS
+    source_state = "available" if source_available else str(doc.parse_error)
     return {
         "id": doc.id,
         "owner_id": doc.owner_id,
@@ -340,6 +342,8 @@ def document_payload(doc) -> dict:
         "total_pages": doc.total_pages,
         "summary": doc.summary,
         "content_package_id": doc.content_package_id if hasattr(doc, "content_package_id") else None,
+        "source_available": source_available,
+        "source_state": source_state,
         "created_at": doc.created_at,
         "updated_at": doc.updated_at,
     }
@@ -406,8 +410,13 @@ async def list_documents(
     """列出知识库文档。"""
     from ..models import KbDocument
 
-    stmt = select(KbDocument).where(KbDocument.owner_id == owner_id, KbDocument.deleted.is_(False))
-    count_stmt = select(func.count(KbDocument.id)).where(KbDocument.owner_id == owner_id, KbDocument.deleted.is_(False))
+    live_conditions = (
+        KbDocument.owner_id == owner_id,
+        KbDocument.deleted.is_(False),
+        File.deleted.is_(False),
+    )
+    stmt = select(KbDocument).join(File, File.id == KbDocument.file_id).where(*live_conditions)
+    count_stmt = select(func.count(KbDocument.id)).join(File, File.id == KbDocument.file_id).where(*live_conditions)
     if catalog_id is not None:
         stmt = stmt.where(KbDocument.catalog_id == catalog_id)
         count_stmt = count_stmt.where(KbDocument.catalog_id == catalog_id)
@@ -430,6 +439,7 @@ async def list_documents(
 async def get_document(db: AsyncSession, document_id: int, owner_id: int) -> dict:
     """获取文档详情。"""
     from ..models import KbDocument
+    from .source_file_state import get_source_file_availability
 
     r = await db.execute(
         select(KbDocument).where(
@@ -441,6 +451,11 @@ async def get_document(db: AsyncSession, document_id: int, owner_id: int) -> dic
     doc = r.scalar_one_or_none()
     if not doc:
         raise NotFound("Document not found")
+    source_state = await get_source_file_availability(db, int(doc.file_id or 0))
+    if not source_state.available:
+        mark_document_source_unavailable(doc, source_state.reason)
+        await db.commit()
+        raise NotFound(f"Document source file unavailable: {source_state.reason}")
     return document_payload(doc)
 
 

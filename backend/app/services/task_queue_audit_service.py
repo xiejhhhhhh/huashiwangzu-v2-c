@@ -4,8 +4,10 @@ This service is the authoritative source for understanding the task queue's debt
 failed/pending tasks accumulated over time, recent failures that need review, and
 orphan work that may be safely reconciled. It never clears failed rows to fake health.
 """
+import json
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,43 @@ STALE_PENDING_THRESHOLD_SECONDS = 3600
 ORPHAN_RUNNING_TIMEOUT_SECONDS = 1200
 RECENT_FAILURE_WINDOW_HOURS = 1
 HISTORICAL_DEBT_CUTOFF_HOURS = RECENT_FAILURE_WINDOW_HOURS
+COMPLETED_SEMANTIC_FAILURE_SAMPLE_LIMIT = 20
+
+
+def _decode_task_result(raw_result: Any) -> dict[str, Any] | None:
+    if isinstance(raw_result, dict):
+        return raw_result
+    if not isinstance(raw_result, str) or not raw_result.strip():
+        return None
+    try:
+        decoded = json.loads(raw_result)
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _task_result_semantic_failure_reason(result: dict[str, Any] | None) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    if result.get("success") is False:
+        return str(result.get("error") or "Task result success=false")
+    status = result.get("status")
+    if isinstance(status, str) and status.lower() in {"failed", "error"}:
+        return str(result.get("error") or f"Task result status={status}")
+    if result.get("error") not in (None, "") and result.get("success") is not True:
+        return str(result.get("error"))
+    return None
+
+
+def _semantic_failure_sample(task: SystemTaskQueue, reason: str) -> dict:
+    return {
+        "id": task.id,
+        "task_type": task.task_type,
+        "module": task.module,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "reason": reason,
+        "classification": "completed_semantic_failure_manual_review",
+    }
 
 
 async def audit_task_queue(db: AsyncSession) -> dict:
@@ -66,6 +105,27 @@ async def audit_task_queue(db: AsyncSession) -> dict:
         select(func.count(SystemTaskQueue.id)).where(historical_failed_filter)
     )
     historical_failed_debt_count = int(old_failed_count or 0)
+
+    completed_with_results = await db.execute(
+        select(SystemTaskQueue)
+        .where(
+            and_(
+                SystemTaskQueue.status == "completed",
+                SystemTaskQueue.result.is_not(None),
+                SystemTaskQueue.result != "",
+            )
+        )
+        .order_by(SystemTaskQueue.completed_at.desc().nulls_last(), SystemTaskQueue.id.desc())
+    )
+    completed_semantic_failure_count = 0
+    completed_semantic_failure_samples = []
+    for task in completed_with_results.scalars().all():
+        reason = _task_result_semantic_failure_reason(_decode_task_result(task.result))
+        if reason is None:
+            continue
+        completed_semantic_failure_count += 1
+        if len(completed_semantic_failure_samples) < COMPLETED_SEMANTIC_FAILURE_SAMPLE_LIMIT:
+            completed_semantic_failure_samples.append(_semantic_failure_sample(task, reason))
 
     # --- Classify pending tasks ---
     pending_tasks = await db.execute(
@@ -194,9 +254,21 @@ async def audit_task_queue(db: AsyncSession) -> dict:
             "future_scheduled_count": len(unreachable_pending),
             "healthy_running_count": len(healthy_running),
             "orphan_running_debt_count": len(orphan_running),
+            "completed_semantic_failure_count": completed_semantic_failure_count,
+            "completed_semantic_failure_manual_review_count": completed_semantic_failure_count,
         },
         "recent_failed_count": len(recent_failed_list),
         "historical_debt_total": historical_failed_debt_count,
+        "completed_semantic_failures": {
+            "count": completed_semantic_failure_count,
+            "action": "manual_review",
+            "mutates_rows": False,
+            "reason": (
+                "Completed task rows whose result JSON still reports error/status=failed/"
+                "success=false need manual review; audit does not retry, archive, or delete them."
+            ),
+            "samples": completed_semantic_failure_samples,
+        },
         "stalest_pending": stalest_pending_info,
         "handler_breakdown": handler_breakdown,
         "top_error_signatures": top_error_signatures,

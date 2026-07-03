@@ -45,6 +45,7 @@ async def _create_task(
     scheduled_at: datetime | None = None,
     module: str = "test",
     parameters: dict | None = None,
+    result: dict | None = None,
 ) -> int:
     async with AsyncSessionLocal() as db:
         now = datetime.now(timezone.utc)
@@ -61,6 +62,7 @@ async def _create_task(
             completed_at=completed_at,
             error_message=error_message,
             scheduled_at=scheduled_at,
+            result=json.dumps(result, ensure_ascii=False) if result is not None else None,
         )
         db.add(task)
         await db.commit()
@@ -508,5 +510,116 @@ async def test_debt_governance_dedupes_legacy_profile_init_db_failures() -> None
             assert statuses[first_id][0] == "pending"
             assert statuses[second_id][0] == "completed"
             assert json.loads(statuses[second_id][1])["status"] == "obsolete"
+    finally:
+        await _cleanup(marker)
+
+
+@pytest.mark.asyncio
+async def test_debt_governance_profile_json_parse_failure_requires_manual_review() -> None:
+    marker = uuid4().hex
+    await _cleanup(marker)
+    try:
+        now = datetime.now(timezone.utc)
+        task_id = await _create_task(
+            "profile_evolve",
+            "failed",
+            module="agent",
+            completed_at=now - timedelta(hours=2),
+            error_message="Failed to parse profile JSON",
+            parameters={"marker": marker, "owner_id": 4, "conversation_id": 78},
+        )
+
+        async with AsyncSessionLocal() as db:
+            plan = await govern_task_queue_debt(
+                db,
+                dry_run=False,
+                limit=2000,
+                sample_limit=10,
+                task_ids=[task_id],
+            )
+
+        assert plan["summary_by_category"]["profile_evolve_json_parse_manual_review"] >= 1
+        assert plan["summary_by_action"]["manual_review"] >= 1
+        assert plan["processed"] == 0
+
+        async with AsyncSessionLocal() as db:
+            row = await db.execute(
+                text(
+                    """
+                    SELECT status, error_message, result
+                    FROM framework_system_task_queues
+                    WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            )
+            status, error_message, result = row.one()
+            assert status == "failed"
+            assert error_message == "Failed to parse profile JSON"
+            assert result is None
+    finally:
+        await _cleanup(marker)
+
+
+@pytest.mark.asyncio
+async def test_completed_semantic_failure_is_audit_and_governance_readonly_debt() -> None:
+    marker = uuid4().hex
+    await _cleanup(marker)
+    try:
+        now = datetime.now(timezone.utc)
+        async with AsyncSessionLocal() as db:
+            baseline = await audit.audit_task_queue(db)
+        baseline_count = baseline["classification"]["completed_semantic_failure_count"]
+
+        task_result = {
+            "status": "failed",
+            "error": "unparseable_llm_profile_json",
+            "retryable": True,
+        }
+        task_id = await _create_task(
+            "profile_evolve",
+            "completed",
+            module="agent",
+            completed_at=now - timedelta(hours=2),
+            parameters={"marker": marker, "owner_id": 4, "conversation_id": 79},
+            result=task_result,
+        )
+
+        async with AsyncSessionLocal() as db:
+            audit_result = await audit.audit_task_queue(db)
+
+        semantic = audit_result["completed_semantic_failures"]
+        assert audit_result["classification"]["completed_semantic_failure_count"] >= baseline_count + 1
+        assert semantic["mutates_rows"] is False
+        assert any(sample["id"] == task_id for sample in semantic["samples"])
+
+        async with AsyncSessionLocal() as db:
+            plan = await govern_task_queue_debt(
+                db,
+                dry_run=False,
+                limit=2000,
+                sample_limit=10,
+                task_ids=[task_id],
+            )
+
+        assert plan["readonly_review"]["mutates_completed_rows"] is False
+        assert plan["readonly_review"]["completed_semantic_failure_count"] >= 1
+        assert plan["summary_by_category"]["completed_semantic_failure_manual_review"] >= 1
+        assert plan["processed"] == 0
+
+        async with AsyncSessionLocal() as db:
+            row = await db.execute(
+                text(
+                    """
+                    SELECT status, result
+                    FROM framework_system_task_queues
+                    WHERE id = :task_id
+                    """
+                ),
+                {"task_id": task_id},
+            )
+            status, stored_result = row.one()
+            assert status == "completed"
+            assert json.loads(stored_result) == task_result
     finally:
         await _cleanup(marker)

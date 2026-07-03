@@ -32,7 +32,35 @@ async def _run_pipeline(
     force_fusion: bool = False,
 ) -> dict:
     """委托给 PipelineOrchestrator。"""
-    doc = await db.scalar(select(KbDocument).where(KbDocument.id == document_id))
+    doc = await db.scalar(
+        select(KbDocument).where(
+            KbDocument.id == document_id,
+            KbDocument.owner_id == owner_id,
+            KbDocument.deleted.is_(False),
+        )
+    )
+    if not doc:
+        return {"error": f"Document {document_id} not found", "status": "failed"}
+
+    source_file_id = int(doc.file_id or file_id)
+    source_state = await get_source_file_availability(db, source_file_id)
+    if not source_state.available:
+        mark_document_source_unavailable(doc, source_state.reason)
+        await db.commit()
+        logger.info(
+            "Pipeline skipped before parse/index for document_id=%d file_id=%d: %s",
+            document_id,
+            source_file_id,
+            source_state.reason,
+        )
+        return {
+            "document_id": document_id,
+            "file_id": source_file_id,
+            "status": "skipped",
+            "reason": source_state.reason,
+            "classification": "source_unavailable",
+        }
+
     if doc and (not document_parse_allows_search(doc) or doc.vector_status != "done"):
         await parse_and_index_document(
             db,
@@ -42,7 +70,7 @@ async def _run_pipeline(
             extract_graph=False,
         )
     return await _run_orchestrated(
-        db, document_id, owner_id, file_id, user_id,
+        db, document_id, owner_id, source_file_id, user_id,
         force_raw=force_raw, force_fusion=force_fusion,
     )
 

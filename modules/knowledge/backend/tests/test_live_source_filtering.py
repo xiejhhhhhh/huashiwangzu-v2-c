@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import sys
 import uuid
+import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import func, select, text
+
+os.environ.setdefault("JWT_SECRET", "test-secret-for-knowledge-live-source-filtering")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 BACKEND_ROOT = REPO_ROOT / "backend"
@@ -18,8 +21,10 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.database import AsyncSessionLocal, engine, init_db
+from app.core.exceptions import NotFound
 from app.models.file import File
-from modules.knowledge.backend.models import KbChunk, KbDocument
+from modules.knowledge.backend.models import KbChunk, KbDocument, KbPageFusion, KbRawData
+from modules.knowledge.backend.services import document_service, pipeline_service
 from modules.knowledge.backend.services import search_service
 from modules.knowledge.backend.services.embedding_service import get_chunk_by_id
 from modules.knowledge.backend.services.search_service import (
@@ -47,6 +52,10 @@ async def _ensure_framework_ready() -> None:
 async def _cleanup(doc_ids: list[int], file_ids: list[int]) -> None:
     async with AsyncSessionLocal() as db:
         for doc_id in doc_ids:
+            await db.execute(text("DELETE FROM kb_pipeline_stage_runs WHERE document_id = :doc_id"), {"doc_id": doc_id})
+            await db.execute(text("DELETE FROM kb_pipeline_runs WHERE document_id = :doc_id"), {"doc_id": doc_id})
+            await db.execute(text("DELETE FROM kb_raw_data WHERE document_id = :doc_id"), {"doc_id": doc_id})
+            await db.execute(text("DELETE FROM kb_page_fusions WHERE document_id = :doc_id"), {"doc_id": doc_id})
             await db.execute(text("DELETE FROM kb_chunks WHERE document_id = :doc_id"), {"doc_id": doc_id})
             await db.execute(text("DELETE FROM kb_documents WHERE id = :doc_id"), {"doc_id": doc_id})
         for file_id in file_ids:
@@ -192,6 +201,103 @@ async def test_search_filters_deleted_doc_and_unavailable_source(monkeypatch: py
         for item in keyword_results + vector_results + hybrid_results:
             assert item["source_available"] is True
             assert item["source_state"] == "available"
+    finally:
+        await _cleanup(list(docs.values()), [ids["live_file"], ids["deleted_file"]])
+
+
+@pytest.mark.asyncio
+async def test_document_list_and_detail_filter_unavailable_sources() -> None:
+    marker = uuid.uuid4().hex[:8]
+    docs, ids = await _create_case(marker)
+    try:
+        async with AsyncSessionLocal() as db:
+            listed = await document_service.list_documents(db, OWNER_ID, keyword=marker, page=1, page_size=20)
+            listed_ids = [item["id"] for item in listed["items"]]
+
+            assert listed["total"] == 1
+            assert listed_ids == [docs["live"]]
+            assert listed["items"][0]["source_available"] is True
+            assert listed["items"][0]["source_state"] == "available"
+
+            live = await document_service.get_document(db, docs["live"], OWNER_ID)
+            assert live["id"] == docs["live"]
+            assert live["source_available"] is True
+            assert live["source_state"] == "available"
+
+            with pytest.raises(NotFound):
+                await document_service.get_document(db, docs["source_deleted"], OWNER_ID)
+            with pytest.raises(NotFound):
+                await document_service.get_document(db, docs["source_missing"], OWNER_ID)
+    finally:
+        await _cleanup(list(docs.values()), [ids["live_file"], ids["deleted_file"]])
+
+
+@pytest.mark.asyncio
+async def test_pipeline_skips_unavailable_sources_before_parse_or_index() -> None:
+    marker = uuid.uuid4().hex[:8]
+    docs, ids = await _create_case(marker)
+    try:
+        async with AsyncSessionLocal() as db:
+            deleted_doc = await db.get(KbDocument, docs["source_deleted"])
+            missing_doc = await db.get(KbDocument, docs["source_missing"])
+            assert deleted_doc is not None
+            assert missing_doc is not None
+
+            before = {
+                key: {
+                    "chunks": await db.scalar(select(func.count(KbChunk.id)).where(KbChunk.document_id == doc_id)) or 0,
+                    "raw": await db.scalar(select(func.count(KbRawData.id)).where(KbRawData.document_id == doc_id)) or 0,
+                    "fusion": await db.scalar(
+                        select(func.count(KbPageFusion.id)).where(KbPageFusion.document_id == doc_id)
+                    ) or 0,
+                }
+                for key, doc_id in (
+                    ("source_deleted", docs["source_deleted"]),
+                    ("source_missing", docs["source_missing"]),
+                )
+            }
+
+            deleted_result = await pipeline_service._run_pipeline(
+                db,
+                docs["source_deleted"],
+                OWNER_ID,
+                deleted_doc.file_id,
+                OWNER_ID,
+            )
+            missing_result = await pipeline_service._run_pipeline(
+                db,
+                docs["source_missing"],
+                OWNER_ID,
+                missing_doc.file_id,
+                OWNER_ID,
+            )
+
+            assert deleted_result["status"] == "skipped"
+            assert deleted_result["reason"] == "source_file_deleted"
+            assert deleted_result["classification"] == "source_unavailable"
+            assert missing_result["status"] == "skipped"
+            assert missing_result["reason"] == "source_file_missing"
+            assert missing_result["classification"] == "source_unavailable"
+
+            await db.refresh(deleted_doc)
+            await db.refresh(missing_doc)
+            assert deleted_doc.parse_error == "source_file_deleted"
+            assert missing_doc.parse_error == "source_file_missing"
+
+            after = {
+                key: {
+                    "chunks": await db.scalar(select(func.count(KbChunk.id)).where(KbChunk.document_id == doc_id)) or 0,
+                    "raw": await db.scalar(select(func.count(KbRawData.id)).where(KbRawData.document_id == doc_id)) or 0,
+                    "fusion": await db.scalar(
+                        select(func.count(KbPageFusion.id)).where(KbPageFusion.document_id == doc_id)
+                    ) or 0,
+                }
+                for key, doc_id in (
+                    ("source_deleted", docs["source_deleted"]),
+                    ("source_missing", docs["source_missing"]),
+                )
+            }
+            assert after == before
     finally:
         await _cleanup(list(docs.values()), [ids["live_file"], ids["deleted_file"]])
 

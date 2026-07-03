@@ -324,8 +324,25 @@ async def _cap_get_file_content(params: dict, caller: str) -> dict:
     if not file_id:
         return {"success": False, "error": "file_id required"}
     owner_id = resolve_caller_user_id(caller)
+
+    def fail_content(error: str, status: str, source: str = "none", package_id: int | None = None) -> dict:
+        data = {"source": source, "status": status, "download_url": f"/api/files/download/{file_id}/original"}
+        if package_id is not None:
+            data["package_id"] = package_id
+        return {"success": False, "error": error, "data": data}
+
+    def blocks_from_full_package(full: dict) -> list:
+        content = full.get("content", {})
+        blocks = content.get("blocks", [])
+        if full.get("version") and full["version"].get("content_json"):
+            import json
+            parsed = json.loads(full["version"]["content_json"])
+            blocks = parsed.get("blocks", blocks)
+        return blocks
+
     async with AsyncSessionLocal() as db:
         try:
+            from app.core.exceptions import NotFound as AppNotFound
             from app.services.content.package_service import ContentPackageService
             from app.services.file_service import check_file_access as file_access
             from app.services.file_service import get_file_record
@@ -333,20 +350,22 @@ async def _cap_get_file_content(params: dict, caller: str) -> dict:
             if not file_record:
                 return {"success": False, "error": "File not found"}
 
-            access = await file_access(db, file_id, owner_id)
-            if not access:
-                return {"success": False, "error": "Permission denied"}
-
+            await file_access(db, file_id, owner_id)
             pkg_svc = ContentPackageService()
-            pkg = await pkg_svc.get_package(db, file_id=file_id, owner_id=owner_id)
+            try:
+                pkg = await pkg_svc.get_package(db, file_id=file_id, owner_id=owner_id)
+            except AppNotFound:
+                pkg = None
             if pkg and is_package_consumable_status(pkg.get("status")):
                 full = await pkg_svc.get_full_package(db, pkg["id"], owner_id=owner_id)
-                content = full.get("content", {})
-                blocks = content.get("blocks", [])
-                if full.get("version") and full["version"].get("content_json"):
-                    import json
-                    parsed = json.loads(full["version"]["content_json"])
-                    blocks = parsed.get("blocks", blocks)
+                blocks = blocks_from_full_package(full)
+                if not blocks:
+                    return fail_content(
+                        "Content package contains no consumable blocks",
+                        str(pkg.get("status") or "empty_blocks"),
+                        source="content_package",
+                        package_id=pkg["id"],
+                    )
                 return {"success": True, "data": {
                     "source": "content_package",
                     "package_id": pkg["id"],
@@ -359,46 +378,47 @@ async def _cap_get_file_content(params: dict, caller: str) -> dict:
             from app.services.content.pipeline_service import ContentPipelineService
             pipeline_svc = ContentPipelineService()
             try:
-                caller_str = f"user:{owner_id}"
-                pipeline_result = await pipeline_svc.run_pipeline(file_id, caller_str)
+                pipeline_result = await pipeline_svc.run_pipeline(file_id, caller)
             except Exception as e:
-                return {"success": False, "error": str(e), "data": {
-                    "source": "none",
-                    "status": "parse_failed",
-                    "download_url": f"/api/files/download/{file_id}/original",
-                }}
+                return fail_content(str(e), "parse_failed")
 
             pipeline_error = _pipeline_failure(pipeline_result)
             if pipeline_error:
-                return {"success": False, "error": pipeline_error, "data": {
-                    "source": "none",
-                    "status": "parse_failed",
-                    "download_url": f"/api/files/download/{file_id}/original",
-                }}
+                return fail_content(pipeline_error, "parse_failed")
+
+            if isinstance(pipeline_result, dict) and pipeline_result.get("skipped"):
+                return fail_content(str(pipeline_result.get("reason") or "Content pipeline skipped"), "skipped")
 
             if pipeline_result:
-                pkg = await pkg_svc.get_package(db, file_id=file_id, owner_id=owner_id)
+                try:
+                    pkg = await pkg_svc.get_package(db, file_id=file_id, owner_id=owner_id)
+                except AppNotFound:
+                    pkg = None
                 if pkg and is_package_consumable_status(pkg.get("status")):
                     full = await pkg_svc.get_full_package(db, pkg["id"], owner_id=owner_id)
-                    content = full.get("content", {})
-                    blocks = content.get("blocks", [])
-                    if full.get("version") and full["version"].get("content_json"):
-                        import json
-                        parsed = json.loads(full["version"]["content_json"])
-                        blocks = parsed.get("blocks", blocks)
+                    blocks = blocks_from_full_package(full)
+                    if not blocks:
+                        return fail_content(
+                            "Content package contains no consumable blocks",
+                            str(pkg.get("status") or "empty_blocks"),
+                            source="content_package",
+                            package_id=pkg["id"],
+                        )
                     return {"success": True, "data": {
                         "source": "content_package",
                         "package_id": pkg["id"],
                         "blocks": blocks,
                         "status": pkg.get("status"),
                     }}
+                if pkg:
+                    return fail_content(
+                        f"Content package is not consumable: {pkg.get('status')}",
+                        str(pkg.get("status") or "not_parsed"),
+                        source="content_package",
+                        package_id=pkg["id"],
+                    )
 
-            return {"success": True, "data": {
-                "source": "none",
-                "blocks": [],
-                "status": "not_parsed",
-                "download_url": f"/api/files/download/{file_id}/original",
-            }}
+            return fail_content("No consumable content package available", "not_parsed")
         except Exception as e:
             return {"success": False, "error": str(e)}
 
