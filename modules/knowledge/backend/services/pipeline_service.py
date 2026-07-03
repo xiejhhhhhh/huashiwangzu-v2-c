@@ -30,6 +30,7 @@ async def _run_pipeline(
     user_id: int,
     force_raw: bool = False,
     force_fusion: bool = False,
+    task_id: int | None = None,
 ) -> dict:
     """委托给 PipelineOrchestrator。"""
     doc = await db.scalar(
@@ -71,7 +72,7 @@ async def _run_pipeline(
         )
     return await _run_orchestrated(
         db, document_id, owner_id, source_file_id, user_id,
-        force_raw=force_raw, force_fusion=force_fusion,
+        force_raw=force_raw, force_fusion=force_fusion, task_id=task_id,
     )
 
 
@@ -83,6 +84,7 @@ async def _pipeline_handler(params: dict) -> dict:
     """
     document_id = int(params.get("document_id", 0))
     user_id = int(params.get("user_id", 0)) or 1
+    task_id = int(params.get("task_id", 0) or 0) or None
     if document_id <= 0:
         return {"error": "document_id required", "status": "failed"}
 
@@ -113,6 +115,7 @@ async def _pipeline_handler(params: dict) -> dict:
                 db, document_id, doc.owner_id, doc.file_id, user_id,
                 force_raw=params.get("force_raw", False),
                 force_fusion=params.get("force_fusion", False),
+                task_id=task_id,
             )
             if result.get("error") and result.get("status") not in {"skipped", "degraded"}:
                 return {"status": "failed", **result}

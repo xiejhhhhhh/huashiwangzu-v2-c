@@ -77,6 +77,7 @@ async def _start_pipeline_run(
     document_id: int,
     owner_id: int,
     file_id: int,
+    task_id: int | None = None,
 ) -> int | None:
     """Persist a best-effort pipeline run row for diagnostics."""
     _ = db
@@ -88,6 +89,7 @@ async def _start_pipeline_run(
                 document_id=document_id,
                 owner_id=owner_id,
                 file_id=file_id,
+                task_id=task_id,
                 trigger="kb_pipeline",
                 status="running",
                 started_at=_now(),
@@ -321,6 +323,7 @@ async def run_pipeline(
     user_id: int,
     force_raw: bool = False,
     force_fusion: bool = False,
+    task_id: int | None = None,
 ) -> dict:
     """统一 pipeline 入口。
 
@@ -336,7 +339,7 @@ async def run_pipeline(
     )).scalar_one_or_none()):
         return {"error": f"Document {document_id} not found"}
 
-    run = await _start_pipeline_run(db, document_id, owner_id, file_id)
+    run = await _start_pipeline_run(db, document_id, owner_id, file_id, task_id)
 
     aborted = await _abort_if_source_unavailable(
         db,
