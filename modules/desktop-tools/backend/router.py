@@ -717,7 +717,7 @@ register_capability(
             "page": {"type": "integer", "description": "Page number", "default": 1},
             "page_size": {
                 "type": "integer",
-                "description": f"Items per page (max {MAX_PAGE_SIZE})",
+                "description": "Items per page (max 100)",
                 "default": 50,
             },
         },
@@ -737,7 +737,7 @@ register_capability(
             "page": {"type": "integer", "description": "Page number", "default": 1},
             "page_size": {
                 "type": "integer",
-                "description": f"Items per page (max {MAX_PAGE_SIZE})",
+                "description": "Items per page (max 100)",
                 "default": 50,
             },
         },

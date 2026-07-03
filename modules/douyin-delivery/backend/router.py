@@ -225,6 +225,7 @@ class DeliveryTaskCreateRequest(BaseModel):
     payload: dict | None = None
     result_payload: dict | None = None
     error_message: str = ""
+    auto_execute: bool = True
 
 class DeliveryTaskUpdateRequest(BaseModel):
     task_type: str | None = None
@@ -757,13 +758,14 @@ register_capability(
 )
 register_capability(
     "douyin-delivery", "create_delivery_task", _cap_create_delivery_task,
-    description="创建抖音投递任务，返回可审计的 pending/running/succeeded/failed 状态记录",
-    brief="创建投递任务",
+    description="创建抖音内容交接任务并同步推进状态；不会调用外部广告平台",
+    brief="创建交接任务",
     parameters={
         "task_type": {"type": "string", "description": "publish_script/publish_ad_copy/sync_metrics/review_content"},
         "target_type": {"type": "string", "description": "script/ad_copy/campaign/material"},
         "target_id": {"type": "integer", "description": "目标逻辑 ID"},
-        "payload": {"type": "object", "description": "投递参数"},
+        "payload": {"type": "object", "description": "交接参数；execution_mode 支持 handoff/dry_run"},
+        "auto_execute": {"type": "boolean", "description": "是否创建后立即推进状态，默认 true"},
     },
     min_role="editor",
 )

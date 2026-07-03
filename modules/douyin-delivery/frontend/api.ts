@@ -113,6 +113,10 @@ export interface DeliveryTask {
   updated_at: string | null
 }
 
+export interface DeliveryTaskCreateRequest extends Partial<DeliveryTask> {
+  auto_execute?: boolean
+}
+
 export interface GenerateResult {
   script?: string
   ad_copy?: string
@@ -208,7 +212,7 @@ export const deliveryTasks = {
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     return apiGet<DeliveryTask[]>(`${BASE}/delivery-tasks${suffix}`)
   },
-  create: (data: Partial<DeliveryTask>) => apiPost<DeliveryTask>(`${BASE}/delivery-tasks`, data),
+  create: (data: DeliveryTaskCreateRequest) => apiPost<DeliveryTask>(`${BASE}/delivery-tasks`, data),
   update: (id: number, data: Partial<DeliveryTask>) => apiPut<DeliveryTask>(`${BASE}/delivery-tasks/${id}`, data),
   markStatus: (id: number, data: { status: string; error_message?: string; result_payload?: Record<string, unknown> }) =>
     apiPost<DeliveryTask>(`${BASE}/delivery-tasks/${id}/status`, data),

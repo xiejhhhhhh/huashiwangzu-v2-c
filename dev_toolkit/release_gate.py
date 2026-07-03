@@ -290,8 +290,9 @@ async def check_smoke(skip_ui: bool) -> None:
         started = time.monotonic()
         env_override = {"SMOKE_SKIP_UI": "1"} if skip_ui else {}
         env = {**os.environ.copy(), **env_override}
+        smoke_python = str(BACKEND_PYTHON if BACKEND_PYTHON.exists() else Path(sys.executable))
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
+            smoke_python,
             str(REPO_ROOT / "dev_toolkit" / "smoke.py"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

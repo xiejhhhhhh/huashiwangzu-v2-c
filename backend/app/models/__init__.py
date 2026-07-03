@@ -5,6 +5,7 @@ from .desktop_state import DesktopState
 from .file import File, Folder
 from .file_share import FileShare
 from .file_upload_session import FileUploadSession
+from .gateway_usage import GatewayUsageDaily
 from .private_module import PrivateModule
 from .prompt import PromptCategory, PromptTemplate
 from .recycle import RecycleItem
@@ -18,5 +19,6 @@ __all__ = ["User", "App", "Folder", "File", "FileUploadSession", "FileShare", "R
            "RoleMatrix", "DesktopState",
            "PromptCategory", "PromptTemplate",
            "PrivateModule",
+           "GatewayUsageDaily",
            "Artifact", "ArtifactVersion", "ArtifactOperation",
            "ContentPackage", "ContentPackageVersion", "Resource", "ResourceRef"]

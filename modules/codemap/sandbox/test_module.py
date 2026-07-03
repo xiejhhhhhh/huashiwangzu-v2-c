@@ -67,11 +67,12 @@ def test_rebuild_params() -> None:
 
 
 def test_acquire_lock_params() -> None:
-    """acquire_lock: path + agent_id required."""
-    params = {"path": "modules/agent/manifest.json", "agent_id": "agent-001"}
+    """acquire_lock: path + agent_id required, ttl optional."""
+    params = {"path": "modules/agent/manifest.json", "agent_id": "agent-001", "ttl": 60}
     assert "path" in params and "agent_id" in params
     assert isinstance(params["path"], str) and len(params["path"]) > 0
     assert isinstance(params["agent_id"], str) and len(params["agent_id"]) > 0
+    assert isinstance(params["ttl"], int) and params["ttl"] > 0
     print("  [ACQUIRE_LOCK] Parameter contract valid")
 
 
@@ -115,6 +116,33 @@ def test_list_feedback_params() -> None:
     if "path" in params_with_path:
         assert isinstance(params_with_path["path"], str)
     print("  [LIST_FEEDBACK] Parameter contract valid")
+
+
+def test_feedback_empty_state_output_shape() -> None:
+    """No feedback must be visible as unknown accuracy, not 100%."""
+    stats = {
+        "query_count": 12,
+        "feedback_count": 0,
+        "empirical_accuracy": None,
+        "empirical_accuracy_status": "no_feedback",
+        "empirical_accuracy_note": "暂无 codemap_feedback 反馈样本，empirical_accuracy 未知，不能视为 100% 准确。",
+    }
+    assert stats["feedback_count"] == 0
+    assert stats["empirical_accuracy"] is None
+    assert stats["empirical_accuracy_status"] == "no_feedback"
+    assert "100%" in stats["empirical_accuracy_note"]
+
+    feedback_list = {
+        "items": [],
+        "feedback_count": 0,
+        "has_feedback": False,
+        "aggregated_by_path": True,
+        "empty_note": stats["empirical_accuracy_note"],
+    }
+    assert feedback_list["has_feedback"] is False
+    assert feedback_list["items"] == []
+    assert "empty_note" in feedback_list
+    print("  [FEEDBACK_EMPTY_STATE] Output shape valid")
 
 
 def test_file_info_output_shape() -> None:
@@ -212,6 +240,7 @@ def main() -> None:
     test_list_locks_params()
     test_report_inaccuracy_params()
     test_list_feedback_params()
+    test_feedback_empty_state_output_shape()
     test_file_info_output_shape()
     test_impact_output_shape()
     test_boundary_check_output_shape()

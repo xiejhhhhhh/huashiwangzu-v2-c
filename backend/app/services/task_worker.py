@@ -6,10 +6,11 @@ FOR UPDATE SKIP LOCKED. Modules register handlers by task_type.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 
 from app.database import AsyncSessionLocal
 from app.models.system import SystemTaskQueue
@@ -65,17 +66,34 @@ async def _recover_stale_tasks(db) -> None:
         .with_for_update(skip_locked=True)
     )
     stale = list(result.scalars().all())
+    reclaimed_count = 0
     for task in stale:
-        task.retry_count = (task.retry_count or 0) + 1
-        if task.retry_count >= (task.max_retries or 3):
-            task.status = "failed"
-            task.error_message = "Task timed out and exceeded max retries"
-            task.completed_at = now
+        retry_count = (task.retry_count or 0) + 1
+        if retry_count >= (task.max_retries or 3):
+            values = {
+                "retry_count": retry_count,
+                "status": "failed",
+                "error_message": "Task timed out and exceeded max retries",
+                "completed_at": now,
+            }
         else:
-            task.status = "pending"
-            task.started_at = None
-    if stale:
-        logger.info("Timeout recovery: reclaimed %d stale tasks", len(stale))
+            values = {
+                "retry_count": retry_count,
+                "status": "pending",
+                "started_at": None,
+            }
+        update_result = await db.execute(
+            update(SystemTaskQueue)
+            .where(
+                SystemTaskQueue.id == task.id,
+                SystemTaskQueue.status == "running",
+                SystemTaskQueue.started_at == task.started_at,
+            )
+            .values(**values)
+        )
+        reclaimed_count += int(update_result.rowcount or 0)
+    if reclaimed_count:
+        logger.info("Timeout recovery: reclaimed %d stale tasks", reclaimed_count)
     await db.commit()
 
 
@@ -256,4 +274,7 @@ def worker_health() -> dict:
         "running": _worker_task is not None and not _worker_task.done(),
         "registered_handlers": sorted(_HANDLERS.keys()),
         "last_active": _last_active.isoformat() if _last_active else None,
+        "process_local": True,
+        "pid": os.getpid(),
+        "last_active_scope": "process",
     }

@@ -75,7 +75,7 @@
     },
     {
       "action": "stats",
-      "description": "返回索引规模、构建耗时、最后更新时间。",
+      "description": "返回索引规模、构建耗时、最后更新时间、解析 confidence、反馈样本数与 empirical_accuracy 状态。",
       "parameters": {},
       "min_role": "viewer"
     },
@@ -90,7 +90,8 @@
       "description": "获取文件锁",
       "parameters": {
         "path": "文件路径",
-        "agent_id": "锁主标识"
+        "agent_id": "锁主标识",
+        "ttl": "租约秒数（可选，默认 600）"
       },
       "min_role": "viewer"
     },
@@ -118,10 +119,14 @@
     },
     {
       "action": "report_inaccuracy",
-      "description": "报告 codemap 查询结果与实际不符",
+      "description": "报告 codemap 查询结果与实际不符。Agent 实读验证后发现不准时调用。",
       "parameters": {
         "path": "文件路径",
-        "query_type": "查询类型"
+        "query_type": "查询类型",
+        "codemap_said": "codemap 返回内容摘要",
+        "actual": "实际内容或影响",
+        "reason": "为什么不准",
+        "agent_id": "反馈来源 agent（可选）"
       },
       "min_role": "viewer"
     },
@@ -129,7 +134,9 @@
       "action": "list_feedback",
       "description": "列出 codemap 反馈记录",
       "parameters": {
-        "path": "过滤路径（可选）"
+        "path": "过滤路径（可选）",
+        "page": "页码（可选，默认 1）",
+        "page_size": "每页条数（可选，默认 50）"
       },
       "min_role": "admin"
     }

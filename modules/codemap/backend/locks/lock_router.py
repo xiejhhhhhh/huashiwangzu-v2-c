@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..feedback_summary import build_feedback_list_metadata
 from ..graph.graph import normalize_path
 from ..init_db import ensure_codemap_tables
 from ..models import CodemapFeedback
@@ -123,6 +124,10 @@ async def http_list_feedback(
     await ensure_codemap_tables(db)
     if path:
         path = normalize_path(path)
+        total_result = await db.execute(
+            select(func.count(CodemapFeedback.id)).where(CodemapFeedback.path == path)
+        )
+        feedback_count = total_result.scalar() or 0
         # Filter by path, ordered by recency
         result = await db.execute(
             select(CodemapFeedback)
@@ -133,6 +138,10 @@ async def http_list_feedback(
         )
         items = result.scalars().all()
     else:
+        total_result = await db.execute(select(func.count(CodemapFeedback.id)))
+        feedback_count = total_result.scalar() or 0
+        path_count_result = await db.execute(select(func.count(func.distinct(CodemapFeedback.path))))
+        path_count = path_count_result.scalar() or 0
         # Aggregate by path, sorted by complaint count desc
         result = await db.execute(
             select(
@@ -159,9 +168,13 @@ async def http_list_feedback(
                 entry["latest_reason"] = row
         return ApiResponse(data={
             "items": aggregated,
-            "aggregated_by_path": True,
-            "page": page,
-            "page_size": page_size,
+            **build_feedback_list_metadata(
+                feedback_count=feedback_count,
+                page=page,
+                page_size=page_size,
+                aggregated_by_path=True,
+                path_count=path_count,
+            ),
         })
 
     return ApiResponse(data={
@@ -178,7 +191,11 @@ async def http_list_feedback(
             }
             for f in items
         ],
-        "total": len(items),
-        "page": page,
-        "page_size": page_size,
+        **build_feedback_list_metadata(
+            feedback_count=feedback_count,
+            page=page,
+            page_size=page_size,
+            aggregated_by_path=False,
+            path=path,
+        ),
     })

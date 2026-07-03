@@ -19,7 +19,7 @@ HTTP 前缀：`/api/codemap`，除 rebuild/feedback 管理接口外一般 `viewe
 | 端点 | 方法 | 用途 |
 |---|---|---|
 | `/health` | GET | 健康检查 |
-| `/stats` | GET | 索引规模、confidence、empirical_accuracy |
+| `/stats` | GET | 索引规模、confidence、feedback_count、empirical_accuracy/status/note |
 | `/get-file` | POST | 查询单文件依赖、被依赖、能力、表、stale |
 | `/impact` | POST | 查询影响面 |
 | `/check-boundary` | POST | 边界合规检查 |
@@ -31,9 +31,9 @@ HTTP 前缀：`/api/codemap`，除 rebuild/feedback 管理接口外一般 `viewe
 | `/release-lock` | POST | 释放文件锁 |
 | `/list-locks` | GET | 列活跃锁 |
 | `/report-inaccuracy` | POST | 记录索引不准反馈 |
-| `/list-feedback` | GET | 查看反馈，需 admin |
+| `/list-feedback` | GET | 查看反馈，需 admin；无反馈时返回 `has_feedback:false` 与 `empty_note` |
 
-跨模块能力与 HTTP 基本一一对应：`codemap:get_file`、`impact`、`check_boundary`、`module_map`、`search`、`stats`、`rebuild`、`acquire_lock`、`check_lock`、`release_lock`、`list_locks`、`report_inaccuracy`、`list_feedback`。
+跨模块能力与 HTTP 基本一一对应：`codemap:get_file`、`impact`、`check_boundary`、`module_map`、`search`、`stats`、`rebuild`、`acquire_lock`、`check_lock`、`release_lock`、`list_locks`、`report_inaccuracy`、`list_feedback`。能力参数以 `manifest.json` 的 `public_actions` 和运行时 `register_capability` 为准，两者必须保持同名同义；`acquire_lock.ttl` 可省略，默认 600 秒。
 
 ## 示例
 
@@ -55,7 +55,7 @@ curl -sS -X POST "http://127.0.0.1:$PORT/api/codemap/impact" \
 | 表 | `codemap_feedback`、`codemap_metrics` |
 | 依赖 | `tree-sitter`、`watchdog` |
 | 热更新 | 后端启动后后台建索引，watchdog 500ms 防抖增量更新 |
-| 可信度 | `confidence` 是解析覆盖率，`empirical_accuracy` 是反馈后的实战命中率 |
+| 可信度 | `confidence` 是解析覆盖率，`empirical_accuracy` 是基于反馈闭环的实战命中率；当 `codemap_feedback=0` 时返回 `empirical_accuracy:null`、`empirical_accuracy_status:"no_feedback"`，表示暂无反馈样本，不能解读为 100% 准确 |
 
 ## 多 Worker 口径
 
@@ -102,7 +102,10 @@ codemap:check_lock {"path":"modules/codemap/README.md"}
 codemap:list_locks {}
 codemap:release_lock {"path":"modules/codemap/README.md"}
 
-# 反馈链路守卫：report 后 list_feedback 可见；验收创建的反馈必须从 codemap_feedback 清理
+# 反馈链路守卫：无反馈时 stats 的 empirical_accuracy 必须为 null 且 list_feedback 含 empty_note；
+# report 后 list_feedback 可见；验收创建的反馈必须从 codemap_feedback 清理
+codemap:stats
+codemap:list_feedback {}
 codemap:report_inaccuracy {
   "path":"modules/codemap/README.md",
   "query_type":"verification",

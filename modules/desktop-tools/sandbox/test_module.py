@@ -85,6 +85,23 @@ def test_registered_capabilities() -> None:
     print(f"  [CAPABILITIES] {len(actions)} desktop-tools actions registered: OK")
 
 
+def test_registered_parameter_metadata() -> None:
+    """Static registry metadata exposes the same parameter keys as manifest."""
+    capabilities = list_capabilities(role="admin", caller="user:1")
+    by_action = {
+        cap["action"]: cap
+        for cap in capabilities
+        if cap["module"] == "desktop-tools"
+    }
+
+    list_props = by_action["list_files"]["parameters"]["properties"]
+    assert set(list_props) == {"folder_id", "page", "page_size"}
+
+    search_props = by_action["search_files"]["parameters"]["properties"]
+    assert set(search_props) == {"keyword", "extension", "page", "page_size"}
+    print("  [CAPABILITY PARAMS] list/search metadata keys: OK")
+
+
 def test_parser_map_completeness() -> None:
     """Every delegated parser mapping stays in sync with the router."""
     assert _EXT_PARSER_MAP == EXPECTED_PARSER_MAP
@@ -137,6 +154,7 @@ def main() -> None:
     print("=" * 60)
 
     test_registered_capabilities()
+    test_registered_parameter_metadata()
     test_parser_map_completeness()
     test_input_guards()
     test_output_truncation()

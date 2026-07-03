@@ -126,6 +126,13 @@ async def enqueue_pipeline_task(
     )
     db.add(task)
     await db.flush()
+    task.parameters = json.dumps({
+        "document_id": doc.id,
+        "user_id": user_id,
+        "force_raw": force_raw,
+        "force_fusion": force_fusion,
+        "task_id": task.id,
+    }, ensure_ascii=False)
     return {"task_id": task.id, "enqueued": True, "reason": "created"}
 
 

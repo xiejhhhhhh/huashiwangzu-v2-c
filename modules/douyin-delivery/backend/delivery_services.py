@@ -24,6 +24,14 @@ VALID_MATERIAL_STATUSES = {"draft", "ready", "published", "archived"}
 VALID_DELIVERY_TASK_TYPES = {"publish_script", "publish_ad_copy", "sync_metrics", "review_content"}
 VALID_DELIVERY_TARGET_TYPES = {"script", "ad_copy", "campaign", "material"}
 VALID_DELIVERY_TASK_STATUSES = {"pending", "running", "succeeded", "failed", "cancelled"}
+VALID_EXECUTION_MODES = {"handoff", "dry_run"}
+EXTERNAL_EXECUTION_MODES = {"external_platform", "platform_api", "ocean_engine_api", "qianchuan_api"}
+TARGET_MODELS = {
+    "script": DouyinScript,
+    "ad_copy": DouyinAdCopy,
+    "campaign": DouyinCampaign,
+    "material": DouyinMaterial,
+}
 
 
 def _now() -> datetime:
@@ -70,6 +78,24 @@ def _has_failure_signal(value: object) -> bool:
     if isinstance(value, list):
         return any(_has_failure_signal(item) for item in value)
     return False
+
+
+def _normalize_payload(payload: object) -> dict:
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise ValidationError("delivery task payload must be an object")
+    return payload
+
+
+def _normalize_execution_mode(payload: dict) -> str:
+    mode = str(payload.get("execution_mode") or payload.get("mode") or "handoff").strip()
+    if mode in EXTERNAL_EXECUTION_MODES:
+        raise ValidationError(
+            "External delivery adapters are not configured; "
+            "this module only creates audited handoff tasks."
+        )
+    return _validate_choice("execution_mode", mode, VALID_EXECUTION_MODES)
 
 
 def _validate_task_result_semantics(status: str, error_message: str, result_payload: dict | None) -> None:
@@ -289,6 +315,7 @@ async def create_delivery_task(data: dict, owner_id: int) -> dict:
     status = _validate_choice("status", data.get("status", "pending"), VALID_DELIVERY_TASK_STATUSES)
     error_message = str(data.get("error_message", "") or "")
     result_payload = data.get("result_payload")
+    payload = _normalize_payload(data.get("payload"))
     _validate_task_result_semantics(status, error_message, result_payload)
     now = _now()
     async with AsyncSessionLocal() as db:
@@ -299,7 +326,7 @@ async def create_delivery_task(data: dict, owner_id: int) -> dict:
             target_id=data.get("target_id"),
             status=status,
             priority=int(data.get("priority", 5)),
-            payload=data.get("payload"),
+            payload=payload,
             result_payload=result_payload,
             error_message=error_message,
             started_at=now if status == "running" else data.get("started_at"),
@@ -308,7 +335,12 @@ async def create_delivery_task(data: dict, owner_id: int) -> dict:
         db.add(task)
         await db.commit()
         await db.refresh(task)
-        return _delivery_task_to_dict(task)
+        created = _delivery_task_to_dict(task)
+    if status == "pending" and data.get("auto_execute", True):
+        executed = await execute_delivery_task(created["id"], owner_id)
+        if executed:
+            return executed
+    return created
 
 
 async def update_delivery_task(task_id: int, data: dict, owner_id: int) -> dict | None:
@@ -376,7 +408,8 @@ async def mark_delivery_task_status(
         task = r.scalar_one_or_none()
         if not task:
             return None
-        _validate_task_result_semantics(status, error_message, result_payload)
+        next_result_payload = result_payload if result_payload is not None else task.result_payload
+        _validate_task_result_semantics(status, error_message, next_result_payload)
         task.status = status
         task.error_message = error_message if status == "failed" else ""
         if result_payload is not None:
@@ -386,6 +419,105 @@ async def mark_delivery_task_status(
         await db.commit()
         await db.refresh(task)
         return _delivery_task_to_dict(task)
+
+
+async def execute_delivery_task(task_id: int, owner_id: int) -> dict | None:
+    """Run the module-local delivery handoff and persist a terminal state."""
+    async with AsyncSessionLocal() as db:
+        r = await db.execute(
+            select(DouyinDeliveryTask).where(
+                DouyinDeliveryTask.id == task_id,
+                DouyinDeliveryTask.owner_id == owner_id,
+                DouyinDeliveryTask.deleted.is_(False),
+            )
+        )
+        task = r.scalar_one_or_none()
+        if not task:
+            return None
+        if task.status != "pending":
+            return _delivery_task_to_dict(task)
+
+        task.status = "running"
+        _apply_task_status_timestamps(task)
+        task.updated_at = _now()
+        await db.flush()
+
+        try:
+            result_payload = await _execute_delivery_handoff(db, task)
+            _validate_task_result_semantics("succeeded", "", result_payload)
+        except ValidationError as exc:
+            task.status = "failed"
+            task.error_message = str(exc)
+            task.result_payload = {
+                "success": False,
+                "status": "failed",
+                "error": str(exc),
+                "external_delivery": False,
+            }
+        else:
+            task.status = "succeeded"
+            task.error_message = ""
+            task.result_payload = result_payload
+
+        _apply_task_status_timestamps(task)
+        task.updated_at = _now()
+        await db.commit()
+        await db.refresh(task)
+        return _delivery_task_to_dict(task)
+
+
+async def _execute_delivery_handoff(db, task: DouyinDeliveryTask) -> dict:
+    payload = _normalize_payload(task.payload)
+    execution_mode = _normalize_execution_mode(payload)
+    target = await _load_task_target(db, task)
+    channel = str(payload.get("channel") or getattr(target, "channel", "") or "")
+    if channel:
+        _validate_choice("channel", channel, VALID_CHANNELS)
+    return {
+        "success": True,
+        "status": "succeeded",
+        "execution_mode": execution_mode,
+        "external_delivery": False,
+        "handoff_required": execution_mode != "dry_run",
+        "task_type": task.task_type,
+        "target_type": task.target_type,
+        "target_id": task.target_id,
+        "channel": channel,
+        "adapter": "manual_handoff",
+        "message": (
+            "Delivery task validated and converted into an audited handoff record; "
+            "no external ad platform was called."
+        ),
+        "target_snapshot": _target_snapshot(target),
+    }
+
+
+async def _load_task_target(db, task: DouyinDeliveryTask) -> object | None:
+    if task.target_id is None:
+        return None
+    model = TARGET_MODELS[task.target_type]
+    r = await db.execute(
+        select(model).where(
+            model.id == task.target_id,
+            model.owner_id == task.owner_id,
+            model.deleted.is_(False),
+        )
+    )
+    target = r.scalar_one_or_none()
+    if target is None:
+        raise ValidationError(f"Target {task.target_type}:{task.target_id} not found")
+    return target
+
+
+def _target_snapshot(target: object | None) -> dict | None:
+    if target is None:
+        return None
+    snapshot = {"id": getattr(target, "id", None)}
+    for field in ("name", "title", "channel", "status"):
+        value = getattr(target, field, None)
+        if value is not None:
+            snapshot[field] = value
+    return snapshot
 
 
 async def delete_delivery_task(task_id: int, owner_id: int) -> bool:

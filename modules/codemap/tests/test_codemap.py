@@ -595,9 +595,22 @@ class TestFileLockPersistence:
         assert file_lock_module.acquire_lock("", "agent-a")["success"] is False
         assert file_lock_module.acquire_lock("modules/codemap/README.md", "")["success"] is False
         assert file_lock_module.acquire_lock("modules/codemap/README.md", "agent-a", ttl=0)["success"] is False
+        assert file_lock_module.acquire_lock("modules/codemap/README.md", "agent-a", ttl="0")["success"] is False
+        assert file_lock_module.acquire_lock("modules/codemap/README.md", "agent-a", ttl="abc")["success"] is False
         outside = file_lock_module.acquire_lock("/tmp/outside-repo-file.py", "agent-a")
         assert outside["success"] is False
         assert outside["error"] == "path must be inside repository root"
+
+    def test_acquire_lock_normalizes_capability_inputs(self):
+        result = file_lock_module.acquire_lock(
+            "modules/codemap/README.md",
+            123,
+            ttl="60",
+        )
+        assert result["success"] is True
+        assert result["agent_id"] == "123"
+        assert result["ttl"] == 60
+        assert file_lock_module.check_lock("modules/codemap/README.md")["locked"] is True
 
     def test_check_lock_invalid_path_fails_closed(self):
         result = file_lock_module.check_lock("/tmp/outside-repo-file.py")

@@ -93,8 +93,8 @@ def _write_locks(locks: dict) -> bool:
         return False
 
 
-def _normalize_path(path: str) -> str:
-    clean = path.strip().replace("\\", "/")
+def _normalize_path(path: object) -> str:
+    clean = str(path or "").strip().replace("\\", "/")
     if not clean:
         raise ValueError("path is required")
     raw = Path(clean)
@@ -117,6 +117,20 @@ def _normalize_path(path: str) -> str:
     if not parts:
         raise ValueError("path is required")
     return "/".join(parts)
+
+
+def _normalize_ttl(ttl: object) -> int:
+    if isinstance(ttl, bool):
+        raise ValueError("ttl must be a positive integer")
+    try:
+        if isinstance(ttl, float) and not ttl.is_integer():
+            raise ValueError
+        normalized = int(str(ttl).strip()) if isinstance(ttl, str) else int(ttl)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ttl must be a positive integer") from exc
+    if normalized <= 0:
+        raise ValueError("ttl must be positive")
+    return normalized
 
 
 def _expire_locks(locks: dict) -> None:
@@ -142,33 +156,35 @@ def _with_locked_locks(mutator) -> dict:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def acquire_lock(path: str, agent_id: str, ttl: int = 600) -> dict:
+def acquire_lock(path: object, agent_id: object, ttl: object = 600) -> dict:
     """Acquire a lock on *path* for *agent_id* with *ttl* seconds TTL."""
     try:
         norm_path = _normalize_path(path)
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
-    agent_id = agent_id.strip()
-    if not agent_id:
+    normalized_agent_id = str(agent_id or "").strip()
+    if not normalized_agent_id:
         return {"success": False, "error": "agent_id is required"}
-    if ttl <= 0:
-        return {"success": False, "error": "ttl must be positive"}
+    try:
+        normalized_ttl = _normalize_ttl(ttl)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
 
     def _mutate(locks: dict) -> dict:
-        expires_at = time.time() + ttl
+        expires_at = time.time() + normalized_ttl
         _expire_locks(locks)
         existing = locks.get(norm_path)
-        if existing and existing.get("agent_id") != agent_id:
+        if existing and existing.get("agent_id") != normalized_agent_id:
             remaining = existing["expires_at"] - time.time()
             return {
                 "success": False,
                 "error": f"Already locked by agent '{existing['agent_id']}' "
                          f"(remaining TTL: {max(0, round(remaining, 1))}s)",
             }
-        locks[norm_path] = {"agent_id": agent_id, "expires_at": expires_at}
+        locks[norm_path] = {"agent_id": normalized_agent_id, "expires_at": expires_at}
         if not _write_locks(locks):
             return {"success": False, "error": "Failed to persist lock"}
-        return {"success": True, "path": norm_path, "agent_id": agent_id, "ttl": ttl}
+        return {"success": True, "path": norm_path, "agent_id": normalized_agent_id, "ttl": normalized_ttl}
 
     return _with_locked_locks(_mutate)
 

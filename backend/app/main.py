@@ -161,7 +161,7 @@ async def health_check():
                 GROUP BY status
             """))
             task_counts = {row[0]: int(row[1]) for row in task_rows.fetchall()}
-            semantic_failed_completed = await conn.execute(text("""
+            semantic_failed_completed_24h = await conn.execute(text("""
                 SELECT count(*)
                 FROM framework_system_task_queues
                 WHERE status = 'completed'
@@ -169,12 +169,37 @@ async def health_check():
                   AND result IS NOT NULL
                   AND (result ILIKE '%"error"%' OR result ILIKE '%"status": "failed"%')
             """))
+            semantic_failed_completed_total = await conn.execute(text("""
+                SELECT count(*)
+                FROM framework_system_task_queues
+                WHERE status = 'completed'
+                  AND result IS NOT NULL
+                  AND (
+                    result ILIKE '%"success": false%'
+                    OR result ILIKE '%"status": "failed"%'
+                    OR result ILIKE '%"status":"failed"%'
+                    OR (
+                      result ILIKE '%"error"%'
+                      AND result NOT ILIKE '%"success": true%'
+                    )
+                  )
+            """))
             task_queue_summary = {
                 "pending": task_counts.get("pending", 0),
                 "running": task_counts.get("running", 0),
                 "failed": task_counts.get("failed", 0),
-                "semantic_failed_completed_24h": int(semantic_failed_completed.scalar() or 0),
+                "historical_failed_debt": task_counts.get("failed", 0),
+                "semantic_failed_completed_24h": int(semantic_failed_completed_24h.scalar() or 0),
+                "semantic_failed_completed_total": int(semantic_failed_completed_total.scalar() or 0),
             }
+            task_queue_summary["debt_status"] = (
+                "debt"
+                if (
+                    task_queue_summary["historical_failed_debt"] > 0
+                    or task_queue_summary["semantic_failed_completed_total"] > 0
+                )
+                else "clean"
+            )
     except Exception:
         database_status = "unreachable"
 

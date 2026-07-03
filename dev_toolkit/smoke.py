@@ -472,8 +472,8 @@ async def test_e():
         convs = r.get("data", {}).get("data", [])
         if not convs:
             r2 = await probe("POST", "/api/im/messages", {"target_user_id": 3, "content": f"smoke bootstrap {TS}"})
-            convs2 = r2.get("data", {})
-            conv_id = convs2.get("data", {}).get("conversation_id") if convs2.get("success") else None
+            convs2 = _cap_payload(r2)
+            conv_id = convs2.get("conversation_id") if isinstance(convs2, dict) else None
         else:
             conv_id = convs[0]["id"]
         if conv_id:

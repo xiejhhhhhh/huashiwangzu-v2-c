@@ -8,6 +8,7 @@ contract helpers without creating database rows.
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -18,6 +19,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_DIR = PROJECT_ROOT / "backend"
 MODULES_DIR = PROJECT_ROOT / "modules"
+
+os.environ.setdefault("JWT_SECRET", "im-sandbox-test-secret")
 
 for import_path in (BACKEND_DIR, MODULES_DIR):
     path_text = str(import_path)

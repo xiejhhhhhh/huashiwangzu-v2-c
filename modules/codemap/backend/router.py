@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .feedback_summary import build_empirical_accuracy_fields, build_feedback_list_metadata
 from .graph.graph import get_graph, normalize_path
 from .indexer import get_indexer
 from .init_db import ensure_codemap_tables
@@ -240,7 +241,7 @@ async def _enrich_stats_with_db(stats: dict, db: AsyncSession) -> dict:
     result = await db.execute(select(func.count(CodemapFeedback.id)))
     feedback_count = result.scalar() or 0
     stats["feedback_count"] = feedback_count
-    stats["empirical_accuracy"] = max(0, 100 - int(feedback_count * 100 / max(qc, 1))) if qc > 0 else 100
+    stats.update(build_empirical_accuracy_fields(qc, feedback_count))
     if feedback_count > 0:
         result = await db.execute(
             select(CodemapFeedback)
@@ -525,10 +526,16 @@ async def _cap_list_feedback(params: dict, caller: str) -> dict:
         path = params.get("path")
         page = params.get("page", 1)
         page_size = params.get("page_size", 50)
+        page = max(int(page or 1), 1)
+        page_size = max(int(page_size or 50), 1)
         async with AsyncSessionLocal() as db:
             await _ensure_tables_once(db)
             if path:
                 path = normalize_path(path)
+                total_result = await db.execute(
+                    select(func.count(CodemapFeedback.id)).where(CodemapFeedback.path == path)
+                )
+                feedback_count = total_result.scalar() or 0
                 result = await db.execute(
                     select(CodemapFeedback)
                     .where(CodemapFeedback.path == path)
@@ -541,13 +548,31 @@ async def _cap_list_feedback(params: dict, caller: str) -> dict:
                         "id": f.id,
                         "path": f.path,
                         "query_type": f.query_type,
+                        "codemap_said": f.codemap_said,
+                        "actual": f.actual,
                         "reason": f.reason,
                         "agent_id": f.agent_id,
                         "created_at": str(f.created_at),
                     }
                     for f in result.scalars().all()
                 ]
-                return {"success": True, "data": {"items": items}}
+                return {
+                    "success": True,
+                    "data": {
+                        "items": items,
+                        **build_feedback_list_metadata(
+                            feedback_count=feedback_count,
+                            page=page,
+                            page_size=page_size,
+                            aggregated_by_path=False,
+                            path=path,
+                        ),
+                    },
+                }
+            total_result = await db.execute(select(func.count(CodemapFeedback.id)))
+            feedback_count = total_result.scalar() or 0
+            path_count_result = await db.execute(select(func.count(func.distinct(CodemapFeedback.path))))
+            path_count = path_count_result.scalar() or 0
             result = await db.execute(
                 select(CodemapFeedback.path, func.count(CodemapFeedback.id).label("count"))
                 .group_by(CodemapFeedback.path)
@@ -559,7 +584,13 @@ async def _cap_list_feedback(params: dict, caller: str) -> dict:
                 "success": True,
                 "data": {
                     "items": [{"path": row[0], "complaint_count": row[1]} for row in result.all()],
-                    "aggregated_by_path": True,
+                    **build_feedback_list_metadata(
+                        feedback_count=feedback_count,
+                        page=page,
+                        page_size=page_size,
+                        aggregated_by_path=True,
+                        path_count=path_count,
+                    ),
                 },
             }
     except Exception as exc:
@@ -706,6 +737,7 @@ register_capability(
             "codemap_said": {"type": "string", "description": "codemap 返回的内容摘要"},
             "actual": {"type": "string", "description": "实际内容或影响"},
             "reason": {"type": "string", "description": "为什么不准"},
+            "agent_id": {"type": "string", "description": "反馈来源 agent（可选）"},
         },
         "required": ["path", "query_type"],
     },

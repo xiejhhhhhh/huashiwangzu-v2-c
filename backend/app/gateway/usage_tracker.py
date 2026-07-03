@@ -55,17 +55,17 @@ async def log_usage(
         today = date.today()
         async with AsyncSessionLocal() as db:
             await db.execute(text("""
-                INSERT INTO agent_usage_daily
+                INSERT INTO framework_gateway_usage_daily
                 (usage_date, model_key, provider, module, call_count,
                  prompt_tokens, completion_tokens, cost)
                 VALUES (:date, :model, :provider, :module, 1,
                         :prompt_tokens, :completion_tokens, :cost)
                 ON CONFLICT (usage_date, model_key, provider, module)
                 DO UPDATE SET
-                    call_count = agent_usage_daily.call_count + 1,
-                    prompt_tokens = agent_usage_daily.prompt_tokens + :prompt_tokens,
-                    completion_tokens = agent_usage_daily.completion_tokens + :completion_tokens,
-                    cost = agent_usage_daily.cost + :cost
+                    call_count = framework_gateway_usage_daily.call_count + 1,
+                    prompt_tokens = framework_gateway_usage_daily.prompt_tokens + :prompt_tokens,
+                    completion_tokens = framework_gateway_usage_daily.completion_tokens + :completion_tokens,
+                    cost = framework_gateway_usage_daily.cost + :cost
             """), {
                 "date": today,
                 "model": model_key,

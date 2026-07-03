@@ -216,6 +216,43 @@ def test_delivery_task_semantics_reject_fake_success() -> None:
     print("  [TASK SEMANTICS] Fake success states rejected")
 
 
+def test_delivery_execution_mode_contract() -> None:
+    """Delivery tasks must be auditable handoff records unless a real adapter exists."""
+    from app.core.exceptions import ValidationError
+
+    delivery_services = load_backend_module("delivery_services")
+
+    assert delivery_services._normalize_execution_mode({}) == "handoff"
+    assert delivery_services._normalize_execution_mode({"execution_mode": "dry_run"}) == "dry_run"
+
+    try:
+        delivery_services._normalize_execution_mode({"execution_mode": "ocean_engine_api"})
+    except ValidationError as exc:
+        assert "External delivery adapters are not configured" in str(exc)
+    else:
+        raise AssertionError("external platform mode must fail closed without an adapter")
+
+    result = asyncio.run(delivery_services._execute_delivery_handoff(FakeDb(), FakeTask()))
+    assert result["success"] is True
+    assert result["external_delivery"] is False
+    assert result["adapter"] == "manual_handoff"
+    print("  [DELIVERY EXECUTION] Handoff mode is explicit and auditable")
+
+
+class FakeDb:
+    async def execute(self, _query: object) -> object:
+        raise AssertionError("target lookup should not run without target_id")
+
+
+class FakeTask:
+    id = 1
+    owner_id = 1
+    task_type = "publish_script"
+    target_type = "script"
+    target_id = None
+    payload = {"execution_mode": "handoff", "channel": "local_push"}
+
+
 def test_cleanup_marker_contract() -> None:
     """Cleanup must be marker-scoped to avoid deleting real data."""
     marker = "r2-douyin-20260703"
@@ -243,6 +280,9 @@ def test_manifest_actions_and_db_contracts() -> None:
     tables = {item["table"] for item in manifest["db_migration_declaration"]}
 
     assert {"create_delivery_task", "mark_task_failed", "cleanup_marked_data"} <= actions
+    action_map = {item["action"]: item for item in manifest["public_actions"]}
+    assert "不调用外部广告平台" in action_map["create_delivery_task"]["description"]
+    assert "auto_execute" in action_map["create_delivery_task"]["parameters"]
     assert {
         "douyin_accounts",
         "douyin_materials",
@@ -274,6 +314,7 @@ def test_frontend_crud_methods_match_backend_routes() -> None:
     assert "export const accounts" in api_src
     assert "export const materials" in api_src
     assert "export const deliveryTasks" in api_src
+    assert "export interface DeliveryTaskCreateRequest" in api_src
     assert "export const cleanup" in api_src
     assert "delete: (id: number) => apiDelete" in api_src
     assert "apiPost<{ deleted: boolean }>" not in api_src

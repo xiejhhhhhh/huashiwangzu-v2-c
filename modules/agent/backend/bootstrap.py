@@ -111,7 +111,9 @@ def register_agent_capabilities() -> None:
           "conversation_id": {"type": "integer", "description": "可选：将子 Agent 轨迹归属到指定对话；为空时使用临时负数编号"},
           "session_id": {"type": "string", "description": "可选：轨迹会话标识"},
           "turn_index_offset": {"type": "integer", "description": "可选：轨迹起始 turn_index；为空时自动追加到该对话当前最大 turn 后"},
-          "max_rounds": {"type": "integer", "description": "最大工具轮数"}}, "viewer"),
+          "max_rounds": {"type": "integer", "description": "最大工具轮数"},
+          "gates": {"type": "boolean", "description": "是否启用质量门控校验"},
+          "gate_retry": {"type": "integer", "description": "门控失败最多重试次数，默认 1"}}, "viewer"),
         ("agent", "skill_manage", _cap_skill_manage,
          "管理技能：列表、创建、更新、删除、扫描、使用统计和来源追溯。"
          "Review fork 产出的技能不能直接修改正式技能，必须走审批。",

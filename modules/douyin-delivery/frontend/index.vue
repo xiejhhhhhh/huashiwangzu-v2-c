@@ -1,7 +1,7 @@
 <template>
   <div class="douyin-app">
     <div class="dy-header">
-      <h2 class="dy-title">抖音投放助手</h2>
+      <h2 class="dy-title">抖音内容与计划助手</h2>
       <div class="dy-channel-tabs">
         <el-radio-group v-model="activeChannel" size="small" @change="onChannelChange">
           <el-radio-button value="local_push">本地推</el-radio-button>
@@ -114,18 +114,18 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="投放计划" name="campaigns">
+      <el-tab-pane label="计划与交接" name="campaigns">
         <div class="tab-toolbar">
-          <el-button type="primary" @click="showCampaignForm = true">新建计划</el-button>
+          <el-button type="primary" @click="showCampaignForm = true">新建计划草稿</el-button>
         </div>
 
         <div v-if="showCampaignForm" class="form-card">
-          <h3>新建投放计划</h3>
+          <h3>新建计划草稿</h3>
           <el-form :model="campaignForm" label-width="100px" size="small">
             <el-form-item label="计划名称">
               <el-input v-model="campaignForm.name" />
             </el-form-item>
-            <el-form-item label="投放渠道">
+            <el-form-item label="计划渠道">
               <el-select v-model="campaignForm.channel">
                 <el-option label="本地推" value="local_push" />
                 <el-option label="巨量引擎" value="ocean_engine" />
@@ -153,7 +153,7 @@
         </div>
 
         <div class="list-section">
-          <h3>计划列表</h3>
+          <h3>计划草稿列表</h3>
           <el-alert v-if="campaignsError" type="error" :title="campaignsError" show-icon :closable="false" class="list-error" />
           <el-table :data="campaignsList" stripe style="width:100%" v-loading="campaignsLoading" size="small">
             <el-table-column prop="name" label="计划名称" min-width="160" show-overflow-tooltip />
@@ -178,7 +178,7 @@
 
         <div v-if="campaignAnalysis" class="result-card">
           <div class="result-header">
-            <span class="result-label">投放分析</span>
+            <span class="result-label">计划分析</span>
             <el-button size="small" @click="campaignAnalysis = null">关闭</el-button>
           </div>
           <pre class="result-content">{{ campaignAnalysis.analysis }}</pre>

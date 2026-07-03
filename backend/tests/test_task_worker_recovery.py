@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -134,3 +135,12 @@ async def test_handler_business_dict_completes_normally() -> None:
         else:
             task_worker._HANDLERS[task_type] = previous
         await _cleanup(task_type)
+
+
+def test_worker_health_marks_last_active_as_process_local() -> None:
+    health = task_worker.worker_health()
+
+    assert health["process_local"] is True
+    assert health["pid"] == os.getpid()
+    assert health["last_active_scope"] == "process"
+    assert isinstance(health["registered_handlers"], list)

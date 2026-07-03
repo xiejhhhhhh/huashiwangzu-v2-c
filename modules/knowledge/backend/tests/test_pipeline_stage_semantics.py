@@ -328,6 +328,37 @@ async def test_orchestrator_persists_stage_diagnostics(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_persists_queue_task_id_on_pipeline_run(monkeypatch):
+    async def done_raw(**_kwargs):
+        return {
+            "status": "done",
+            "total_rounds": 1,
+            "valid_rounds": 1,
+            "empty_rounds": 0,
+        }
+
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "STAGE_REGISTRY",
+        [StageDef("raw", ["source_file"], False, done_raw)],
+    )
+    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
+    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
+
+    diagnostics_db = _DiagnosticDb()
+    monkeypatch.setattr(pipeline_orchestrator, "AsyncSessionLocal", _SessionFactory(diagnostics_db))
+
+    result = await pipeline_orchestrator.run_pipeline(_FakeDb(), 123, 1, 456, 1, task_id=777)
+
+    run_rows = [
+        item for item in diagnostics_db.added
+        if getattr(item, "__tablename__", "") == "kb_pipeline_runs"
+    ]
+    assert result["status"] == "done"
+    assert run_rows[0].task_id == 777
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_diagnostic_failure_rolls_back_and_does_not_break_pipeline(monkeypatch):
     async def done_raw(**_kwargs):
         return {

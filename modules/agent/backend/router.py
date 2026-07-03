@@ -10,11 +10,11 @@ from app.schemas.common import ApiResponse
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .bootstrap import register_agent_tasks
 from .init_db import (
     ensure_default_agent_prompts,
     run_init,
 )
-from .runtime import ConversationRuntime
 from .schemas import (
     AgentConfigCreate,
     AgentConfigUpdate,
@@ -35,8 +35,8 @@ logger = logging.getLogger("v2.agent").getChild("router")
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
-# 注册后台任务处理器（框架 worker 自动消费）
-from .handlers import tasks  # noqa: F401 — triggers register_task_handler calls
+# Register background task handlers before the framework worker starts.
+register_agent_tasks()
 
 
 def _j(obj) -> str:
@@ -182,6 +182,8 @@ async def edit_resubmit(
     """
     if not payload.content or not payload.content.strip():
         raise ValidationError("content is required")
+    from .runtime import ConversationRuntime
+
     runtime = ConversationRuntime()
     return await runtime.execute_edit_resubmit(
         conversation_id=conversation_id,
@@ -202,6 +204,8 @@ async def get_messages(conversation_id: int, db: AsyncSession = Depends(get_db),
 
 @router.post("/chat")
 async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
+    from .runtime import ConversationRuntime
+
     runtime = ConversationRuntime()
     if payload.enable_checkpointer is not None:
         runtime.policy.enable_checkpointer = bool(payload.enable_checkpointer)
