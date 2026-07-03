@@ -37,9 +37,13 @@ backend/db/*.sqlite3
 backend/_废弃/
 backend/脚本/
 backend/data/uploads/
+backend/data/.chunked_uploads/
+backend/data/.tmp_downloads/
+backend/data/.tmp_exports/
 backend/data/.tmp_uploads/
 backend/data/.tmp_upload_sessions/
 backend/data/.upload_sessions/
+backend/data/runtime/*.jsonl
 
 # Terminal tools workspace
 backend/data/workspaces/

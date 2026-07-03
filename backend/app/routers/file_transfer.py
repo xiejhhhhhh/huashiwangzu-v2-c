@@ -43,6 +43,13 @@ TMP_DOWNLOAD_DIR = Path(get_settings().UPLOAD_DIR).resolve().parent / ".tmp_down
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 
+def _cleanup_temp_upload(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.warning("Failed to clean up temp upload file %s: %s", path, exc)
+
+
 async def _emit_file_uploaded(file_id: int, user: User) -> None:
     try:
         from app.services.module_events import emit_module_event
@@ -64,6 +71,7 @@ async def upload(file: UploadFile = FastAPIFile(...), folder_id: int = Form(0), 
     tmp_dir = Path(get_settings().UPLOAD_DIR).resolve().parent / ".tmp_uploads"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(tmp_dir))
+    tmp_file_path = Path(tmp_path)
     total = 0
     md5 = hashlib.md5()
     try:
@@ -78,23 +86,23 @@ async def upload(file: UploadFile = FastAPIFile(...), folder_id: int = Form(0), 
             md5.update(chunk)
         if total == 0:
             raise ValidationError("Empty file")
-    finally:
         os.close(tmp_fd)
-    tmp_file_path = Path(tmp_path)
-    md5_hex = md5.hexdigest()
-    rp = relative_path.strip() if relative_path else None
-    target_folder = folder_id if folder_id > 0 else None
-    from app.services.file_upload_service import _detect_mime_by_header
-    mime_type = _detect_mime_by_header(tmp_file_path, file.filename)
-    result = await file_upload_service.upload_file_from_path(
-        db, tmp_file_path, file.filename, user.id, target_folder, rp,
-        md5_hex=md5_hex, mime_type=mime_type,
-    )
-    # Temp file cleanup
-    try:
-        tmp_file_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+        tmp_fd = -1
+        md5_hex = md5.hexdigest()
+        rp = relative_path.strip() if relative_path else None
+        target_folder = folder_id if folder_id > 0 else None
+        from app.services.file_upload_service import _detect_mime_by_header
+        mime_type = _detect_mime_by_header(tmp_file_path, file.filename)
+        result = await file_upload_service.upload_file_from_path(
+            db, tmp_file_path, file.filename, user.id, target_folder, rp,
+            md5_hex=md5_hex, mime_type=mime_type,
+        )
+    finally:
+        try:
+            if tmp_fd >= 0:
+                os.close(tmp_fd)
+        finally:
+            _cleanup_temp_upload(tmp_file_path)
     # ── 上传完成，尽力而为通知各模块（不阻塞上传） ──
     await _emit_file_uploaded(result["id"], user)
     return ApiResponse(data=UploadResponse(**result))
