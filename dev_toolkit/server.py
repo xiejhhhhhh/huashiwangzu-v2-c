@@ -1114,6 +1114,7 @@ async def _finish_task(
     lint_paths: str = "",
     test_targets: str = "",
     module_key: str = "",
+    allowed_prefixes: str = "",
     verification_summary: str = "",
     risk_note: str = "",
 ) -> str:
@@ -1164,7 +1165,12 @@ async def _finish_task(
 
     # 边界检查: 使用 worktree_guard，包含 untracked 文件，比 git diff --name-only 更不漏。
     try:
-        report["boundary_check"] = json.loads(await worktree_guard(_run_command_json, REPO_ROOT, module_key=module_key))
+        report["boundary_check"] = json.loads(await worktree_guard(
+            _run_command_json,
+            REPO_ROOT,
+            module_key=module_key,
+            allowed_prefixes=allowed_prefixes,
+        ))
     except json.JSONDecodeError as exc:
         report["boundary_check"] = {"success": False, "error": str(exc)}
     if module_key and not report["boundary_check"].get("success", False):

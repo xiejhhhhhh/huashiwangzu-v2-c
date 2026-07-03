@@ -176,6 +176,51 @@ def test_lint_accepts_comma_and_newline_separated_paths() -> None:
     assert calls[1]["cmd"][-1].endswith("dev_toolkit/agent_board_tools.py")
 
 
+def test_finish_task_forwards_allowed_prefixes_to_worktree_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    async def fake_git_status_summary(*_args, **_kwargs) -> dict:
+        return {"branch": "codex/test", "is_main": False, "dirty_count": 0, "sample": []}
+
+    async def fake_worktree_guard(
+        _run_command_json,
+        _repo_root,
+        *,
+        module_key: str = "",
+        allowed_prefixes: str = "",
+        forbidden_prefixes: str = "",
+        include_untracked: bool = True,
+    ) -> str:
+        calls.append({
+            "module_key": module_key,
+            "allowed_prefixes": allowed_prefixes,
+            "forbidden_prefixes": forbidden_prefixes,
+            "include_untracked": include_untracked,
+        })
+        return json.dumps({"success": True, "outside_allowed": []})
+
+    monkeypatch.setattr(server, "git_status_summary", fake_git_status_summary)
+    monkeypatch.setattr(server, "worktree_guard", fake_worktree_guard)
+
+    async def run() -> dict:
+        raw = await server._finish_task(
+            "finish with memory",
+            module_key="knowledge",
+            allowed_prefixes="modules/knowledge\n开发文档/项目记忆",
+        )
+        return json.loads(raw)
+
+    data = anyio.run(run)
+
+    assert data["success"] is True
+    assert calls == [{
+        "module_key": "knowledge",
+        "allowed_prefixes": "modules/knowledge\n开发文档/项目记忆",
+        "forbidden_prefixes": "",
+        "include_untracked": True,
+    }]
+
+
 def test_normalize_pytest_targets_accepts_module_repo_path() -> None:
     target = "modules/agent/backend/engine/test_fallback_chain.py"
     normalized = server._normalize_pytest_targets(target)

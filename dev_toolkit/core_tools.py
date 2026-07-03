@@ -58,7 +58,7 @@ class CoreToolContext:
     capabilities: Callable[[str], Awaitable[str]]
     db_schema: Callable[[str], Awaitable[str]]
     plan_task: Callable[[str, str, str], Awaitable[str]]
-    finish_task: Callable[[str, str, str, str, str, str, str], Awaitable[str]]
+    finish_task: Callable[[str, str, str, str, str, str, str, str], Awaitable[str]]
     knowledge_noise_report: Callable[[], dict[str, Any]]
     knowledge_cleanup_noise: Callable[[], dict[str, Any]]
     workspace_audit: Callable[[], Awaitable[dict[str, Any]]]
@@ -242,6 +242,11 @@ def tool_definitions() -> list[Any]:
                     "lint_paths": {"type": "string", "description": "逗号或换行分隔的 Python 文件路径", "default": ""},
                     "test_targets": {"type": "string", "description": "pytest 目标，支持多个空格分隔", "default": ""},
                     "module_key": {"type": "string", "description": "模块 key，用于边界校验", "default": ""},
+                    "allowed_prefixes": {
+                        "type": "string",
+                        "description": "额外允许路径前缀，逗号或换行分隔；传入后覆盖 module_key 默认边界",
+                        "default": "",
+                    },
                     "verification_summary": {"type": "string", "description": "验证结果摘要", "default": ""},
                     "risk_note": {"type": "string", "description": "残留风险评估", "default": ""},
                 },
@@ -359,6 +364,7 @@ async def handle_tool(context: CoreToolContext, name: str, arguments: dict[str, 
             arguments.get("lint_paths", ""),
             arguments.get("test_targets", ""),
             arguments.get("module_key", ""),
+            arguments.get("allowed_prefixes", ""),
             arguments.get("verification_summary", ""),
             arguments.get("risk_note", ""),
         )
