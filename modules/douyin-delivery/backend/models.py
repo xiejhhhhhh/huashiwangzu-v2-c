@@ -1,8 +1,9 @@
 """DB models for douyin-delivery module."""
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, JSON, Float, text
+
 from app.models.base import Base
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, Text, text
 
 
 class DouyinProduct(Base):
@@ -87,6 +88,60 @@ class DouyinCampaign(Base):
     ad_copy_ids = Column(JSON, nullable=True, comment="关联文案")
     notes = Column(Text, nullable=True, default="")
     performance_metrics = Column(JSON, nullable=True, comment="ROI/CTR/CVR 数据")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.now(timezone.utc))
+    deleted = Column(Boolean, nullable=False, default=False)
+
+
+class DouyinAccount(Base):
+    __tablename__ = "douyin_accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(Integer, nullable=False, index=True)
+    channel = Column(String(50), nullable=False, default="local_push", comment="local_push/ocean_engine/qianchuan")
+    account_name = Column(String(200), nullable=False)
+    external_account_id = Column(String(100), nullable=True, default="")
+    status = Column(String(20), nullable=False, default="active", comment="active/paused/disabled")
+    notes = Column(Text, nullable=True, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.now(timezone.utc))
+    deleted = Column(Boolean, nullable=False, default=False)
+
+
+class DouyinMaterial(Base):
+    __tablename__ = "douyin_materials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(Integer, nullable=False, index=True)
+    title = Column(String(300), nullable=False)
+    material_type = Column(String(30), nullable=False, default="video", comment="video/image/text/landing_page")
+    channel = Column(String(50), nullable=True, default="")
+    source_file_id = Column(Integer, nullable=True)
+    content_url = Column(String(500), nullable=True, default="")
+    content_text = Column(Text, nullable=True, default="")
+    status = Column(String(20), nullable=False, default="draft", comment="draft/ready/published/archived")
+    notes = Column(Text, nullable=True, default="")
+    metadata_json = Column(JSON, nullable=True, comment="素材扩展信息")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.now(timezone.utc))
+    deleted = Column(Boolean, nullable=False, default=False)
+
+
+class DouyinDeliveryTask(Base):
+    __tablename__ = "douyin_delivery_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(Integer, nullable=False, index=True)
+    task_type = Column(String(50), nullable=False, default="publish_script")
+    target_type = Column(String(50), nullable=False, default="campaign", comment="script/ad_copy/campaign/material")
+    target_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="pending", comment="pending/running/succeeded/failed/cancelled")
+    priority = Column(Integer, nullable=False, default=5)
+    payload = Column(JSON, nullable=True)
+    result_payload = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True, default="")
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), onupdate=datetime.now(timezone.utc))
     deleted = Column(Boolean, nullable=False, default=False)

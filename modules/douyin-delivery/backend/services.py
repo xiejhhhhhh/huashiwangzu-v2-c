@@ -3,15 +3,15 @@
 import json
 import logging
 from datetime import datetime, timezone
-from sqlalchemy import select
-from sqlalchemy import text as sa_text
+from typing import Any
 
+from app.core.exceptions import ValidationError
 from app.database import AsyncSessionLocal
 from app.gateway.service import chat as gateway_chat
-from app.services.file_reader import resolve_caller_user_id as resolve_user_id
 from app.services.prompt_helpers import load_prompt_with_fallback
+from sqlalchemy import select
 
-from .models import DouyinProduct, DouyinScript, DouyinAdCopy, DouyinCampaign, DouyinPrompt
+from .models import DouyinAdCopy, DouyinCampaign, DouyinProduct, DouyinPrompt, DouyinScript
 
 logger = logging.getLogger("v2.douyin_delivery").getChild("services")
 
@@ -23,6 +23,35 @@ CHANNEL_LABELS = {
     "ocean_engine": "巨量引擎",
     "qianchuan": "千川",
 }
+VALID_CHANNELS = set(CHANNEL_LABELS)
+VALID_SCRIPT_STATUSES = {"draft", "ready", "published", "archived"}
+VALID_AD_COPY_STATUSES = {"draft", "ready", "published", "archived"}
+VALID_CAMPAIGN_STATUSES = {"planning", "running", "paused", "ended"}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _validate_choice(field: str, value: str, allowed: set[str]) -> str:
+    if value not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValidationError(f"Invalid {field}: {value}. Allowed: {allowed_text}")
+    return value
+
+
+def _validate_optional_channel(channel: str | None) -> str:
+    value = channel or ""
+    if value:
+        _validate_choice("channel", value, VALID_CHANNELS)
+    return value
+
+
+def _mark_deleted(row: Any) -> None:
+    row.deleted = True
+    row.updated_at = _now()
+
+
 # ── Prompt helpers ──────────────────────────────────────────────
 
 async def get_prompt(db, key: str, owner_id: int = 0) -> str | None:
@@ -30,7 +59,7 @@ async def get_prompt(db, key: str, owner_id: int = 0) -> str | None:
         select(DouyinPrompt).where(
             DouyinPrompt.key == key,
             DouyinPrompt.owner_id.in_([0, owner_id]),
-            DouyinPrompt.deleted == False,
+            DouyinPrompt.deleted.is_(False),
         ).order_by(DouyinPrompt.owner_id.desc()).limit(1)
     )
     prompt = r.scalar_one_or_none()
@@ -142,7 +171,7 @@ async def analyze_campaign(campaign_id: int, owner_id: int) -> dict | None:
             select(DouyinCampaign).where(
                 DouyinCampaign.id == campaign_id,
                 DouyinCampaign.owner_id == owner_id,
-                DouyinCampaign.deleted == False,
+                DouyinCampaign.deleted.is_(False),
             )
         )
         campaign = r.scalar_one_or_none()
@@ -185,17 +214,20 @@ async def list_products(owner_id: int) -> list[dict]:
         r = await db.execute(
             select(DouyinProduct).where(
                 DouyinProduct.owner_id == owner_id,
-                DouyinProduct.deleted == False,
+                DouyinProduct.deleted.is_(False),
             ).order_by(DouyinProduct.updated_at.desc())
         )
         return [_product_to_dict(p) for p in r.scalars().all()]
 
 
 async def create_product(data: dict, owner_id: int) -> dict:
+    name = str(data.get("name", "")).strip()
+    if not name:
+        raise ValidationError("Product name is required")
     async with AsyncSessionLocal() as db:
         product = DouyinProduct(
             owner_id=owner_id,
-            name=data.get("name", ""),
+            name=name,
             category=data.get("category", ""),
             selling_points=data.get("selling_points"),
             ingredients=data.get("ingredients"),
@@ -210,12 +242,14 @@ async def create_product(data: dict, owner_id: int) -> dict:
 
 
 async def update_product(product_id: int, data: dict, owner_id: int) -> dict | None:
+    if "name" in data and not str(data.get("name", "")).strip():
+        raise ValidationError("Product name is required")
     async with AsyncSessionLocal() as db:
         r = await db.execute(
             select(DouyinProduct).where(
                 DouyinProduct.id == product_id,
                 DouyinProduct.owner_id == owner_id,
-                DouyinProduct.deleted == False,
+                DouyinProduct.deleted.is_(False),
             )
         )
         product = r.scalar_one_or_none()
@@ -235,13 +269,13 @@ async def delete_product(product_id: int, owner_id: int) -> bool:
             select(DouyinProduct).where(
                 DouyinProduct.id == product_id,
                 DouyinProduct.owner_id == owner_id,
-                DouyinProduct.deleted == False,
+                DouyinProduct.deleted.is_(False),
             )
         )
         product = r.scalar_one_or_none()
         if not product:
             return False
-        product.deleted = True
+        _mark_deleted(product)
         await db.commit()
         return True
 
@@ -252,7 +286,7 @@ async def list_scripts(owner_id: int, channel: str | None = None) -> list[dict]:
     async with AsyncSessionLocal() as db:
         query = select(DouyinScript).where(
             DouyinScript.owner_id == owner_id,
-            DouyinScript.deleted == False,
+            DouyinScript.deleted.is_(False),
         )
         if channel:
             query = query.where(DouyinScript.channel == channel)
@@ -262,13 +296,15 @@ async def list_scripts(owner_id: int, channel: str | None = None) -> list[dict]:
 
 
 async def save_script(data: dict, owner_id: int) -> dict:
+    channel = _validate_choice("channel", data.get("channel", "local_push"), VALID_CHANNELS)
+    status = _validate_choice("status", data.get("status", "draft"), VALID_SCRIPT_STATUSES)
     async with AsyncSessionLocal() as db:
         script = DouyinScript(
             owner_id=owner_id,
             title=data.get("title", ""),
             product_id=data.get("product_id"),
             product_name=data.get("product_name", ""),
-            channel=data.get("channel", "local_push"),
+            channel=channel,
             hook=data.get("hook", ""),
             pain_point=data.get("pain_point", ""),
             selling_point=data.get("selling_point", ""),
@@ -278,7 +314,7 @@ async def save_script(data: dict, owner_id: int) -> dict:
             style_notes=data.get("style_notes", ""),
             hashtags=data.get("hashtags"),
             suggested_titles=data.get("suggested_titles"),
-            status=data.get("status", "draft"),
+            status=status,
         )
         db.add(script)
         await db.commit()
@@ -292,7 +328,7 @@ async def get_script(script_id: int, owner_id: int) -> dict | None:
             select(DouyinScript).where(
                 DouyinScript.id == script_id,
                 DouyinScript.owner_id == owner_id,
-                DouyinScript.deleted == False,
+                DouyinScript.deleted.is_(False),
             )
         )
         s = r.scalar_one_or_none()
@@ -300,12 +336,16 @@ async def get_script(script_id: int, owner_id: int) -> dict | None:
 
 
 async def update_script(script_id: int, data: dict, owner_id: int) -> dict | None:
+    if "channel" in data:
+        data["channel"] = _validate_choice("channel", data["channel"], VALID_CHANNELS)
+    if "status" in data:
+        data["status"] = _validate_choice("status", data["status"], VALID_SCRIPT_STATUSES)
     async with AsyncSessionLocal() as db:
         r = await db.execute(
             select(DouyinScript).where(
                 DouyinScript.id == script_id,
                 DouyinScript.owner_id == owner_id,
-                DouyinScript.deleted == False,
+                DouyinScript.deleted.is_(False),
             )
         )
         script = r.scalar_one_or_none()
@@ -329,13 +369,13 @@ async def delete_script(script_id: int, owner_id: int) -> bool:
             select(DouyinScript).where(
                 DouyinScript.id == script_id,
                 DouyinScript.owner_id == owner_id,
-                DouyinScript.deleted == False,
+                DouyinScript.deleted.is_(False),
             )
         )
         script = r.scalar_one_or_none()
         if not script:
             return False
-        script.deleted = True
+        _mark_deleted(script)
         await db.commit()
         return True
 
@@ -346,7 +386,7 @@ async def list_ad_copies(owner_id: int, channel: str | None = None) -> list[dict
     async with AsyncSessionLocal() as db:
         query = select(DouyinAdCopy).where(
             DouyinAdCopy.owner_id == owner_id,
-            DouyinAdCopy.deleted == False,
+            DouyinAdCopy.deleted.is_(False),
         )
         if channel:
             query = query.where(DouyinAdCopy.channel == channel)
@@ -356,20 +396,23 @@ async def list_ad_copies(owner_id: int, channel: str | None = None) -> list[dict
 
 
 async def save_ad_copy(data: dict, owner_id: int) -> dict:
+    channel = _validate_choice("channel", data.get("channel", "ocean_engine"), VALID_CHANNELS)
+    ad_type = _validate_choice("ad_type", data.get("ad_type", "feed"), {"feed", "search", "brand"})
+    status = _validate_choice("status", data.get("status", "draft"), VALID_AD_COPY_STATUSES)
     async with AsyncSessionLocal() as db:
         copy = DouyinAdCopy(
             owner_id=owner_id,
             product_id=data.get("product_id"),
             product_name=data.get("product_name", ""),
-            channel=data.get("channel", "ocean_engine"),
-            ad_type=data.get("ad_type", "feed"),
+            channel=channel,
+            ad_type=ad_type,
             title=data.get("title", ""),
             headline=data.get("headline", ""),
             description=data.get("description", ""),
             call_to_action=data.get("call_to_action", "立即购买"),
             target_audience_desc=data.get("target_audience_desc", ""),
             landing_page_suggestion=data.get("landing_page_suggestion", ""),
-            status=data.get("status", "draft"),
+            status=status,
         )
         db.add(copy)
         await db.commit()
@@ -378,12 +421,18 @@ async def save_ad_copy(data: dict, owner_id: int) -> dict:
 
 
 async def update_ad_copy(copy_id: int, data: dict, owner_id: int) -> dict | None:
+    if "channel" in data:
+        data["channel"] = _validate_choice("channel", data["channel"], VALID_CHANNELS)
+    if "ad_type" in data:
+        data["ad_type"] = _validate_choice("ad_type", data["ad_type"], {"feed", "search", "brand"})
+    if "status" in data:
+        data["status"] = _validate_choice("status", data["status"], VALID_AD_COPY_STATUSES)
     async with AsyncSessionLocal() as db:
         r = await db.execute(
             select(DouyinAdCopy).where(
                 DouyinAdCopy.id == copy_id,
                 DouyinAdCopy.owner_id == owner_id,
-                DouyinAdCopy.deleted == False,
+                DouyinAdCopy.deleted.is_(False),
             )
         )
         copy = r.scalar_one_or_none()
@@ -407,13 +456,13 @@ async def delete_ad_copy(copy_id: int, owner_id: int) -> bool:
             select(DouyinAdCopy).where(
                 DouyinAdCopy.id == copy_id,
                 DouyinAdCopy.owner_id == owner_id,
-                DouyinAdCopy.deleted == False,
+                DouyinAdCopy.deleted.is_(False),
             )
         )
         copy = r.scalar_one_or_none()
         if not copy:
             return False
-        copy.deleted = True
+        _mark_deleted(copy)
         await db.commit()
         return True
 
@@ -425,21 +474,27 @@ async def list_campaigns(owner_id: int) -> list[dict]:
         r = await db.execute(
             select(DouyinCampaign).where(
                 DouyinCampaign.owner_id == owner_id,
-                DouyinCampaign.deleted == False,
+                DouyinCampaign.deleted.is_(False),
             ).order_by(DouyinCampaign.updated_at.desc())
         )
         return [_campaign_to_dict(c) for c in r.scalars().all()]
 
 
 async def create_campaign(data: dict, owner_id: int) -> dict:
+    name = str(data.get("name", "")).strip()
+    if not name:
+        raise ValidationError("Campaign name is required")
+    channel = _validate_choice("channel", data.get("channel", "local_push"), VALID_CHANNELS)
+    status = _validate_choice("status", data.get("status", "planning"), VALID_CAMPAIGN_STATUSES)
+    budget_type = _validate_choice("budget_type", data.get("budget_type", "daily"), {"daily", "total"})
     async with AsyncSessionLocal() as db:
         campaign = DouyinCampaign(
             owner_id=owner_id,
-            name=data.get("name", ""),
-            channel=data.get("channel", "local_push"),
-            status=data.get("status", "planning"),
+            name=name,
+            channel=channel,
+            status=status,
             budget=data.get("budget"),
-            budget_type=data.get("budget_type", "daily"),
+            budget_type=budget_type,
             start_date=data.get("start_date", ""),
             end_date=data.get("end_date", ""),
             target_audience=data.get("target_audience"),
@@ -456,12 +511,20 @@ async def create_campaign(data: dict, owner_id: int) -> dict:
 
 
 async def update_campaign(campaign_id: int, data: dict, owner_id: int) -> dict | None:
+    if "name" in data and not str(data.get("name", "")).strip():
+        raise ValidationError("Campaign name is required")
+    if "channel" in data:
+        data["channel"] = _validate_choice("channel", data["channel"], VALID_CHANNELS)
+    if "status" in data:
+        data["status"] = _validate_choice("status", data["status"], VALID_CAMPAIGN_STATUSES)
+    if "budget_type" in data:
+        data["budget_type"] = _validate_choice("budget_type", data["budget_type"], {"daily", "total"})
     async with AsyncSessionLocal() as db:
         r = await db.execute(
             select(DouyinCampaign).where(
                 DouyinCampaign.id == campaign_id,
                 DouyinCampaign.owner_id == owner_id,
-                DouyinCampaign.deleted == False,
+                DouyinCampaign.deleted.is_(False),
             )
         )
         campaign = r.scalar_one_or_none()
@@ -484,15 +547,17 @@ async def delete_campaign(campaign_id: int, owner_id: int) -> bool:
             select(DouyinCampaign).where(
                 DouyinCampaign.id == campaign_id,
                 DouyinCampaign.owner_id == owner_id,
-                DouyinCampaign.deleted == False,
+                DouyinCampaign.deleted.is_(False),
             )
         )
         campaign = r.scalar_one_or_none()
         if not campaign:
             return False
-        campaign.deleted = True
+        _mark_deleted(campaign)
         await db.commit()
         return True
+
+
 
 
 # ── Prompt CRUD ─────────────────────────────────────────────────
@@ -501,7 +566,7 @@ async def list_prompts(owner_id: int, category: str | None = None, channel: str 
     async with AsyncSessionLocal() as db:
         query = select(DouyinPrompt).where(
             DouyinPrompt.owner_id.in_([0, owner_id]),
-            DouyinPrompt.deleted == False,
+            DouyinPrompt.deleted.is_(False),
         )
         if category:
             query = query.where(DouyinPrompt.category == category)
@@ -517,18 +582,24 @@ async def list_prompts(owner_id: int, category: str | None = None, channel: str 
 
 
 async def save_prompt(data: dict, owner_id: int) -> dict:
+    key = str(data.get("key", "")).strip()
+    content = str(data.get("content", "")).strip()
+    if not key:
+        raise ValidationError("Prompt key is required")
+    if not content:
+        raise ValidationError("Prompt content is required")
+    _validate_optional_channel(data.get("channel", ""))
     async with AsyncSessionLocal() as db:
-        key = data.get("key", "")
         r = await db.execute(
             select(DouyinPrompt).where(
                 DouyinPrompt.key == key,
                 DouyinPrompt.owner_id == owner_id,
-                DouyinPrompt.deleted == False,
+                DouyinPrompt.deleted.is_(False),
             )
         )
         existing = r.scalar_one_or_none()
         if existing:
-            existing.content = data.get("content", existing.content)
+            existing.content = content
             existing.name = data.get("name", existing.name)
             existing.description = data.get("description", existing.description)
             existing.category = data.get("category", existing.category)
@@ -542,7 +613,7 @@ async def save_prompt(data: dict, owner_id: int) -> dict:
                 owner_id=owner_id,
                 key=key,
                 name=data.get("name", key),
-                content=data.get("content", ""),
+                content=content,
                 description=data.get("description", ""),
                 category=data.get("category", "custom"),
                 channel=data.get("channel", ""),
@@ -559,13 +630,13 @@ async def delete_prompt(prompt_id: int, owner_id: int) -> bool:
             select(DouyinPrompt).where(
                 DouyinPrompt.id == prompt_id,
                 DouyinPrompt.owner_id == owner_id,
-                DouyinPrompt.deleted == False,
+                DouyinPrompt.deleted.is_(False),
             )
         )
         p = r.scalar_one_or_none()
         if not p:
             return False
-        p.deleted = True
+        _mark_deleted(p)
         await db.commit()
         return True
 
@@ -653,6 +724,7 @@ def _campaign_to_dict(c: DouyinCampaign) -> dict:
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
+
 
 
 def _prompt_to_dict(p: DouyinPrompt) -> dict:

@@ -23,6 +23,11 @@
 | GET/POST/PUT/DELETE | `/api/douyin-delivery/scripts` | 脚本 CRUD |
 | GET/POST/PUT/DELETE | `/api/douyin-delivery/ad-copies` | 文案 CRUD |
 | GET/POST/PUT/DELETE | `/api/douyin-delivery/campaigns` | 计划 CRUD |
+| GET/POST/PUT/DELETE | `/api/douyin-delivery/accounts` | 投放账号 CRUD |
+| GET/POST/PUT/DELETE | `/api/douyin-delivery/materials` | 投放素材 CRUD |
+| GET/POST/PUT/DELETE | `/api/douyin-delivery/delivery-tasks` | 投递任务 CRUD |
+| POST | `/api/douyin-delivery/delivery-tasks/{id}/status` | 更新投递任务状态 |
+| POST | `/api/douyin-delivery/cleanup` | 按 marker 清理当前用户测试数据 |
 | GET/POST/DELETE | `/api/douyin-delivery/prompts` | 提示词管理 |
 
 ### 跨模块能力
@@ -32,6 +37,9 @@
 | `douyin-delivery:generate_script` | 生成口播脚本 | editor |
 | `douyin-delivery:generate_ad_copy` | 生成广告文案 | editor |
 | `douyin-delivery:validate_content` | 知识库校验 | editor |
+| `douyin-delivery:create_delivery_task` | 创建投递任务 | editor |
+| `douyin-delivery:mark_task_failed` | 标记投递失败并记录原因 | editor |
+| `douyin-delivery:cleanup_marked_data` | 按 marker 清理当前用户测试数据 | editor |
 
 ### 投放渠道
 
@@ -51,12 +59,39 @@
 | `douyin_scripts` | 口播脚本 | channel, hook, pain_point, full_script, hashtags(JSON), suggested_titles(JSON) |
 | `douyin_ad_copies` | 广告文案 | channel, ad_type, headline, description, call_to_action, target_audience_desc |
 | `douyin_campaigns` | 投放计划 | channel, budget, target_audience(JSON), performance_metrics(JSON) |
+| `douyin_accounts` | 投放账号 | channel, account_name, external_account_id, status |
+| `douyin_materials` | 投放素材 | material_type, channel, source_file_id, content_url, content_text, status |
+| `douyin_delivery_tasks` | 投递任务 | task_type, target_type, target_id, status, payload(JSON), result_payload(JSON), error_message |
 | `douyin_prompts` | 提示词模板 | key, content, category, channel |
+
+## 状态与失败语义
+
+投递相关状态是后端契约，不允许写入任意字符串：
+
+| 对象 | 状态 |
+|------|------|
+| 脚本/文案/素材 | `draft` / `ready` / `published` / `archived` |
+| 计划 | `planning` / `running` / `paused` / `ended` |
+| 账号 | `active` / `paused` / `disabled` |
+| 投递任务 | `pending` / `running` / `succeeded` / `failed` / `cancelled` |
+
+`douyin_delivery_tasks.status = failed` 必须带 `error_message`。投递任务完成态会写 `finished_at`；运行态会写 `started_at`。调用方不能把投递平台失败包进成功 payload，必须通过 `/delivery-tasks/{id}/status` 或 `mark_task_failed` 落失败状态。
+
+## Cleanup 契约
+
+测试数据必须带唯一 marker（建议形如 `r2-douyin-20260703-xxxx`）。清理调用：
+
+```text
+POST /api/douyin-delivery/cleanup
+{ "marker": "r2-douyin-20260703-xxxx" }
+```
+
+marker 至少 6 个字符；仅清理当前用户数据，不清理 `owner_id=0` 的系统默认提示词。
 
 ## 业务流程
 
 ```
-产品/卖点 → 选择渠道 → AI 生成 → 校验(知识库) → 保存草稿 → 投放计划
+产品/卖点 → 选择渠道/账号/素材 → AI 生成 → 校验(知识库) → 保存草稿 → 投放计划 → 投递任务状态
 ```
 
 ## 技术栈

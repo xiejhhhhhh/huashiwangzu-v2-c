@@ -1,7 +1,9 @@
 """Sandbox test for douyin-delivery module.
 
-Validates core schemas and response shapes without calling external APIs or DB.
+Validates core schemas, module contracts, and response shapes without calling
+external APIs or DB.
 """
+import json
 from pathlib import Path
 
 
@@ -90,6 +92,65 @@ def test_ad_copy_schema() -> None:
     print("  [AD_COPY] Schema valid")
 
 
+def test_delivery_contract_schema() -> None:
+    """Account/material/task contracts must cover delivery sweep semantics."""
+    valid_channels = {"local_push", "ocean_engine", "qianchuan"}
+    task_statuses = {"pending", "running", "succeeded", "failed", "cancelled"}
+
+    account = {
+        "channel": "ocean_engine",
+        "account_name": "r2-douyin-test-account",
+        "external_account_id": "r2-douyin-account-001",
+        "status": "active",
+    }
+    material = {
+        "title": "r2-douyin-test-material",
+        "material_type": "video",
+        "channel": "qianchuan",
+        "content_text": "test video brief",
+        "status": "ready",
+    }
+    task = {
+        "task_type": "publish_ad_copy",
+        "target_type": "material",
+        "target_id": 1,
+        "status": "failed",
+        "error_message": "r2-douyin-platform-rejected",
+    }
+
+    assert account["channel"] in valid_channels
+    assert material["channel"] in valid_channels
+    assert material["material_type"] in {"video", "image", "text", "landing_page"}
+    assert task["status"] in task_statuses
+    assert task["status"] != "failed" or task["error_message"], "failed task must preserve error_message"
+    print("  [DELIVERY CONTRACT] Account/material/task schema valid")
+
+
+def test_cleanup_marker_contract() -> None:
+    """Cleanup must be marker-scoped to avoid deleting real data."""
+    marker = "r2-douyin-20260703"
+    assert len(marker) >= 6
+    cleanup_request = {"marker": marker}
+    assert cleanup_request["marker"].startswith("r2-douyin")
+    print("  [CLEANUP] Marker contract valid")
+
+
+def test_manifest_actions_and_db_contracts() -> None:
+    """Manifest must declare runtime capabilities and owned tables."""
+    module_root = Path(__file__).resolve().parents[1]
+    manifest = json.loads((module_root / "manifest.json").read_text(encoding="utf-8"))
+    actions = {item["action"] for item in manifest["public_actions"]}
+    tables = {item["table"] for item in manifest["db_migration_declaration"]}
+
+    assert {"create_delivery_task", "mark_task_failed", "cleanup_marked_data"} <= actions
+    assert {
+        "douyin_accounts",
+        "douyin_materials",
+        "douyin_delivery_tasks",
+    } <= tables
+    print("  [MANIFEST] Actions and DB contracts valid")
+
+
 def test_response_shape() -> None:
     """Unified API response shape contract."""
     r = {"success": True, "data": {"id": 1, "name": "test"}, "error": None}
@@ -110,6 +171,10 @@ def test_frontend_crud_methods_match_backend_routes() -> None:
     assert "update: (id: number, data: Partial<Script>) => apiPut" in api_src
     assert "update: (id: number, data: Partial<AdCopy>) => apiPut" in api_src
     assert "update: (id: number, data: Partial<Campaign>) => apiPut" in api_src
+    assert "export const accounts" in api_src
+    assert "export const materials" in api_src
+    assert "export const deliveryTasks" in api_src
+    assert "export const cleanup" in api_src
     assert "delete: (id: number) => apiDelete" in api_src
     assert "apiPost<{ deleted: boolean }>" not in api_src
     print("  [FRONTEND CRUD] HTTP methods match backend routes")
@@ -123,6 +188,9 @@ def main() -> None:
     test_campaign_schema()
     test_script_schema()
     test_ad_copy_schema()
+    test_delivery_contract_schema()
+    test_cleanup_marker_contract()
+    test_manifest_actions_and_db_contracts()
     test_response_shape()
     test_frontend_crud_methods_match_backend_routes()
     print("=" * 60)

@@ -71,6 +71,48 @@ export interface Campaign {
   updated_at: string | null
 }
 
+export interface DeliveryAccount {
+  id: number
+  channel: string
+  account_name: string
+  external_account_id: string
+  status: string
+  notes: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface DeliveryMaterial {
+  id: number
+  title: string
+  material_type: string
+  channel: string
+  source_file_id: number | null
+  content_url: string
+  content_text: string
+  status: string
+  notes: string
+  metadata_json: Record<string, unknown> | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface DeliveryTask {
+  id: number
+  task_type: string
+  target_type: string
+  target_id: number | null
+  status: string
+  priority: number
+  payload: Record<string, unknown> | null
+  result_payload: Record<string, unknown> | null
+  error_message: string
+  started_at: string | null
+  finished_at: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface GenerateResult {
   script?: string
   ad_copy?: string
@@ -135,6 +177,47 @@ export const campaigns = {
   update: (id: number, data: Partial<Campaign>) => apiPut<Campaign>(`${BASE}/campaigns/${id}`, data),
   delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/campaigns/${id}`),
   analyze: (id: number) => apiPost<{ campaign: Campaign; analysis: string }>(`${BASE}/campaigns/${id}/analyze`),
+}
+
+export const accounts = {
+  list: (channel?: string) =>
+    apiGet<DeliveryAccount[]>(`${BASE}/accounts${channel ? `?channel=${channel}` : ''}`),
+  create: (data: Partial<DeliveryAccount>) => apiPost<DeliveryAccount>(`${BASE}/accounts`, data),
+  update: (id: number, data: Partial<DeliveryAccount>) => apiPut<DeliveryAccount>(`${BASE}/accounts/${id}`, data),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/accounts/${id}`),
+}
+
+export const materials = {
+  list: (materialType?: string, status?: string) => {
+    const qs = new URLSearchParams()
+    if (materialType) qs.set('material_type', materialType)
+    if (status) qs.set('status', status)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return apiGet<DeliveryMaterial[]>(`${BASE}/materials${suffix}`)
+  },
+  create: (data: Partial<DeliveryMaterial>) => apiPost<DeliveryMaterial>(`${BASE}/materials`, data),
+  update: (id: number, data: Partial<DeliveryMaterial>) => apiPut<DeliveryMaterial>(`${BASE}/materials/${id}`, data),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/materials/${id}`),
+}
+
+export const deliveryTasks = {
+  list: (status?: string, taskType?: string) => {
+    const qs = new URLSearchParams()
+    if (status) qs.set('status', status)
+    if (taskType) qs.set('task_type', taskType)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return apiGet<DeliveryTask[]>(`${BASE}/delivery-tasks${suffix}`)
+  },
+  create: (data: Partial<DeliveryTask>) => apiPost<DeliveryTask>(`${BASE}/delivery-tasks`, data),
+  update: (id: number, data: Partial<DeliveryTask>) => apiPut<DeliveryTask>(`${BASE}/delivery-tasks/${id}`, data),
+  markStatus: (id: number, data: { status: string; error_message?: string; result_payload?: Record<string, unknown> }) =>
+    apiPost<DeliveryTask>(`${BASE}/delivery-tasks/${id}/status`, data),
+  delete: (id: number) => apiDelete<{ deleted: boolean }>(`${BASE}/delivery-tasks/${id}`),
+}
+
+export const cleanup = {
+  markedData: (marker: string) =>
+    apiPost<{ marker: string; deleted: Record<string, number>; total_deleted: number }>(`${BASE}/cleanup`, { marker }),
 }
 
 export const validation = {
