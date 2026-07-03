@@ -58,7 +58,9 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "content": "Non-empty document blocks; also accepts Content IR blocks/content_ir with {type, text, data, children}",
-        "blocks": "Content IR block alias for content"
+        "blocks": "Content IR block alias for content",
+        "content_ir": "Content IR object with a non-empty content or blocks array",
+        "folder_id": "Optional target folder ID; root folder when omitted"
       },
       "min_role": "editor"
     },
@@ -68,7 +70,9 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "sheets": "Non-empty sheet objects with name, columns, rows; also accepts Content IR sheet blocks/content_ir",
-        "blocks": "Content IR sheet block alias for sheets"
+        "blocks": "Content IR sheet block alias for sheets",
+        "content_ir": "Spreadsheet Content IR object with a non-empty sheets or blocks array",
+        "folder_id": "Optional target folder ID; root folder when omitted"
       },
       "min_role": "editor"
     },
@@ -78,7 +82,9 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "slides": "Non-empty slide objects with title, bullets, notes; also accepts Content IR slide blocks/content_ir",
-        "blocks": "Content IR slide block alias for slides"
+        "blocks": "Content IR slide block alias for slides",
+        "content_ir": "Presentation Content IR object with a non-empty slides or blocks array",
+        "folder_id": "Optional target folder ID; root folder when omitted"
       },
       "min_role": "editor"
     },
@@ -88,7 +94,9 @@
       "parameters": {
         "filename": "Output file name (without extension)",
         "content": "Non-empty document blocks; also accepts Content IR blocks/content_ir with {type, text, data, children}",
-        "blocks": "Content IR block alias for content"
+        "blocks": "Content IR block alias for content",
+        "content_ir": "Document Content IR object with a non-empty content or blocks array",
+        "folder_id": "Optional target folder ID; root folder when omitted"
       },
       "min_role": "editor"
     },
@@ -107,8 +115,12 @@
       "parameters": {
         "format": "Output format: xlsx/docx/pptx/pdf",
         "filename": "Output file name (without extension)",
-        "content/sheets/slides": "Non-empty content data for the chosen format",
-        "blocks/content_ir": "Content IR aliases accepted for the chosen format"
+        "content": "Non-empty document blocks for docx/pdf",
+        "sheets": "Non-empty sheet objects for xlsx",
+        "slides": "Non-empty slide objects for pptx",
+        "blocks": "Content IR block alias for the chosen format",
+        "content_ir": "Content IR object with a non-empty content, sheets, slides, or blocks array",
+        "folder_id": "Optional target folder ID; root folder when omitted"
       },
       "min_role": "editor"
     },
@@ -117,9 +129,13 @@
       "description": "Generate an office file and replace an existing file entry",
       "parameters": {
         "format": "Output format: xlsx/docx/pptx/pdf",
+        "filename": "Output file name (without extension)",
         "target_file_id": "Existing file ID to replace",
-        "content/sheets/slides": "Non-empty content data for the chosen format",
-        "blocks/content_ir": "Content IR aliases accepted for the chosen format"
+        "content": "Non-empty document blocks for docx/pdf",
+        "sheets": "Non-empty sheet objects for xlsx",
+        "slides": "Non-empty slide objects for pptx",
+        "blocks": "Content IR block alias for the chosen format",
+        "content_ir": "Content IR object with a non-empty content, sheets, slides, or blocks array"
       },
       "min_role": "editor"
     },

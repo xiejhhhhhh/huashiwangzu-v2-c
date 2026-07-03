@@ -14,7 +14,7 @@ import struct
 import sys
 import time
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -114,6 +114,54 @@ def _cap_ok(r: dict) -> bool:
     if isinstance(inner, dict) and "success" in inner:
         return bool(inner.get("success"))
     return bool(data.get("success"))
+
+
+def _cap_payload(r: dict) -> Any:
+    """Unwrap /api/modules/call and module-level unified envelopes."""
+    payload: Any = r.get("data", {})
+    while isinstance(payload, dict) and "data" in payload:
+        next_payload = payload.get("data")
+        if next_payload is payload:
+            break
+        payload = next_payload
+    return payload
+
+
+def _load_backend_env(backend_dir: str) -> None:
+    env_path = os.path.join(backend_dir, ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+async def _cleanup_scheduler_smoke_task(title: str) -> int:
+    """Remove the scheduler task created by this smoke run."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    backend_dir = os.path.join(repo_root, "backend")
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    _load_backend_env(backend_dir)
+
+    from app.database import AsyncSessionLocal  # noqa: PLC0415
+    from app.models.system import SystemTaskQueue  # noqa: PLC0415
+    from sqlalchemy import delete  # noqa: PLC0415
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            delete(SystemTaskQueue).where(
+                SystemTaskQueue.module == "scheduler",
+                SystemTaskQueue.task_type == "scheduled_agent_job",
+                SystemTaskQueue.parameters.contains(title),
+            )
+        )
+        await db.commit()
+        return int(result.rowcount or 0)
 
 def _make_png() -> bytes:
     """Minimal 2×2 red PNG."""
@@ -438,9 +486,28 @@ async def test_e():
     except Exception as e:
         add_result("E7 im send", False, str(e))
 
-    r = await call_capability("scheduler", "create", {"name": f"smoke-{TS}", "cron": "0 0 1 1 *", "action": "echo"})
+    scheduler_title = f"smoke-{TS}"
+    scheduled_at = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
+    r = await call_capability(
+        "scheduler",
+        "create",
+        {
+            "title": scheduler_title,
+            "action_description": "smoke test scheduler noop",
+            "scheduled_at": scheduled_at,
+        },
+    )
     ok = _cap_ok(r)
-    add_result("E8 scheduler create", ok, str(r.get("data", {}))[:120])
+    task_payload = _cap_payload(r)
+    task_id = task_payload.get("id") if isinstance(task_payload, dict) else None
+    cleaned = 0
+    if ok and task_id:
+        cancel_result = await call_capability("scheduler", "cancel", {"task_id": task_id})
+        ok = _cap_ok(cancel_result)
+        cleaned = await _cleanup_scheduler_smoke_task(scheduler_title)
+        add_result("E8 scheduler create/cancel", ok and cleaned == 1, f"task_id={task_id}, cleaned={cleaned}")
+    else:
+        add_result("E8 scheduler create/cancel", ok, str(r.get("data", {}))[:120])
 
 # ── 前端 UI 集测 ──────────────────────────────────────────────────
 

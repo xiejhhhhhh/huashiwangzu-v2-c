@@ -32,6 +32,37 @@ def _load_backend_env() -> None:
 
 _load_backend_env()
 
+
+def test_manifest_public_actions_match_registered_parameters():
+    """Manifest discovery metadata must match the runtime capability registry."""
+    # Importing the router registers excel-engine capabilities as it does in the app.
+    import backend.router  # noqa: F401
+    from app.services.module_registry import list_capabilities
+
+    manifest_path = os.path.join(_MODULE_ROOT, "manifest.json")
+    with open(manifest_path, encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
+
+    manifest_actions = {
+        item["action"]: {
+            "min_role": item.get("min_role", "viewer"),
+            "parameters": item.get("parameters") or {},
+        }
+        for item in manifest.get("public_actions", [])
+    }
+    registered_actions = {
+        item["action"]: {
+            "min_role": item.get("min_role", "viewer"),
+            "parameters": item.get("parameters") or {},
+        }
+        for item in list_capabilities()
+        if item.get("module") == "excel-engine"
+    }
+
+    assert manifest_actions == registered_actions
+    print("  ✓ test_manifest_public_actions_match_registered_parameters passed")
+
+
 # Test constants
 TEST_DATA = {
     'cells': {
@@ -621,6 +652,7 @@ def test_live_capability_history_versions_compile():
 
 if __name__ == '__main__':
     print('\n=== Excel Engine Module Tests ===\n')
+    test_manifest_public_actions_match_registered_parameters()
     test_address_tool()
     test_formula()
     test_state_manager()
