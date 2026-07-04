@@ -1,6 +1,10 @@
 <template>
   <div class="dashboard">
     <h2 class="db-title">知识库健康看板</h2>
+    <div v-if="loadError" class="db-error" role="alert">
+      <span>{{ loadError }}</span>
+      <button type="button" @click="refreshStats">重试</button>
+    </div>
     <div class="db-cards">
       <div class="db-card"><span class="db-num">{{ s.total_documents }}</span><span class="db-label">总文件数</span></div>
       <div class="db-card ok"><span class="db-num">{{ s.completed_documents }}</span><span class="db-label">分析完成</span></div>
@@ -127,6 +131,7 @@ const s = ref<DashboardStats>({
   recent_completions: [],
 })
 const loading = ref(true)
+const loadError = ref('')
 const triggeredSet = ref(new Set<number>())
 const triggeringSet = ref(new Set<number>())
 const pendingCount = ref(0)
@@ -171,21 +176,27 @@ function fmtDate(iso: string): string {
   if (!iso) return '-'
   try { return new Date(iso).toLocaleDateString('zh-CN') } catch { return iso.slice(0, 10) }
 }
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
 
 async function refreshStats() {
-  try { s.value = await getDashboardStats() } catch { /* ignore */ }
+  const errors: string[] = []
+  try { s.value = await getDashboardStats() } catch (e: unknown) { errors.push(errorMessage(e, '看板统计加载失败')) }
   try {
     const pending = await getPendingCount()
     pendingCount.value = pending.pending_count
-  } catch { /* ignore */ }
+  } catch (e: unknown) { errors.push(errorMessage(e, '治理待办数量加载失败')) }
   try {
     governanceCandidatesUnavailable.value = false
     const candidates = await getGovernanceCandidates(5)
     governanceCandidates.value = candidates.items
-  } catch {
+  } catch (e: unknown) {
     governanceCandidates.value = []
     governanceCandidatesUnavailable.value = true
+    errors.push(errorMessage(e, '治理候选加载失败'))
   }
+  loadError.value = errors.join('；')
 }
 
 async function handleRetrigger(docId: number) {
@@ -238,6 +249,28 @@ onMounted(async () => {
 <style scoped>
 .dashboard { padding: 4px 0; }
 .db-title { margin: 0 0 16px; font-size: 20px; font-weight: 700; color: #1c3a4a; }
+.db-error {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #f1b6ae;
+  border-radius: 8px;
+  background: #fff7f6;
+  color: #b42318;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+.db-error button {
+  flex: none;
+  height: 28px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+}
 .db-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .db-card { border: 1px solid #e3e9f2; border-radius: 12px; background: #fff; padding: 16px; text-align: center; }
 .db-card.ok { border-color: #b8e6d0; background: #f0faf5; }

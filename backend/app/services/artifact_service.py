@@ -898,8 +898,12 @@ async def _create_version_snapshot(
 
 
 def _artifact_to_dict(a: Artifact) -> dict[str, Any]:
+    package_id = a.source_object_id if a.source_object_type == "content_package" else None
+    download_url = f"/api/files/download/{a.file_id}" if a.file_id else None
+    open_url = f"/api/files/preview/{a.file_id}" if a.file_id else None
     return {
         "id": a.id,
+        "artifact_id": a.id,
         "owner_id": a.owner_id,
         "name": a.name,
         "extension": a.extension,
@@ -913,8 +917,12 @@ def _artifact_to_dict(a: Artifact) -> dict[str, Any]:
         "size": a.size,
         "status": a.status,
         "source_module": a.source_module,
+        "origin_module": a.source_module,
         "source_object_type": a.source_object_type,
         "source_object_id": a.source_object_id,
+        "package_id": package_id,
+        "download_url": download_url,
+        "open_url": open_url,
         "current_version_id": a.current_version_id,
         "folder_id": a.folder_id,
         "created_at": a.created_at.isoformat() if a.created_at else None,

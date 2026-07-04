@@ -17,7 +17,7 @@ export function getAllowedApps(role?: string): AppRegistryEntry[] {
   const userRole = role.toLowerCase()
   return all.filter(app => {
     const allowed = app.allowedRoles
-    return !allowed || allowed.includes(userRole)
+    return !allowed || allowed.length === 0 || allowed.includes(userRole)
   })
 }
 

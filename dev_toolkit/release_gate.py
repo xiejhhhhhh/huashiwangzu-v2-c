@@ -900,6 +900,8 @@ async def check_smoke(skip_ui: bool) -> None:
             else:
                 add_result("Smoke test (backends)", "BLOCKER",
                            f"{elapsed:.0f}s, unknown smoke verdict={verdict!r}")
+            check_ui_smoke_summary(smoke_summary, skip_ui=skip_ui)
+            check_model_fallback_summary(smoke_summary)
             return
 
         if passed:
@@ -924,13 +926,93 @@ async def check_smoke(skip_ui: bool) -> None:
 
 def check_ui_coverage(skip_ui: bool) -> None:
     if skip_ui:
+        runtime_context["ui_coverage"] = {
+            "status": "DEBT",
+            "included": False,
+            "reason": "--skip-ui used",
+        }
         add_result(
             "UI coverage",
             "DEBT",
             "--skip-ui used; backend preflight only, not a clean release gate",
         )
         return
+    runtime_context["ui_coverage"] = {
+        "status": "PENDING",
+        "included": True,
+        "reason": "waiting for smoke Playwright summary",
+    }
     add_result("UI coverage", "PASS", "UI smoke coverage included")
+
+
+def check_ui_smoke_summary(smoke_summary: dict[str, Any], *, skip_ui: bool) -> None:
+    if skip_ui:
+        return
+    ui_summary = smoke_summary.get("ui")
+    if not isinstance(ui_summary, dict):
+        runtime_context["ui_coverage"] = {
+            "status": "BLOCKER",
+            "included": True,
+            "reason": "smoke summary missing ui field",
+        }
+        add_result("UI Playwright summary", "BLOCKER", "smoke summary missing UI machine summary")
+        return
+
+    failed = int(ui_summary.get("failed") or 0)
+    passed = int(ui_summary.get("passed") or 0)
+    skipped = int(ui_summary.get("skipped") or 0)
+    status = str(ui_summary.get("status") or "")
+    failed_tests = ui_summary.get("failed_tests") if isinstance(ui_summary.get("failed_tests"), list) else []
+    artifacts = ui_summary.get("artifact_paths") if isinstance(ui_summary.get("artifact_paths"), list) else []
+    runtime_context["ui_coverage"] = {
+        "status": "PASS" if status == "pass" and failed == 0 else ("DEBT" if status == "unavailable" else "BLOCKER"),
+        "included": True,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "failed_tests": failed_tests[:10],
+        "artifact_paths": artifacts[:20],
+        "duration_seconds": ui_summary.get("duration_seconds"),
+    }
+    if status == "pass" and failed == 0:
+        add_result("UI Playwright summary", "PASS", f"passed={passed}, skipped={skipped}, artifacts={len(artifacts)}")
+    elif status == "unavailable":
+        add_result("UI Playwright summary", "DEBT", str(ui_summary.get("reason") or "UI environment unavailable"))
+    else:
+        names = ", ".join(str(item.get("title", "?")) for item in failed_tests[:3] if isinstance(item, dict))
+        add_result(
+            "UI Playwright summary",
+            "BLOCKER",
+            f"failed={failed}, passed={passed}, artifacts={len(artifacts)}" + (f"; tests={names}" if names else ""),
+        )
+
+
+def check_model_fallback_summary(smoke_summary: dict[str, Any]) -> None:
+    model_summary = smoke_summary.get("model_fallback")
+    if not isinstance(model_summary, dict):
+        runtime_context["model_fallback"] = {
+            "status": "DEBT",
+            "reason": "smoke summary missing model_fallback field",
+        }
+        add_result("Model fallback", "DEBT", "smoke summary missing model fallback summary")
+        return
+
+    status = str(model_summary.get("status") or "PASS")
+    observations = model_summary.get("observations") if isinstance(model_summary.get("observations"), list) else []
+    runtime_context["model_fallback"] = {
+        "status": status,
+        "fallback_used_count": int(model_summary.get("fallback_used_count") or 0),
+        "blocker_count": int(model_summary.get("blocker_count") or 0),
+        "observations": observations[:10],
+    }
+    if status == "BLOCKER":
+        add_result("Model fallback", "BLOCKER", f"{runtime_context['model_fallback']['blocker_count']} model fallback blocker(s)")
+    elif status == "DEBT":
+        sample = observations[0] if observations and isinstance(observations[0], dict) else {}
+        detail = str(sample.get("summary") or f"{model_summary.get('fallback_used_count', 0)} fallback debt observation(s)")
+        add_result("Model fallback", "DEBT", detail)
+    else:
+        add_result("Model fallback", "PASS", "no blocking model fallback debt observed")
 
 
 async def check_task_queue_audit(
@@ -1201,12 +1283,17 @@ def build_release_summary(verdict: str, *, skip_ui: bool = False, preflight: boo
     deploy_allowed = release_safe
     blockers = _compact_items({"BLOCKER"})
     debts = _compact_items({"DEBT", "SKIPPED_WITH_REASON"})
+    ui_coverage_status = runtime_context.get("ui_coverage", {})
+    model_fallback_status = runtime_context.get("model_fallback", {})
     compact_summary = {
         "verdict": summary_verdict,
         "blockers": blockers,
         "debts": debts,
+        "release_safe": release_safe,
         "clean_release_ready": clean_release_ready,
         "deploy_allowed": deploy_allowed,
+        "ui_coverage_status": ui_coverage_status,
+        "model_fallback_status": model_fallback_status,
     }
     return {
         "verdict": summary_verdict,
@@ -1217,6 +1304,8 @@ def build_release_summary(verdict: str, *, skip_ui: bool = False, preflight: boo
         "clean_release_ready": clean_release_ready,
         "release_safe": release_safe,
         "deploy_allowed": deploy_allowed,
+        "ui_coverage_status": ui_coverage_status,
+        "model_fallback_status": model_fallback_status,
         "has_debt": has_debt,
         "ui_skipped": skip_ui,
         "preflight": preflight,
@@ -1292,6 +1381,17 @@ async def main():
     print()
     if args.preflight:
         add_result("Smoke test (backends)", "DEBT", "--preflight used; smoke_all not run")
+        runtime_context["ui_coverage"] = {
+            "status": "DEBT",
+            "included": False,
+            "reason": "--preflight used; Playwright not run",
+        }
+        add_result("UI Playwright summary", "DEBT", "--preflight used; Playwright not run")
+        runtime_context["model_fallback"] = {
+            "status": "DEBT",
+            "reason": "--preflight used; model fallback probe not run",
+        }
+        add_result("Model fallback", "DEBT", "--preflight used; model fallback probe not run")
     else:
         await check_smoke(skip_ui=args.skip_ui)
         _token_cache.clear()

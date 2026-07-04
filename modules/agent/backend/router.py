@@ -30,6 +30,7 @@ from .schemas import (
     WorkflowArtifactRequest,
     WorkflowCancelRequest,
     WorkflowCreateRequest,
+    WorkflowDemoSeedRequest,
     WorkflowFinalizeRequest,
     WorkflowStepRequest,
     WorkflowToolCallRequest,
@@ -38,6 +39,7 @@ from .schemas import (
 from .services import agent_config_service, tool_discovery
 from .services import conversation_service as conv_svc
 from .services import prompt_service as prompt_svc
+from .services import workflow_seed_service as workflow_seed_svc
 from .services import workflow_service as workflow_svc
 
 logger = logging.getLogger("v2.agent").getChild("router")
@@ -238,6 +240,9 @@ async def _require_workflow_visible(
 @router.get("/workflows")
 async def list_workflows(
     status: str | None = None,
+    has_failures: bool | None = None,
+    has_artifacts: bool | None = None,
+    has_references: bool | None = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("viewer")),
@@ -248,10 +253,28 @@ async def list_workflows(
         user_id=user.id,
         is_admin=_is_admin(user),
         status=status,
-        limit=limit,
+        limit=limit if not any(item is not None for item in (has_failures, has_artifacts, has_references)) else 200,
     )
     serializer = workflow_svc.workflow_to_admin_dict if _is_admin(user) else workflow_svc.workflow_to_summary
-    return ApiResponse(data={"items": [serializer(run) for run in runs], "total": len(runs)})
+    counts = await workflow_svc.get_workflow_rollup_counts(
+        db,
+        [run.id for run in runs],
+        include_hidden_artifacts=_is_admin(user),
+    )
+    items = []
+    for run in runs:
+        item = serializer(run)
+        item.update(counts.get(run.id, {}))
+        if has_failures is not None and bool(item.get("failure_count")) != has_failures:
+            continue
+        if has_artifacts is not None and bool(item.get("artifact_count")) != has_artifacts:
+            continue
+        if has_references is not None and bool(item.get("reference_count")) != has_references:
+            continue
+        items.append(item)
+        if len(items) >= max(1, min(limit, 200)):
+            break
+    return ApiResponse(data={"items": items, "total": len(items)})
 
 
 @router.post("/workflows")
@@ -274,6 +297,46 @@ async def create_workflow(
     return ApiResponse(data={"workflow_run_id": run.id, "status": run.status})
 
 
+@router.get("/workflows/governance-summary")
+async def get_workflow_governance_summary(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await run_init(db)
+    return ApiResponse(data=await workflow_svc.get_workflow_governance_summary(
+        db,
+        owner_id=user.id,
+        is_admin=_is_admin(user),
+    ))
+
+
+@router.post("/workflows/demo-seed")
+async def seed_demo_workflows(
+    body: WorkflowDemoSeedRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    await run_init(db)
+    owner_id = body.owner_id or user.id
+    return ApiResponse(data=await workflow_seed_svc.seed_demo_workflows(
+        db,
+        owner_id=owner_id,
+        creator_id=user.id,
+        marker=body.marker,
+        cleanup_existing=body.cleanup_existing,
+    ))
+
+
+@router.post("/workflows/demo-seed/cleanup")
+async def cleanup_demo_workflows(
+    body: WorkflowDemoSeedRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    await run_init(db)
+    return ApiResponse(data=await workflow_seed_svc.cleanup_demo_workflows(db, marker=body.marker))
+
+
 @router.get("/workflows/{run_id}")
 async def get_workflow(
     run_id: int,
@@ -282,20 +345,29 @@ async def get_workflow(
 ):
     run = await _require_workflow_visible(db, run_id, user)
     data = workflow_svc.workflow_to_admin_dict(run) if _is_admin(user) else workflow_svc.workflow_to_summary(run)
-    if _is_admin(user):
-        steps = await workflow_svc.list_steps(db, run_id)
-        tool_calls = await workflow_svc.list_tool_calls(db, run_id)
-        verifications = await workflow_svc.list_verifications(db, run_id)
-        failures = await workflow_svc.list_failures(db, run_id)
-        data.update({
-            "steps": [workflow_svc.step_to_dict(step) for step in steps],
-            "tool_calls": [
-                workflow_svc.tool_call_to_dict(call, include_arguments=True)
-                for call in tool_calls
-            ],
-            "verifications": [workflow_svc.verification_to_dict(item) for item in verifications],
-            "failures": [workflow_svc.failure_to_dict(item) for item in failures],
-        })
+    steps = await workflow_svc.list_steps(db, run_id)
+    tool_calls = await workflow_svc.list_tool_calls(db, run_id)
+    artifacts = await workflow_svc.list_artifacts(db, run_id)
+    verifications = await workflow_svc.list_verifications(db, run_id)
+    failures = await workflow_svc.list_failures(db, run_id)
+    if not _is_admin(user):
+        artifacts = [item for item in artifacts if item.visibility in {"user", "developer"}]
+    data.update({
+        "steps": [workflow_svc.step_to_dict(step) for step in steps],
+        "tool_calls": [
+            workflow_svc.tool_call_to_dict(call, include_arguments=_is_admin(user))
+            for call in tool_calls
+        ],
+        "artifacts": [workflow_svc.artifact_to_dict(item) for item in artifacts],
+        "verifications": [workflow_svc.verification_to_dict(item) for item in verifications],
+        "failures": [workflow_svc.failure_to_dict(item) for item in failures],
+    })
+    counts = await workflow_svc.get_workflow_rollup_counts(
+        db,
+        [run_id],
+        include_hidden_artifacts=_is_admin(user),
+    )
+    data.update(counts.get(run_id, {}))
     data["multi_agent_summary"] = await workflow_svc.get_multi_agent_summary(
         db,
         run_id,

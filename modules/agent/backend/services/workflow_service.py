@@ -919,6 +919,28 @@ async def get_multi_agent_summary(
     return await aggregate_summary(db, run_id, include_hidden_artifacts=include_hidden_artifacts)
 
 
+async def get_workflow_rollup_counts(
+    db: AsyncSession,
+    run_ids: list[int],
+    *,
+    include_hidden_artifacts: bool = False,
+) -> dict[int, dict[str, int]]:
+    from .workflow_summary_service import get_workflow_rollup_counts as aggregate_counts
+
+    return await aggregate_counts(db, run_ids, include_hidden_artifacts=include_hidden_artifacts)
+
+
+async def get_workflow_governance_summary(
+    db: AsyncSession,
+    *,
+    owner_id: int,
+    is_admin: bool = False,
+) -> dict:
+    from .workflow_summary_service import get_workflow_governance_summary as aggregate_summary
+
+    return await aggregate_summary(db, owner_id=owner_id, is_admin=is_admin)
+
+
 async def ensure_workflow_owner_from_caller(
     db: AsyncSession,
     run_id: int,

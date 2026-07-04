@@ -134,3 +134,24 @@ curl /api/modules/capabilities | grep terminal-tools
 - [x] publish 后文件出现在框架文件系统
 - [x] import 后框架文件出现在工作区
 - [x] owner 隔离: 用户只能操作自己的工作区
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `terminal-tools`, window `background-service`, formats: Not format-bound. |
+| Backend capability | PASS | 8 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
+| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/terminal-tools/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `terminal-tools:<action>` and release smoke/capability drift gates. |
+| Known debt | DEBT | Keep component_key empty so the launcher never opens a blank background window. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/terminal-tools/sandbox/test_module.py
+cd modules/terminal-tools/sandbox && npm run build
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module terminal-tools --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

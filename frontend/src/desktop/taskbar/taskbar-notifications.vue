@@ -39,6 +39,7 @@
         @action-secondary="handleActionSecondary"
         @open-agent="emit('open-app', 'agent')"
         @retry-load="retryFeedbackLoad"
+        @open-load-source="handleOpenLoadSource"
       />
     </div>
   </div>
@@ -47,7 +48,7 @@
 <script setup lang="ts">
 import { Bell } from '@element-plus/icons-vue'
 import { useNotifications } from '@/shared/composables/use-notifications'
-import type { ActionItem } from '@/shared/composables/use-notifications'
+import type { ActionItem, NotificationLoadIssue } from '@/shared/composables/use-notifications'
 import NotifyPanel from '@/shared/components/notification-panel.vue'
 import { computed, nextTick, ref } from 'vue'
 
@@ -134,6 +135,11 @@ function handleActionSecondary(item: ActionItem, actionId: string) {
     return
   }
   dismissActionItem(item.id)
+}
+
+function handleOpenLoadSource(issue: NotificationLoadIssue) {
+  if (!issue.sourceTarget) return
+  emit('open-app', issue.sourceTarget.app_key, issue.sourceTarget.payload)
 }
 </script>
 

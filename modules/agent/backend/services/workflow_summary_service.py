@@ -15,6 +15,7 @@ from ..workflow_models import (
     AgentToolCall,
     AgentVerificationResult,
     AgentWorkflowArtifact,
+    AgentWorkflowRun,
     AgentWorkflowStep,
 )
 
@@ -277,3 +278,118 @@ async def get_multi_agent_summary(
             verifications=run_level_verifications,
         ))
     return {"items": items, "total": len(items)}
+
+
+async def get_workflow_rollup_counts(
+    db: AsyncSession,
+    run_ids: list[int],
+    *,
+    include_hidden_artifacts: bool = False,
+) -> dict[int, dict[str, int]]:
+    """Aggregate list-card counts without loading full workflow details."""
+    if not run_ids:
+        return {}
+    unique_ids = sorted(set(int(run_id) for run_id in run_ids))
+    counts = {
+        run_id: {
+            "step_count": 0,
+            "tool_call_count": 0,
+            "failure_count": 0,
+            "artifact_count": 0,
+            "verification_count": 0,
+            "reference_count": 0,
+        }
+        for run_id in unique_ids
+    }
+
+    steps = list((await db.execute(
+        select(AgentWorkflowStep).where(AgentWorkflowStep.run_id.in_(unique_ids))
+    )).scalars().all())
+    calls = list((await db.execute(
+        select(AgentToolCall).where(AgentToolCall.run_id.in_(unique_ids))
+    )).scalars().all())
+    artifacts_stmt = select(AgentWorkflowArtifact).where(AgentWorkflowArtifact.run_id.in_(unique_ids))
+    if not include_hidden_artifacts:
+        artifacts_stmt = artifacts_stmt.where(AgentWorkflowArtifact.visibility.in_(("user", "developer")))
+    artifacts = list((await db.execute(artifacts_stmt)).scalars().all())
+    failures = list((await db.execute(
+        select(AgentFailureRecord).where(AgentFailureRecord.run_id.in_(unique_ids))
+    )).scalars().all())
+    verifications = list((await db.execute(
+        select(AgentVerificationResult).where(AgentVerificationResult.run_id.in_(unique_ids))
+    )).scalars().all())
+
+    for step in steps:
+        counts[step.run_id]["step_count"] += 1
+        counts[step.run_id]["reference_count"] += len(_reference_ids_from_value(step.input_ref))
+        counts[step.run_id]["reference_count"] += len(_reference_ids_from_value(step.output_ref))
+    for call in calls:
+        counts[call.run_id]["tool_call_count"] += 1
+        counts[call.run_id]["reference_count"] += len(_reference_ids_from_value(call.result_ref))
+    for artifact in artifacts:
+        counts[artifact.run_id]["artifact_count"] += 1
+        counts[artifact.run_id]["reference_count"] += len(_reference_ids_from_value(artifact.storage_ref))
+    for failure in failures:
+        counts[failure.run_id]["failure_count"] += 1
+        counts[failure.run_id]["reference_count"] += len(_reference_ids_from_value(failure.evidence_ref))
+    for verification in verifications:
+        counts[verification.run_id]["verification_count"] += 1
+        counts[verification.run_id]["reference_count"] += len(_reference_ids_from_value(verification.evidence_ref))
+
+    return counts
+
+
+async def get_workflow_governance_summary(
+    db: AsyncSession,
+    *,
+    owner_id: int,
+    is_admin: bool = False,
+    limit_recent_errors: int = 5,
+) -> dict[str, Any]:
+    """Aggregate lightweight governance metrics for visible workflows."""
+    stmt = select(AgentWorkflowRun)
+    if not is_admin:
+        stmt = stmt.where(AgentWorkflowRun.owner_id == owner_id)
+    runs = list((await db.execute(stmt.order_by(AgentWorkflowRun.id.desc()))).scalars().all())
+    run_ids = [run.id for run in runs]
+    counts = await get_workflow_rollup_counts(db, run_ids, include_hidden_artifacts=is_admin)
+    total_duration_ms = 0
+    duration_count = 0
+    for run in runs:
+        if run.started_at and run.finished_at:
+            total_duration_ms += max(0, int((run.finished_at - run.started_at).total_seconds() * 1000))
+            duration_count += 1
+
+    failures: list[AgentFailureRecord] = []
+    if run_ids:
+        failures = list((await db.execute(
+            select(AgentFailureRecord)
+            .where(AgentFailureRecord.run_id.in_(run_ids))
+            .order_by(AgentFailureRecord.id.desc())
+            .limit(max(1, min(limit_recent_errors, 20)))
+        )).scalars().all())
+
+    return {
+        "total": len(runs),
+        "failed": sum(1 for run in runs if run.status == "failed"),
+        "partial": sum(1 for run in runs if run.status == "partial"),
+        "completed": sum(1 for run in runs if run.status == "completed"),
+        "needs_confirmation": sum(1 for run in runs if run.status == "needs_confirmation"),
+        "with_artifacts": sum(1 for run_id in run_ids if counts.get(run_id, {}).get("artifact_count", 0) > 0),
+        "with_references": sum(1 for run_id in run_ids if counts.get(run_id, {}).get("reference_count", 0) > 0),
+        "average_duration_ms": int(total_duration_ms / duration_count) if duration_count else 0,
+        "recent_errors": [
+            {
+                "run_id": item.run_id,
+                "step_id": item.step_id,
+                "tool_call_id": item.tool_call_id,
+                "failure_type": item.failure_type,
+                "reason": item.handoff_note or item.error_signature or item.failure_type,
+                "retryable": item.retryable,
+                "retry_count": item.retry_count,
+                "next_action": item.next_action,
+                "created_at": _iso(item.created_at),
+            }
+            for item in failures
+        ],
+    }

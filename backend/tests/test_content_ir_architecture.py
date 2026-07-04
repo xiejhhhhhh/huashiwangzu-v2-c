@@ -317,6 +317,26 @@ class TestValidateIR:
         result = validate_ir_sync({"content_type": "bad"})
         assert result.valid is False
 
+    @pytest.mark.asyncio
+    async def test_authoritative_fields_and_assets_alias_validate(self):
+        ir = _valid_document_ir(
+            source_file_id=123,
+            source_module="agent",
+            parser="docx-parser:parse",
+            assets=[{"id": "r1", "resource_type": "image", "mime_type": "image/png"}],
+            warnings=[{"code": "low_confidence", "message": "OCR was partial"}],
+            quality={"confidence": 0.82},
+        )
+        result = await validate_ir(ir)
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_authoritative_quality_must_be_object(self):
+        ir = _valid_document_ir(quality="high")
+        result = await validate_ir(ir)
+        assert result.valid is False
+        assert any(e.path == "quality" and e.code == "invalid_type" for e in result.errors)
+
 
 # ====================================================================
 # 2. Content IR writer tests
@@ -377,6 +397,53 @@ class TestWriteIR:
             except Exception:
                 await db.rollback()
                 raise
+
+    @pytest.mark.asyncio
+    async def test_write_ir_persists_authoritative_metadata(self):
+        """ContentPackage version keeps source/parser/assets/warnings/quality in canonical DB JSON."""
+        from app.database import AsyncSessionLocal
+        from app.models.content import ContentPackageVersion
+
+        owner_id = 99910
+        raw_resource = b"content-ir-authority-" + uuid.uuid4().bytes
+        ir = _valid_document_ir(
+            source_module="agent",
+            parser="markdown-parser:parse",
+            metadata={"workflow_id": "wf-test"},
+            warnings=[{"code": "truncated", "message": "sample"}],
+            quality={"confidence": 0.91},
+            assets=[{
+                "id": "asset-1",
+                "resource_type": "image",
+                "mime_type": "image/png",
+                "filename": "asset.png",
+                "data_b64": base64.b64encode(raw_resource).decode("ascii"),
+            }],
+        )
+        async with AsyncSessionLocal() as db:
+            resource_id = None
+            try:
+                result = await write_ir(
+                    db,
+                    ir,
+                    owner_id=owner_id,
+                    caller=f"user:{owner_id}",
+                )
+                version = await db.get(ContentPackageVersion, result["version_id"])
+                assert version is not None
+                content = json.loads(version.content_json)
+                resource_id = content["resources"][0]["resource_id"]
+                assert content["manifest"]["source_module"] == "agent"
+                assert content["manifest"]["parser"] == "markdown-parser:parse"
+                assert content["metadata"] == {"workflow_id": "wf-test"}
+                assert content["warnings"][0]["code"] == "truncated"
+                assert content["quality"]["confidence"] == 0.91
+                assert content["assets"][0]["resource_id"] == resource_id
+            finally:
+                if "result" in locals():
+                    await _delete_content_packages(db, [result["package_id"]])
+                if resource_id is not None:
+                    await _delete_resources(db, [resource_id])
 
     @pytest.mark.asyncio
     async def test_write_ir_source_file_id_requires_file_access(self):

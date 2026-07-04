@@ -56,6 +56,7 @@ def test_real_sample_csv_parses_with_unified_blocks() -> None:
     text = _block_text(result)
 
     assert result["format"] == "csv"
+    assert {str(block["type"]) for block in _validate_shape(result)} <= {"paragraph", "table"}
     assert "表格：2列 x 2行数据" in text
     assert "表头：name | score" in text
     assert "行2：alpha | 1" in text

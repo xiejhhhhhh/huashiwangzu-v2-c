@@ -118,6 +118,17 @@ async function gotoDesktop(page) {
   await expect(page.locator('.desktop-file-icon-item').first()).toBeVisible({ timeout: 15000 }).catch(() => {})
 }
 
+async function closeAllWindows(page) {
+  await page.evaluate(() => {
+    const manager = window.__HSWZ_WINDOW_MANAGER__
+    if (!manager || !Array.isArray(manager.windows) || typeof manager.closeWindow !== 'function') return
+    for (const id of manager.windows.map(windowState => windowState.id).reverse()) {
+      manager.closeWindow(id)
+    }
+  })
+  await expect(page.locator('.desktop-window')).toHaveCount(0, { timeout: 5000 }).catch(() => {})
+}
+
 test('content publish artifact is visible, openable, and downloadable from desktop file entry', async ({ page, request }) => {
   const token = await loginAdminToken(request).catch(() => readAdminToken())
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -166,6 +177,7 @@ test('content publish artifact is visible, openable, and downloadable from deskt
     expect(fileItems.some(item => Number(item?.id) === Number(state.fileId))).toBe(true)
 
     await gotoDesktop(page)
+    await closeAllWindows(page)
     const icon = page.locator(`.desktop-file-icon-item[data-selection-key="file:${state.fileId}"]`)
     await expect(icon).toBeVisible({ timeout: 15000 })
 
@@ -186,6 +198,7 @@ test('content publish artifact is visible, openable, and downloadable from deskt
     await menu.locator('.v40-ctx-item').filter({ hasText: '下载到本地' }).click()
     await downloadResponse
   } finally {
+    await closeAllWindows(page).catch(() => {})
     await cleanupPublishedArtifact(request, token, state)
   }
 })

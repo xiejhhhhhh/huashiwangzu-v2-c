@@ -100,8 +100,8 @@ interface ImageEntry {
 function hasImage(r: unknown): boolean {
   if (!r || typeof r !== 'object') return false
   const obj = r as Record<string, unknown>
-  if (Array.isArray(obj.images) && obj.images.length > 0) return true
-  if (obj.type === 'image' && typeof obj.file_id === 'number') return true
+  if (Array.isArray(obj.images) && obj.images.some(isImageEntry)) return true
+  if (isImageEntry(obj)) return true
   return false
 }
 
@@ -109,12 +109,18 @@ function extractImages(r: unknown): ImageEntry[] {
   if (!r || typeof r !== 'object') return []
   const obj = r as Record<string, unknown>
   if (Array.isArray(obj.images)) {
-    return obj.images as ImageEntry[]
+    return obj.images.filter(isImageEntry)
   }
-  if (obj.type === 'image' && typeof obj.file_id === 'number') {
-    return [obj as unknown as ImageEntry]
+  if (isImageEntry(obj)) {
+    return [obj]
   }
   return []
+}
+
+function isImageEntry(value: unknown): value is ImageEntry {
+  if (!isRecord(value)) return false
+  if (value.type !== undefined && value.type !== 'image') return false
+  return typeof value.file_id === 'number'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

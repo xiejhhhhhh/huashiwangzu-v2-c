@@ -12,7 +12,7 @@ export interface NotificationItem {
   title: string
   notification_type: string
   is_read: boolean
-  published_at: string
+  published_at: string | null
   [key: string]: unknown
 }
 

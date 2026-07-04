@@ -114,6 +114,8 @@ def test_vlm_refine_existing_analysis_contract() -> None:
     assert result["schema_version"] == "media-intelligence.analysis.v1"
     assert result["summary"]
     assert result["stages"][-1]["stage"] == "vlm_refine"
+    assert result["model_fallback"]["fallback_used"] is True
+    assert result["model_fallback"]["failure_category"] == "not_configured"
     assert result["warnings"]
 
 

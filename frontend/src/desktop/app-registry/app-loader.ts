@@ -35,7 +35,8 @@ function missingComponentLoader(app: DesktopAppItem, componentKey: string): AppR
 
 function transformApiToEntry(app: DesktopAppItem): AppRegistryEntry {
   const entryKey: string = app.entry_component_key || ''
-  const componentLoader = app.window_type === WINDOW_TYPE_BACKGROUND_SERVICE || !entryKey
+  const allowedRoles = app.permissions && app.permissions.length > 0 ? app.permissions : undefined
+  const componentLoader = app.window_type === WINDOW_TYPE_BACKGROUND_SERVICE
     ? backgroundServiceLoader()
     : componentKeyMap[entryKey]
   const publicActions = app.public_actions?.map(action => ({
@@ -62,7 +63,7 @@ function transformApiToEntry(app: DesktopAppItem): AppRegistryEntry {
     showInLauncher: app.show_in_launcher ?? false,
     showInSidebar: app.show_in_sidebar ?? false,
     category: app.category || '',
-    allowedRoles: app.permissions || [],
+    allowedRoles,
     supportedFormats: app.supported_formats || undefined,
     editableFormats: app.editable_formats || undefined,
     creatableFormats: app.creatable_formats || undefined,
@@ -77,7 +78,7 @@ function transformApiToEntry(app: DesktopAppItem): AppRegistryEntry {
 
 export async function loadAppRegistry(role: string): Promise<AppRegistryEntry[]> {
   const data = await fetchDesktopApps()
-  if (Array.isArray(data) && data.length > 0) {
+  if (Array.isArray(data)) {
     const appList = data.map(transformApiToEntry)
     setAppRegistry(appList)
     return appList

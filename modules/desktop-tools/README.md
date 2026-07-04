@@ -96,3 +96,24 @@ npm run dev
 cd /path/to/华世王镞_v2
 PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py
 ```
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `desktop-tools`, window `background-service`, formats: Not format-bound. |
+| Backend capability | PASS | 15 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
+| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `desktop-tools:<action>` and release smoke/capability drift gates. |
+| Known debt | DEBT | Keep component_key empty so the launcher never opens a blank background window. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py
+cd modules/desktop-tools/sandbox && npm run build
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module desktop-tools --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

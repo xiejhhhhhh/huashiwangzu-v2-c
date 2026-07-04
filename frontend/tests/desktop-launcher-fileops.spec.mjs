@@ -38,6 +38,17 @@ const mockApps = [
 ]
 
 async function mockDesktopShell(page) {
+  await page.addInitScript(() => {
+    localStorage.setItem('v2_auth_token', 'desktop-launcher-fileops-test-token')
+  })
+  await page.route('**/api/current-user', route => route.fulfill({
+    status: 200,
+    json: {
+      success: true,
+      data: { id: 1, username: '何焜华', role: 'admin' },
+      error: null,
+    },
+  }))
   await page.route('**/api/desktop/apps', route => route.fulfill({
     status: 200,
     json: { success: true, data: mockApps, error: null },
@@ -53,6 +64,40 @@ async function mockDesktopShell(page) {
   await page.route('**/api/files/list**', route => route.fulfill({
     status: 200,
     json: { success: true, data: { items: [], total: 0, page: 1, page_size: 50 }, error: null },
+  }))
+  await page.route('**/api/notifications/unread-count', route => route.fulfill({
+    status: 200,
+    json: { success: true, data: { unread_count: 0 }, error: null },
+  }))
+  await page.route('**/api/tasks/worker/audit', route => route.fulfill({
+    status: 200,
+    json: {
+      success: true,
+      data: {
+        summary: { pending: 0, running: 0, completed: 0, failed: 0 },
+        recent_failed_count: 0,
+        historical_debt_total: 0,
+        classification: {
+          recent_failed_count: 0,
+          stale_pending_debt_count: 0,
+          orphan_running_debt_count: 0,
+          completed_semantic_failure_count: 0,
+        },
+      },
+      error: null,
+    },
+  }))
+  await page.route('**/api/modules/call', route => route.fulfill({
+    status: 200,
+    json: { success: true, data: { total: 0, items: [] }, error: null },
+  }))
+  await page.route('**/api/knowledge/dashboard/stats', route => route.fulfill({
+    status: 200,
+    json: { success: true, data: { source_unavailable_documents: 0, stuck_documents: [] }, error: null },
+  }))
+  await page.route('**/api/knowledge/governance/pending-count', route => route.fulfill({
+    status: 200,
+    json: { success: true, data: { pending_count: 0 }, error: null },
   }))
 }
 

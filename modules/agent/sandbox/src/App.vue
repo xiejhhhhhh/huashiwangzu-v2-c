@@ -74,8 +74,8 @@ async function doLogin() {
     if (!body.success) throw new Error(body.error || '登录失败')
     localStorage.setItem(TOKEN_KEY, body.data.access_token)
     loggedIn.value = true
-  } catch (e: any) {
-    loginError.value = e.message || '登录失败'
+  } catch (e: unknown) {
+    loginError.value = e instanceof Error ? e.message : '登录失败'
   } finally {
     loginLoading.value = false
   }

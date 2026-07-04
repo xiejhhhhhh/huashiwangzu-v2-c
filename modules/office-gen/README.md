@@ -98,3 +98,23 @@ Generated live-stack test files must be cleaned up by the creator after verifica
 ## Known Follow-Up Outside This Module
 
 - Framework Content IR export currently decides fallback behavior in `backend/app/services/content/export_service.py`. If product policy requires Content Package parsing failure to fail the whole artifact operation instead of returning an explicit `content_package_status="failed"`, that should be handled as a separate framework task.
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `office-gen`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 8 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/office-gen/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `office-gen:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/office-gen/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module office-gen --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

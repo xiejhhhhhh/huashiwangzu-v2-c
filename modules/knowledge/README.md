@@ -101,6 +101,27 @@ class ContentBlock(BaseModel):
     coordinate: Coordinate | None  # 坐标（版面分析）
 ```
 
+### 搜索结果引用口径
+
+Knowledge 搜索和 evidence capability 输出统一使用 Agent EvidenceReference 的同一组字段语义：
+
+```text
+source_module=knowledge
+file_id/source_file_id
+document_id
+chunk_id
+content_package_id(package_id)
+page
+section
+paragraph
+score
+title/source_file/snippet
+```
+
+Knowledge 只维护 `kb_documents/kb_chunks/kb_page_fusions` 等知识库权威数据；不复制 ContentPackage 全量 IR，也不直接读写 Artifact 表。若需要 ContentPackage 元信息，只保存 `content_package_id` 作为逻辑引用，详情和下载/打开动作交给框架 Content/Artifact/File API 做权限校验后返回。
+
+前端搜索结果卡片与 Agent evidence card 保持同语义：能定位 `source_file_id` 时可打开/下载原文件；任何结果都可复制引用和查看原始 metadata；无法定位时不生成假链接。
+
 ### 分块策略
 
 - `fixed_size`：传统段落/句子固定大小分块（向后兼容）
@@ -138,4 +159,25 @@ curl -X POST http://127.0.0.1:33000/api/knowledge/search \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"query":"测试","top_k":5}'
+```
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `knowledge`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 16 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/knowledge/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `knowledge:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/knowledge/sandbox/test_module.py
+cd modules/knowledge/sandbox && npm run build
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module knowledge --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```

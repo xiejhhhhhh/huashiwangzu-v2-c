@@ -72,3 +72,23 @@ python3.14 scripts/check-capability-drift.py
 - Adapters handle auth/signing/request/polling/parsing. They do NOT download URLs or persist to DB.
 - When a template's required credentials are missing, the system auto-downgrades to placeholder (no hard error).
 - Validation: `prompt` must be non-empty; either `size` (WxH) or `aspect_ratio` must be provided.
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `image-gen`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 3 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | SKIP | Module does not directly consume framework file_id content. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `image-gen:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-gen --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

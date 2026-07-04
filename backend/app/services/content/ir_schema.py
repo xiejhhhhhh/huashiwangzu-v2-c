@@ -60,10 +60,16 @@ class ContentIR(BaseModel):
     schema_version: str = "1.0"
     content_type: str = "document"
     title: str = ""
+    source_file_id: int | None = None
+    source_module: str = ""
+    parser: str = ""
     locale: str = "zh-CN"
     metadata: dict[str, Any] = Field(default_factory=dict)
     blocks: list[ContentBlock] = Field(default_factory=list)
     resources: list[ContentResource] = Field(default_factory=list)
+    assets: list[ContentResource] = Field(default_factory=list)
+    warnings: list[dict[str, Any] | str] = Field(default_factory=list)
+    quality: dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidationError(BaseModel):

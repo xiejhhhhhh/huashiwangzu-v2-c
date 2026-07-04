@@ -68,3 +68,23 @@ backend/.venv/bin/python modules/media-asr/sandbox/test_module.py
 ```
 
 The sandbox imports production router/service code and stubs only DB/media/model boundaries. It does not create framework upload files or call real ASR.
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `media-asr`, window `normal`, formats: mp4, mov, m4v, webm, mkv, avi, wav, mp3, m4a, aac, flac, ogg. |
+| Backend capability | PASS | 3 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/media-asr/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `media-asr:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/media-asr/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module media-asr --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

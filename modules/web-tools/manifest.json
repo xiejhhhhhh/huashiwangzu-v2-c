@@ -4,7 +4,7 @@
   "icon": "Search",
   "icon_asset": "",
   "category": "tools",
-  "component_key": "index.vue",
+  "component_key": "",
   "route_prefix": "/api/web-tools",
   "permissions": [
     "viewer",

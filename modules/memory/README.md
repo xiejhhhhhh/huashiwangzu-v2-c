@@ -100,3 +100,23 @@ python3.14 scripts/check-capability-drift.py
 - Live dry-run found `memory_records`: 43 total, 20 with embeddings, 23 missing; `memory_chunks`: 13 total, all with embeddings. Use `memory:backfill_embeddings` with `dry_run=false` after confirming embedding service health.
 - DB shape audit found 1 orphan chunk and 8 orphan links before this pass; module initialization now removes those safely.
 - Bad `limit` parameters previously produced 500 for `memory:list`, `memory:recall`, and `memory:recall_chunk`; the module now validates them before SQL execution.
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `memory`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 19 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | SKIP | Module does not directly consume framework file_id content. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `memory:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module memory --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

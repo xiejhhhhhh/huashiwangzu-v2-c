@@ -1,5 +1,6 @@
 import base64
 import logging
+from io import BytesIO
 
 from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
@@ -16,6 +17,8 @@ router = APIRouter(prefix="/api/image-vision", tags=["image-vision"])
 LOGGER = logging.getLogger("v2.image-vision")
 ALLOWED_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "ico"}
 ANALYSIS_MODES = {"auto", "local", "semantic"}
+MAX_VLM_IMAGE_BYTES = 700_000
+MAX_VLM_IMAGE_SIDE = 1024
 MIME_TYPE_MAP = {
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
@@ -25,6 +28,84 @@ MIME_TYPE_MAP = {
     "bmp": "image/bmp",
     "ico": "image/x-icon",
 }
+
+
+def _classify_vlm_failure(exc: Exception) -> dict[str, object]:
+    text = str(exc)
+    lowered = text.lower()
+    if any(token in lowered for token in ("401", "unauthorized", "forbidden", "api key", "apikey", "auth")):
+        return {
+            "code": "vision_auth_config_debt",
+            "category": "auth_config_debt",
+            "retryable": False,
+            "message": "Vision model auth/config failed; local image analysis fallback was used.",
+            "detail": text[:500],
+        }
+    if any(token in lowered for token in ("context", "too many tokens", "maximum", "request too large", "413")):
+        return {
+            "code": "vision_context_too_large",
+            "category": "context_too_large",
+            "retryable": False,
+            "message": "Vision model context was too large after compression; local image analysis fallback was used.",
+            "detail": text[:500],
+        }
+    if any(token in lowered for token in ("not configured", "missing", "no vision model")):
+        return {
+            "code": "vision_not_configured",
+            "category": "not_configured",
+            "retryable": False,
+            "message": "Vision model is not configured; local image analysis fallback was used.",
+            "detail": text[:500],
+        }
+    return {
+        "code": "vision_model_unavailable",
+        "category": "model_unavailable",
+        "retryable": True,
+        "message": "Vision model failed; local image analysis fallback was used.",
+        "detail": text[:500],
+    }
+
+
+def _prepare_vlm_image(raw: bytes, ext: str) -> tuple[bytes, str, dict[str, object]]:
+    original_mime = MIME_TYPE_MAP.get(ext, "image/jpeg")
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(raw)) as image:
+            width, height = image.size
+            if len(raw) <= MAX_VLM_IMAGE_BYTES and max(width, height) <= MAX_VLM_IMAGE_SIDE:
+                return raw, original_mime, {
+                    "compressed": False,
+                    "original_bytes": len(raw),
+                    "sent_bytes": len(raw),
+                    "original_width": width,
+                    "original_height": height,
+                    "mime_type": original_mime,
+                }
+            image.thumbnail((MAX_VLM_IMAGE_SIDE, MAX_VLM_IMAGE_SIDE))
+            rgb = image.convert("RGB")
+            out = BytesIO()
+            rgb.save(out, format="JPEG", quality=84, optimize=True)
+            prepared = out.getvalue()
+            return prepared, "image/jpeg", {
+                "compressed": True,
+                "original_bytes": len(raw),
+                "sent_bytes": len(prepared),
+                "original_width": width,
+                "original_height": height,
+                "sent_width": rgb.width,
+                "sent_height": rgb.height,
+                "mime_type": "image/jpeg",
+                "reason": "vlm_context_budget",
+            }
+    except Exception as exc:
+        return raw, original_mime, {
+            "compressed": False,
+            "original_bytes": len(raw),
+            "sent_bytes": len(raw),
+            "mime_type": original_mime,
+            "compression_error": str(exc)[:300],
+        }
 
 
 def _normalize_params(params: dict[str, object]) -> dict[str, object]:
@@ -75,23 +156,27 @@ async def _describe(params: dict, caller: str) -> dict:
         semantic_description = None
         vlm_attempted = False
         vlm_used = False
+        vlm_failure: dict[str, object] | None = None
+        vlm_payload_info: dict[str, object] | None = None
 
         if vlm_decision["use_vlm"]:
             vlm_attempted = True
             try:
                 from app.services.model_services import describe_image
 
+                vlm_bytes, vlm_mime, vlm_payload_info = _prepare_vlm_image(raw, ext)
                 candidate = await describe_image(
-                    raw,
+                    vlm_bytes,
                     prompt=build_vlm_prompt(local_summary, prompt if isinstance(prompt, str) else None),
-                    mime_type=MIME_TYPE_MAP.get(ext, "image/jpeg"),
+                    mime_type=vlm_mime,
                 )
                 semantic_description = candidate.strip() if isinstance(candidate, str) else None
                 vlm_used = bool(semantic_description)
                 if not semantic_description:
                     warnings.append("Vision model returned an empty description; using local analysis only.")
             except Exception as exc:
-                warnings.append(f"Vision model unavailable; using local analysis only: {exc}")
+                vlm_failure = _classify_vlm_failure(exc)
+                warnings.append(str(vlm_failure["message"]))
                 LOGGER.warning("image-vision VLM fallback for file_id=%d: %s", file_id, exc)
 
         description = local_summary
@@ -105,8 +190,20 @@ async def _describe(params: dict, caller: str) -> dict:
             "vlm_attempted": vlm_attempted,
             "vlm_used": vlm_used,
             "vlm_decision": vlm_decision,
+            "vlm_payload": vlm_payload_info,
+            "vlm_failure": vlm_failure,
             "external_vlm_calls": 1 if vlm_attempted else 0,
             "degraded": vlm_attempted and not vlm_used,
+        }
+        model_fallback = {
+            "primary_model": "vision.primary",
+            "primary_failed": vlm_attempted and not vlm_used,
+            "fallback_used": vlm_attempted and not vlm_used,
+            "fallback_model": "local_analysis",
+            "final_success": bool(description),
+            "failure_category": vlm_failure.get("category") if vlm_failure else None,
+            "failure_code": vlm_failure.get("code") if vlm_failure else None,
+            "retryable": vlm_failure.get("retryable") if vlm_failure else None,
         }
 
         data_b64 = base64.b64encode(raw).decode("ascii")
@@ -136,7 +233,7 @@ async def _describe(params: dict, caller: str) -> dict:
         block_ref = resource_id if resource_id else 1
         blocks = [
             {"type": "image", "text": description, "page": None, "resource_ref": block_ref},
-            {"type": "metadata", "text": local_summary, "page": None, "resource_ref": block_ref},
+            {"type": "paragraph", "text": local_summary, "page": None, "resource_ref": block_ref},
         ]
         resources = [
             {
@@ -158,6 +255,8 @@ async def _describe(params: dict, caller: str) -> dict:
             "semantic_description": semantic_description,
             "local_analysis": local_analysis,
             "analysis_strategy": analysis_strategy,
+            "model_fallback": model_fallback,
+            "degraded_reasons": [vlm_failure] if vlm_failure else [],
             "warnings": warnings,
         }
 

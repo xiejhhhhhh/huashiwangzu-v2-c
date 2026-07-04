@@ -73,3 +73,23 @@ PYTHONPATH=backend backend/.venv/bin/python modules/docs-open/sandbox/test_modul
 ```
 
 The sandbox test covers token scope/expiry/client ID boundaries, mode and document type normalization, token hashing, capability return shapes, and the scoped-token-vs-JWT boundary.
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `docs-open`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 3 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/docs-open/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `docs-open:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/docs-open/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module docs-open --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

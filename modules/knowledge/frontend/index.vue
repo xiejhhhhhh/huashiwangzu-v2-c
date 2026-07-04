@@ -16,7 +16,12 @@
       </div>
 
       <div class="tree-wrap">
-        <div v-if="!fileTree.length" class="empty-tip">加载中…</div>
+        <div v-if="treeLoading" class="empty-tip">加载中…</div>
+        <div v-else-if="treeError" class="tree-error" role="alert">
+          <span>{{ treeError }}</span>
+          <button type="button" @click="loadFileTree">重试</button>
+        </div>
+        <div v-else-if="!fileTree.length" class="empty-tip">暂无可分析文件</div>
         <button
           v-for="node in visibleTree"
           :key="node.id + (node.is_folder ? 'd' : 'f')"
@@ -134,6 +139,9 @@
         </nav>
 
         <section v-if="hasResult && tab === 'overview'" class="pane">
+          <div v-if="resultLoadErrors.profile" class="pane-error" role="alert">
+            {{ resultLoadErrors.profile }}
+          </div>
           <div v-if="profile" class="profile-grid">
             <div class="pf-card pf-main">
               <div class="pf-tag">{{ profile.doc_type || '资料' }}</div>
@@ -150,6 +158,9 @@
         </section>
 
         <section v-if="hasResult && tab === 'reader'" class="pane">
+          <div v-if="resultLoadErrors.fusions" class="pane-error" role="alert">
+            {{ resultLoadErrors.fusions }}
+          </div>
           <article v-for="p in fusions" :key="p.page" :ref="el => setPageRef(p.page, el)" class="page-card">
             <div class="page-head"><span class="page-no">第 {{ p.page }} 页</span><span v-if="p.page_title" class="page-title">{{ p.page_title }}</span><span class="conf" :class="confClass(p.confidence)" :title="'融合置信度'">置信 {{ Math.round((p.confidence||0)*100) }}%</span></div>
             <p class="page-text">{{ p.fused_text }}</p>
@@ -159,6 +170,9 @@
         </section>
 
         <section v-if="hasResult && tab === 'relation'" class="pane">
+          <div v-if="resultLoadErrors.relations" class="pane-error" role="alert">
+            {{ resultLoadErrors.relations }}
+          </div>
           <div v-if="relations.length" class="rel-list">
             <div class="rel-hint">这份资料与库中其它资料的关联(系统自动织网):</div>
             <button v-for="r in relations" :key="r.target_document_id" class="rel-card" @click="jumpDoc(r.target_document_id)">
@@ -173,7 +187,25 @@
         <section v-if="hasResult && tab === 'search'" class="pane">
           <div class="search-bar"><input v-model="query" class="search-input" placeholder="搜索全库知识内容…" @keyup.enter="runSearch" /><button class="primary-btn" :disabled="searching" @click="runSearch">{{ searching?'搜索中':'搜索' }}</button></div>
           <div v-if="searched" class="search-hint">在 {{ analyzedDocCount }} 个已分析文件中检索「{{ query }}」</div>
-          <article v-for="item in searchResults" :key="item.chunk_id" class="result-card" @click="jumpToSearchResult(item)"><div class="result-head"><span class="result-doc">{{ item.document_name || docName(item.document_id) }}</span><span class="result-page">第 {{ item.page||'·' }} 页</span></div><p v-html="highlightText(item.text, query)"></p></article>
+          <article v-for="item in searchResults" :key="item.chunk_id" class="result-card" @click="jumpToSearchResult(item)">
+            <div class="result-head">
+              <span class="result-doc">{{ item.document_name || docName(item.document_id) }}</span>
+              <span class="result-page">第 {{ item.page||'·' }} 页</span>
+            </div>
+            <div class="result-meta">
+              <span>{{ item.source_file || item.document_name || ('文档 #' + item.document_id) }}</span>
+              <span v-if="item.paragraph !== null && item.paragraph !== undefined">段落 {{ item.paragraph }}</span>
+              <span>{{ item.retrieval_source || 'hybrid' }} · {{ item.explain?.rrf_score ?? item.rrf_score ?? item.score }}</span>
+            </div>
+            <div class="result-actions">
+              <button type="button" :disabled="!item.source_file_id" @click.stop="openSearchSource(item)">打开</button>
+              <button type="button" :disabled="!item.source_file_id" @click.stop="downloadSearchSource(item)">下载</button>
+              <button type="button" @click.stop="copySearchReference(item)">复制引用</button>
+              <button type="button" @click.stop="showSearchMetadata(item)">metadata</button>
+            </div>
+            <p v-html="highlightText(item.text, query)"></p>
+          </article>
+          <pre v-if="searchMetadataText" class="result-metadata">{{ searchMetadataText }}</pre>
           <div v-if="searched && !searchResults.length" class="empty-tip pad">没找到相关内容</div>
         </section>
       </template>
@@ -198,7 +230,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, nextTick, watch } from 'vue'
-import { initRuntime, platform } from '../runtime'
+import { initRuntime, platform, getApiUrl, authHeaders } from '../runtime'
 import WorkspaceGraph from './views/WorkspaceGraph.vue'
 import DashboardView from './views/DashboardView.vue'
 import {
@@ -231,6 +263,8 @@ const showGovernanceFromPayload = computed(() => props.showGovernance === true)
 
 // ── 文件树 ──
 const fileTree = ref<FileTreeNode[]>([])
+const treeLoading = ref(false)
+const treeError = ref('')
 const folderOpenState = ref<Record<number, boolean>>({})
 const folderFiles = ref<Record<number, FileTreeNode[]>>({})  // folder_id → 文件节点列表
 const kbDocMap = ref<Record<number, KnowledgeDocument>>({})
@@ -375,10 +409,12 @@ const ingestStatus = ref<KnowledgeIngestStatus | null>(null)
 const fusions = ref<FusionPage[]>([])
 const profile = ref<DocumentProfile | null>(null)
 const relations = ref<FileRelation[]>([])
+const resultLoadErrors = ref<{ fusions?: string; profile?: string; relations?: string }>({})
 const query = ref('')
 const searching = ref(false)
 const searched = ref(false)
 const searchResults = ref<SearchResult[]>([])
+const searchMetadataText = ref('')
 const exportFormat = ref<ExportFormat>('markdown')
 const exporting = ref(false)
 let pollTimer: number | null = null
@@ -440,6 +476,7 @@ function statusDotClass(status?: string): string { if (status === 'done') return
 function stageLabel(stage: string): string { const labels: Record<string, string> = { source: '源文件', parse: '解析', vector: '索引', raw: '原始采集', fusion: '页级融合', profile: '画像', graph: '图谱', relation: '关联', complete: '完成' }; return labels[stage] || stage }
 function sourceStateText(state: string): string { const labels: Record<string, string> = { source_file_deleted: '原始文件已删除或进入回收站。', source_file_missing: '原始文件路径不可用。', permission_denied: '当前账号没有访问原始文件的权限。', source_unavailable: '原始文件不可用。' }; return labels[state] || '原始文件不可用。' }
 function readableFailure(message: string): string { return message.replace(/^Document source file unavailable:\s*/i, '源文件不可用：') }
+function errorMessage(error: unknown, fallback: string): string { return error instanceof Error && error.message ? error.message : fallback }
 function stepCount(s: ProgressStage): string { if (s.key === 'graph') return s.count ? `${s.count} 个实体` : (s.status === 'done' ? '完成' : '—'); if (s.key === 'relation') return s.count ? `${s.count} 条关联` : (s.status === 'done' ? '完成' : '—'); if (s.total <= 1) return s.status === 'done' ? '完成' : (s.status === 'running' ? '进行中' : '—'); return `${s.done}/${s.total}` }
 function confClass(c?: number): string { const v = c || 0; if (v >= 0.9) return 'high'; if (v >= 0.75) return 'mid'; return 'low' }
 function relPct(r: FileRelation): number { return Math.round((r.similarity_score || 0) * 100) }
@@ -465,6 +502,63 @@ function highlightText(text: string, q: string): string {
   }
   return result
 }
+async function openBlobPath(path: string) {
+  const url = getApiUrl(path)
+  const response = await fetch(url, { headers: authHeaders() })
+  if (!response.ok) throw new Error(`接口返回 ${response.status}`)
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  window.open(objectUrl, '_blank', 'noopener')
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+}
+async function openSearchSource(item: SearchResult) {
+  if (!item.source_file_id) return
+  try {
+    await openBlobPath(`/files/preview/${item.source_file_id}`)
+  } catch (e: unknown) {
+    console.warn('[kb] open source failed:', e)
+  }
+}
+async function downloadSearchSource(item: SearchResult) {
+  if (!item.source_file_id) return
+  try {
+    await openBlobPath(`/files/download/${item.source_file_id}`)
+  } catch (e: unknown) {
+    console.warn('[kb] download source failed:', e)
+  }
+}
+async function copySearchReference(item: SearchResult) {
+  const payload = [
+    item.source_module || 'knowledge',
+    `document_id=${item.document_id}`,
+    `chunk_id=${item.chunk_id}`,
+    item.source_file_id ? `source_file_id=${item.source_file_id}` : '',
+    item.content_package_id ? `package_id=${item.content_package_id}` : '',
+    item.page ? `page=${item.page}` : '',
+  ].filter(Boolean).join(' | ')
+  try {
+    await navigator.clipboard.writeText(payload)
+  } catch (e: unknown) {
+    console.warn('[kb] copy reference failed:', e)
+  }
+}
+function showSearchMetadata(item: SearchResult) {
+  searchMetadataText.value = JSON.stringify({
+    source_module: item.source_module || 'knowledge',
+    file_id: item.file_id,
+    source_file_id: item.source_file_id,
+    document_id: item.document_id,
+    chunk_id: item.chunk_id,
+    package_id: item.content_package_id,
+    block_id: item.block_id,
+    page: item.page,
+    section: item.section,
+    paragraph: item.paragraph,
+    score: item.score,
+    source_file: item.source_file,
+    explain: item.explain,
+  }, null, 2)
+}
 async function jumpToSearchResult(item: SearchResult) {
   const doc = documents.value.find(d => d.id === item.document_id)
   if (!doc) return
@@ -473,6 +567,8 @@ async function jumpToSearchResult(item: SearchResult) {
 }
 
 async function loadFileTree() {
+  treeLoading.value = true
+  treeError.value = ''
   try {
     const [folders, docs] = await Promise.all([
       getFileTree(),
@@ -529,7 +625,12 @@ async function loadFileTree() {
 
     // ── 自动登记未入库的已支持格式文件（上传即分析零点击） ──
     await autoRegisterUnregistered()
-  } catch (e) { console.error('[kb] loadFileTree:', e) }
+  } catch (e: unknown) {
+    console.error('[kb] loadFileTree:', e)
+    treeError.value = '知识库文件树加载失败：' + String((e as Error).message || e)
+  } finally {
+    treeLoading.value = false
+  }
 }
 
 async function applyOpenPayload() {
@@ -706,7 +807,7 @@ async function openDocument(doc: KnowledgeDocument) {
   ])
   progress.value = progressResult
   ingestStatus.value = statusResult
-  fusions.value = []; profile.value = null; relations.value = []; searchResults.value = []; searched.value = false
+  fusions.value = []; profile.value = null; relations.value = []; resultLoadErrors.value = {}; searchResults.value = []; searched.value = false
   if (progress.value.overall_status === 'running') ensurePolling()
   if (hasResult.value) await loadResult(doc.id)
   if (pp) {
@@ -716,13 +817,20 @@ async function openDocument(doc: KnowledgeDocument) {
 }
 
 async function loadResult(docId: number) {
-  const [f, pf, rel] = await Promise.all([
-    getFusions(docId).then(r => r.items).catch(() => []),
-    getProfile(docId).catch(() => null),
-    getRelations(docId).catch(() => []),
+  const [f, pf, rel] = await Promise.allSettled([
+    getFusions(docId).then(r => r.items),
+    getProfile(docId),
+    getRelations(docId),
   ])
   if (active.value?.id !== docId) return
-  fusions.value = f; profile.value = pf; relations.value = rel
+  const errors: { fusions?: string; profile?: string; relations?: string } = {}
+  if (f.status === 'fulfilled') fusions.value = f.value
+  else { fusions.value = []; errors.fusions = '逐页内容加载失败：' + errorMessage(f.reason, '请求失败') }
+  if (pf.status === 'fulfilled') profile.value = pf.value
+  else { profile.value = null; errors.profile = '画像加载失败：' + errorMessage(pf.reason, '请求失败') }
+  if (rel.status === 'fulfilled') relations.value = rel.value
+  else { relations.value = []; errors.relations = '关联数据加载失败：' + errorMessage(rel.reason, '请求失败') }
+  resultLoadErrors.value = errors
 }
 
 async function startAnalyze() {
@@ -844,6 +952,7 @@ async function pollTick() {
 
 async function runSearch() {
   if (!query.value.trim()) return; searching.value = true
+  searchMetadataText.value = ''
   try {
     const data = await apiPost<{ results: SearchResult[] }>('/knowledge/search', { query: query.value, top_k: 10 })
     searchResults.value = data.results; searched.value = true
@@ -897,6 +1006,26 @@ watch(
 .running-hint:hover { background: #fdf0c8; border-color: #e0b84c; }
 
 .tree-wrap { flex: 1; min-height: 0; overflow: auto; }
+.tree-error {
+  margin: 6px 0;
+  padding: 10px;
+  border: 1px solid #f1b6ae;
+  border-radius: 8px;
+  background: #fff7f6;
+  color: #b42318;
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.tree-error button {
+  justify-self: start;
+  height: 28px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+}
 .tree-node { display: flex; align-items: center; gap: 4px; width: 100%; padding: 5px 6px; text-align: left; cursor: pointer; border: none; background: transparent; font-size: 12px; color: #46586b; border-radius: 6px; }
 .tree-node:hover { background: #f0f6fb; }
 .tree-node.active { background: #eaf6fb; color: #2395bc; font-weight: 600; }
@@ -974,6 +1103,15 @@ watch(
 .tabs button.active { color: #2395bc; font-weight: 700; box-shadow: inset 0 -2px 0 #2395bc; }
 
 .pane { flex: 1; min-height: 0; overflow: auto; }
+.pane-error {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #f1b6ae;
+  border-radius: 8px;
+  background: #fff7f6;
+  color: #b42318;
+  font-size: 13px;
+}
 
 .profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .pf-card { border: 1px solid #e3e9f2; border-radius: 12px; background: #fff; padding: 16px; }
@@ -1017,9 +1155,14 @@ watch(
 .search-input:focus { border-color: #2395bc; }
 .result-card { border: 1px solid #e3e9f2; border-radius: 10px; background: #fff; padding: 14px; margin-bottom: 10px; cursor: pointer; }
 .result-card:hover { border-color: #2395bc; }
-.result-head { display: flex; justify-content: space-between; font-size: 12px; color: #7c8da0; margin-bottom: 8px; }
+.result-head { display: flex; justify-content: space-between; font-size: 12px; color: #7c8da0; margin-bottom: 8px; gap: 10px; }
 .result-doc { font-weight: 600; color: #2395bc; }
+.result-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; color: #6b7b8c; font-size: 11px; }
+.result-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.result-actions button { height: 24px; padding: 0 8px; border: 1px solid #c8d6e3; border-radius: 6px; background: #fff; color: #365468; font-size: 11px; cursor: pointer; }
+.result-actions button:disabled { cursor: default; opacity: 0.45; }
 .result-card p { margin: 0; line-height: 1.7; color: #2a3a48; }
+.result-metadata { max-height: 220px; overflow: auto; margin: 0 0 10px; padding: 10px; border: 1px solid #d8e5ee; border-radius: 8px; background: #f7fafc; color: #2a3a48; font-size: 11px; white-space: pre-wrap; }
 .kw-highlight { background: #fef3c7; color: #92400e; padding: 0 2px; border-radius: 2px; }
 .search-hint { font-size: 12px; color: #8aa0b5; margin-bottom: 12px; }
 

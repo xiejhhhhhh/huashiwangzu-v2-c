@@ -89,6 +89,15 @@ def _extract_knowledge_refs(result: dict) -> list[dict]:
             "type": "knowledge",
             "title": title,
             "source": doc_name or "知识库",
+            "source_module": "knowledge",
+            "file_id": r_item.get("file_id"),
+            "source_file_id": r_item.get("source_file_id"),
+            "document_id": r_item.get("document_id"),
+            "chunk_id": r_item.get("chunk_id"),
+            "package_id": r_item.get("content_package_id") or r_item.get("package_id"),
+            "page": page,
+            "section": r_item.get("section"),
+            "score": r_item.get("score"),
             "excerpt": excerpt,
         })
     return refs
@@ -145,7 +154,7 @@ def artifact_refs_from_value(value: object, limit: int = 40) -> list[dict]:
     refs: list[dict] = []
     seen: set[str] = set()
 
-    def add_ref(key: str, raw_value: object) -> None:
+    def add_ref(key: str, raw_value: object, context: dict | None = None) -> None:
         if len(refs) >= limit:
             return
         if raw_value is None or isinstance(raw_value, (dict, list, tuple, set)):
@@ -167,6 +176,30 @@ def artifact_refs_from_value(value: object, limit: int = 40) -> list[dict]:
             "ref_key": key,
             "ref_id": ref_id,
         }
+        if isinstance(context, dict):
+            for context_key in (
+                "source_module",
+                "file_id",
+                "source_file_id",
+                "document_id",
+                "chunk_id",
+                "package_id",
+                "artifact_id",
+                "page",
+                "section",
+                "score",
+                "download_url",
+                "open_url",
+            ):
+                context_value = context.get(context_key)
+                if context_value is not None and context_key not in item:
+                    item[context_key] = context_value
+            snippet = context.get("snippet") or context.get("excerpt") or context.get("text")
+            if snippet:
+                item["excerpt"] = str(snippet)[:240]
+            title = context.get("title") or context.get("document_name") or context.get("source_file")
+            if title:
+                item["title"] = str(title)
         item[key] = raw_value
         refs.append(item)
 
@@ -177,7 +210,7 @@ def artifact_refs_from_value(value: object, limit: int = 40) -> list[dict]:
             for raw_key, child in node.items():
                 key = str(raw_key)
                 if key in _ARTIFACT_REF_LABELS:
-                    add_ref(key, child)
+                    add_ref(key, child, node)
                 walk(child, depth + 1)
         elif isinstance(node, (list, tuple, set)):
             for child in list(node)[:50]:

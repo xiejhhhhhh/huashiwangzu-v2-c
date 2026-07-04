@@ -115,3 +115,23 @@ codemap:report_inaccuracy {
 }
 codemap:list_feedback {"path":"modules/codemap/README.md"}
 ```
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `codemap`, window `background-service`, formats: Not format-bound. |
+| Backend capability | PASS | 13 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
+| File access | SKIP | Module does not directly consume framework file_id content. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/codemap/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `codemap:<action>` and release smoke/capability drift gates. |
+| Known debt | DEBT | Keep component_key empty so the launcher never opens a blank background window. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/codemap/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module codemap --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

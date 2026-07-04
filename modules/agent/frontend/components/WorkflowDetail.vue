@@ -8,8 +8,13 @@
           <h3>{{ currentWorkflow.title }}</h3>
           <p>{{ currentWorkflow.progress_summary || '暂无进度摘要' }}</p>
         </div>
-        <WorkflowStatusBadge :status="currentWorkflow.status" />
+        <div class="workflow-detail__actions">
+          <WorkflowStatusBadge :status="currentWorkflow.status" />
+          <button type="button" @click="copyWorkflowId">复制ID</button>
+          <button type="button" :disabled="!primaryError" @click="copyPrimaryError">复制错误</button>
+        </div>
       </header>
+      <p v-if="copyMessage" class="workflow-detail__hint">{{ copyMessage }}</p>
 
       <div class="workflow-detail__summary-grid">
         <div>
@@ -269,6 +274,20 @@ const workflowNeedsConfirmation = computed(() => {
 })
 const artifactSummaryItems = computed(() => formatArtifactSummary(currentWorkflow.value?.artifact_summary))
 const queueTaskSummary = computed(() => formatJsonSummary(currentWorkflow.value?.queue_task_ids))
+const copyMessage = ref('')
+const primaryError = computed(() => {
+  for (const item of multiAgentSummary.value) {
+    if (item.failure_reason) return item.failure_reason
+  }
+  for (const item of failures.value) {
+    if (item.handoff_note || item.error_signature) return item.handoff_note || item.error_signature || ''
+  }
+  for (const item of verifications.value) {
+    if (item.status === 'fail' && item.summary) return item.summary
+  }
+  const summary = currentWorkflow.value?.progress_summary
+  return currentWorkflow.value?.status === 'failed' && summary ? summary : ''
+})
 
 watch(() => props.runId, () => {
   ledgerOpen.value = false
@@ -484,6 +503,25 @@ function readableError(error: unknown): string {
   }
   return message || '加载失败'
 }
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copyMessage.value = `已复制 ${text.length > 36 ? `${text.slice(0, 34)}...` : text}`
+    window.setTimeout(() => { copyMessage.value = '' }, 1800)
+  } catch {
+    copyMessage.value = '复制失败'
+  }
+}
+
+function copyWorkflowId() {
+  const id = currentWorkflow.value?.id
+  if (id !== undefined) void copyText(String(id))
+}
+
+function copyPrimaryError() {
+  if (primaryError.value) void copyText(primaryError.value)
+}
 </script>
 
 <style scoped>
@@ -504,6 +542,37 @@ function readableError(error: unknown): string {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--ag-space-lg);
+}
+.workflow-detail__actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--ag-space-xs);
+}
+.workflow-detail__actions button {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--ag-border-base);
+  border-radius: var(--ag-radius-sm);
+  background: var(--ag-bg-base);
+  color: var(--ag-text-secondary);
+  cursor: pointer;
+  font-size: var(--ag-font-size-xs);
+}
+.workflow-detail__actions button:hover:not(:disabled) {
+  border-color: var(--ag-primary);
+  color: var(--ag-primary);
+}
+.workflow-detail__actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.workflow-detail__hint {
+  margin: calc(var(--ag-space-sm) * -1) 0 0;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-font-size-xs);
 }
 .workflow-detail__title-block { min-width: 0; }
 .workflow-detail__title-block h3 {

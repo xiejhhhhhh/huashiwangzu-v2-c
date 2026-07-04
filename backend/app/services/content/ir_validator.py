@@ -75,7 +75,7 @@ def _validate_schema(ir: dict[str, Any], errors: list[IRValidationError]) -> Non
         ))
         return
 
-    # resources must be list if present
+    # resources/assets/warnings/quality must keep the canonical reference shape.
     resources = ir.get("resources")
     if resources is not None and not isinstance(resources, list):
         errors.append(IRValidationError(
@@ -85,12 +85,42 @@ def _validate_schema(ir: dict[str, Any], errors: list[IRValidationError]) -> Non
             expected="array",
             actual=type(resources).__name__,
         ))
+    assets = ir.get("assets")
+    if assets is not None and not isinstance(assets, list):
+        errors.append(IRValidationError(
+            path="assets",
+            code="invalid_type",
+            message="assets must be an array",
+            expected="array",
+            actual=type(assets).__name__,
+        ))
+    warnings = ir.get("warnings")
+    if warnings is not None and not isinstance(warnings, list):
+        errors.append(IRValidationError(
+            path="warnings",
+            code="invalid_type",
+            message="warnings must be an array",
+            expected="array",
+            actual=type(warnings).__name__,
+        ))
+    quality = ir.get("quality")
+    if quality is not None and not isinstance(quality, dict):
+        errors.append(IRValidationError(
+            path="quality",
+            code="invalid_type",
+            message="quality must be an object",
+            expected="object",
+            actual=type(quality).__name__,
+        ))
 
     # Validate block types recursively
     if isinstance(blocks, list):
+        resource_items = resources if isinstance(resources, list) else assets
         resource_ids: set[str | int] = set()
-        if isinstance(resources, list):
-            for r in resources:
+        if isinstance(resource_items, list):
+            for r in resource_items:
+                if not isinstance(r, dict):
+                    continue
                 rid = r.get("id")
                 if rid is not None:
                     if rid in resource_ids:
@@ -154,7 +184,7 @@ def _validate_profile(
         return
 
     blocks = ir.get("blocks", [])
-    resources = ir.get("resources", [])
+    resources = ir.get("resources", ir.get("assets", []))
 
     # Image must have image block or resource
     if content_type == "image":

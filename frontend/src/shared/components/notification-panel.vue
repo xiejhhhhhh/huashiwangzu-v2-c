@@ -33,15 +33,36 @@
             {{ issue.backendMessage }}
           </span>
         </div>
-        <button
-          class="feedback-load-retry"
-          type="button"
-          :aria-label="`重试${issue.label}`"
-          @click="emit('retry-load', issue.source)"
-        >
-          <el-icon :size="14"><Refresh /></el-icon>
-          <span>重试</span>
-        </button>
+        <div class="feedback-load-actions">
+          <button
+            class="feedback-load-retry"
+            type="button"
+            :aria-label="`复制${issue.label}错误`"
+            @click="copyLoadIssue(issue)"
+          >
+            <el-icon :size="14"><CopyDocument /></el-icon>
+            <span>复制</span>
+          </button>
+          <button
+            v-if="issue.sourceTarget"
+            class="feedback-load-retry"
+            type="button"
+            :aria-label="`打开${issue.label}来源`"
+            @click="emit('open-load-source', issue)"
+          >
+            <el-icon :size="14"><Position /></el-icon>
+            <span>来源</span>
+          </button>
+          <button
+            class="feedback-load-retry"
+            type="button"
+            :aria-label="`重试${issue.label}`"
+            @click="emit('retry-load', issue.source)"
+          >
+            <el-icon :size="14"><Refresh /></el-icon>
+            <span>重试</span>
+          </button>
+        </div>
       </div>
       <button v-if="loadIssues.length > 1" class="feedback-load-retry all" type="button" @click="emit('retry-load')">
         <el-icon :size="14"><Refresh /></el-icon>
@@ -184,7 +205,8 @@ import type {
   TaskDebtSummary,
 } from '@/shared/composables/use-notifications'
 import { computed } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { CopyDocument, Position, Refresh } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps<{
  show: boolean
@@ -204,6 +226,7 @@ const emit = defineEmits<{
   'action-secondary': [item: ActionItem, actionId: string]
   'open-agent': []
   'retry-load': [source?: NotificationLoadSource]
+  'open-load-source': [issue: NotificationLoadIssue]
 }>()
 
 function tagType(type: string) {
@@ -363,6 +386,15 @@ function handleMarkRead(id: number) {
 
 function handleMarkAllRead() {
   emit('mark-all-read')
+}
+
+async function copyLoadIssue(issue: NotificationLoadIssue) {
+  try {
+    await navigator.clipboard.writeText(issue.copyText)
+    ElMessage.success('错误信息已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动选择错误信息')
+  }
 }
 </script>
 
@@ -553,6 +585,15 @@ function handleMarkAllRead() {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.74);
   color: #991b1b;
+}
+
+.feedback-load-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .feedback-load-row-stale {

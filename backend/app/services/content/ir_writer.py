@@ -61,7 +61,7 @@ async def write_ir(
             details=[e.model_dump() for e in validation.errors],
         )
 
-    source_file_id = _normalize_source_file_id(source_file_id)
+    source_file_id = _normalize_source_file_id(source_file_id or content_ir.get("source_file_id"))
     if source_file_id is not None:
         source_file = await _check_source_file_write_access(
             db,
@@ -178,6 +178,8 @@ async def _write_to_content_package(
     manifest_dict = {
         "title": ir.get("title", ""),
         "source_file_id": source_file_id,
+        "source_module": ir.get("source_module", ""),
+        "parser": ir.get("parser", ""),
         "package_type": ir.get("content_type", ""),
         "schema_version": ir.get("schema_version", "1.0"),
         "locale": ir.get("locale", "zh-CN"),
@@ -191,6 +193,11 @@ async def _write_to_content_package(
         content_json["metadata"] = metadata
     if resources_for_json:
         content_json["resources"] = resources_for_json
+        content_json["assets"] = resources_for_json
+    if ir.get("warnings"):
+        content_json["warnings"] = ir.get("warnings")
+    if ir.get("quality"):
+        content_json["quality"] = ir.get("quality")
 
     content_json_str = json.dumps(
         content_json,

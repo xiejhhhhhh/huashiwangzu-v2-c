@@ -55,7 +55,7 @@ interface AgentWorkflowListResponse {
   total: number
 }
 
-export type ActionItemSourceType = 'notification' | 'task' | 'agent_workflow' | 'knowledge_document' | 'knowledge_governance'
+export type ActionItemSourceType = 'notification' | 'model_fallback' | 'task' | 'agent_workflow' | 'knowledge_document' | 'knowledge_governance'
 export type ActionItemSeverity = 'info' | 'warning' | 'error' | 'success'
 
 export interface ActionTarget {
@@ -85,6 +85,17 @@ export interface ActionItem {
   can_archive: boolean
   created_at?: string | null
   updated_at?: string | null
+}
+
+interface ModelFallbackNotice {
+  primaryModel: string
+  fallbackModel: string
+  primaryFailed: boolean
+  fallbackUsed: boolean
+  finalSuccess: boolean
+  failureCategory: string
+  failureCode?: string
+  reason: string
 }
 
 interface KnowledgeDashboardStats {
@@ -119,6 +130,8 @@ export interface NotificationLoadIssue {
   status: 'error' | 'stale'
   message: string
   backendMessage?: string
+  copyText: string
+  sourceTarget?: ActionTarget
 }
 
 export function useNotifications(containerSelector = '.taskbar-notifications-wrapper') {
@@ -199,6 +212,24 @@ export function useNotifications(containerSelector = '.taskbar-notifications-wra
     const items: ActionItem[] = []
 
     for (const notification of notificationList.value.filter((item) => !item.is_read).slice(0, 5)) {
+      const modelFallback = modelFallbackFromNotification(notification)
+      if (modelFallback) {
+        items.push({
+          id: `model_fallback:${notification.id}`,
+          source_type: 'model_fallback',
+          source_id: String(notification.id),
+          title: modelFallback.finalSuccess ? '模型已降级但任务继续完成' : '模型降级失败需要处理',
+          description: modelFallbackDescription(modelFallback),
+          severity: modelFallback.finalSuccess ? 'warning' : 'error',
+          visible_status: modelFallback.finalSuccess ? '已降级' : '失败',
+          secondary_actions: [{ id: 'archive', label: '本次忽略', kind: 'archive' }],
+          can_retry: !modelFallback.finalSuccess,
+          can_archive: true,
+          created_at: notification.published_at,
+          updated_at: notification.published_at,
+        })
+        continue
+      }
       items.push({
         id: `notification:${notification.id}`,
         source_type: 'notification',
@@ -390,9 +421,13 @@ export function useNotifications(containerSelector = '.taskbar-notifications-wra
   }
 
   async function loadKnowledgeSignals() {
-    await loadWithState(knowledgeStatsLoadState, async () => (
-      await api.get<unknown, KnowledgeDashboardStats>('/knowledge/dashboard/stats')
-    ), (stats) => { knowledgeStats.value = stats }, '知识库状态加载失败')
+    await loadWithState(knowledgeStatsLoadState, async () => {
+      const stats = await api.get<unknown, KnowledgeDashboardStats>('/knowledge/dashboard/stats')
+      return {
+        ...stats,
+        stuck_documents: Array.isArray(stats.stuck_documents) ? stats.stuck_documents : [],
+      }
+    }, (stats) => { knowledgeStats.value = stats }, '知识库状态加载失败')
     await loadWithState(knowledgePendingLoadState, async () => {
       const pending = await api.get<unknown, KnowledgePendingCount>('/knowledge/governance/pending-count')
       return pending.pending_count
@@ -474,12 +509,23 @@ export function useNotifications(containerSelector = '.taskbar-notifications-wra
   function issueFromState<T>(source: NotificationLoadSource, state: LoadState<T>): NotificationLoadIssue | null {
     if (state.status !== 'error' && state.status !== 'stale') return null
     if (!state.error) return null
+    const label = loadStateLabels[source]
+    const statusLabel = state.status === 'stale' ? '可能不是最新' : '加载失败'
+    const backendMessage = state.error.backendMessage
     return {
       source,
-      label: loadStateLabels[source],
+      label,
       status: state.status,
       message: state.error.userMessage,
-      backendMessage: state.error.backendMessage,
+      backendMessage,
+      copyText: [
+        `${label}${statusLabel}`,
+        `用户提示：${state.error.userMessage}`,
+        backendMessage ? `后端摘要：${backendMessage}` : '',
+        state.error.code ? `错误码：${state.error.code}` : '',
+        state.error.httpStatus !== undefined ? `HTTP：${state.error.httpStatus}` : '',
+      ].filter(Boolean).join('\n'),
+      sourceTarget: loadIssueTarget(source),
     }
   }
 
@@ -512,6 +558,13 @@ export function useNotifications(containerSelector = '.taskbar-notifications-wra
   }
 }
 
+function loadIssueTarget(source: NotificationLoadSource): ActionTarget | undefined {
+  if (source === 'agentWorkflows') return { app_key: 'agent', payload: { view: 'workflows' } }
+  if (source === 'knowledgeStats') return { app_key: 'knowledge', payload: { view: 'dashboard' } }
+  if (source === 'knowledgeGovernance') return { app_key: 'knowledge', payload: { view: 'dashboard', showGovernance: true } }
+  return undefined
+}
+
 async function loadWithState<T>(
   state: Ref<LoadState<T>>,
   loader: () => Promise<T>,
@@ -534,6 +587,101 @@ function notificationSeverity(type: string): ActionItemSeverity {
   if (value.includes('warning') || value.includes('维护')) return 'warning'
   if (value.includes('success')) return 'success'
   return 'info'
+}
+
+function modelFallbackDescription(notice: ModelFallbackNotice): string {
+  const fallbackText = notice.fallbackUsed ? `已切到 ${notice.fallbackModel}` : '未使用 fallback'
+  const finalText = notice.finalSuccess ? '最终成功' : '最终失败'
+  const categoryText = notice.failureCategory ? `，原因 ${notice.failureCategory}` : ''
+  return `主模型 ${notice.primaryModel} ${notice.primaryFailed ? '失败' : '异常'}，${fallbackText}，${finalText}${categoryText}。${notice.reason}`
+}
+
+function modelFallbackFromNotification(notification: NotificationItem): ModelFallbackNotice | null {
+  const direct = normalizeModelFallbackNotice(recordField(notification, 'model_fallback'))
+  if (direct) return direct
+
+  const content = stringField(notification, 'content')
+  const parsedContent = parseJsonObject(content)
+  const fromContent = normalizeModelFallbackNotice(recordField(parsedContent, 'model_fallback') ?? parsedContent)
+  if (fromContent) return fromContent
+
+  const haystack = `${notification.title} ${notification.notification_type} ${content}`.toLowerCase()
+  const mentionsModel = haystack.includes('model') || haystack.includes('模型') || haystack.includes('vlm') || haystack.includes('qwen') || haystack.includes('mimo')
+  const mentionsFallback = haystack.includes('fallback') || haystack.includes('降级') || haystack.includes('degraded')
+  if (!mentionsModel || !mentionsFallback) return null
+  return {
+    primaryModel: 'primary',
+    fallbackModel: haystack.includes('local') || haystack.includes('本地') ? 'local_analysis' : 'fallback',
+    primaryFailed: true,
+    fallbackUsed: true,
+    finalSuccess: !haystack.includes('最终失败') && !haystack.includes('final failed'),
+    failureCategory: haystack.includes('401') || haystack.includes('auth') ? 'auth_config_debt'
+      : haystack.includes('context') || haystack.includes('上下文') ? 'context_too_large'
+        : 'model_unavailable',
+    reason: content.slice(0, 160),
+  }
+}
+
+function normalizeModelFallbackNotice(value: unknown): ModelFallbackNotice | null {
+  if (!isRecord(value)) return null
+  const primaryModel = stringField(value, 'primary_model') || stringField(value, 'primaryModel') || 'primary'
+  const fallbackModel = stringField(value, 'fallback_model') || stringField(value, 'fallbackModel') || 'fallback'
+  const primaryFailed = booleanField(value, 'primary_failed') ?? booleanField(value, 'primaryFailed') ?? true
+  const fallbackUsed = booleanField(value, 'fallback_used') ?? booleanField(value, 'fallbackUsed') ?? false
+  const finalSuccess = booleanField(value, 'final_success') ?? booleanField(value, 'finalSuccess') ?? false
+  const failureCategory = stringField(value, 'failure_category') || stringField(value, 'failureCategory') || ''
+  const failureCode = stringField(value, 'failure_code') || stringField(value, 'failureCode')
+  const reason = stringField(value, 'summary') || stringField(value, 'reason') || stringField(value, 'message') || ''
+  if (!primaryFailed && !fallbackUsed && !failureCategory) return null
+  return {
+    primaryModel,
+    fallbackModel,
+    primaryFailed,
+    fallbackUsed,
+    finalSuccess,
+    failureCategory,
+    failureCode,
+    reason,
+  }
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  const text = value.trim()
+  if (!text) return null
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    const parsed: unknown = JSON.parse(text.slice(start, end + 1))
+    return isRecord(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function recordField(record: Record<string, unknown> | NotificationItem | null, key: string): Record<string, unknown> | null {
+  if (!record) return null
+  const value = record[key]
+  return isRecord(value) ? value : null
+}
+
+function stringField(record: Record<string, unknown> | NotificationItem, key: string): string {
+  const value = record[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function booleanField(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key]
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    if (['true', '1', 'yes'].includes(value.toLowerCase())) return true
+    if (['false', '0', 'no'].includes(value.toLowerCase())) return false
+  }
+  return undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function taskProblemCount(summary: TaskDebtSummary): number {

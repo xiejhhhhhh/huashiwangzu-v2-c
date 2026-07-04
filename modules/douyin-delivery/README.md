@@ -122,3 +122,24 @@ douyin-delivery:cleanup_marked_data
 - 前端：Vue3 + Element Plus + TypeScript
 - AI：模型网关 `gateway.service.chat`（profile: deepseek-v4-flash）
 - 知识库：`call_capability("knowledge", "search")`
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `douyin-delivery`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 6 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | SKIP | Module does not directly consume framework file_id content. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/douyin-delivery/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `douyin-delivery:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/douyin-delivery/sandbox/test_module.py
+cd modules/douyin-delivery/sandbox && npm run build
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module douyin-delivery --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.core.exceptions import PermissionDenied
 from app.database import AsyncSessionLocal
 from app.models.user import User
 from app.services.file_reader import resolve_caller_user_id
@@ -9,6 +10,7 @@ from app.services.module_registry import register_capability
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..init_db import run_init
+from ..services import workflow_seed_service as seed_svc
 from ..services import workflow_service as svc
 
 
@@ -55,10 +57,66 @@ async def _cap_list_workflows(params: dict, caller: str) -> dict:
             user_id=owner_id,
             is_admin=is_admin,
             status=params.get("status"),
-            limit=int(params.get("limit", 50)),
+            limit=int(params.get("limit", 50)) if not any(
+                params.get(key) is not None
+                for key in ("has_failures", "has_artifacts", "has_references")
+            ) else 200,
         )
         serializer = svc.workflow_to_admin_dict if is_admin else svc.workflow_to_summary
-        return {"items": [serializer(run) for run in runs], "total": len(runs)}
+        counts = await svc.get_workflow_rollup_counts(
+            db,
+            [run.id for run in runs],
+            include_hidden_artifacts=is_admin,
+        )
+        limit = max(1, min(int(params.get("limit", 50)), 200))
+        items = []
+        for run in runs:
+            item = serializer(run)
+            item.update(counts.get(run.id, {}))
+            if params.get("has_failures") is not None and bool(item.get("failure_count")) != bool(params["has_failures"]):
+                continue
+            if params.get("has_artifacts") is not None and bool(item.get("artifact_count")) != bool(params["has_artifacts"]):
+                continue
+            if params.get("has_references") is not None and bool(item.get("reference_count")) != bool(params["has_references"]):
+                continue
+            items.append(item)
+            if len(items) >= limit:
+                break
+        return {"items": items, "total": len(items)}
+
+
+async def _cap_get_workflow_governance_summary(params: dict, caller: str) -> dict:
+    async with AsyncSessionLocal() as db:
+        await run_init(db)
+        owner_id, is_admin = await _caller_context(db, caller)
+        return await svc.get_workflow_governance_summary(db, owner_id=owner_id, is_admin=is_admin)
+
+
+async def _cap_seed_demo_workflows(params: dict, caller: str) -> dict:
+    async with AsyncSessionLocal() as db:
+        await run_init(db)
+        caller_id, is_admin = await _caller_context(db, caller)
+        if not is_admin:
+            raise PermissionDenied("Only admin can seed workflow demo data")
+        return await seed_svc.seed_demo_workflows(
+            db,
+            owner_id=int(params.get("owner_id") or caller_id),
+            creator_id=caller_id,
+            marker=params.get("marker") or seed_svc.DEFAULT_DEMO_MARKER,
+            cleanup_existing=bool(params.get("cleanup_existing", True)),
+        )
+
+
+async def _cap_cleanup_demo_workflows(params: dict, caller: str) -> dict:
+    async with AsyncSessionLocal() as db:
+        await run_init(db)
+        _caller_id, is_admin = await _caller_context(db, caller)
+        if not is_admin:
+            raise PermissionDenied("Only admin can cleanup workflow demo data")
+        return await seed_svc.cleanup_demo_workflows(
+            db,
+            marker=params.get("marker") or seed_svc.DEFAULT_DEMO_MARKER,
+        )
 
 
 async def _cap_list_workflow_steps(params: dict, caller: str) -> dict:
@@ -257,10 +315,44 @@ capabilities = [
         {
             "owner_id": {"type": "integer"},
             "status": {"type": "string"},
+            "has_failures": {"type": "boolean"},
+            "has_artifacts": {"type": "boolean"},
+            "has_references": {"type": "boolean"},
             "limit": {"type": "integer"},
             "offset": {"type": "integer"},
         },
         "viewer",
+    ),
+    (
+        "agent",
+        "get_workflow_governance_summary",
+        _cap_get_workflow_governance_summary,
+        "汇总 Agent workflow 治理面板统计",
+        "workflow治理统计",
+        {},
+        "viewer",
+    ),
+    (
+        "agent",
+        "seed_demo_workflows",
+        _cap_seed_demo_workflows,
+        "创建可清理的 Agent workflow demo 数据",
+        "创建workflow演示数据",
+        {
+            "marker": {"type": "string"},
+            "owner_id": {"type": "integer"},
+            "cleanup_existing": {"type": "boolean"},
+        },
+        "admin",
+    ),
+    (
+        "agent",
+        "cleanup_demo_workflows",
+        _cap_cleanup_demo_workflows,
+        "清理 Agent workflow demo 数据",
+        "清理workflow演示数据",
+        {"marker": {"type": "string"}},
+        "admin",
     ),
     (
         "agent",

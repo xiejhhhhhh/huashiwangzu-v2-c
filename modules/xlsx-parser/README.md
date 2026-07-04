@@ -52,3 +52,24 @@ curl -X POST http://127.0.0.1:33000/api/xlsx-parser/parse \
 cd modules/xlsx-parser/sandbox
 ../../../backend/.venv/bin/python test_module.py
 ```
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `xlsx-parser`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/xlsx-parser/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `xlsx-parser:<action>` and release smoke/capability drift gates. |
+| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/xlsx-parser/sandbox/test_module.py
+cd modules/xlsx-parser/sandbox && npm run build
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module xlsx-parser --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

@@ -15,14 +15,27 @@ import sys
 import time
 import zlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+try:
+    from dev_toolkit.asset_lifecycle_tools import (
+        CONFIRM_CLEAN_TEST_DATA,
+        cleanup_test_data_pollution,
+    )
+except ModuleNotFoundError:
+    from asset_lifecycle_tools import (
+        CONFIRM_CLEAN_TEST_DATA,
+        cleanup_test_data_pollution,
+    )
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
 BACKEND_BASE = "http://127.0.0.1:33000"
 FRONTEND_BASE = "http://localhost:5173"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 ACCOUNTS = {
     "admin": {"username": "何焜华", "password": "123rgE123", "user_id": 4},
@@ -32,6 +45,7 @@ ACCOUNTS = {
 
 TS = int(time.time() * 1000)
 results: list[dict[str, Any]] = []
+model_fallback_observations: list[dict[str, Any]] = []
 _pending_deletions: list[int] = []  # 延后到所有测试结束后统一删除，避免异步 kb_pipeline 争抢
 _TOKEN_CACHE: dict[str, str] = {}
 
@@ -265,6 +279,190 @@ def _cap_payload(r: dict) -> Any:
     return payload
 
 
+def _relative_artifact_path(path_value: str) -> str:
+    path = Path(path_value)
+    if not path.is_absolute():
+        return path_value
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _collect_playwright_failures(suite: dict[str, Any], parents: list[str] | None = None) -> list[dict[str, Any]]:
+    parents = parents or []
+    title = str(suite.get("title") or "").strip()
+    next_parents = [*parents, title] if title else parents
+    failures: list[dict[str, Any]] = []
+    for spec in suite.get("specs", []) or []:
+        if not isinstance(spec, dict):
+            continue
+        spec_title = str(spec.get("title") or "").strip()
+        for test in spec.get("tests", []) or []:
+            if not isinstance(test, dict):
+                continue
+            results_for_test = [r for r in (test.get("results") or []) if isinstance(r, dict)]
+            last_result = results_for_test[-1] if results_for_test else {}
+            status = str(test.get("status") or last_result.get("status") or "")
+            if status not in {"failed", "timedOut", "interrupted", "unexpected"}:
+                continue
+            attachments = []
+            for result_item in results_for_test:
+                for attachment in result_item.get("attachments", []) or []:
+                    if isinstance(attachment, dict) and attachment.get("path"):
+                        attachments.append(_relative_artifact_path(str(attachment["path"])))
+            error = last_result.get("error") if isinstance(last_result.get("error"), dict) else {}
+            message = str(error.get("message") or last_result.get("error") or "")[:500]
+            failures.append({
+                "title": " › ".join([*next_parents, spec_title]).strip(" ›"),
+                "status": status,
+                "message": message,
+                "artifacts": attachments[:6],
+            })
+    for child in suite.get("suites", []) or []:
+        if isinstance(child, dict):
+            failures.extend(_collect_playwright_failures(child, next_parents))
+    return failures
+
+
+def _parse_playwright_json(output: str, returncode: int, elapsed: float) -> dict[str, Any]:
+    json_text = output.strip()
+    if not json_text.startswith("{"):
+        start = json_text.find("{")
+        end = json_text.rfind("}")
+        if start >= 0 and end > start:
+            json_text = json_text[start:end + 1]
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError:
+        return _parse_playwright_text(output, returncode, elapsed)
+
+    stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+    passed = int(stats.get("expected") or 0)
+    failed = int(stats.get("unexpected") or 0)
+    skipped = int(stats.get("skipped") or 0)
+    flaky = int(stats.get("flaky") or 0)
+    failures: list[dict[str, Any]] = []
+    for suite in payload.get("suites", []) or []:
+        if isinstance(suite, dict):
+            failures.extend(_collect_playwright_failures(suite))
+    artifact_paths: list[str] = []
+    for failure in failures:
+        for artifact in failure.get("artifacts", []) or []:
+            if artifact not in artifact_paths:
+                artifact_paths.append(str(artifact))
+    test_results_dir = REPO_ROOT / "frontend" / "test-results"
+    if test_results_dir.exists():
+        artifact_paths.append("frontend/test-results")
+    status = "pass" if returncode == 0 and failed == 0 else "fail"
+    return {
+        "status": status,
+        "returncode": returncode,
+        "duration_seconds": round(elapsed, 3),
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "flaky": flaky,
+        "failed_tests": failures[:10],
+        "artifact_paths": artifact_paths[:20],
+        "reporter": "json",
+    }
+
+
+def _parse_playwright_text(output: str, returncode: int, elapsed: float) -> dict[str, Any]:
+    passed_match = re.search(r"(\d+)\s*passed", output)
+    failed_match = re.search(r"(\d+)\s*failed", output)
+    skipped_match = re.search(r"(\d+)\s*(?:skipped|did not run)", output)
+    fail_lines = [
+        line.strip()
+        for line in output.splitlines()
+        if "FAIL" in line or "failed" in line.lower() or "✘" in line
+    ]
+    return {
+        "status": "pass" if returncode == 0 else "fail",
+        "returncode": returncode,
+        "duration_seconds": round(elapsed, 3),
+        "passed": int(passed_match.group(1)) if passed_match else 0,
+        "failed": int(failed_match.group(1)) if failed_match else (1 if returncode != 0 else 0),
+        "skipped": int(skipped_match.group(1)) if skipped_match else 0,
+        "flaky": 0,
+        "failed_tests": [{"title": line, "status": "failed", "message": ""} for line in fail_lines[-10:]],
+        "artifact_paths": ["frontend/test-results"] if (REPO_ROOT / "frontend" / "test-results").exists() else [],
+        "reporter": "text_fallback",
+    }
+
+
+def _classify_model_fallback_reason(warnings: list[str]) -> dict[str, Any]:
+    text = "\n".join(warnings).lower()
+    if any(token in text for token in ("401", "unauthorized", "forbidden", "api key", "apikey", "auth")):
+        return {
+            "category": "auth_config_debt",
+            "retryable": False,
+            "summary": "primary vision model auth/config failed; local fallback used",
+        }
+    if any(token in text for token in ("context", "too many tokens", "maximum", "request too large", "413")):
+        return {
+            "category": "context_too_large",
+            "retryable": False,
+            "summary": "vision payload exceeded context; compressed/local fallback used",
+        }
+    if "not configured" in text or "missing" in text:
+        return {
+            "category": "not_configured",
+            "retryable": False,
+            "summary": "vision model is not configured; local fallback used",
+        }
+    return {
+        "category": "model_unavailable",
+        "retryable": True,
+        "summary": "vision model unavailable; local fallback used",
+    }
+
+
+def _record_model_fallback(source: str, payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    strategy = payload.get("analysis_strategy") if isinstance(payload.get("analysis_strategy"), dict) else {}
+    warnings = [str(item) for item in payload.get("warnings", []) if item]
+    attempted = bool(strategy.get("vlm_attempted"))
+    used = bool(strategy.get("vlm_used"))
+    degraded = bool(strategy.get("degraded")) or (attempted and not used)
+    if not attempted and not degraded:
+        return None
+    reason = _classify_model_fallback_reason(warnings)
+    observation = {
+        "source": source,
+        "primary_model": str(strategy.get("primary_model") or "vision.primary"),
+        "primary_failed": attempted and not used,
+        "fallback_used": degraded,
+        "fallback_model": "local_analysis",
+        "final_success": bool(payload.get("description")),
+        "failure_category": reason["category"] if degraded else "",
+        "retryable": reason["retryable"],
+        "summary": reason["summary"] if degraded else "vision model succeeded",
+        "warnings": warnings[:5],
+    }
+    model_fallback_observations.append(observation)
+    return observation
+
+
+def _build_model_fallback_summary() -> dict[str, Any]:
+    blockers = [item for item in model_fallback_observations if not item.get("final_success")]
+    debts = [item for item in model_fallback_observations if item.get("fallback_used") and item.get("final_success")]
+    if blockers:
+        status = "BLOCKER"
+    elif debts:
+        status = "DEBT"
+    else:
+        status = "PASS"
+    return {
+        "status": status,
+        "observations": model_fallback_observations,
+        "fallback_used_count": len(debts),
+        "blocker_count": len(blockers),
+    }
+
+
 def _load_backend_env(backend_dir: str) -> None:
     env_path = os.path.join(backend_dir, ".env")
     if not os.path.exists(env_path):
@@ -301,6 +499,15 @@ async def _cleanup_scheduler_smoke_task(title: str) -> int:
         await db.commit()
         return int(result.rowcount or 0)
 
+def _cleanup_test_data_pollution() -> dict[str, Any]:
+    return cleanup_test_data_pollution(
+        REPO_ROOT,
+        dry_run=False,
+        limit=500,
+        confirm=CONFIRM_CLEAN_TEST_DATA,
+        reason=f"smoke_all:{TS}",
+    )
+
 def _make_png() -> bytes:
     """Minimal 2×2 red PNG."""
     width, height = 2, 2
@@ -330,22 +537,28 @@ async def call_capability(module: str, action: str, params: dict | None = None, 
 def add_result(scenario: str, passed: bool, notes: str = "", status: str | None = None) -> None:
     result_status = status or ("PASS" if passed else "FAIL")
     results.append({"scenario": scenario, "passed": passed, "status": result_status, "notes": notes})
-    marker = {"PASS": "G", "FAIL": "R", "SKIPPED": "S"}.get(result_status, "?")
+    marker = {"PASS": "G", "FAIL": "R", "SKIPPED": "S", "DEBT": "D"}.get(result_status, "?")
     print(f"  [{marker}] {scenario}: {notes[:120]}")
 
 
 def _build_summary() -> dict[str, Any]:
     total = len(results)
     skipped = sum(1 for r in results if r.get("status") == "SKIPPED")
+    debt = sum(1 for r in results if r.get("status") == "DEBT")
     failed = sum(1 for r in results if r.get("status") == "FAIL" or not r.get("passed"))
-    passed = total - skipped - failed
-    verdict = "FAIL" if failed else ("PASS_WITH_DEBT" if skipped else "PASS")
+    passed = total - skipped - debt - failed
+    verdict = "FAIL" if failed else ("PASS_WITH_DEBT" if skipped or debt else "PASS")
+    ui_summary = next((r.get("data") for r in results if r.get("scenario") == "UI 集测 (Playwright)"), None)
     return {
         "verdict": verdict,
         "clean_pass": verdict == "PASS",
         "has_debt": verdict == "PASS_WITH_DEBT",
-        "counts": {"total": total, "passed": passed, "failed": failed, "skipped": skipped},
+        "counts": {"total": total, "passed": passed, "failed": failed, "skipped": skipped, "debt": debt},
+        "failed_scenarios": [r["scenario"] for r in results if r.get("status") == "FAIL" or not r.get("passed")],
+        "debt_scenarios": [r["scenario"] for r in results if r.get("status") == "DEBT"],
         "skipped_scenarios": [r["scenario"] for r in results if r.get("status") == "SKIPPED"],
+        "ui": ui_summary,
+        "model_fallback": _build_model_fallback_summary(),
     }
 
 
@@ -481,13 +694,47 @@ async def test_b():
             fid = up["data"]["id"]
             r = await call_capability("image-vision", "describe", {"file_id": fid})
             ok = _cap_ok(r)
-            blocks = r.get("data", {}).get("data", {}).get("blocks", [])
+            payload = _cap_payload(r)
+            blocks = payload.get("blocks", []) if isinstance(payload, dict) else []
+            _record_model_fallback("image-vision:auto", payload)
             add_result("B2 image-vision describe", ok, f"blocks={len(blocks)}")
             await _schedule_delete(fid)
         else:
             add_result("B2 image-vision describe", False, f"upload failed: {up.get('error','?')}")
     except Exception as e:
         add_result("B2 image-vision describe", False, str(e))
+
+    # Semantic mode intentionally exercises the model/fallback lane. A model 401,
+    # missing key, or context issue is debt only if local fallback still succeeds.
+    try:
+        png = _make_png()
+        up = await _upload_file(f"smoke-vlm-{TS}.png", png, "image/png")
+        if up.get("success"):
+            fid = up["data"]["id"]
+            r = await call_capability("image-vision", "describe", {
+                "file_id": fid,
+                "analysis_mode": "semantic",
+                "prompt": "smoke gate semantic fallback probe",
+            })
+            ok = _cap_ok(r)
+            payload = _cap_payload(r)
+            observation = _record_model_fallback("image-vision:semantic", payload)
+            if ok and observation and observation.get("fallback_used"):
+                add_result(
+                    "B3 image-vision model fallback",
+                    True,
+                    str(observation.get("summary") or "")[:160],
+                    status="DEBT",
+                )
+            elif ok:
+                add_result("B3 image-vision model fallback", True, "vision model succeeded without fallback")
+            else:
+                add_result("B3 image-vision model fallback", False, str(r.get("data", {}))[:160])
+            await _schedule_delete(fid)
+        else:
+            add_result("B3 image-vision model fallback", False, f"upload failed: {up.get('error','?')}")
+    except Exception as e:
+        add_result("B3 image-vision model fallback", False, str(e))
 
 # ── C. Agent 全链路 ───────────────────────────────────────────────
 
@@ -635,40 +882,83 @@ async def test_e():
 
 async def test_ui():
     print("\n═══════════════════ 前端 UI 集测 ═══════════════════\n")
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    frontend_dir = os.path.join(repo_root, "frontend")
+    frontend_dir = REPO_ROOT / "frontend"
     env = os.environ.copy()
     env["PLAYWRIGHT_EXTERNAL_SERVER"] = "1"
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "npm", "run", "test:browser",
-            cwd=frontend_dir,
+            "npm", "run", "test:browser", "--", "--reporter=json", "--trace", "retain-on-failure",
+            cwd=str(frontend_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
-        output = stdout.decode() + stderr.decode()
+        started = time.monotonic()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=240)
+        elapsed = time.monotonic() - started
+        output = stdout.decode(errors="replace") + stderr.decode(errors="replace")
         passed = proc.returncode == 0
-        pm = re.search(r"(\d+)\s*passed", output)
-        fm = re.search(r"(\d+)\s*failed", output)
-        dm = re.search(r"(\d+)\s*did not run", output)
-        passed_count = int(pm.group(1)) if pm else 0
-        failed_count = int(fm.group(1)) if fm else 0
-        did_not_run = int(dm.group(1)) if dm else 0
-        add_result("UI 集测 (Playwright)", passed, f"exit={proc.returncode}, passed={passed_count}, failed={failed_count}, skipped={did_not_run}")
+        ui_summary = _parse_playwright_json(output, int(proc.returncode or 0), elapsed)
+        add_result(
+            "UI 集测 (Playwright)",
+            passed,
+            (
+                f"exit={proc.returncode}, passed={ui_summary['passed']}, "
+                f"failed={ui_summary['failed']}, skipped={ui_summary['skipped']}, "
+                f"artifacts={len(ui_summary['artifact_paths'])}"
+            ),
+        )
+        results[-1]["data"] = ui_summary
         if not passed:
-            lines = output.split("\n")
-            fail_lines = [line for line in lines if "FAIL" in line or "failed" in line.lower() or "✘" in line]
-            for fl in fail_lines[-5:]:
-                print(f"    {fl.strip()}")
+            for failure in ui_summary.get("failed_tests", [])[:5]:
+                print(f"    {failure.get('title', '?')}: {failure.get('message', '')[:160]}")
     except asyncio.TimeoutError:
-        add_result("UI 集测 (Playwright)", False, "超时(>180s)")
+        summary = {
+            "status": "timeout",
+            "returncode": None,
+            "duration_seconds": 240,
+            "passed": 0,
+            "failed": 1,
+            "skipped": 0,
+            "flaky": 0,
+            "failed_tests": [{"title": "Playwright run", "status": "timedOut", "message": "timeout (>240s)"}],
+            "artifact_paths": ["frontend/test-results"] if (REPO_ROOT / "frontend" / "test-results").exists() else [],
+            "reporter": "timeout",
+        }
+        add_result("UI 集测 (Playwright)", False, "超时(>240s)")
+        results[-1]["data"] = summary
     except FileNotFoundError:
-        add_result("UI 集测 (Playwright)", False, "npm not found")
+        summary = {
+            "status": "unavailable",
+            "returncode": None,
+            "duration_seconds": 0,
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "flaky": 0,
+            "failed_tests": [],
+            "artifact_paths": [],
+            "reporter": "unavailable",
+            "reason": "npm not found",
+        }
+        add_result("UI 集测 (Playwright)", True, "npm not found; UI environment unavailable", status="DEBT")
+        results[-1]["data"] = summary
     except Exception as e:
+        summary = {
+            "status": "error",
+            "returncode": None,
+            "duration_seconds": 0,
+            "passed": 0,
+            "failed": 1,
+            "skipped": 0,
+            "flaky": 0,
+            "failed_tests": [{"title": "Playwright run", "status": "failed", "message": str(e)[:500]}],
+            "artifact_paths": [],
+            "reporter": "exception",
+        }
         add_result("UI 集测 (Playwright)", False, str(e))
+        results[-1]["data"] = summary
 
 # ── 健康检查 ──────────────────────────────────────────────────────────
 
@@ -694,6 +984,7 @@ async def health_check():
 # ── 主函数 ────────────────────────────────────────────────────────────
 
 async def main():
+    model_fallback_observations.clear()
     print("smoke_all — 一键全回归")
     print(f"时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"后端: {BACKEND_BASE}  前端: {FRONTEND_BASE}")
@@ -735,6 +1026,26 @@ async def main():
     deleted = await _flush_pending_deletions()
     print(f"  清理: 删除了 {deleted} 个测试文件")
 
+    try:
+        pollution_cleanup = _cleanup_test_data_pollution()
+        selected_files = int(pollution_cleanup.get("selected_files") or 0)
+        archived_docs = int(pollution_cleanup.get("archived_documents") or 0)
+        archived_packages = int(pollution_cleanup.get("archived_packages") or 0)
+        deleted_file_rows = int(pollution_cleanup.get("deleted_file_rows") or 0)
+        physical_errors = pollution_cleanup.get("physical_delete_errors") or []
+        cleanup_ok = bool(pollution_cleanup.get("success")) and not physical_errors
+        add_result(
+            "Z3 测试数据污染清理",
+            cleanup_ok,
+            (
+                f"selected={selected_files}, deleted_file_rows={deleted_file_rows}, "
+                f"archived_docs={archived_docs}, archived_packages={archived_packages}, "
+                f"physical_errors={len(physical_errors)}"
+            ),
+        )
+    except Exception as exc:
+        add_result("Z3 测试数据污染清理", False, str(exc))
+
     # 清理后先短间隔探测；未产生异步积压时跳过第二轮长 settle。
     if cleanup_count == 0:
         print("  清理队列为空，跳过第二轮异步队列等待")
@@ -767,6 +1078,7 @@ async def main():
     passed = counts["passed"]
     failed = counts["failed"]
     skipped = counts["skipped"]
+    debt = counts["debt"]
 
     print(f"\n{'场景':<40} {'结果':>6} {'备注'}")
     print("-" * 80)
@@ -775,7 +1087,7 @@ async def main():
         marker = {"PASS": "G", "FAIL": "R", "SKIPPED": "S"}.get(status, "?")
         print(f"{r['scenario']:<40} {marker:>6}  {r['notes'][:100]}")
 
-    print(f"\n总计: {total} 场景, G {passed} 通过, R {failed} 失败, S {skipped} 跳过")
+    print(f"\n总计: {total} 场景, G {passed} 通过, R {failed} 失败, D {debt} 债务, S {skipped} 跳过")
     print("SMOKE_JSON: " + json.dumps(summary, ensure_ascii=False))
     if failed > 0:
         print(f"{failed} 个场景失败, 请查看详情")

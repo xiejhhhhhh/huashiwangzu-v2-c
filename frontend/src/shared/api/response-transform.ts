@@ -31,11 +31,50 @@ function dataMessage(data: unknown): string | undefined {
   if (!isRecord(data)) return undefined
   const direct = stringField(data, 'error') || stringField(data, 'message') || stringField(data, 'detail')
   if (direct) return direct
+  const errors = summarizeErrors(data.errors)
+  if (errors) return errors
+  const detail = summarizeDetail(data.detail)
+  if (detail) return detail
   const nestedError = data.error
   if (isRecord(nestedError)) {
     return stringField(nestedError, 'message') || stringField(nestedError, 'detail') || stringField(nestedError, 'code')
   }
   return undefined
+}
+
+function summarizeErrors(errors: unknown): string | undefined {
+  if (Array.isArray(errors)) {
+    const parts = errors
+      .map((item) => {
+        if (!isRecord(item)) return ''
+        const field = stringField(item, 'field')
+        const message = stringField(item, 'message')
+        return message ? (field ? `${field}: ${message}` : message) : ''
+      })
+      .filter(Boolean)
+    return parts.length ? parts.slice(0, 3).join('；') : undefined
+  }
+  if (isRecord(errors)) {
+    const parts = Object.entries(errors)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+      .map(([field, message]) => `${field}: ${message}`)
+    return parts.length ? parts.slice(0, 3).join('；') : undefined
+  }
+  return undefined
+}
+
+function summarizeDetail(detail: unknown): string | undefined {
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (!Array.isArray(detail)) return undefined
+  const parts = detail
+    .map((item) => {
+      if (!isRecord(item)) return ''
+      const message = stringField(item, 'msg') || stringField(item, 'message')
+      const location = Array.isArray(item.loc) ? item.loc.map(String).join('.') : ''
+      return message ? (location ? `${location}: ${message}` : message) : ''
+    })
+    .filter(Boolean)
+  return parts.length ? parts.slice(0, 3).join('；') : undefined
 }
 
 function dataCode(data: unknown): string | undefined {

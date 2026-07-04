@@ -79,6 +79,7 @@ class ContentExportService:
         file_id: int,
         status: str,
         fmt: str,
+        source_file_id: int | None = None,
         target_file_id: int | None = None,
     ) -> dict[str, Any]:
         download_url = f"/api/files/download/{file_id}"
@@ -88,6 +89,9 @@ class ContentExportService:
             "download_url": download_url,
             "open_url": open_url,
             "desktop_visible": True,
+            "package_id": artifact.get("package_id") or package_id,
+            "source_file_id": source_file_id,
+            "origin_module": artifact.get("origin_module") or artifact.get("source_module") or "content",
         }
         return {
             "package_id": package_id,
@@ -96,6 +100,8 @@ class ContentExportService:
             "file_id": file_id,
             "download_url": download_url,
             "open_url": open_url,
+            "source_file_id": source_file_id,
+            "origin_module": artifact_payload["origin_module"],
             "desktop_visible": True,
             "published_version_id": artifact.get("current_version_id"),
             "status": status,
@@ -248,6 +254,7 @@ class ContentExportService:
             file_id=int(export_result["file_id"]),
             status="published",
             fmt=str(export_result.get("format") or artifact.get("extension") or ""),
+            source_file_id=pkg_info.get("source_file_id"),
         )
 
     async def _publish_to_target_file(
@@ -319,6 +326,7 @@ class ContentExportService:
             file_id=target_file_id,
             status="replaced",
             fmt=target_file.extension or fmt,
+            source_file_id=pkg_info.get("source_file_id"),
             target_file_id=target_file_id,
         )
 

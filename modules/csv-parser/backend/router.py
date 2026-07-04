@@ -88,7 +88,7 @@ def parse_csv_content(content: str, file_id: int, ext: str) -> dict[str, object]
         return {
             "file_id": file_id,
             "format": ext,
-            "blocks": [_block("段落", "空CSV/TSV文件：0列 x 0行数据")],
+            "blocks": [_block("paragraph", "空CSV/TSV文件：0列 x 0行数据")],
             "resources": [],
         }
 
@@ -114,13 +114,13 @@ def parse_csv_content(content: str, file_id: int, ext: str) -> dict[str, object]
             emitted_row_count += 1
             row_texts.append(_format_row(physical_line, row))
             if len(row_texts) >= DATA_BLOCK_BATCH_SIZE:
-                data_blocks.append(_block("表格", "\n".join(row_texts)))
+                data_blocks.append(_block("table", "\n".join(row_texts)))
                 row_texts = []
     except csv.Error as exc:
         raise ValidationError(f"Invalid CSV content: {exc}")
 
     if row_texts:
-        data_blocks.append(_block("表格", "\n".join(row_texts)))
+        data_blocks.append(_block("table", "\n".join(row_texts)))
 
     summary = f"表格：{len(headers)}列 x {data_row_count}行数据"
     summary += f"\n分隔符：{_delimiter_label(delimiter)}"
@@ -130,9 +130,9 @@ def parse_csv_content(content: str, file_id: int, ext: str) -> dict[str, object]
         omitted = data_row_count - emitted_row_count
         summary += f"\n仅输出前 {emitted_row_count} 行，剩余 {omitted} 行已省略。"
 
-    blocks = [_block("段落", summary)]
+    blocks = [_block("paragraph", summary)]
     if headers:
-        blocks.append(_block("表格", " | ".join(_trim_cell(header) for header in headers)))
+        blocks.append(_block("table", " | ".join(_trim_cell(header) for header in headers)))
     blocks.extend(data_blocks)
 
     return {

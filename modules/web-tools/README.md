@@ -48,3 +48,23 @@ Live-stack checks:
 call_capability("web-tools", "fetch", {"url": "http://127.0.0.1:33000/api/health"})
 call_capability("web-tools", "search", {"query": "华世王镞", "top_k": 1})
 ```
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `web-tools`, window `background-service`, formats: Not format-bound. |
+| Backend capability | PASS | 2 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
+| File access | SKIP | Module does not directly consume framework file_id content. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/web-tools/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `web-tools:<action>` and release smoke/capability drift gates. |
+| Known debt | DEBT | Keep component_key empty so the launcher never opens a blank background window. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/web-tools/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module web-tools --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

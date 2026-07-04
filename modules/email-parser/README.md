@@ -45,3 +45,23 @@ curl -X POST http://127.0.0.1:33000/api/email-parser/parse \
   -H "Authorization: Bearer <token>" \
   -d '{"file_id": <id>}'
 ```
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `email-parser`, window `background-service`, formats: Not format-bound. |
+| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
+| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/email-parser/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `email-parser:<action>` and release smoke/capability drift gates. |
+| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/email-parser/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module email-parser --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

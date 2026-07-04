@@ -283,6 +283,77 @@ async def test_workflow_http_routes_create_verify_and_finalize(
 
 
 @pytest.mark.asyncio
+async def test_workflow_demo_seed_admin_only_and_cleanup() -> None:
+    admin = await _user("admin")
+    viewer = await _user("viewer")
+    marker = f"agent-demo-workflow-{uuid4().hex}"
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/agent/workflows/demo-seed",
+            json={"marker": marker},
+            headers=_headers(viewer),
+        )
+        assert response.status_code == 403
+
+        response = await client.post(
+            "/api/agent/workflows/demo-seed",
+            json={"marker": marker, "cleanup_existing": True},
+            headers=_headers(admin),
+        )
+        assert response.status_code == 200
+        seeded = response.json()["data"]
+        assert seeded["count"] == 4
+
+        response = await client.get(
+            "/api/agent/workflows?has_artifacts=true&limit=100",
+            headers=_headers(admin),
+        )
+        assert response.status_code == 200
+        artifact_items = response.json()["data"]["items"]
+        assert any(item["title"].startswith(marker) and item["artifact_count"] > 0 for item in artifact_items)
+
+        response = await client.get(
+            "/api/agent/workflows?has_failures=true&limit=100",
+            headers=_headers(admin),
+        )
+        assert response.status_code == 200
+        failure_items = response.json()["data"]["items"]
+        assert any(item["title"].startswith(marker) and item["failure_count"] > 0 for item in failure_items)
+
+        failed_run_id = next(item["id"] for item in failure_items if item["title"].startswith(marker))
+        response = await client.get(f"/api/agent/workflows/{failed_run_id}", headers=_headers(admin))
+        assert response.status_code == 200
+        detail = response.json()["data"]
+        assert detail["failures"]
+        assert detail["failures"][0]["failure_type"] == "semantic_failure"
+        assert "语义失败" in detail["failures"][0]["handoff_note"]
+
+        response = await client.get("/api/agent/workflows/governance-summary", headers=_headers(admin))
+        assert response.status_code == 200
+        summary = response.json()["data"]
+        assert summary["total"] >= 4
+        assert any(item["failure_type"] == "semantic_failure" for item in summary["recent_errors"])
+
+        response = await client.post(
+            "/api/agent/workflows/demo-seed/cleanup",
+            json={"marker": marker},
+            headers=_headers(admin),
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["deleted"] == 4
+
+        response = await client.get(
+            "/api/agent/workflows?has_references=true&limit=100",
+            headers=_headers(admin),
+        )
+        assert response.status_code == 200
+        remaining = response.json()["data"]["items"]
+        assert all(not item["title"].startswith(marker) for item in remaining)
+
+
+@pytest.mark.asyncio
 async def test_created_capability_run_is_queryable_from_service(
     db: AsyncSession,
     cleanup_runs: list[int],

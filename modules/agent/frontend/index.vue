@@ -29,7 +29,12 @@
           </svg>
           <p>选择或创建一个对话开始</p>
         </div>
-        <div v-if="messages.length === 0 && activeConvId && !loading" class="msg-empty">
+        <div v-if="messageLoadError" class="msg-load-error" role="alert">
+          <span>{{ messageLoadError }}</span>
+          <button type="button" @click="activeConvId && reloadMessages(activeConvId)">重试</button>
+        </div>
+        <div v-else-if="messagesLoading" class="msg-load-state">消息加载中...</div>
+        <div v-else-if="messages.length === 0 && activeConvId && !loading" class="msg-empty">
           <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1" width="40" height="40" class="msg-empty-icon">
             <path d="M8 10h32v24H16l-8 6V10z"/>
           </svg>
@@ -133,6 +138,8 @@ const tools = ref<unknown[]>([])
 const editingMessageId = ref<number | null>(null)
 const activeConvId = ref<number | null>(null)
 const messages = ref<MsgItem[]>([])
+const messagesLoading = ref(false)
+const messageLoadError = ref('')
 const inputText = ref('')
 const sending = ref(false)
 const streaming = ref(false)
@@ -251,11 +258,17 @@ async function deleteConversation(item: ConvItem) {
 }
 
 async function selectConversation(id: number) {
-  activeConvId.value = id; messages.value = []; error.value = ''; showAdminPanel.value = false
+  activeConvId.value = id; messages.value = []; error.value = ''; messageLoadError.value = ''; showAdminPanel.value = false
+  messagesLoading.value = true
   try {
     const raw = await apiFetch<MsgItem[]>(`/agent/conversations/${id}/messages`)
     messages.value = expandTimeline(raw)
-  } catch { /* ignore */ }
+  } catch (e: unknown) {
+    console.error('[Agent] load messages failed:', e)
+    messageLoadError.value = '消息加载失败：' + String((e as Error).message || e)
+  } finally {
+    messagesLoading.value = false
+  }
   nextTick(scrollToBottom)
 }
 
@@ -1044,7 +1057,19 @@ function commitAssistantStream(segmentId: string) {
 			  }
 			}
 
-async function reloadMessages(convId: number) { try { const raw = await apiFetch<MsgItem[]>(`/agent/conversations/${convId}/messages`); messages.value = expandTimeline(raw) } catch { /* ignore */ } }
+async function reloadMessages(convId: number) {
+  messageLoadError.value = ''
+  messagesLoading.value = true
+  try {
+    const raw = await apiFetch<MsgItem[]>(`/agent/conversations/${convId}/messages`)
+    messages.value = expandTimeline(raw)
+  } catch (e: unknown) {
+    console.error('[Agent] reload messages failed:', e)
+    messageLoadError.value = '消息加载失败：' + String((e as Error).message || e)
+  } finally {
+    messagesLoading.value = false
+  }
+}
 
 onMounted(async () => {
   await initRuntime('agent')
@@ -1085,6 +1110,34 @@ onMounted(async () => {
 .msg-empty-icon { opacity: 0.25; }
 .msg-empty p { margin: 0; font-size: var(--ag-font-size-md); }
 .msg-empty-hint { font-size: var(--ag-font-size-sm); }
+.msg-load-state {
+  padding: var(--ag-space-lg);
+  text-align: center;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-font-size-sm);
+}
+.msg-load-error {
+  margin: var(--ag-space-md);
+  padding: var(--ag-space-sm) var(--ag-space-md);
+  border: 1px solid rgba(229, 83, 75, 0.32);
+  border-radius: var(--ag-radius-md);
+  background: rgba(254, 240, 238, 0.92);
+  color: #b42318;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ag-space-sm);
+  font-size: var(--ag-font-size-sm);
+}
+.msg-load-error button {
+  flex: none;
+  height: 28px;
+  border: 1px solid currentColor;
+  border-radius: var(--ag-radius-sm);
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+}
 
 /* ── Streaming row ── */
 .msg-row.streaming { flex-shrink: 0; display: flex; gap: var(--ag-space-md); margin-bottom: var(--ag-space-xl); animation: msgSlideUp 0.25s ease-out; }

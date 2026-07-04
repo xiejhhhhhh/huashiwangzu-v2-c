@@ -35,3 +35,23 @@ backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --check
 ```
 
 Expected result: `image-viewer` passes through its sandbox frontend build. There is no `sandbox/test_module.py` because this module has no backend router, no samples, and no cross-module capability.
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `image-viewer`, window `normal`, formats: png, jpg, jpeg, gif, bmp, webp, svg, ico. |
+| Backend capability | SKIP | No backend capability; passive frontend module. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | PASS | Uses framework file preview/open dispatch; no direct cross-module table access. |
+| Sandbox | PASS | `cd modules/image-viewer/sandbox && npm run build` |
+| Smoke | PASS | `npm --prefix frontend run build` plus desktop open-dispatch/browser test when UI is in scope. |
+| Known debt | DEBT | Pure frontend viewer/editor; UI coverage depends on Playwright desktop-open tests. |
+
+### Reproducible Checks
+
+```bash
+cd modules/image-viewer/sandbox && npm run build
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-viewer --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

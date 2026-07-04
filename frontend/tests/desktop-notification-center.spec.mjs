@@ -90,7 +90,7 @@ async function mockNotificationCenter(page) {
 
   await page.route('**/api/notifications/unread-count', route => route.fulfill({
     status: 200,
-    json: { success: true, data: { unread_count: notificationRead ? 0 : 1 }, error: null },
+    json: { success: true, data: { unread_count: notificationRead ? 0 : 2 }, error: null },
   }))
   await page.route('**/api/notifications', route => route.fulfill({
     status: 200,
@@ -104,6 +104,23 @@ async function mockNotificationCenter(page) {
           notification_type: '普通通知',
           is_read: notificationRead,
           published_at: '2026-07-04 12:00',
+        }, {
+          id: 102,
+          title: '视觉模型降级',
+          content: JSON.stringify({
+            model_fallback: {
+              primary_model: 'mimo-vl',
+              primary_failed: true,
+              fallback_used: true,
+              fallback_model: 'local_analysis',
+              final_success: true,
+              failure_category: 'auth_config_debt',
+              summary: 'mimo 401; local fallback completed',
+            },
+          }),
+          notification_type: 'model_degraded',
+          is_read: notificationRead,
+          published_at: '2026-07-04 12:02',
         }],
       },
       error: null,
@@ -194,6 +211,9 @@ test('notification center opens with grouped feedback layers', async ({ page }) 
   await expect(panel).toContainText('后台任务')
   await expect(panel).toContainText('Agent 工作')
   await expect(panel).toContainText('通知中心验收提醒')
+  await expect(panel).toContainText('模型已降级但任务继续完成')
+  await expect(panel).toContainText('主模型 mimo-vl 失败')
+  await expect(panel).toContainText('已切到 local_analysis')
 
   await expect(panel).toHaveCSS('border-radius', '12px')
   const boxShadow = await panel.evaluate(node => getComputedStyle(node).boxShadow)
@@ -207,11 +227,11 @@ test('notification center marks unread notifications as read', async ({ page }) 
 
   await page.locator('.taskbar-notifications-button').click()
   const panel = page.locator('.taskbar-notifications-panel')
-  await expect(panel.locator('.notification-item-unread')).toBeVisible()
+  await expect(panel.locator('.notification-item-unread')).toHaveCount(2)
 
-  await panel.locator('.notification-actions').getByRole('button', { name: '标为已读' }).click()
+  await panel.locator('.notification-actions').getByRole('button', { name: '标为已读' }).first().click()
   await expect.poll(() => notificationMock.wasMarkReadCalled()).toBe(true)
-  await expect(panel.locator('.notification-item-unread')).toHaveCount(0)
+  await expect(panel.locator('.notification-item-unread')).toHaveCount(1)
   await expect(panel).toContainText('✓ 已读')
 })
 

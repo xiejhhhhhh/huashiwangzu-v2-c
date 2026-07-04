@@ -61,11 +61,23 @@ def test_smoke_samples_queue_before_business_steps(monkeypatch) -> None:
     async def fake_flush() -> int:
         return 0
 
+    def fake_cleanup_pollution() -> dict:
+        order.append("pollution_cleanup")
+        return {
+            "success": True,
+            "selected_files": 0,
+            "deleted_file_rows": 0,
+            "archived_documents": 0,
+            "archived_packages": 0,
+            "physical_delete_errors": [],
+        }
+
     monkeypatch.setattr(smoke, "probe", fake_probe)
     for name in ("health_check", "test_a", "test_b", "test_c", "test_d", "test_e"):
         monkeypatch.setattr(smoke, name, fake_group)
     monkeypatch.setattr(smoke, "_await_queue_settle", fake_settle)
     monkeypatch.setattr(smoke, "_flush_pending_deletions", fake_flush)
+    monkeypatch.setattr(smoke, "_cleanup_test_data_pollution", fake_cleanup_pollution)
     monkeypatch.setenv("SMOKE_SKIP_UI", "1")
     smoke.results.clear()
     smoke._pending_deletions.clear()
@@ -74,7 +86,9 @@ def test_smoke_samples_queue_before_business_steps(monkeypatch) -> None:
 
     assert order[0] == "queue_status"
     assert order.index("queue_status") < order.index("business")
+    assert order.index("pollution_cleanup") > order.index("business")
     assert order.count("settle:1") == 1
+    assert any(item["scenario"] == "Z3 测试数据污染清理" and item["passed"] for item in smoke.results)
 
 
 def test_read_queue_state_rejects_success_false_body(monkeypatch) -> None:
@@ -157,3 +171,32 @@ def test_probe_refreshes_cached_token_once_on_401(monkeypatch) -> None:
     assert result["status"] == 200
     assert seen_auth == ["Bearer stale", "Bearer fresh"]
     assert smoke._TOKEN_CACHE["admin"] == "fresh"
+
+
+def test_smoke_summary_tracks_debt_and_model_fallback() -> None:
+    original_results = list(smoke.results)
+    original_model = list(smoke.model_fallback_observations)
+    try:
+        smoke.results[:] = []
+        smoke.model_fallback_observations[:] = [{
+            "source": "image-vision:semantic",
+            "primary_model": "vision.primary",
+            "primary_failed": True,
+            "fallback_used": True,
+            "fallback_model": "local_analysis",
+            "final_success": True,
+            "failure_category": "auth_config_debt",
+            "summary": "primary auth failed; local fallback used",
+        }]
+        smoke.add_result("clean", True, "ok")
+        smoke.add_result("fallback", True, "fallback used", status="DEBT")
+
+        summary = smoke._build_summary()
+
+        assert summary["verdict"] == "PASS_WITH_DEBT"
+        assert summary["counts"]["debt"] == 1
+        assert summary["model_fallback"]["status"] == "DEBT"
+        assert summary["model_fallback"]["fallback_used_count"] == 1
+    finally:
+        smoke.results[:] = original_results
+        smoke.model_fallback_observations[:] = original_model

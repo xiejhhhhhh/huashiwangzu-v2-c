@@ -29,7 +29,7 @@ function openWindow(appKey: string, payload?: unknown): string | null {
   if (!app) return null
   const store = useUserStore()
   const currentRole = store.userInfo?.role?.toLowerCase()
-  if (app.allowedRoles && currentRole && !app.allowedRoles.includes(currentRole)) {
+  if (app.allowedRoles && app.allowedRoles.length > 0 && currentRole && !app.allowedRoles.includes(currentRole)) {
     console.warn(`Opening window was denied: role ${currentRole} cannot access app ${appKey}`)
     return null
   }

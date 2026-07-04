@@ -130,6 +130,27 @@ modules/{module_name}/sandbox/
 
 当前 `smoke_all` 只能证明主框架 happy path，不等于每个模块 sandbox 都通过。发布前应维护一张模块验收矩阵：模块 key、sandbox 命令、主框架命令、是否清理测试数据、最近一次结果。
 
+### Parser / Content IR 验收矩阵
+
+文件解析模块输出必须逐步收口到统一 Content IR。当前最低契约：
+
+| 字段 | 要求 |
+|---|---|
+| `file_id` | 原框架文件 ID |
+| `format` | 小写扩展名或解析格式 |
+| `blocks` | 内容块数组，`type` 使用英文 Content IR block type：`heading/paragraph/table/sheet/range/slide/image/chart/code/quote/divider` |
+| `resources` | 二进制或嵌入资源引用数组，可为空 |
+| `metadata` | 解析器、截断、质量、警告等结构化元数据；长正文不得塞 manifest |
+| `warnings` | 可恢复问题列表；失败不能包装成假成功 |
+
+Parser README 的 `Acceptance Matrix` 之外，还应声明：支持扩展名、capability 名称、返回 block types、是否返回 resources、sandbox 样例命令和 skip 原因。ContentPackage 状态机按框架口径解释：
+
+```text
+draft_package -> parsed_package/degraded/failed -> compiled_preview -> published_artifact/file -> archived
+```
+
+历史兼容说明：部分旧 parser 仍会通过 legacy `{blocks, resources}` 进入 ContentPackage pipeline；新增或修改 parser 时必须优先输出英文 block type，并通过 sandbox 样例验证 Content IR 兼容性。
+
 ### sandbox 模板不够用时
 
 sandbox 是模块开发态的小框架。如果模块需要更多能力：

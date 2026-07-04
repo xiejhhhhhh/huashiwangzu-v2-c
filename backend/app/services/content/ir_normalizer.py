@@ -27,6 +27,10 @@ async def normalize_ir(content_ir: dict[str, Any]) -> dict[str, Any]:
     ir.setdefault("schema_version", "1.0")
     ir.setdefault("locale", "zh-CN")
     ir.setdefault("metadata", {})
+    ir.setdefault("warnings", [])
+    ir.setdefault("quality", {})
+    if "resources" not in ir and isinstance(ir.get("assets"), list):
+        ir["resources"] = list(ir["assets"])
     ir.setdefault("resources", [])
 
     # Normalize blocks recursively
@@ -48,6 +52,7 @@ async def normalize_ir(content_ir: dict[str, Any]) -> dict[str, Any]:
 
     ir["blocks"] = blocks
     ir["resources"] = resources
+    ir["assets"] = list(resources)
     return ir
 
 

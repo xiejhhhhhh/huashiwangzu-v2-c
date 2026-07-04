@@ -187,12 +187,39 @@ export interface ChunkItem {
 export interface SearchResult {
   chunk_id: number
   document_id: number
+  file_id?: number | null
+  source_file_id?: number | null
   page: number | null
+  section?: string | null
+  paragraph?: number | null
   block_type: string
   text: string
   score: number
   rrf_score: number
   document_name?: string
+  source_file?: string
+  source_module?: string
+  source_type?: string
+  retrieval_source?: string
+  mime_type?: string
+  extension?: string
+  content_package_id?: number | null
+  block_id?: string | null
+  explain?: {
+    retrieval_source?: string
+    score?: number
+    rrf_score?: number
+    kw_score?: number
+    vec_score?: number
+    kw_rank?: number | null
+    vec_rank?: number | null
+    final_rank?: number
+    source_file_id?: number | null
+    source_file?: string
+    page?: number | null
+    section?: string | null
+    paragraph?: number | null
+  }
 }
 
 export interface EntityItem {

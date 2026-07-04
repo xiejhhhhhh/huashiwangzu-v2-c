@@ -92,3 +92,24 @@ PYTHONPATH=backend:. backend/.venv/bin/python -m pytest modules/wechat-writer/sa
 ```
 
 `sandbox/test_module.py` 不调用真实模型网关或数据库；它会在 running event loop 中真调用 `_run_startup_init()`，用假 `run_init()` 验证模块启动初始化不会再触发 `asyncio.run()` 的协程未 await 警告。
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `wechat-writer`, window `normal`, formats: Not format-bound. |
+| Backend capability | PASS | 4 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | SKIP | Module does not directly consume framework file_id content. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/wechat-writer/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `wechat-writer:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/wechat-writer/sandbox/test_module.py
+cd modules/wechat-writer/sandbox && npm run build
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module wechat-writer --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

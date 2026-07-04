@@ -2,7 +2,7 @@ export interface ApiResponse<T = unknown> {
   success: boolean
   data?: T | null
   error?: string | null
-  errors?: { field: string; message: string }[] | null
+  errors?: Record<string, string> | { field: string; message: string }[] | null
 }
 
 export type { ApiErrorInfo } from './response-transform'

@@ -5,6 +5,10 @@
         <span class="im-sidebar-title">会话</span>
         <button class="im-new-chat-btn" @click="showUserPicker = true" title="发起新对话">+</button>
       </div>
+      <div v-if="conversationsError" class="im-error">
+        <span>{{ conversationsError }}</span>
+        <button type="button" @click="loadConversations">重试</button>
+      </div>
       <div class="im-conv-list">
         <div v-for="conv in conversations" :key="conv.id"
           class="im-conv-item"
@@ -19,12 +23,17 @@
             <div class="im-conv-last">{{ conv.last_message_summary || '暂无消息' }}</div>
           </div>
         </div>
-        <div v-if="!conversations.length" class="im-conv-empty">暂无会话</div>
+        <div v-if="conversationsLoading" class="im-loading">加载中...</div>
+        <div v-else-if="!conversations.length && !conversationsError" class="im-conv-empty">暂无会话</div>
       </div>
     </div>
     <div class="im-main">
       <template v-if="activeConvId">
         <div class="im-messages" ref="messagesRef">
+          <div v-if="messagesError" class="im-error im-error-inline">
+            <span>{{ messagesError }}</span>
+            <button type="button" @click="activeConvId && loadMessages(activeConvId)">重试</button>
+          </div>
           <div v-for="msg in messages" :key="msg.id" class="im-msg"
             :class="{ 'im-msg-self': msg.sender_id === currentUserId, 'im-msg-notification': msg.msg_type === 'notification' }">
             <div class="im-msg-sender">{{ msg.msg_type === 'notification' ? '系统通知' : (msg.sender_id === currentUserId ? '我' : getSenderName(msg.sender_id)) }}</div>
@@ -52,7 +61,12 @@
             <div class="im-user-avatar">{{ (u.display_name || u.username)[0] }}</div>
             <span>{{ u.display_name || u.username }}</span>
           </div>
-          <div v-if="!availableUsers.length" class="im-loading">加载中...</div>
+          <div v-if="usersError" class="im-error im-error-inline">
+            <span>{{ usersError }}</span>
+            <button type="button" @click="loadUsers">重试</button>
+          </div>
+          <div v-else-if="usersLoading" class="im-loading">加载中...</div>
+          <div v-else-if="!availableUsers.length" class="im-conv-empty">暂无可选联系人</div>
         </div>
         <button class="im-user-picker-close" @click="showUserPicker = false">取消</button>
       </div>
@@ -87,24 +101,35 @@ const inputText = ref('')
 const showUserPicker = ref(false)
 const availableUsers = ref<UserInfo[]>([])
 const loadingMessages = ref(false)
+const conversationsLoading = ref(false)
+const usersLoading = ref(false)
 const sending = ref(false)
 const currentUserId = ref(0)
 const messagesRef = ref<HTMLElement | null>(null)
+const conversationsError = ref('')
+const messagesError = ref('')
+const usersError = ref('')
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let msgPollTimer: ReturnType<typeof setInterval> | null = null
 let lastMsgId = ref(0)
 
 async function loadConversations() {
+  conversationsLoading.value = true
+  conversationsError.value = ''
   try {
     conversations.value = await apiGet<Conversation[]>('/im/conversations')
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Failed to load conversations', e)
+    conversationsError.value = errorMessage(e, '会话列表加载失败')
+  } finally {
+    conversationsLoading.value = false
   }
 }
 
 async function loadMessages(convId: number) {
   loadingMessages.value = true
+  messagesError.value = ''
   try {
     const msgs = await apiGet<Message[]>(`/im/conversations/${convId}/messages?page=1&page_size=100`)
     messages.value = msgs
@@ -113,8 +138,9 @@ async function loadMessages(convId: number) {
     }
     await nextTick()
     scrollToBottom()
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Failed to load messages', e)
+    messagesError.value = errorMessage(e, '消息加载失败')
   } finally {
     loadingMessages.value = false
   }
@@ -130,7 +156,7 @@ async function pollMessages(convId: number) {
       await nextTick()
       scrollToBottom()
     }
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Failed to poll messages', e)
   }
 }
@@ -146,7 +172,7 @@ async function selectConversation(convId: number) {
       await apiPost(`/im/conversations/${convId}/read`, { last_read_message_id: lastId })
     }
     loadConversations()
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Failed to mark read', e)
   }
 }
@@ -163,18 +189,24 @@ async function sendMessage() {
     inputText.value = ''
     await loadMessages(activeConvId.value)
     loadConversations()
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Failed to send message', e)
+    messagesError.value = errorMessage(e, '消息发送失败')
   } finally {
     sending.value = false
   }
 }
 
 async function loadUsers() {
+  usersLoading.value = true
+  usersError.value = ''
   try {
     availableUsers.value = await apiGet<UserInfo[]>('/im/users')
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Failed to load users', e)
+    usersError.value = errorMessage(e, '联系人加载失败')
+  } finally {
+    usersLoading.value = false
   }
 }
 
@@ -187,9 +219,14 @@ async function startChat(targetUserId: number) {
     activeConvId.value = result.conversation_id
     await loadMessages(result.conversation_id)
     await loadConversations()
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('Failed to start chat', e)
+    usersError.value = errorMessage(e, '发起会话失败')
   }
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
 }
 
 function getConvAvatar(conv: Conversation): string {
@@ -303,6 +340,30 @@ onUnmounted(() => {
 }
 .im-conv-last { font-size: 12px; color: #999; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .im-conv-empty { text-align: center; color: #ccc; padding: 40px 16px; font-size: 14px; }
+.im-error {
+  margin: 8px 10px;
+  padding: 9px 10px;
+  border: 1px solid #f1b6ae;
+  border-radius: 8px;
+  background: #fff7f6;
+  color: #b42318;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.im-error-inline { margin: 0 0 12px; }
+.im-error button {
+  flex: none;
+  height: 26px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
 .im-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .im-messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
 .im-msg { margin-bottom: 16px; max-width: 70%; }

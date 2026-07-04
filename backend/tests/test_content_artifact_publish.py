@@ -173,6 +173,10 @@ async def test_publish_without_target_returns_artifact_file_contract():
             assert after_files == (before_files or 0) + 1
             assert published["package_id"] == package_id
             assert published["artifact_id"] == published["artifact"]["id"]
+            assert published["artifact"]["artifact_id"] == published["artifact_id"]
+            assert published["artifact"]["package_id"] == package_id
+            assert published["artifact"]["origin_module"] == "content"
+            assert published["artifact"]["source_file_id"] is None
             assert published["file_id"] == artifact.file_id
             assert published["download_url"] == f"/api/files/download/{published['file_id']}"
             assert published["open_url"] == f"/api/files/preview/{published['file_id']}"
@@ -181,6 +185,8 @@ async def test_publish_without_target_returns_artifact_file_contract():
             assert published["artifact"]["open_url"] == published["open_url"]
             assert published["artifact"]["desktop_visible"] is True
             assert published["published_version_id"] == artifact.current_version_id
+            assert published["source_file_id"] is None
+            assert published["origin_module"] == "content"
             assert published["status"] == "published"
             assert published["publish_status"] == "published_artifact/file"
             assert published_file is not None
@@ -312,6 +318,9 @@ async def test_content_publish_capability_returns_artifact_file_envelope():
 
         assert published["package_id"] == package_id
         assert published["artifact_id"] == published["artifact"]["id"]
+        assert published["artifact"]["artifact_id"] == published["artifact_id"]
+        assert published["artifact"]["package_id"] == package_id
+        assert published["artifact"]["origin_module"] == "content"
         assert published["file_id"] == published["artifact"]["file_id"]
         assert published["download_url"] == f"/api/files/download/{published['file_id']}"
         assert published["open_url"] == f"/api/files/preview/{published['file_id']}"
@@ -373,6 +382,8 @@ async def test_rest_publish_handler_returns_artifact_file_response():
 
             assert published["package_id"] == package_id
             assert published["artifact_id"] == published["artifact"]["id"]
+            assert published["artifact"]["package_id"] == package_id
+            assert published["artifact"]["origin_module"] == "content"
             assert published["file_id"] == published["artifact"]["file_id"]
             assert published["download_url"] == f"/api/files/download/{published['file_id']}"
             assert published["open_url"] == f"/api/files/preview/{published['file_id']}"

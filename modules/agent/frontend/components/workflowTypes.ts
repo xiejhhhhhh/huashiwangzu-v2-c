@@ -16,6 +16,12 @@ export interface WorkflowSummary {
   release_gate_verdict?: string | null
   dirty_worktree_state?: JsonValue
   multi_agent_summary?: MultiAgentSummarySource
+  step_count?: number
+  tool_call_count?: number
+  failure_count?: number
+  artifact_count?: number
+  verification_count?: number
+  reference_count?: number
 }
 
 export interface WorkflowListPayload {
@@ -143,4 +149,28 @@ export interface WorkflowDetailPayload extends WorkflowSummary {
   verifications?: WorkflowVerification[]
   failures?: WorkflowFailure[]
   multi_agent_summary?: MultiAgentSummarySource
+}
+
+export interface WorkflowGovernanceError {
+  run_id?: number | null
+  step_id?: number | null
+  tool_call_id?: number | null
+  failure_type: string
+  reason?: string | null
+  retryable?: boolean
+  retry_count?: number | null
+  next_action?: string | null
+  created_at?: string | null
+}
+
+export interface WorkflowGovernanceSummary {
+  total: number
+  failed: number
+  partial: number
+  completed: number
+  needs_confirmation: number
+  with_artifacts: number
+  with_references: number
+  average_duration_ms: number
+  recent_errors: WorkflowGovernanceError[]
 }

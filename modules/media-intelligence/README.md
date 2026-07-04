@@ -136,3 +136,23 @@ POST /api/modules/call
 4. Add object detection provider with normalized boxes and labels.
 5. Add VLM adapter that calls the framework model gateway for costly refine only after cheap signals are present.
 6. Add persistence only after schema consumers stabilize; use a `media_intelligence_*` table prefix if storage becomes necessary.
+
+## Acceptance Matrix
+
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `manifest.json` key `media-intelligence`, window `normal`, formats: jpg, jpeg, png, gif, webp, bmp, ico, mp4, mov, m4v, webm, mkv, avi. |
+| Backend capability | PASS | 8 public action(s) declared in manifest and checked by capability drift gate. |
+| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
+| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
+| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/media-intelligence/sandbox/test_module.py` |
+| Smoke | PASS | Use `call_capability` for `media-intelligence:<action>` and release smoke/capability drift gates. |
+| Known debt | PASS | None tracked in this matrix. |
+
+### Reproducible Checks
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python modules/media-intelligence/sandbox/test_module.py
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module media-intelligence --check
+backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
+```

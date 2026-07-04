@@ -73,6 +73,132 @@ router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 # ── 模块加载时初始化：建表 + 索引 + 列迁移（一次性，幂等） ──
 _run_startup_init()
 
+
+async def _enrich_search_results(
+    db: AsyncSession,
+    results: list[dict],
+    owner_id: int,
+    *,
+    include_page_fusion: bool = False,
+) -> tuple[list[dict], dict]:
+    from .models import KbChunk, KbDocument
+    from .services.entity_service import get_page_fusion as _get_page_fusion
+
+    enriched: list[dict] = []
+    doc_cache: dict[int, dict] = {}
+    chunk_cache: dict[int, dict] = {}
+    file_ids: set[int] = set()
+    document_ids: set[int] = set()
+
+    for result in results:
+        item = dict(result)
+        doc_id = item.get("document_id")
+        chunk_id = item.get("chunk_id")
+        page = item.get("page")
+        doc_info: dict = {}
+        chunk_info: dict = {}
+
+        if doc_id:
+            document_ids.add(int(doc_id))
+            if int(doc_id) not in doc_cache:
+                dr = await db.execute(
+                    select(KbDocument).where(
+                        KbDocument.id == int(doc_id),
+                        KbDocument.owner_id == owner_id,
+                    )
+                )
+                doc = dr.scalar_one_or_none()
+                doc_cache[int(doc_id)] = {
+                    "name": doc.filename if doc else "",
+                    "file_id": doc.file_id if doc else None,
+                    "mime_type": doc.mime_type if doc else "",
+                    "extension": doc.extension if doc else "",
+                    "file_size": doc.file_size if doc else None,
+                    "content_package_id": doc.content_package_id if doc else None,
+                    "parser_status": doc.parse_status if doc else "",
+                    "vector_status": doc.vector_status if doc else "",
+                }
+            doc_info = doc_cache.get(int(doc_id), {})
+            if doc_info.get("file_id"):
+                file_ids.add(int(doc_info["file_id"]))
+
+        if chunk_id:
+            if int(chunk_id) not in chunk_cache:
+                cr = await db.execute(
+                    select(KbChunk).where(
+                        KbChunk.id == int(chunk_id),
+                        KbChunk.owner_id == owner_id,
+                    )
+                )
+                chunk = cr.scalar_one_or_none()
+                chunk_cache[int(chunk_id)] = {
+                    "block_id": chunk.block_id if chunk else None,
+                    "chunk_index": chunk.chunk_index if chunk else None,
+                    "section": chunk.block_type if chunk else None,
+                    "paragraph": chunk.chunk_index if chunk else None,
+                }
+            chunk_info = chunk_cache.get(int(chunk_id), {})
+
+        retrieval_source = item.get("source") or "hybrid"
+        item.update({
+            "document_name": doc_info.get("name", ""),
+            "file_id": doc_info.get("file_id"),
+            "source_file_id": doc_info.get("file_id"),
+            "source_file": doc_info.get("name", ""),
+            "mime_type": doc_info.get("mime_type", ""),
+            "extension": doc_info.get("extension", ""),
+            "file_size": doc_info.get("file_size"),
+            "content_package_id": doc_info.get("content_package_id"),
+            "block_id": chunk_info.get("block_id"),
+            "chunk_index": chunk_info.get("chunk_index"),
+            "section": chunk_info.get("section"),
+            "paragraph": chunk_info.get("paragraph"),
+            "source_module": "knowledge",
+            "source_type": "knowledge_document",
+            "retrieval_source": retrieval_source,
+            "explain": {
+                "retrieval_source": retrieval_source,
+                "score": item.get("score"),
+                "rrf_score": item.get("rrf_score"),
+                "kw_score": item.get("kw_score"),
+                "vec_score": item.get("vec_score"),
+                "kw_rank": item.get("kw_rank"),
+                "vec_rank": item.get("vec_rank"),
+                "final_rank": item.get("final_rank"),
+                "source_file_id": doc_info.get("file_id"),
+                "source_file": doc_info.get("name", ""),
+                "page": page,
+                "section": chunk_info.get("section"),
+                "paragraph": chunk_info.get("paragraph"),
+            },
+        })
+        if include_page_fusion and doc_id and page:
+            item["page_fusion"] = await _get_page_fusion(
+                db,
+                int(doc_id),
+                int(page),
+                owner_id=owner_id,
+            )
+        enriched.append(item)
+
+    context_data = {
+        "result_count": len(enriched),
+        "document_ids": sorted(document_ids),
+        "file_ids": sorted(file_ids),
+        "fields": [
+            "chunk_id",
+            "document_id",
+            "file_id",
+            "page",
+            "section",
+            "paragraph",
+            "score",
+            "source_file",
+            "explain",
+        ],
+    }
+    return enriched, context_data
+
 class RegisterDocumentRequest(BaseModel):
     file_id: int
     catalog_id: int | None = None
@@ -488,32 +614,16 @@ async def api_search(
     user: User = Depends(require_permission("viewer")),
 ):
     results = await hybrid_search(db, payload.query, user.id, payload.top_k, payload.use_rerank)
-    # Enrich with content_package_id and block_id
-    from .models import KbChunk, KbDocument
-    enriched = []
-    doc_cache: dict[int, dict] = {}
-    for r in results:
-        doc_id = r.get("document_id")
-        chunk_id = r.get("chunk_id")
-        if doc_id and doc_id not in doc_cache:
-            dr = await db.execute(select(KbDocument).where(KbDocument.id == doc_id, KbDocument.owner_id == user.id))
-            doc = dr.scalar_one_or_none()
-            doc_cache[doc_id] = {
-                "name": doc.filename if doc else "",
-                "content_package_id": doc.content_package_id if doc and hasattr(doc, "content_package_id") else None,
-            }
-        doc_info = doc_cache.get(doc_id, {})
-        r["document_name"] = doc_info.get("name", "")
-        r["content_package_id"] = doc_info.get("content_package_id")
-        if chunk_id:
-            cr = await db.execute(
-                select(KbChunk.block_id).where(KbChunk.id == chunk_id, KbChunk.owner_id == user.id)
-            )
-            r["block_id"] = cr.scalar_one_or_none()
-        else:
-            r["block_id"] = None
-        enriched.append(r)
-    return ApiResponse(data={"query": payload.query, "results": enriched})
+    enriched, context_data = await _enrich_search_results(db, results, user.id)
+    return ApiResponse(data={
+        "query": payload.query,
+        "results": enriched,
+        "context_data": {
+            **context_data,
+            "top_k": payload.top_k,
+            "use_rerank": payload.use_rerank,
+        },
+    })
 
 @router.get("/documents/{document_id}/chunks")
 async def api_document_chunks(
@@ -764,38 +874,21 @@ async def _cap_search(params: dict, caller: str) -> dict:
         raise ValueError("query is required")
     async with AsyncSessionLocal() as db:
         results = await hybrid_search(db, query, owner_id, top_k=top_k, use_rerank=False)
-        # 为每个结果补充页级融合内容和文档名称
-        from .models import KbChunk, KbDocument
-        from .services.entity_service import get_page_fusion as _get_page_fusion
-        enriched = []
-        doc_cache: dict[int, dict] = {}
-        for r in results:
-            doc_id = r.get("document_id")
-            page = r.get("page")
-            chunk_id = r.get("chunk_id")
-            if doc_id and page:
-                fusion = await _get_page_fusion(db, doc_id, page, owner_id=owner_id)
-                r["page_fusion"] = fusion
-            if doc_id and doc_id not in doc_cache:
-                dr = await db.execute(select(KbDocument).where(KbDocument.id == doc_id, KbDocument.owner_id == owner_id))
-                doc = dr.scalar_one_or_none()
-                doc_cache[doc_id] = {
-                    "name": doc.filename if doc else "",
-                    "content_package_id": doc.content_package_id if doc and hasattr(doc, "content_package_id") else None,
-                }
-            doc_info = doc_cache.get(doc_id, {})
-            r["document_name"] = doc_info.get("name", "")
-            r["content_package_id"] = doc_info.get("content_package_id")
-            # Look up block_id from chunk
-            if chunk_id:
-                cr = await db.execute(
-                    select(KbChunk.block_id).where(KbChunk.id == chunk_id, KbChunk.owner_id == owner_id)
-                )
-                r["block_id"] = cr.scalar_one_or_none()
-            else:
-                r["block_id"] = None
-            enriched.append(r)
-        return {"query": query, "results": enriched}
+        enriched, context_data = await _enrich_search_results(
+            db,
+            results,
+            owner_id,
+            include_page_fusion=True,
+        )
+        return {
+            "query": query,
+            "results": enriched,
+            "context_data": {
+                **context_data,
+                "top_k": top_k,
+                "use_rerank": False,
+            },
+        }
 
 async def _cap_get_block(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)

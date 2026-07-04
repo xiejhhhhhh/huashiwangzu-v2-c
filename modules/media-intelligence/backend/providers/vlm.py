@@ -19,6 +19,16 @@ class VlmRefineProvider(MediaProvider):
                     f"{suffix}"
                 ),
                 "model": "not_configured",
+                "model_fallback": {
+                    "primary_model": "vlm_refine.primary",
+                    "primary_failed": True,
+                    "fallback_used": True,
+                    "fallback_model": "local_and_rule_based_summary",
+                    "final_success": True,
+                    "failure_category": "not_configured",
+                    "failure_code": "vlm_missing",
+                    "retryable": False,
+                },
                 "degraded": [
                     {
                         "code": "vlm_missing",

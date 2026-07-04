@@ -7,11 +7,12 @@ import pytest
 import pytest_asyncio
 from app.core.exceptions import PermissionDenied, ValidationError
 from app.database import AsyncSessionLocal
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.agent.backend.init_db import run_init
 from modules.agent.backend.models import ApprovalQueue
+from modules.agent.backend.services import workflow_seed_service as seed_svc
 from modules.agent.backend.services import workflow_service as svc
 from modules.agent.backend.workflow_models import (
     AgentFailureRecord,
@@ -152,6 +153,47 @@ async def test_multi_agent_summary_empty_workflow_returns_empty_items(
 
     summary = await svc.get_multi_agent_summary(db, run.id)
     assert summary == {"items": [], "total": 0}
+
+
+@pytest.mark.asyncio
+async def test_demo_workflow_seed_creates_and_cleans_repeatable_samples(
+    db: AsyncSession,
+) -> None:
+    marker = f"agent-demo-workflow-{uuid4().hex}"
+    try:
+        seeded = await seed_svc.seed_demo_workflows(
+            db,
+            owner_id=560,
+            creator_id=560,
+            marker=marker,
+        )
+        assert seeded["count"] == 4
+        statuses = {item["scenario"]: item["status"] for item in seeded["created"]}
+        assert statuses["completed"] == "completed"
+        assert statuses["partial"] == "partial"
+        assert statuses["semantic_failed"] == "failed"
+        assert statuses["needs_confirmation"] == "needs_confirmation"
+
+        runs = await svc.list_workflows(db, user_id=560, limit=20)
+        demo_runs = [run for run in runs if run.title.startswith(marker)]
+        assert len(demo_runs) == 4
+        counts = await svc.get_workflow_rollup_counts(db, [run.id for run in demo_runs])
+        assert any(item["artifact_count"] > 0 for item in counts.values())
+        assert any(item["reference_count"] > 0 for item in counts.values())
+        assert any(item["failure_count"] > 0 for item in counts.values())
+
+        summary = await svc.get_workflow_governance_summary(db, owner_id=560)
+        assert summary["total"] >= 4
+        assert summary["failed"] >= 1
+        assert summary["needs_confirmation"] >= 1
+        assert any(item["failure_type"] == "semantic_failure" for item in summary["recent_errors"])
+    finally:
+        cleanup = await seed_svc.cleanup_demo_workflows(db, marker=marker)
+        assert cleanup["deleted"] in {0, 4}
+        remaining = list((await db.execute(
+            select(AgentWorkflowRun).where(AgentWorkflowRun.title.like(f"{marker}-%"))
+        )).scalars().all())
+        assert remaining == []
 
 
 @pytest.mark.asyncio

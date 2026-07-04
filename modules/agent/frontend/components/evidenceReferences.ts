@@ -4,9 +4,21 @@ export interface EvidenceReference {
   ref_id: string
   title?: string
   source?: string
+  source_module?: string
   source_tool?: string
   status?: string
   excerpt?: string
+  file_id?: string | number | null
+  document_id?: string | number | null
+  chunk_id?: string | number | null
+  package_id?: string | number | null
+  artifact_id?: string | number | null
+  page?: string | number | null
+  section?: string | null
+  score?: string | number | null
+  snippet?: string | null
+  download_url?: string | null
+  open_url?: string | null
 }
 
 export interface EvidenceReferenceContext {
@@ -24,6 +36,7 @@ export const EVIDENCE_REF_LABELS: Record<string, string> = {
   document_id: '文档',
   chunk_id: '片段',
   page: '页码',
+  section: '章节',
 }
 
 const KNOWN_REF_KEYS = new Set(Object.keys(EVIDENCE_REF_LABELS))
@@ -69,9 +82,21 @@ function directReferenceFromRecord(record: Record<string, unknown>, context: Evi
     ref_id: refId,
     title: stringField(record, 'title'),
     source: stringField(record, 'source'),
+    source_module: stringField(record, 'source_module') || stringField(record, 'sourceModule'),
     source_tool: stringField(record, 'source_tool') || stringField(record, 'sourceTool'),
     status: stringField(record, 'status'),
-    excerpt: stringField(record, 'excerpt'),
+    excerpt: stringField(record, 'excerpt') || stringField(record, 'snippet'),
+    file_id: record.file_id as EvidenceReference['file_id'],
+    document_id: record.document_id as EvidenceReference['document_id'],
+    chunk_id: record.chunk_id as EvidenceReference['chunk_id'],
+    package_id: record.package_id as EvidenceReference['package_id'],
+    artifact_id: record.artifact_id as EvidenceReference['artifact_id'],
+    page: record.page as EvidenceReference['page'],
+    section: stringField(record, 'section'),
+    score: record.score as EvidenceReference['score'],
+    snippet: stringField(record, 'snippet') || stringField(record, 'excerpt'),
+    download_url: stringField(record, 'download_url') || stringField(record, 'downloadUrl'),
+    open_url: stringField(record, 'open_url') || stringField(record, 'openUrl'),
   }, context)
 }
 
@@ -119,6 +144,18 @@ export function collectEvidenceReferences(
           ref_id: refId,
           title: `${EVIDENCE_REF_LABELS[key]} ${refId}`,
           source: key,
+          source_module: stringField(value, 'source_module') || stringField(value, 'sourceModule'),
+          file_id: value.file_id as EvidenceReference['file_id'],
+          document_id: value.document_id as EvidenceReference['document_id'],
+          chunk_id: value.chunk_id as EvidenceReference['chunk_id'],
+          package_id: value.package_id as EvidenceReference['package_id'],
+          artifact_id: value.artifact_id as EvidenceReference['artifact_id'],
+          page: value.page as EvidenceReference['page'],
+          section: stringField(value, 'section'),
+          score: value.score as EvidenceReference['score'],
+          snippet: stringField(value, 'snippet') || stringField(value, 'excerpt'),
+          download_url: stringField(value, 'download_url') || stringField(value, 'downloadUrl'),
+          open_url: stringField(value, 'open_url') || stringField(value, 'openUrl'),
         }, context))
       }
     }
@@ -149,23 +186,35 @@ export function evidenceReferenceLabel(ref: EvidenceReference): string {
 }
 
 export function evidenceReferenceOpenReason(ref: EvidenceReference): string {
+  if (ref.open_url || ref.download_url) return '可打开来源'
   if (ref.ref_key === 'file_id' || ref.ref_key === 'source_file_id') {
     return numericFileId(ref) === null ? '文件 id 不是数字，暂不可直接打开' : '可打开文件'
   }
-  if (ref.ref_key === 'document_id' || ref.ref_key === 'chunk_id' || ref.ref_key === 'page') {
-    return '当前没有直接打开入口，请通过知识库证据/文档页面查看'
+  if (ref.ref_key === 'document_id' || ref.ref_key === 'chunk_id' || ref.ref_key === 'page' || ref.ref_key === 'section') {
+    return '可查看知识库 metadata，但当前没有直接文件入口'
   }
   if (ref.ref_key === 'package_id' || ref.ref_key === 'artifact_id') {
-    return '当前没有直接打开入口，请通过产物或内容包页面查看'
+    return '可查看 metadata；若未发布为文件则没有下载链接'
   }
   return '当前没有直接打开入口'
 }
 
 export function canOpenEvidenceReference(ref: EvidenceReference): boolean {
-  return (ref.ref_key === 'file_id' || ref.ref_key === 'source_file_id') && numericFileId(ref) !== null
+  return Boolean(ref.open_url || ref.download_url || numericFileId(ref) !== null)
 }
 
 export function numericFileId(ref: EvidenceReference): number | null {
-  const fileId = Number(ref.ref_id)
+  const fileId = Number(ref.ref_key === 'source_file_id' || ref.ref_key === 'file_id' ? ref.ref_id : (ref.file_id ?? ref.source))
   return Number.isInteger(fileId) && fileId > 0 ? fileId : null
+}
+
+export function evidenceReferenceCitation(ref: EvidenceReference): string {
+  const parts = [
+    ref.source_module || 'unknown',
+    ref.ref_key,
+    ref.ref_id,
+    ref.page ? `page=${ref.page}` : '',
+    ref.section ? `section=${ref.section}` : '',
+  ].filter(Boolean)
+  return parts.join(' | ')
 }

@@ -145,7 +145,7 @@ export interface Prompt {
   updated_at: string | null
 }
 
-const BASE = '/api/douyin-delivery'
+const BASE = '/douyin-delivery'
 
 export const products = {
   list: () => apiGet<Product[]>(`${BASE}/products`),

@@ -4,7 +4,7 @@
   "icon": "Monitor",
   "icon_asset": "",
   "category": "tools",
-  "component_key": "index.vue",
+  "component_key": "",
   "route_prefix": "/api/terminal-tools",
   "permissions": ["viewer", "editor", "admin"],
   "sort_order": 600,

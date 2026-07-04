@@ -115,6 +115,12 @@ class WorkflowCancelRequest(BaseModel):
     reason: str | None = None
 
 
+class WorkflowDemoSeedRequest(BaseModel):
+    marker: str = "agent-demo-workflow"
+    owner_id: int | None = None
+    cleanup_existing: bool = True
+
+
 class PromptItemCreate(BaseModel):
     key: str = ""
     title: str

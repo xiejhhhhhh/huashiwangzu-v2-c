@@ -406,6 +406,65 @@ def test_check_smoke_requires_machine_json(monkeypatch) -> None:
         release_gate.results[:] = original
 
 
+def test_release_summary_exposes_ui_and_model_fallback_status() -> None:
+    original_results = list(release_gate.results)
+    original_context = dict(release_gate.runtime_context)
+    try:
+        release_gate.results[:] = [{"check": "clean", "level": "PASS", "detail": "ok"}]
+        release_gate.runtime_context.clear()
+        release_gate.runtime_context["ui_coverage"] = {"status": "PASS", "passed": 3, "failed": 0}
+        release_gate.runtime_context["model_fallback"] = {"status": "DEBT", "fallback_used_count": 1}
+
+        summary = release_gate.build_release_summary("PASS_WITH_DEBT")
+
+        assert summary["ui_coverage_status"]["status"] == "PASS"
+        assert summary["model_fallback_status"]["status"] == "DEBT"
+        assert summary["compact_summary"]["ui_coverage_status"]["passed"] == 3
+        assert summary["compact_summary"]["model_fallback_status"]["fallback_used_count"] == 1
+        assert summary["compact_summary"]["release_safe"] is True
+    finally:
+        release_gate.results[:] = original_results
+        release_gate.runtime_context.clear()
+        release_gate.runtime_context.update(original_context)
+
+
+def test_ui_and_model_fallback_summary_classification() -> None:
+    original_results = list(release_gate.results)
+    original_context = dict(release_gate.runtime_context)
+    try:
+        release_gate.results[:] = []
+        release_gate.runtime_context.clear()
+        release_gate.check_ui_smoke_summary({
+            "ui": {
+                "status": "fail",
+                "passed": 4,
+                "failed": 1,
+                "skipped": 0,
+                "failed_tests": [{"title": "desktop smoke opens"}],
+                "artifact_paths": ["frontend/test-results/a/trace.zip"],
+            },
+        }, skip_ui=False)
+        release_gate.check_model_fallback_summary({
+            "model_fallback": {
+                "status": "DEBT",
+                "fallback_used_count": 1,
+                "blocker_count": 0,
+                "observations": [{"summary": "primary auth failed; local fallback used"}],
+            },
+        })
+
+        checks = {item["check"]: item for item in release_gate.results}
+        assert checks["UI Playwright summary"]["level"] == "BLOCKER"
+        assert "desktop smoke opens" in checks["UI Playwright summary"]["detail"]
+        assert checks["Model fallback"]["level"] == "DEBT"
+        assert release_gate.runtime_context["ui_coverage"]["artifact_paths"] == ["frontend/test-results/a/trace.zip"]
+        assert release_gate.runtime_context["model_fallback"]["fallback_used_count"] == 1
+    finally:
+        release_gate.results[:] = original_results
+        release_gate.runtime_context.clear()
+        release_gate.runtime_context.update(original_context)
+
+
 def test_task_result_semantic_failure_contract() -> None:
     assert release_gate._task_result_is_semantic_failure({"success": False, "error": "bad"}) == (
         True,
