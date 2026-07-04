@@ -73,6 +73,7 @@
           <span class="candidate-doc">资料 #{{ item.document_id }}</span>
         </div>
       </div>
+      <div v-else-if="governanceCandidatesUnavailable" class="db-empty">仅管理员可查看治理候选明细</div>
       <div v-else class="db-empty">暂无治理待办</div>
     </section>
 
@@ -118,6 +119,7 @@ const triggeredSet = ref(new Set<number>())
 const triggeringSet = ref(new Set<number>())
 const pendingCount = ref(0)
 const governanceCandidates = ref<GovernanceCandidate[]>([])
+const governanceCandidatesUnavailable = ref(false)
 const showGovernance = ref(false)
 
 const hasCategories = computed(() => Object.keys(s.value.entity_category_distribution).length > 0)
@@ -161,13 +163,17 @@ function fmtDate(iso: string): string {
 async function refreshStats() {
   try { s.value = await getDashboardStats() } catch { /* ignore */ }
   try {
-    const [pending, candidates] = await Promise.all([
-      getPendingCount(),
-      getGovernanceCandidates(5),
-    ])
+    const pending = await getPendingCount()
     pendingCount.value = pending.pending_count
-    governanceCandidates.value = candidates.items
   } catch { /* ignore */ }
+  try {
+    governanceCandidatesUnavailable.value = false
+    const candidates = await getGovernanceCandidates(5)
+    governanceCandidates.value = candidates.items
+  } catch {
+    governanceCandidates.value = []
+    governanceCandidatesUnavailable.value = true
+  }
 }
 
 async function handleRetrigger(docId: number) {
