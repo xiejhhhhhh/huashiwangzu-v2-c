@@ -4,12 +4,12 @@ Snapshots are auxiliary — all failures are logged without propagation.
 """
 import logging
 
-from sqlalchemy import select, desc, text, func
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ContextSnapshot, AgentEvent
-from .event_store import record_event
+from ..models import AgentEvent, ContextSnapshot
 from .budget_allocator import estimate_tokens as _budget_estimate_tokens
+from .event_store import record_event
 
 logger = logging.getLogger("v2.agent").getChild("engine.context_snapshot")
 

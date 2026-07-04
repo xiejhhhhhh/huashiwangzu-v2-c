@@ -174,6 +174,10 @@ def _build_command(repo_root: Path, tool_name: str, arguments: dict[str, Any]) -
         if bool(arguments.get("skip_ui", False)):
             cmd.append("--skip-ui")
             env["RELEASE_GATE_SKIP_UI"] = "1"
+        if arguments.get("sandbox_jobs") is not None:
+            cmd.extend(["--sandbox-jobs", str(max(1, int(arguments["sandbox_jobs"])))])
+        if arguments.get("sandbox_frontend_jobs") is not None:
+            cmd.extend(["--sandbox-frontend-jobs", str(max(1, int(arguments["sandbox_frontend_jobs"])))])
         return cmd, repo_root, env, timeout_seconds or (120 if mode == "preflight" else 600)
 
     if tool_name == "smoke_all":

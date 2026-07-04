@@ -1,5 +1,4 @@
 """Tests for skills_loader.py — priority resolution + skill discovery."""
-import pytest
 from .skills_loader import SkillDef, resolve_skill_priority
 
 

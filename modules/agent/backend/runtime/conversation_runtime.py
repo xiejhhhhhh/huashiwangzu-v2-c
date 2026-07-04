@@ -33,6 +33,7 @@ from .runtime_policy import RuntimePolicy
 from .task_sink import RuntimeTaskSink
 from .tool_loop_runtime import ToolLoopRuntime
 from .understanding_loop import UnderstandingLoopOrchestrator
+from .workflow_link import WorkflowRuntimeLink, should_open_workflow_from_preflight
 
 logger = logging.getLogger("v2.agent").getChild("runtime.conversation")
 
@@ -77,6 +78,7 @@ class ConversationRuntime:
         _exec_t0 = time.monotonic()
 
         profile_key = payload.profile_key or "deepseek-v4-flash"
+        user_message_id: int | None = None
 
         # ── Resume path: restore from checkpoint ────────────────────
         channel_values: dict | None = None
@@ -101,9 +103,10 @@ class ConversationRuntime:
             )
         else:
             # ── Normal flow: persist user message ───────────────────
-            await conv_svc.add_message(
+            user_msg = await conv_svc.add_message(
                 db, user.id, payload.conversation_id, "user", payload.content,
             )
+            user_message_id = user_msg.id
             await record_event(
                 db, payload.conversation_id, "user_msg",
                 {"content": payload.content},
@@ -215,6 +218,15 @@ class ConversationRuntime:
         # ── Wire sub-runtimes lazily inside the SSE stream so preflight does not block the HTTP response ──
         async def _event_stream():
             stream_preflight = None
+            workflow_link = WorkflowRuntimeLink.from_channel_values(
+                conversation_id=payload.conversation_id,
+                owner_id=user.id,
+                user_input=payload.content,
+                profile_key=profile_key,
+                channel_values=channel_values,
+            )
+            if not workflow_link.user_message_id:
+                workflow_link.user_message_id = user_message_id
             if not channel_values and self.policy.intent_preflight_enabled:
                 _ip_t0 = time.monotonic()
                 async with AsyncSessionLocal() as stream_db:
@@ -227,6 +239,10 @@ class ConversationRuntime:
                         user_input=payload.content,
                         messages=messages,
                     )
+                    if stream_preflight:
+                        workflow_link.intent_preflight = stream_preflight.to_dict()
+                    if should_open_workflow_from_preflight(workflow_link.intent_preflight):
+                        await workflow_link.ensure_started(stream_db, reason="intent_preflight")
                 logger.info("[PREFLIGHT_TIMING] intent preflight: %dms",
                             round((time.monotonic() - _ip_t0) * 1000))
             sink = RuntimeTaskSink(
@@ -235,6 +251,7 @@ class ConversationRuntime:
                 profile_key=profile_key,
                 user_input=payload.content,
                 intent_preflight=stream_preflight.to_dict() if stream_preflight else None,
+                workflow_link=workflow_link,
             )
             if self._should_preflight_clarify(stream_preflight):
                 async for event in self._yield_preflight_clarification(
@@ -392,6 +409,14 @@ class ConversationRuntime:
         # Wire sub-runtimes lazily inside the SSE stream so preflight does not block the HTTP response.
         async def _event_stream():
             stream_preflight = None
+            workflow_link = WorkflowRuntimeLink(
+                conversation_id=conversation_id,
+                owner_id=user.id,
+                user_input=content,
+                profile_key=profile_key,
+                user_message_id=edited_msg.id,
+                agent_run_id=f"agent-run-edit-{uuid4().hex}",
+            )
             if self.policy.intent_preflight_enabled:
                 async with AsyncSessionLocal() as stream_db:
                     stream_preflight = await self._run_intent_preflight(
@@ -403,12 +428,17 @@ class ConversationRuntime:
                         user_input=content,
                         messages=messages,
                     )
+                    if stream_preflight:
+                        workflow_link.intent_preflight = stream_preflight.to_dict()
+                    if should_open_workflow_from_preflight(workflow_link.intent_preflight):
+                        await workflow_link.ensure_started(stream_db, reason="edit_resubmit_preflight")
             sink = RuntimeTaskSink(
                 conversation_id=conversation_id,
                 owner_id=user.id,
                 profile_key=profile_key,
                 user_input=content,
                 intent_preflight=stream_preflight.to_dict() if stream_preflight else None,
+                workflow_link=workflow_link,
             )
             if self._should_preflight_clarify(stream_preflight):
                 async for event in self._yield_preflight_clarification(

@@ -81,6 +81,10 @@ async def _handle_memory_distill(params: dict) -> dict:
 async def _submit_slow_tool_task(
     conversation_id: int, user_id: int, tool_name: str,
     skill_args: dict, caller: str, caller_role: str,
+    workflow_run_id: int | None = None,
+    workflow_step_id: int | None = None,
+    workflow_tool_call_id: int | None = None,
+    idempotency_key: str | None = None,
 ) -> int:
     """将慢工具提交到 SystemTaskQueue 后台执行。
 
@@ -96,6 +100,10 @@ async def _submit_slow_tool_task(
         "skill_args": skill_args,
         "caller": caller,
         "caller_role": caller_role,
+        "workflow_run_id": workflow_run_id,
+        "workflow_step_id": workflow_step_id,
+        "tool_call_id": workflow_tool_call_id,
+        "idempotency_key": idempotency_key,
     }
     async with AsyncSessionLocal() as db:
         task = SystemTaskQueue(
@@ -122,6 +130,9 @@ async def _handle_slow_tool(params: dict) -> dict:
     skill_args = params.get("skill_args", {})
     caller = params.get("caller", "")
     caller_role = params.get("caller_role", "viewer")
+    workflow_run_id = params.get("workflow_run_id")
+    workflow_step_id = params.get("workflow_step_id")
+    workflow_tool_call_id = params.get("tool_call_id")
 
     if not conversation_id or not owner_id or not tool_name:
         return {"error": "Missing required params"}
@@ -205,6 +216,66 @@ async def _handle_slow_tool(params: dict) -> dict:
                 logger.info("Slow tool notify result: %s", notify_result)
             except Exception as notify_exc:
                 logger.warning("Slow tool IM notify failed (non-fatal): %s", notify_exc)
+
+            try:
+                if workflow_run_id and workflow_tool_call_id:
+                    from ..services import workflow_service as workflow_svc
+
+                    if is_failed:
+                        await workflow_svc.update_tool_call_status(
+                            db,
+                            int(workflow_tool_call_id),
+                            status="failed",
+                            result_ref={"summary": failed_error[:1000], "background": True},
+                            error_class="slow_tool_error",
+                            error_signature=failed_error[:256],
+                        )
+                        await workflow_svc.record_failure(
+                            db,
+                            run_id=int(workflow_run_id),
+                            step_id=int(workflow_step_id) if workflow_step_id else None,
+                            tool_call_id=int(workflow_tool_call_id),
+                            failure_type="tool_error",
+                            error_signature=failed_error[:256],
+                            retryable=False,
+                            next_action="manual",
+                            evidence_ref={"background": True, "tool_name": tool_name},
+                        )
+                    else:
+                        await workflow_svc.update_tool_call_status(
+                            db,
+                            int(workflow_tool_call_id),
+                            status="completed",
+                            result_ref={"summary": result_text[:1000], "background": True},
+                        )
+                        await workflow_svc.create_artifact(
+                            db,
+                            run_id=int(workflow_run_id),
+                            step_id=int(workflow_step_id) if workflow_step_id else None,
+                            artifact_type="slow_tool_result",
+                            storage_kind="inline_summary",
+                            storage_ref={"tool_name": tool_name, "result": result_text[:4000]},
+                            visibility="developer",
+                            lifecycle="published",
+                            summary=f"Background tool {tool_name} completed",
+                        )
+                    await workflow_svc.record_verification(
+                        db,
+                        run_id=int(workflow_run_id),
+                        step_id=int(workflow_step_id) if workflow_step_id else None,
+                        verification_type="background_tool_execution",
+                        status="fail" if is_failed else "pass",
+                        summary=failed_error[:1000] if is_failed else f"Background tool {tool_name} completed",
+                        is_required_for_completion=True,
+                        evidence_ref={"tool_name": tool_name, "background": True},
+                    )
+                    await workflow_svc.finalize_workflow(
+                        db,
+                        run_id=int(workflow_run_id),
+                        developer_summary="Finalized by slow tool background handler",
+                    )
+            except Exception as workflow_exc:
+                logger.warning("Slow tool workflow update failed (non-fatal): %s", workflow_exc)
 
             try:
                 from sqlalchemy import select

@@ -1,0 +1,18 @@
+{
+  "backend_base_url": "http://127.0.0.1:33000",
+  "frontend_base_url": "http://127.0.0.1:5173",
+  "db_dsn": "",
+  "bge_m3_url": "http://127.0.0.1:30000",
+  "accounts": {
+    "admin": { "username": "", "password": "", "role": "admin" },
+    "editor": { "username": "", "password": "", "role": "editor" },
+    "viewer": { "username": "", "password": "", "role": "viewer" }
+  },
+  "memory_dir": "开发文档/项目记忆",
+  "embedding_cache": "dev_toolkit/memory_embeddings.json",
+  "log_dir": "backend/logs",
+  "release_gate": {
+    "sandbox_jobs": 1,
+    "sandbox_frontend_jobs": 1
+  }
+}

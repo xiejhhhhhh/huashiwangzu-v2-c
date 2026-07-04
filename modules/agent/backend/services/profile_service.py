@@ -7,12 +7,10 @@ profile evolution pipeline.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
-from sqlalchemy import and_, desc, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -20,7 +18,6 @@ from ..models import (
     AgentMarketProfile,
     AgentProfileSignal,
     AgentRoleProfile,
-    AgentUserProfile,
 )
 
 logger = logging.getLogger("v2.agent").getChild("services.profile_service")
@@ -32,7 +29,7 @@ async def get_role_profile(db: AsyncSession, role_key: str) -> dict | None:
     r = await db.execute(
         select(AgentRoleProfile).where(
             AgentRoleProfile.role_key == role_key,
-            AgentRoleProfile.enabled == True,
+            AgentRoleProfile.enabled,
         )
     )
     item = r.scalar_one_or_none()

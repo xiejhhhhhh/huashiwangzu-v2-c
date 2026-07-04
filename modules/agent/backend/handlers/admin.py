@@ -12,18 +12,16 @@ Contains handler functions for:
 from __future__ import annotations
 
 import glob as _glob
-import json
 import logging
 from pathlib import Path
 
-from sqlalchemy import text, func as sa_func
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.exceptions import ValidationError
 from app.schemas.common import ApiResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..engine.event_store import read_events
-from ..services.action_policy import resolve_approval, list_pending_approvals
+from ..services.action_policy import list_pending_approvals, resolve_approval
 
 logger = logging.getLogger("v2.agent").getChild("handlers.admin")
 
@@ -339,9 +337,8 @@ async def handle_admin_compression_chain(
       - 关联的 pre_snapshot 和 post_snapshot
       - 如果有 restore 事件: restored_from snapshot_id
     """
-    from ..engine.event_store import read_events
     from ..engine.context_snapshot import list_snapshots
-    from ..models import ContextSnapshot
+    from ..engine.event_store import read_events
 
     events = await read_events(db, conversation_id)
     snapshots = await list_snapshots(db, conversation_id, limit=50)
@@ -414,12 +411,12 @@ async def handle_list_approvals(db: AsyncSession, user) -> ApiResponse:
 
 async def handle_resolve_approval(
     approval_id: int, decision: str, reason: str | None,
-    db: AsyncSession, user,
+    db: AsyncSession, user, payload_hash: str | None = None,
 ) -> ApiResponse:
     """审批（同意/拒绝）一个等待确认的敏感操作。"""
     if decision not in ("approved", "rejected"):
         raise ValidationError("decision must be 'approved' or 'rejected'")
-    result = await resolve_approval(db, approval_id, decision, user.id, reason)
+    result = await resolve_approval(db, approval_id, decision, user.id, reason, payload_hash)
     return ApiResponse(data=result)
 
 
@@ -427,7 +424,7 @@ async def handle_admin_snapshots(
     conversation_id: int, db: AsyncSession, user,
 ) -> ApiResponse:
     """快照列表：返回 conversation 所有快照的管理展示字段。"""
-    from ..engine.context_snapshot import list_snapshots, count_snapshots
+    from ..engine.context_snapshot import count_snapshots, list_snapshots
 
     snapshots = await list_snapshots(db, conversation_id, limit=50)
     total = await count_snapshots(db, conversation_id)
@@ -468,6 +465,7 @@ async def handle_admin_snapshot_restore(
 
     messages = await restore_snapshot(db, snapshot_id)
     from sqlalchemy import select
+
     from ..models import ContextSnapshot
     r = await db.execute(select(ContextSnapshot).where(ContextSnapshot.id == snapshot_id))
     snap = r.scalar_one_or_none()

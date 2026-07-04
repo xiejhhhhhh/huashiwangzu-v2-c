@@ -6,6 +6,10 @@
       <div class="db-card ok"><span class="db-num">{{ s.completed_documents }}</span><span class="db-label">分析完成</span></div>
       <div class="db-card busy"><span class="db-num">{{ s.running_documents }}</span><span class="db-label">分析中</span></div>
       <div class="db-card err"><span class="db-num">{{ s.failed_documents }}</span><span class="db-label">失败/卡住</span></div>
+      <div class="db-card source"><span class="db-num">{{ s.source_unavailable_documents || 0 }}</span><span class="db-label">源文件不可用</span></div>
+      <button class="db-card action-card" type="button" @click="showGovernance = !showGovernance">
+        <span class="db-num">{{ pendingCount }}</span><span class="db-label">治理待办</span>
+      </button>
       <div class="db-card"><span class="db-num">{{ s.total_entities }}</span><span class="db-label">实体总数</span></div>
       <div class="db-card"><span class="db-num">{{ s.total_graph_relations }}</span><span class="db-label">图谱关系</span></div>
       <div class="db-card"><span class="db-num">{{ s.total_file_relations }}</span><span class="db-label">跨文件关联</span></div>
@@ -20,9 +24,9 @@
           <tbody>
             <tr v-for="d in s.document_progresses" :key="d.id" :class="rowClass(d)">
               <td class="cell-name">{{ d.filename }}</td>
-              <td><span class="tag" :class="statusClass(d.raw_status)">{{ statusText(d.raw_status) }}</span></td>
-              <td><span class="tag" :class="statusClass(d.fusion_status)">{{ statusText(d.fusion_status) }}</span></td>
-              <td><span class="tag" :class="statusClass(d.parse_status)">{{ statusText(d.parse_status) }}</span></td>
+              <td><span class="tag" :class="statusClass(displayStatus(d, d.raw_status))">{{ statusText(displayStatus(d, d.raw_status)) }}</span></td>
+              <td><span class="tag" :class="statusClass(displayStatus(d, d.fusion_status))">{{ statusText(displayStatus(d, d.fusion_status)) }}</span></td>
+              <td><span class="tag" :class="statusClass(displayStatus(d, d.parse_status))">{{ statusText(displayStatus(d, d.parse_status)) }}</span></td>
               <td>{{ d.total_pages || '-' }}</td>
               <td class="cell-date">{{ fmtDate(d.created_at) }}</td>
               <td v-if="isFailed(d)">
@@ -41,8 +45,8 @@
           <div v-if="s.stuck_documents.length" class="stuck-list">
             <div v-for="d in s.stuck_documents" :key="d.id" class="stuck-item">
               <span class="stuck-name">{{ d.filename }}</span>
-              <span class="tag err">失败</span>
-              <button class="retrigger-btn" :disabled="isTriggered(d.id)" @click="handleRetrigger(d.id)">{{ triggeredSet.has(d.id) ? '已触发' : '🔄 重新触发' }}</button>
+              <span class="tag" :class="d.source_available === false ? 'source' : 'err'">{{ d.source_available === false ? '源文件不可用' : '失败' }}</span>
+              <button v-if="d.source_available !== false" class="retrigger-btn" :disabled="isTriggered(d.id)" @click="handleRetrigger(d.id)">{{ triggeredSet.has(d.id) ? '已触发' : '🔄 重新触发' }}</button>
             </div>
           </div>
         <div v-else class="db-empty">暂无卡住文件</div>
@@ -60,6 +64,17 @@
         <div v-else class="db-empty">暂无实体</div>
       </section>
     </div>
+
+    <section v-if="showGovernance" class="db-section">
+      <h3>治理待办</h3>
+      <div v-if="governanceCandidates.length" class="stuck-list">
+        <div v-for="item in governanceCandidates" :key="item.id" class="stuck-item">
+          <span class="stuck-name">{{ item.entity_name }} · {{ item.category }}</span>
+          <span class="candidate-doc">资料 #{{ item.document_id }}</span>
+        </div>
+      </div>
+      <div v-else class="db-empty">暂无治理待办</div>
+    </section>
 
     <section v-if="s.duplicate_entity_groups.length" class="db-section">
       <h3>重复实体（待消歧）</h3>
@@ -85,7 +100,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { getDashboardStats, startPipeline, type DashboardStats } from '../api'
+import {
+  getDashboardStats, getGovernanceCandidates, getPendingCount, startPipeline,
+  type DashboardStats, type DocProgressEntry, type GovernanceCandidate,
+} from '../api'
 
 const s = ref<DashboardStats>({
   total_documents: 0, completed_documents: 0, running_documents: 0, failed_documents: 0,
@@ -98,6 +116,9 @@ const s = ref<DashboardStats>({
 const loading = ref(true)
 const triggeredSet = ref(new Set<number>())
 const triggeringSet = ref(new Set<number>())
+const pendingCount = ref(0)
+const governanceCandidates = ref<GovernanceCandidate[]>([])
+const showGovernance = ref(false)
 
 const hasCategories = computed(() => Object.keys(s.value.entity_category_distribution).length > 0)
 
@@ -105,21 +126,27 @@ function statusClass(st: string): string {
   if (st === 'done') return 'ok'
   if (st === 'running' || st === 'collecting' || st === 'parsing' || st === 'fusing') return 'busy'
   if (st === 'failed' || st === 'error') return 'err'
+  if (st === 'source_unavailable') return 'source'
   return ''
 }
 function statusText(st: string): string {
   if (st === 'done') return '✓ 完成'
   if (st === 'running') return '进行中'
   if (st === 'failed' || st === 'error') return '✗ 失败'
+  if (st === 'source_unavailable') return '源文件不可用'
   return '待处理'
 }
-function rowClass(d: { raw_status: string; fusion_status: string }): string {
+function displayStatus(d: DocProgressEntry, fallback: string): string {
+  return d.source_available === false ? 'source_unavailable' : fallback
+}
+function rowClass(d: DocProgressEntry): string {
+  if (d.source_available === false) return 'row-source'
   if (d.raw_status === 'failed' || d.fusion_status === 'failed') return 'row-err'
   if (d.raw_status === 'done' && d.fusion_status === 'done') return 'row-ok'
   return ''
 }
-function isFailed(d: { raw_status: string; fusion_status: string }): boolean {
-  return d.raw_status === 'failed' || d.fusion_status === 'failed'
+function isFailed(d: DocProgressEntry): boolean {
+  return d.source_available !== false && (d.raw_status === 'failed' || d.fusion_status === 'failed')
 }
 function barPct(cnt: number): number {
   const values = Object.values(s.value.entity_category_distribution) as number[]
@@ -133,6 +160,14 @@ function fmtDate(iso: string): string {
 
 async function refreshStats() {
   try { s.value = await getDashboardStats() } catch { /* ignore */ }
+  try {
+    const [pending, candidates] = await Promise.all([
+      getPendingCount(),
+      getGovernanceCandidates(5),
+    ])
+    pendingCount.value = pending.pending_count
+    governanceCandidates.value = candidates.items
+  } catch { /* ignore */ }
 }
 
 async function handleRetrigger(docId: number) {
@@ -162,7 +197,7 @@ function isTriggered(docId: number): boolean {
 }
 
 onMounted(async () => {
-  try { s.value = await getDashboardStats() } catch { /* ignore */ }
+  await refreshStats()
   loading.value = false
 })
 </script>
@@ -176,10 +211,14 @@ onMounted(async () => {
 .db-card.busy { border-color: #f0d78c; background: #fef7e0; }
 .db-card.err { border-color: #f5c6c2; background: #fef0ee; }
 .db-card.warn { border-color: #f5c6c2; background: #fef0ee; }
+.db-card.source { border-color: #ffd0a6; background: #fff7ed; }
+.action-card { cursor: pointer; font: inherit; }
+.action-card:hover { border-color: #2395bc; background: #f0f9fd; }
 .db-num { display: block; font-size: 28px; font-weight: 800; color: #1c3a4a; line-height: 1.2; }
 .db-card.ok .db-num { color: #1f9d5b; }
 .db-card.busy .db-num { color: #c5851a; }
 .db-card.err .db-num, .db-card.warn .db-num { color: #d4544b; }
+.db-card.source .db-num { color: #b45309; }
 .db-label { font-size: 12px; color: #7c8da0; margin-top: 4px; display: block; }
 .db-section { margin-bottom: 20px; }
 .db-section h3 { margin: 0 0 10px; font-size: 15px; font-weight: 700; color: #1c3a4a; display: flex; align-items: center; gap: 8px; }
@@ -192,12 +231,14 @@ onMounted(async () => {
 .db-table tr:hover td { background: #f7fbfe; }
 .db-table tr.row-ok td { color: #1f9d5b; }
 .db-table tr.row-err td { color: #d4544b; background: #fef0ee; }
+.db-table tr.row-source td { color: #9a5b12; background: #fff7ed; }
 .cell-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-date { white-space: nowrap; font-size: 12px; color: #8aa0b5; }
 .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .tag.ok { background: #e3f6ec; color: #1f9d5b; }
 .tag.busy { background: #fdf2dd; color: #c5851a; }
 .tag.err { background: #fbe9e7; color: #d4544b; }
+.tag.source { background: #fff0d9; color: #b45309; }
 .db-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .stuck-list, .dup-list, .recent-list { border: 1px solid #e3e9f2; border-radius: 10px; background: #fff; overflow: hidden; }
 .stuck-item, .dup-item, .recent-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid #f0f3f7; font-size: 13px; }
@@ -205,6 +246,7 @@ onMounted(async () => {
 .stuck-name, .dup-name, .recent-name { color: #2a3a48; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .stuck-item .tag { flex: none; }
 .dup-cnt { font-size: 12px; color: #8aa0b5; flex: none; }
+.candidate-doc { font-size: 12px; color: #8aa0b5; flex: none; }
 .recent-date { font-size: 12px; color: #8aa0b5; flex: none; }
 .retrigger-btn { height: 28px; padding: 0 10px; border: 1px solid #2395bc; border-radius: 6px; background: #fff; color: #2395bc; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex: none; transition: all .2s; }
 .retrigger-btn:hover { background: #eaf6fb; }

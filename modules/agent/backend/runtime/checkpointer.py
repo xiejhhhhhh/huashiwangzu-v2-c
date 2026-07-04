@@ -48,6 +48,11 @@ class PostgresCheckpointSaver:
         channel_values: dict,
         parent_checkpoint_id: str | None = None,
         extra_meta: dict | None = None,
+        workflow_run_id: int | None = None,
+        workflow_step_id: int | None = None,
+        agent_run_id: str | None = None,
+        checkpoint_type: str | None = None,
+        resume_cursor: dict | None = None,
     ) -> None:
         """Upsert a checkpoint record.
 
@@ -59,23 +64,33 @@ class PostgresCheckpointSaver:
         now = datetime.datetime.now(datetime.timezone.utc)
         vals = json.dumps(channel_values, ensure_ascii=False, default=str)
         meta = json.dumps(extra_meta or {}, ensure_ascii=False, default=str)
+        cursor = json.dumps(resume_cursor or {}, ensure_ascii=False, default=str)
 
         conn = await db.connection()
         await conn.exec_driver_sql(
             "INSERT INTO agent_checkpoints "
             "(conversation_id, checkpoint_id, parent_checkpoint_id, step, "
-            " channel_values, extra_meta, owner_id, created_at, updated_at) "
+            " channel_values, extra_meta, owner_id, workflow_run_id, "
+            " workflow_step_id, agent_run_id, checkpoint_type, resume_cursor, "
+            " created_at, updated_at) "
             "VALUES ($1::bigint, $2::varchar, $3::varchar, $4::integer, "
             "  CAST($5 AS jsonb), CAST($6 AS jsonb), $7::integer, "
-            "  $8, $8) "
+            "  $8::bigint, $9::bigint, $10::varchar, $11::varchar, "
+            "  CAST($12 AS jsonb), $13, $13) "
             "ON CONFLICT (conversation_id, checkpoint_id) DO UPDATE SET "
             "  step = EXCLUDED.step, "
             "  channel_values = EXCLUDED.channel_values, "
             "  extra_meta = EXCLUDED.extra_meta, "
+            "  workflow_run_id = EXCLUDED.workflow_run_id, "
+            "  workflow_step_id = EXCLUDED.workflow_step_id, "
+            "  agent_run_id = EXCLUDED.agent_run_id, "
+            "  checkpoint_type = EXCLUDED.checkpoint_type, "
+            "  resume_cursor = EXCLUDED.resume_cursor, "
             "  updated_at = NOW()",
             [
                 (conversation_id, checkpoint_id, parent_checkpoint_id, step,
-                 vals, meta, owner_id, now),
+                 vals, meta, owner_id, workflow_run_id, workflow_step_id,
+                 agent_run_id, checkpoint_type, cursor, now),
             ],
         )
         await db.commit()
@@ -94,14 +109,18 @@ class PostgresCheckpointSaver:
         if checkpoint_id:
             result = await db.execute(text(
                 "SELECT checkpoint_id, parent_checkpoint_id, step, "
-                "       channel_values, extra_meta, owner_id "
+                "       channel_values, extra_meta, owner_id, "
+                "       workflow_run_id, workflow_step_id, agent_run_id, "
+                "       checkpoint_type, resume_cursor "
                 "FROM agent_checkpoints "
                 "WHERE conversation_id = :conv_id AND checkpoint_id = :cp_id"
             ), {"conv_id": conversation_id, "cp_id": checkpoint_id})
         else:
             result = await db.execute(text(
                 "SELECT checkpoint_id, parent_checkpoint_id, step, "
-                "       channel_values, extra_meta, owner_id "
+                "       channel_values, extra_meta, owner_id, "
+                "       workflow_run_id, workflow_step_id, agent_run_id, "
+                "       checkpoint_type, resume_cursor "
                 "FROM agent_checkpoints "
                 "WHERE conversation_id = :conv_id "
                 "ORDER BY step DESC LIMIT 1"
@@ -116,6 +135,11 @@ class PostgresCheckpointSaver:
             "channel_values": row[3] if isinstance(row[3], dict) else json.loads(row[3] or "{}"),
             "extra_meta": row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}"),
             "owner_id": row[5],
+            "workflow_run_id": row[6],
+            "workflow_step_id": row[7],
+            "agent_run_id": row[8],
+            "checkpoint_type": row[9],
+            "resume_cursor": row[10] if isinstance(row[10], dict) else json.loads(row[10] or "{}"),
         }
 
     async def list(
@@ -127,7 +151,9 @@ class PostgresCheckpointSaver:
         """List checkpoints for a conversation, newest first."""
         result = await db.execute(text(
             "SELECT checkpoint_id, parent_checkpoint_id, step, "
-            "       channel_values, extra_meta, owner_id "
+            "       channel_values, extra_meta, owner_id, "
+            "       workflow_run_id, workflow_step_id, agent_run_id, "
+            "       checkpoint_type, resume_cursor "
             "FROM agent_checkpoints "
             "WHERE conversation_id = :conv_id "
             "ORDER BY step DESC LIMIT :lim"
@@ -141,6 +167,11 @@ class PostgresCheckpointSaver:
                 "channel_values": row[3] if isinstance(row[3], dict) else json.loads(row[3] or "{}"),
                 "extra_meta": row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}"),
                 "owner_id": row[5],
+                "workflow_run_id": row[6],
+                "workflow_step_id": row[7],
+                "agent_run_id": row[8],
+                "checkpoint_type": row[9],
+                "resume_cursor": row[10] if isinstance(row[10], dict) else json.loads(row[10] or "{}"),
             })
         return rows
 

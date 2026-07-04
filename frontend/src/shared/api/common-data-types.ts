@@ -10,7 +10,7 @@ export interface FileParseResult {
 export interface NotificationItem {
   id: number
   title: string
-  type: string
+  notification_type: string
   is_read: boolean
   published_at: string
   [key: string]: unknown

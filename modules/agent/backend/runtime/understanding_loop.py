@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
 from app.gateway import service as gateway_service
@@ -290,7 +289,7 @@ class UnderstandingLoopOrchestrator:
     async def _persist_packet(self, packet: dict) -> None:
         """Persist the understanding packet and its events to DB."""
         try:
-            from ..models import UnderstandingPacket, UnderstandingEvent
+            from ..models import UnderstandingEvent, UnderstandingPacket
             async with AsyncSessionLocal() as db:
                 db_packet = UnderstandingPacket(
                     owner_id=packet["owner_id"],

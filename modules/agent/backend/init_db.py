@@ -551,6 +551,11 @@ async def ensure_checkpoint_table(db: AsyncSession) -> None:
             "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS channel_values JSONB NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS extra_meta JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS workflow_run_id BIGINT",
+            "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS workflow_step_id BIGINT",
+            "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS agent_run_id VARCHAR(128)",
+            "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS checkpoint_type VARCHAR(32)",
+            "ALTER TABLE agent_checkpoints ADD COLUMN IF NOT EXISTS resume_cursor JSONB DEFAULT '{}'::jsonb",
         ):
             await db.execute(text(sql))
         await db.execute(text(
@@ -585,6 +590,267 @@ async def ensure_checkpoint_table(db: AsyncSession) -> None:
     except Exception as e:
         await db.rollback()
         logger.warning("Migration: checkpoint table check failed: %s", e)
+
+
+async def ensure_workflow_tables(db: AsyncSession) -> None:
+    """Create Agent user workflow ledger tables and extension columns."""
+    try:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_workflow_runs (
+                id BIGSERIAL PRIMARY KEY,
+                owner_id INTEGER NOT NULL,
+                creator_id INTEGER,
+                source VARCHAR(32) NOT NULL DEFAULT 'manual',
+                title VARCHAR(256) NOT NULL DEFAULT '',
+                intent TEXT NOT NULL DEFAULT '',
+                status VARCHAR(32) NOT NULL DEFAULT 'waiting',
+                terminal_status VARCHAR(32),
+                verification_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                current_step_id BIGINT,
+                progress_summary TEXT NOT NULL DEFAULT '',
+                developer_summary TEXT,
+                dirty_worktree_state JSONB,
+                release_gate_verdict VARCHAR(64),
+                queue_task_ids JSONB DEFAULT '[]'::jsonb,
+                artifact_summary JSONB DEFAULT '{}'::jsonb,
+                extra_meta JSONB DEFAULT '{}'::jsonb,
+                started_at TIMESTAMPTZ,
+                finished_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_workflow_steps (
+                id BIGSERIAL PRIMARY KEY,
+                run_id BIGINT NOT NULL,
+                step_key VARCHAR(128) NOT NULL DEFAULT '',
+                title VARCHAR(256) NOT NULL DEFAULT '',
+                type VARCHAR(32) NOT NULL DEFAULT 'agent',
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                order_index INTEGER NOT NULL DEFAULT 0,
+                input_ref JSONB,
+                output_ref JSONB,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 0,
+                error_class VARCHAR(128),
+                error_signature VARCHAR(256),
+                summary TEXT,
+                started_at TIMESTAMPTZ,
+                finished_at TIMESTAMPTZ,
+                extra_meta JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_tool_calls (
+                id BIGSERIAL PRIMARY KEY,
+                run_id BIGINT NOT NULL,
+                step_id BIGINT,
+                agent_run_id VARCHAR(128),
+                tool_name VARCHAR(128) NOT NULL,
+                target_module VARCHAR(64),
+                action VARCHAR(128),
+                caller VARCHAR(128),
+                arguments_ref JSONB,
+                arguments_hash VARCHAR(64) NOT NULL DEFAULT '',
+                side_effect_level VARCHAR(32) NOT NULL DEFAULT 'readonly',
+                approval_policy VARCHAR(32) NOT NULL DEFAULT 'auto',
+                status VARCHAR(32) NOT NULL DEFAULT 'planned',
+                idempotency_key VARCHAR(128),
+                result_ref JSONB,
+                error_class VARCHAR(128),
+                error_signature VARCHAR(256),
+                started_at TIMESTAMPTZ,
+                finished_at TIMESTAMPTZ,
+                extra_meta JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_workflow_artifacts (
+                id BIGSERIAL PRIMARY KEY,
+                run_id BIGINT NOT NULL,
+                step_id BIGINT,
+                artifact_type VARCHAR(32) NOT NULL,
+                storage_kind VARCHAR(32) NOT NULL,
+                storage_ref JSONB,
+                visibility VARCHAR(32) NOT NULL DEFAULT 'user',
+                lifecycle VARCHAR(32) NOT NULL DEFAULT 'candidate',
+                ttl_seconds INTEGER,
+                checksum VARCHAR(128),
+                summary TEXT,
+                extra_meta JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_verification_results (
+                id BIGSERIAL PRIMARY KEY,
+                run_id BIGINT NOT NULL,
+                step_id BIGINT,
+                verification_type VARCHAR(32) NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                command_or_capability TEXT,
+                evidence_ref JSONB,
+                summary TEXT,
+                is_required_for_completion BOOLEAN NOT NULL DEFAULT TRUE,
+                duration_ms INTEGER,
+                extra_meta JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_failure_records (
+                id BIGSERIAL PRIMARY KEY,
+                run_id BIGINT NOT NULL,
+                step_id BIGINT,
+                tool_call_id BIGINT,
+                failure_type VARCHAR(32) NOT NULL,
+                error_signature VARCHAR(256),
+                retryable BOOLEAN NOT NULL DEFAULT FALSE,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                next_action VARCHAR(32) NOT NULL DEFAULT 'manual',
+                evidence_ref JSONB,
+                handoff_note TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        for sql in (
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS owner_id INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS creator_id INTEGER",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'manual'",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS title VARCHAR(256) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS intent TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'waiting'",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS terminal_status VARCHAR(32)",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS verification_status VARCHAR(32) NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS current_step_id BIGINT",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS progress_summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS developer_summary TEXT",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS dirty_worktree_state JSONB",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS release_gate_verdict VARCHAR(64)",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS queue_task_ids JSONB DEFAULT '[]'::jsonb",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS artifact_summary JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS extra_meta JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_workflow_runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS run_id BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS step_key VARCHAR(128) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS title VARCHAR(256) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS type VARCHAR(32) NOT NULL DEFAULT 'agent'",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS order_index INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS input_ref JSONB",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS output_ref JSONB",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS error_class VARCHAR(128)",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS error_signature VARCHAR(256)",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS summary TEXT",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS extra_meta JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_workflow_steps ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS run_id BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS step_id BIGINT",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS agent_run_id VARCHAR(128)",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS tool_name VARCHAR(128) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS target_module VARCHAR(64)",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS action VARCHAR(128)",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS caller VARCHAR(128)",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS arguments_ref JSONB",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS arguments_hash VARCHAR(64) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(32) NOT NULL DEFAULT 'readonly'",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS approval_policy VARCHAR(32) NOT NULL DEFAULT 'auto'",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'planned'",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128)",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS result_ref JSONB",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS error_class VARCHAR(128)",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS error_signature VARCHAR(256)",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS extra_meta JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_tool_calls ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS run_id BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS step_id BIGINT",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS artifact_type VARCHAR(32) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS storage_kind VARCHAR(32) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS storage_ref JSONB",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS visibility VARCHAR(32) NOT NULL DEFAULT 'user'",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS lifecycle VARCHAR(32) NOT NULL DEFAULT 'candidate'",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS ttl_seconds INTEGER",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS checksum VARCHAR(128)",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS summary TEXT",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS extra_meta JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_workflow_artifacts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS run_id BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS step_id BIGINT",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS verification_type VARCHAR(32) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS command_or_capability TEXT",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS evidence_ref JSONB",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS summary TEXT",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS is_required_for_completion BOOLEAN NOT NULL DEFAULT TRUE",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS duration_ms INTEGER",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS extra_meta JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_verification_results ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS run_id BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS step_id BIGINT",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS tool_call_id BIGINT",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS failure_type VARCHAR(32) NOT NULL DEFAULT ''",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS error_signature VARCHAR(256)",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS retryable BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS next_action VARCHAR(32) NOT NULL DEFAULT 'manual'",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS evidence_ref JSONB",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS handoff_note TEXT",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE agent_failure_records ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+        ):
+            await db.execute(text(sql))
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS ix_agent_workflow_runs_owner ON agent_workflow_runs(owner_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_workflow_runs_status ON agent_workflow_runs(status)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_workflow_steps_run ON agent_workflow_steps(run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_tool_calls_run ON agent_tool_calls(run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_tool_calls_step ON agent_tool_calls(step_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_tool_calls_idempotency ON agent_tool_calls(idempotency_key)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_workflow_artifacts_run ON agent_workflow_artifacts(run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_verification_results_run ON agent_verification_results(run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_failure_records_run ON agent_failure_records(run_id)",
+        ):
+            await db.execute(text(sql))
+        for sql in (
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS workflow_run_id BIGINT",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS workflow_step_id BIGINT",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS tool_call_id BIGINT",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS request_type VARCHAR(32)",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS risk_level VARCHAR(32)",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS decision_scope VARCHAR(32)",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS payload_hash VARCHAR(64)",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS resume_target JSONB DEFAULT '{}'::jsonb",
+            "ALTER TABLE agent_approval_queue ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ",
+            "CREATE INDEX IF NOT EXISTS ix_agent_approval_workflow_run ON agent_approval_queue(workflow_run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_approval_tool_call ON agent_approval_queue(tool_call_id)",
+        ):
+            await db.execute(text(sql))
+        await db.commit()
+        logger.info("Migration: ensured agent workflow ledger tables")
+    except Exception as e:
+        await db.rollback()
+        logger.warning("Migration: workflow ledger table check failed: %s", e)
 
 
 async def ensure_workflow_recipes_table(db: AsyncSession) -> None:
@@ -906,6 +1172,7 @@ async def run_init(db: AsyncSession) -> None:
     await ensure_trajectory_table(db)
     await ensure_trajectory_unique_constraint(db)
     await ensure_checkpoint_table(db)
+    await ensure_workflow_tables(db)
     await ensure_profile_v2_tables(db)
     await ensure_workflow_recipes_table(db)
     await ensure_tool_guide_tables(db)

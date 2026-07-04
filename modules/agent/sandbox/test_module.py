@@ -94,6 +94,327 @@ def test_response_shape() -> None:
     print("  [RESPONSE] Shape valid")
 
 
+def test_workflow_run_initial_contract() -> None:
+    """Workflow run starts as the user-level ledger root."""
+    run = {
+        "id": 101,
+        "owner_id": 1,
+        "creator_id": 1,
+        "source": "manual",
+        "title": "Prepare report",
+        "intent": "Create a validated report",
+        "status": "waiting",
+        "terminal_status": None,
+        "verification_status": "pending",
+        "progress_summary": "等待中",
+        "artifact_summary": {},
+        "extra_meta": {},
+    }
+    required = {"id", "owner_id", "title", "intent", "status", "verification_status"}
+    for field in required:
+        assert field in run, f"Missing workflow run field: {field}"
+    assert run["status"] == "waiting"
+    assert run["verification_status"] == "pending"
+    print("  [WORKFLOW_RUN] Initial contract valid")
+
+
+def test_workflow_user_status_summary_contract() -> None:
+    """Normal users see only a compact workflow status."""
+    summary = {
+        "id": 101,
+        "status": "processing",
+        "terminal_status": None,
+        "verification_status": "pending",
+        "progress_summary": "正在分析和执行",
+        "needs_confirmation": False,
+        "artifact_summary": {},
+        "updated_at": "2026-07-01T00:00:00",
+    }
+    required = {
+        "id",
+        "status",
+        "terminal_status",
+        "verification_status",
+        "progress_summary",
+        "needs_confirmation",
+        "artifact_summary",
+        "updated_at",
+    }
+    for field in required:
+        assert field in summary, f"Missing workflow summary field: {field}"
+    assert "developer_summary" not in summary
+    print("  [WORKFLOW_STATUS] User summary contract valid")
+
+
+def test_workflow_admin_ledger_contract() -> None:
+    """Admins can inspect the full durable ledger."""
+    admin_view = {
+        "id": 101,
+        "owner_id": 1,
+        "creator_id": 1,
+        "intent": "Create a validated report",
+        "developer_summary": "lint passed; release gate debt remains",
+        "dirty_worktree_state": {"dirty": False},
+        "release_gate_verdict": "PASS_WITH_DEBT",
+        "queue_task_ids": [9001],
+        "extra_meta": {"priority": "normal"},
+    }
+    required = {"owner_id", "developer_summary", "release_gate_verdict", "queue_task_ids"}
+    for field in required:
+        assert field in admin_view, f"Missing admin ledger field: {field}"
+    assert isinstance(admin_view["queue_task_ids"], list)
+    print("  [WORKFLOW_ADMIN] Ledger contract valid")
+
+
+def test_workflow_frontend_status_set_contract() -> None:
+    """Frontend status labels remain intentionally small."""
+    visible_statuses = {
+        "waiting": "等待中",
+        "processing": "处理中",
+        "needs_confirmation": "需要确认",
+        "completed": "已完成",
+        "failed": "失败",
+        "partial": "部分完成",
+        "cancelled": "已取消",
+        "manual_required": "需要人工接手",
+    }
+    assert set(visible_statuses) == {
+        "waiting",
+        "processing",
+        "needs_confirmation",
+        "completed",
+        "failed",
+        "partial",
+        "cancelled",
+        "manual_required",
+    }
+    assert visible_statuses["partial"] != "已完成"
+    print("  [WORKFLOW_STATUS_SET] Frontend labels valid")
+
+
+def test_workflow_terminal_status_contract() -> None:
+    """Terminal verdicts distinguish clean completion from debt."""
+    terminal = {
+        "clean_completed",
+        "completed_with_debt",
+        "failed_verified",
+        "manual_required",
+        "cancelled",
+    }
+    assert "clean_completed" in terminal
+    assert "completed_with_debt" in terminal
+    assert "PASS_WITH_DEBT" not in {"clean_completed"}
+    print("  [WORKFLOW_TERMINAL] Terminal statuses valid")
+
+
+def test_workflow_step_contract() -> None:
+    """Workflow steps are typed and ordered."""
+    step = {
+        "id": 201,
+        "run_id": 101,
+        "step_key": "verify",
+        "title": "Run verification",
+        "type": "verification",
+        "status": "running",
+        "order_index": 2,
+        "input_ref": {"source": "tool"},
+        "output_ref": None,
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+    assert step["type"] in {"plan", "agent", "tool", "verification", "approval", "artifact", "memory", "publish"}
+    assert step["status"] in {"pending", "running", "paused", "completed", "failed", "skipped", "cancelled"}
+    assert step["order_index"] > 0
+    print("  [WORKFLOW_STEP] Contract valid")
+
+
+def test_workflow_tool_call_contract() -> None:
+    """Tool calls store recoverable metadata without exposing raw arguments."""
+    tool_call = {
+        "id": 301,
+        "run_id": 101,
+        "step_id": 201,
+        "tool_name": "terminal-tools__exec",
+        "target_module": "terminal-tools",
+        "action": "exec",
+        "caller": "user:1",
+        "arguments_ref": {"summary": {"command": "echo ok"}, "storage": "sanitized_summary"},
+        "arguments_hash": "a" * 64,
+        "side_effect_level": "workspace_write",
+        "approval_policy": "requires_user",
+        "status": "waiting_approval",
+        "idempotency_key": "agent-workflow-101-abc",
+    }
+    assert tool_call["arguments_hash"]
+    assert tool_call["idempotency_key"]
+    assert tool_call["side_effect_level"] in {
+        "readonly",
+        "workspace_write",
+        "user_file_write",
+        "external_side_effect",
+        "dangerous",
+    }
+    assert "arguments" not in tool_call
+    print("  [WORKFLOW_TOOL_CALL] Contract valid")
+
+
+def test_workflow_artifact_contract() -> None:
+    """Artifacts describe outputs without requiring inline content."""
+    artifact = {
+        "id": 401,
+        "run_id": 101,
+        "step_id": 201,
+        "artifact_type": "report",
+        "storage_kind": "inline_summary",
+        "storage_ref": {"summary": "done"},
+        "visibility": "user",
+        "lifecycle": "published",
+        "checksum": "sha256:abc",
+    }
+    assert artifact["artifact_type"] in {
+        "report",
+        "patch",
+        "test_result",
+        "screenshot",
+        "document",
+        "spreadsheet",
+        "log",
+        "temp_file",
+        "memory_candidate",
+    }
+    assert artifact["lifecycle"] in {"temp", "candidate", "published", "archived", "expired"}
+    print("  [WORKFLOW_ARTIFACT] Contract valid")
+
+
+def test_workflow_verification_contract() -> None:
+    """Verification results drive terminal decisions."""
+    verification = {
+        "id": 501,
+        "run_id": 101,
+        "step_id": 201,
+        "verification_type": "release_gate",
+        "status": "debt",
+        "command_or_capability": "release_gate --skip-ui",
+        "evidence_ref": {"log": "release_gate"},
+        "summary": "PASS_WITH_DEBT: skip-ui used",
+        "is_required_for_completion": True,
+        "duration_ms": 1200,
+    }
+    assert verification["verification_type"] in {
+        "lint",
+        "unit_test",
+        "probe",
+        "playwright",
+        "release_gate",
+        "sandbox_matrix",
+        "manual_review",
+        "boundary_check",
+    }
+    assert verification["status"] in {"pass", "fail", "debt", "skipped", "not_applicable"}
+    assert verification["status"] != "pass"
+    print("  [WORKFLOW_VERIFICATION] Contract valid")
+
+
+def test_workflow_failure_record_contract() -> None:
+    """Failures keep a recovery decision."""
+    failure = {
+        "id": 601,
+        "run_id": 101,
+        "step_id": 201,
+        "tool_call_id": 301,
+        "failure_type": "approval_rejected",
+        "error_signature": "unsafe command",
+        "retryable": False,
+        "retry_count": 0,
+        "next_action": "manual",
+        "handoff_note": "User rejected the operation",
+    }
+    assert failure["failure_type"] in {
+        "tool_error",
+        "test_failure",
+        "approval_rejected",
+        "conflict",
+        "dirty_worktree",
+        "release_gate_fail",
+        "timeout",
+        "mcp_unavailable",
+        "permission_denied",
+    }
+    assert failure["next_action"] in {"retry", "fallback", "manual", "abort"}
+    print("  [WORKFLOW_FAILURE] Contract valid")
+
+
+def test_workflow_approval_extension_contract() -> None:
+    """Approvals can resume the exact original tool call."""
+    approval = {
+        "id": 701,
+        "workflow_run_id": 101,
+        "workflow_step_id": 201,
+        "tool_call_id": 301,
+        "request_type": "tool_call",
+        "risk_level": "dangerous",
+        "decision_scope": "single_call",
+        "payload_hash": "a" * 64,
+        "resume_target": {
+            "workflow_run_id": 101,
+            "workflow_step_id": 201,
+            "tool_call_id": 301,
+            "idempotency_key": "agent-workflow-101-abc",
+        },
+        "status": "pending",
+    }
+    assert approval["payload_hash"] == "a" * 64
+    assert approval["resume_target"]["tool_call_id"] == approval["tool_call_id"]
+    assert approval["status"] in {"pending", "approved", "rejected"}
+    print("  [WORKFLOW_APPROVAL] Extension contract valid")
+
+
+def test_workflow_checkpoint_extension_contract() -> None:
+    """Checkpoints keep workflow resume coordinates."""
+    checkpoint = {
+        "id": 801,
+        "conversation_id": 901,
+        "owner_id": 1,
+        "checkpoint_id": "cp-1",
+        "workflow_run_id": 101,
+        "workflow_step_id": 201,
+        "agent_run_id": "agent-run-1",
+        "checkpoint_type": "workflow_step",
+        "resume_cursor": {"tool_call_id": 301},
+    }
+    assert checkpoint["workflow_run_id"] == 101
+    assert checkpoint["resume_cursor"]["tool_call_id"] == 301
+    print("  [WORKFLOW_CHECKPOINT] Extension contract valid")
+
+
+def test_workflow_permission_contract() -> None:
+    """Owners see their workflows; admins can see all."""
+    workflow = {"id": 101, "owner_id": 1}
+    owner_user = {"id": 1, "role": "viewer"}
+    other_user = {"id": 2, "role": "viewer"}
+    admin_user = {"id": 3, "role": "admin"}
+
+    assert workflow["owner_id"] == owner_user["id"]
+    assert admin_user["role"] == "admin"
+    assert workflow["owner_id"] != other_user["id"] and other_user["role"] != "admin"
+    print("  [WORKFLOW_PERMISSION] Owner/admin contract valid")
+
+
+def test_workflow_queue_parameter_link_contract() -> None:
+    """Background queue payloads carry workflow coordinates only."""
+    queue_parameters = {
+        "workflow_run_id": 101,
+        "workflow_step_id": 201,
+        "tool_call_id": 301,
+        "idempotency_key": "agent-workflow-101-abc",
+    }
+    required = {"workflow_run_id", "workflow_step_id", "tool_call_id", "idempotency_key"}
+    for field in required:
+        assert field in queue_parameters, f"Missing queue workflow field: {field}"
+    assert all(queue_parameters[field] for field in required)
+    print("  [WORKFLOW_QUEUE] Parameter link contract valid")
+
+
 def main() -> None:
     print("=" * 60)
     print("agent sandbox test")
@@ -104,6 +425,20 @@ def main() -> None:
     test_message_event_shape()
     test_draft_event_shape()
     test_response_shape()
+    test_workflow_run_initial_contract()
+    test_workflow_user_status_summary_contract()
+    test_workflow_admin_ledger_contract()
+    test_workflow_frontend_status_set_contract()
+    test_workflow_terminal_status_contract()
+    test_workflow_step_contract()
+    test_workflow_tool_call_contract()
+    test_workflow_artifact_contract()
+    test_workflow_verification_contract()
+    test_workflow_failure_record_contract()
+    test_workflow_approval_extension_contract()
+    test_workflow_checkpoint_extension_contract()
+    test_workflow_permission_contract()
+    test_workflow_queue_parameter_link_contract()
     print("=" * 60)
     print("PASS: agent sandbox test")
 

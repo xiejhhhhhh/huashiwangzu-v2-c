@@ -16,7 +16,10 @@ def _make_repo(tmp_path: Path) -> Path:
     repo = tmp_path
     toolkit_dir = repo / "dev_toolkit"
     toolkit_dir.mkdir()
-    (toolkit_dir / "config.json").write_text(json.dumps({"db_dsn": "postgresql://readonly/test"}), encoding="utf-8")
+    (toolkit_dir / "config.local.json").write_text(
+        json.dumps({"db_dsn": "postgresql://readonly/test"}),
+        encoding="utf-8",
+    )
 
     knowledge_backend = repo / "modules" / "knowledge" / "backend"
     knowledge_backend.mkdir(parents=True)

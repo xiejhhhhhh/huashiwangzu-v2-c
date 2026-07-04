@@ -6,7 +6,6 @@ instructions.  This reduces reliance on prompt text alone — the strategy
 can be observed, tested, and extended without touching engine logic.
 """
 import logging
-import re
 from typing import Any
 
 logger = logging.getLogger("v2.agent").getChild("engine.workflow_strategy")

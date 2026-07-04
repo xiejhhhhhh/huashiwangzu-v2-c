@@ -32,6 +32,7 @@ try:
     from dev_toolkit.code_tools import resolve_repo_path as _resolve_repo_path_raw
     from dev_toolkit.code_tools import run_test as code_run_test
     from dev_toolkit.code_tools import tool_definitions as code_tool_definitions
+    from dev_toolkit.config_loader import load_config
     from dev_toolkit.contract_tools import handle_tool as contract_handle_tool
     from dev_toolkit.contract_tools import handles_tool as contract_handles_tool
     from dev_toolkit.contract_tools import tool_definitions as contract_tool_definitions
@@ -92,6 +93,7 @@ except ModuleNotFoundError:
     from code_tools import resolve_repo_path as _resolve_repo_path_raw
     from code_tools import run_test as code_run_test
     from code_tools import tool_definitions as code_tool_definitions
+    from config_loader import load_config
     from contract_tools import handle_tool as contract_handle_tool
     from contract_tools import handles_tool as contract_handles_tool
     from contract_tools import tool_definitions as contract_tool_definitions
@@ -145,10 +147,7 @@ except ModuleNotFoundError:
 # ── 配置 ──────────────────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = REPO_ROOT / "dev_toolkit" / "config.json"
-
-with open(CONFIG_PATH, encoding="utf-8") as f:
-    CONFIG = json.load(f)
+CONFIG = load_config(REPO_ROOT)
 
 BACKEND_BASE = CONFIG["backend_base_url"]
 BGE_M3_URL = CONFIG["bge_m3_url"]
@@ -862,7 +861,12 @@ def _build_release_gate_response(
     return build_release_gate_payload(output, returncode, skip_ui, duration_seconds)
 
 
-async def _release_gate(skip_ui: bool = False, mode: str = "preflight") -> str:
+async def _release_gate(
+    skip_ui: bool = False,
+    mode: str = "preflight",
+    sandbox_jobs: int | None = None,
+    sandbox_frontend_jobs: int | None = None,
+) -> str:
     """Run dev_toolkit/release_gate.py and return its verdict."""
     if mode not in {"preflight", "full"}:
         return json.dumps(
@@ -889,6 +893,10 @@ async def _release_gate(skip_ui: bool = False, mode: str = "preflight") -> str:
             cmd.append("--preflight")
         if skip_ui:
             cmd.append("--skip-ui")
+        if sandbox_jobs is not None:
+            cmd.extend(["--sandbox-jobs", str(max(1, sandbox_jobs))])
+        if sandbox_frontend_jobs is not None:
+            cmd.extend(["--sandbox-frontend-jobs", str(max(1, sandbox_frontend_jobs))])
         proc = await create_subprocess_exec_group(
             *cmd,
             stdout=asyncio.subprocess.PIPE,

@@ -26,6 +26,7 @@ from ..runtime.content_gate import (
     final_clean_content,
 )
 from ..services import conversation_service as conv_svc
+from .workflow_link import WorkflowRuntimeLink
 
 logger = logging.getLogger("v2.agent").getChild("runtime.task_sink")
 
@@ -48,12 +49,95 @@ class RuntimeTaskSink:
         profile_key: str = "deepseek-v4-flash",
         user_input: str = "",
         intent_preflight: dict | None = None,
+        workflow_link: WorkflowRuntimeLink | None = None,
     ) -> None:
         self.conversation_id = conversation_id
         self.owner_id = owner_id
         self.profile_key = profile_key
         self.user_input = user_input
         self.intent_preflight = intent_preflight or {}
+        self.workflow_link = workflow_link
+
+    @property
+    def workflow_run_id(self) -> int | None:
+        return self.workflow_link.run_id if self.workflow_link else None
+
+    @property
+    def workflow_step_id(self) -> int | None:
+        return self.workflow_link.step_id if self.workflow_link else None
+
+    @property
+    def agent_run_id(self) -> str | None:
+        return self.workflow_link.agent_run_id if self.workflow_link else None
+
+    async def ensure_workflow_started(self, db: AsyncSession, *, reason: str = "runtime") -> None:
+        if self.workflow_link:
+            await self.workflow_link.ensure_started(db, reason=reason)
+
+    async def workflow_record_tool_started(self, db: AsyncSession, tool: dict) -> int | None:
+        if not self.workflow_link:
+            return None
+        try:
+            return await self.workflow_link.record_tool_started(db, tool)
+        except Exception as exc:
+            logger.warning("workflow record tool start failed (non-fatal): %s", exc)
+            return None
+
+    async def workflow_mark_invalid_tool(self, db: AsyncSession, tool: dict, message: str) -> None:
+        if not self.workflow_link:
+            return
+        try:
+            await self.workflow_link.mark_invalid_tool(db, tool, message)
+        except Exception as exc:
+            logger.warning("workflow invalid-tool record failed (non-fatal): %s", exc)
+
+    async def workflow_mark_tool_result(self, db: AsyncSession, result_event: dict) -> None:
+        if not self.workflow_link:
+            return
+        try:
+            await self.workflow_link.mark_tool_result(db, result_event)
+        except Exception as exc:
+            logger.warning("workflow tool result record failed (non-fatal): %s", exc)
+
+    async def workflow_complete_turn(
+        self,
+        db: AsyncSession,
+        *,
+        message_id: int | None,
+        tool_events: list[dict],
+        completion_evidence: list[dict] | None = None,
+        usage: dict | None = None,
+    ) -> None:
+        if not self.workflow_link:
+            return
+        try:
+            await self.workflow_link.record_turn_completion(
+                db,
+                message_id=message_id,
+                tool_events=tool_events,
+                completion_evidence=completion_evidence,
+                usage=usage,
+            )
+        except Exception as exc:
+            logger.warning("workflow turn completion failed (non-fatal): %s", exc)
+
+    async def workflow_record_runtime_failure(
+        self,
+        db: AsyncSession,
+        *,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        if not self.workflow_link:
+            return
+        try:
+            await self.workflow_link.record_runtime_failure(
+                db,
+                error_type=error_type,
+                error_message=error_message,
+            )
+        except Exception as exc:
+            logger.warning("workflow runtime failure record failed (non-fatal): %s", exc)
 
     @staticmethod
     def check_tool_success(tool_events: list[dict]) -> bool:

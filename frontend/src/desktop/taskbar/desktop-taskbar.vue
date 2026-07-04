@@ -20,6 +20,7 @@
       <div v-if="!items.length" class="taskbar-empty">没有打开的窗口</div>
     </div>
     <div class="taskbar-right">
+      <TaskbarNotifications @open-app="(id: string) => $emit('openTrayApp', id)" />
       <TrayLauncher v-if="trayApps?.length" :app-list="trayApps" @openApp="(id: string) => $emit('openTrayApp', id)" />
       <div class="taskbar-clock">{{ clockText }}</div>
     </div>
@@ -33,6 +34,7 @@ import type { AppRegistryEntry } from '@/desktop/window-manager/window-types'
 import AppIcon from '@/desktop/components/app-icon.vue'
 
 const TrayLauncher = defineAsyncComponent(() => import('./tray-launcher.vue'))
+const TaskbarNotifications = defineAsyncComponent(() => import('./taskbar-notifications.vue'))
 const props = defineProps<{
   items: TaskbarItem[]
   launcherOpen?: boolean

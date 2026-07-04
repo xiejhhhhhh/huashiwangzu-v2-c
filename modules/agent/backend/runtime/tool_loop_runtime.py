@@ -160,6 +160,7 @@ class ToolLoopRuntime:
         persisted_event_count = channel_values.get("persisted_event_count", 0) if channel_values else 0
         _disconnected = False
         _last_checkpoint_id: str | None = None
+        _runtime_model_error = ""
 
         # If resuming from a checkpoint, skip already-completed rounds
         _resume_from_step = channel_values.get("resume_from_step", 0) if channel_values else 0
@@ -327,6 +328,7 @@ class ToolLoopRuntime:
 
                 if result.get("error"):
                     error_msg = str(result["error"])
+                    _runtime_model_error = error_msg
                     logger.warning("ToolLoopRuntime model error: %s", error_msg)
                     yield self._sse("error", user_safe_error_message(error_msg))
                     break
@@ -505,6 +507,17 @@ class ToolLoopRuntime:
                         "args": args,
                         "slow_name": resolved_slow,
                     })
+                    try:
+                        async with AsyncSessionLocal() as _wf_db:
+                            await sink.workflow_record_tool_started(
+                                _wf_db,
+                                parsed_tools[-1],
+                            )
+                    except Exception as _wf_exc:
+                        logger.warning(
+                            "Workflow tool-call start hook failed (non-fatal): %s",
+                            _wf_exc,
+                        )
                     _tool_call_times[tool_call_id] = time.time()
                     call_event = {
                         "type": "tool_call", "name": name,
@@ -538,6 +551,18 @@ class ToolLoopRuntime:
                             "started_at": time.time(),
                             "duration_ms": round((time.time() - _tool_call_times.get(tool.get("tool_call_id", ""), time.time())) * 1000),
                         }
+                        try:
+                            async with AsyncSessionLocal() as _wf_db:
+                                await sink.workflow_mark_invalid_tool(
+                                    _wf_db,
+                                    tool,
+                                    format_retry_message(_invalid_names),
+                                )
+                        except Exception as _wf_exc:
+                            logger.warning(
+                                "Workflow invalid-tool hook failed (non-fatal): %s",
+                                _wf_exc,
+                            )
                         tool_events.append(result_event)
                         timeline.append(result_event)
                         yield self._j_sse(result_event)
@@ -578,6 +603,31 @@ class ToolLoopRuntime:
                         continue
                     has_slow = True
                     skill_args = _slow_tool_args(tool)
+                    _wf_tool_call_id = (
+                        sink.workflow_link.llm_to_ledger_call.get(
+                            str(tool.get("tool_call_id") or ""),
+                        )
+                        if sink.workflow_link else None
+                    )
+                    _wf_idempotency_key = None
+                    if _wf_tool_call_id:
+                        try:
+                            from ..workflow_models import AgentToolCall
+
+                            async with AsyncSessionLocal() as _wf_call_db:
+                                _wf_call = await _wf_call_db.get(
+                                    AgentToolCall,
+                                    _wf_tool_call_id,
+                                )
+                                _wf_idempotency_key = (
+                                    _wf_call.idempotency_key
+                                    if _wf_call else None
+                                )
+                        except Exception as _wf_key_exc:
+                            logger.warning(
+                                "Workflow idempotency lookup failed (non-fatal): %s",
+                                _wf_key_exc,
+                            )
                     task_id = await _submit_slow_tool_task(
                         conversation_id=self.conversation_id,
                         user_id=self.owner_id,
@@ -585,6 +635,10 @@ class ToolLoopRuntime:
                         skill_args=skill_args,
                         caller=f"user:{self.owner_id}",
                         caller_role=self.user_role,
+                        workflow_run_id=sink.workflow_run_id,
+                        workflow_step_id=sink.workflow_step_id,
+                        workflow_tool_call_id=_wf_tool_call_id,
+                        idempotency_key=_wf_idempotency_key,
                     )
                     tool_result = {
                         "background": True,
@@ -602,6 +656,14 @@ class ToolLoopRuntime:
                         "started_at": time.time(),
                         "duration_ms": round((time.time() - _tool_call_times.get(tool["tool_call_id"], time.time())) * 1000),
                     }
+                    try:
+                        async with AsyncSessionLocal() as _wf_db:
+                            await sink.workflow_mark_tool_result(_wf_db, result_event)
+                    except Exception as _wf_exc:
+                        logger.warning(
+                            "Workflow slow-tool result hook failed (non-fatal): %s",
+                            _wf_exc,
+                        )
                     tool_events.append(result_event)
                     timeline.append(result_event)
                     yield self._j_sse(result_event)
@@ -652,10 +714,26 @@ class ToolLoopRuntime:
                             else tool["name"]
                         )
                         async with AsyncSessionLocal() as _pol_db:
+                            _wf_link = sink.workflow_link
+                            _wf_tool_call_id = None
+                            if _wf_link:
+                                _wf_tool_call_id = _wf_link.llm_to_ledger_call.get(
+                                    str(tool.get("tool_call_id") or ""),
+                                )
                             pol = await check_action_allowed(
                                 _pol_db, effective_name, AGENT_CODE,
                                 self.owner_id, self.conversation_id,
                                 tool_args=tool.get("args") or tool.get("arguments", {}),
+                                workflow_run_id=_wf_link.run_id if _wf_link else None,
+                                workflow_step_id=_wf_link.step_id if _wf_link else None,
+                                workflow_tool_call_id=_wf_tool_call_id,
+                                workflow_resume_target={
+                                    "conversation_id": self.conversation_id,
+                                    "provider_tool_call_id": tool.get("tool_call_id"),
+                                    "workflow_run_id": _wf_link.run_id if _wf_link else None,
+                                    "workflow_step_id": _wf_link.step_id if _wf_link else None,
+                                    "tool_call_id": _wf_tool_call_id,
+                                } if _wf_link and _wf_tool_call_id else None,
                             )
                         if not pol.get("allowed"):
                             return {
@@ -732,6 +810,7 @@ class ToolLoopRuntime:
                         result_event = {
                             "type": "tool_result",
                             "name": outcome["name"],
+                            "effective_tool_name": resolved_tool_name,
                             "tool_call_id": outcome.get("tool_call_id", ""),
                             "result": result_data,
                             "started_at": time.time(),
@@ -745,6 +824,14 @@ class ToolLoopRuntime:
                                 "hard_failure": failure_signal["hard"],
                                 "effective_tool_name": failure_signal["tool_name"],
                             })
+                        try:
+                            async with AsyncSessionLocal() as _wf_db:
+                                await sink.workflow_mark_tool_result(_wf_db, result_event)
+                        except Exception as _wf_exc:
+                            logger.warning(
+                                "Workflow fast-tool result hook failed (non-fatal): %s",
+                                _wf_exc,
+                            )
                         tool_events.append(result_event)
                         timeline.append(result_event)
                         yield self._j_sse(result_event)
@@ -861,6 +948,10 @@ class ToolLoopRuntime:
                         "pending_events": pending_events,
                         "event_round": event_round,
                         "persisted_event_count": persisted_event_count,
+                        "workflow": (
+                            sink.workflow_link.to_channel_values()
+                            if sink.workflow_link else {}
+                        ),
                     }
                     try:
                         async with AsyncSessionLocal() as _ck_db:
@@ -873,6 +964,18 @@ class ToolLoopRuntime:
                                 step=_round + 1,
                                 channel_values=_channel_vals,
                                 parent_checkpoint_id=_last_checkpoint_id,
+                                workflow_run_id=sink.workflow_run_id,
+                                workflow_step_id=sink.workflow_step_id,
+                                agent_run_id=sink.agent_run_id,
+                                checkpoint_type="tool_round",
+                                resume_cursor={
+                                    "round": _round + 1,
+                                    "persisted_event_count": persisted_event_count,
+                                    "llm_to_ledger_call": (
+                                        sink.workflow_link.llm_to_ledger_call
+                                        if sink.workflow_link else {}
+                                    ),
+                                },
                             )
                         _last_checkpoint_id = _cp_id
                         logger.info(
@@ -898,6 +1001,18 @@ class ToolLoopRuntime:
                     "chat", "tool_loop",
                     type(exc).__name__, str(exc),
                 )
+                try:
+                    async with AsyncSessionLocal() as _wf_db:
+                        await sink.workflow_record_runtime_failure(
+                            _wf_db,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                        )
+                except Exception as _wf_exc:
+                    logger.warning(
+                        "Workflow runtime exception hook failed (non-fatal): %s",
+                        _wf_exc,
+                    )
                 try:
                     yield self._sse("error", user_safe_error_message(exc))
                 except GeneratorExit:
@@ -996,6 +1111,7 @@ class ToolLoopRuntime:
 
                     # ── Completion evidence ──────────────────────
                     try:
+                        _completion_evidence = []
                         _completion_evidence = await sink.generate_completion_evidence(
                             tool_events,
                             [tr for tr in tool_events if tr.get("type") == "tool_result"],
@@ -1008,6 +1124,22 @@ class ToolLoopRuntime:
                             )
                     except Exception as _ce_exc:
                         logger.warning("Completion evidence failed (non-fatal): %s", _ce_exc)
+                        _completion_evidence = []
+
+                    if _runtime_model_error:
+                        await sink.workflow_record_runtime_failure(
+                            s2,
+                            error_type="model_error",
+                            error_message=_runtime_model_error,
+                        )
+                    else:
+                        await sink.workflow_complete_turn(
+                            s2,
+                            message_id=msg_id,
+                            tool_events=tool_events,
+                            completion_evidence=_completion_evidence,
+                            usage=_usage,
+                        )
 
                     # ── Record trajectory (idempotent upsert) ────
                     _turn_usage = _usage if isinstance(_usage, dict) else {}

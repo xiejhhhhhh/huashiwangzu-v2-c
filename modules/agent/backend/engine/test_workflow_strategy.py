@@ -1,11 +1,10 @@
 """Tests for workflow_strategy module."""
-import pytest
 from .workflow_strategy import (
-    match_workflow,
+    WORKFLOW_DEFINITIONS,
+    apply_workflow_injection,
     format_workflow_injection,
     get_all_workflows,
-    apply_workflow_injection,
-    WORKFLOW_DEFINITIONS,
+    match_workflow,
 )
 
 

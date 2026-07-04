@@ -9,11 +9,11 @@ AGENT_BACKEND = Path(__file__).resolve().parents[2] / "backend"  # modules/agent
 sys.path.insert(0, str(BACKEND_ROOT))
 sys.path.insert(0, str(AGENT_BACKEND))
 
-from fastapi import FastAPI
-from app.database import engine          # 直接用框架的生产库连接（调用框架，允许）
+from app.database import engine  # 直接用框架的生产库连接（调用框架，允许）
+from app.middleware.auth import get_current_user  # 覆盖鉴权起点，比覆盖 require_permission 工厂可靠
 from app.models.base import Base
 from app.models.user import User
-from app.middleware.auth import get_current_user  # 覆盖鉴权起点，比覆盖 require_permission 工厂可靠
+from fastapi import FastAPI
 
 # 导入 agent 自己的 models（注册到 Base.metadata）和 router
 from modules.agent.backend import models as agent_models  # noqa: F401

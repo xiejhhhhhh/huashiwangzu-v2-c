@@ -58,7 +58,7 @@ class CoreToolContext:
     start_frontend: Callable[[], Awaitable[str]]
     sanity_check: Callable[[], Awaitable[str]]
     smoke_all: Callable[[bool], Awaitable[str]]
-    release_gate: Callable[[bool, str], Awaitable[str]]
+    release_gate: Callable[[bool, str, int | None, int | None], Awaitable[str]]
     module_sandbox_matrix: Callable[[bool], Awaitable[str]]
     routes: Callable[[str], Awaitable[str]]
     capabilities: Callable[[str], Awaitable[str]]
@@ -204,6 +204,16 @@ def tool_definitions() -> list[Any]:
                         "description": "运行模式: preflight(默认，跳过耗时 smoke/sandbox) / full",
                         "enum": ["preflight", "full"],
                         "default": "preflight",
+                    },
+                    "sandbox_jobs": {
+                        "type": "number",
+                        "description": "full 模式下透传给 module_sandbox_matrix --jobs",
+                        "default": 1,
+                    },
+                    "sandbox_frontend_jobs": {
+                        "type": "number",
+                        "description": "full 模式下透传给 module_sandbox_matrix --frontend-jobs",
+                        "default": 1,
                     },
                 },
             },
@@ -406,6 +416,8 @@ async def handle_tool(context: CoreToolContext, name: str, arguments: dict[str, 
         return await context.release_gate(
             bool(arguments.get("skip_ui", False)),
             str(arguments.get("mode", "preflight")),
+            int(arguments["sandbox_jobs"]) if arguments.get("sandbox_jobs") is not None else None,
+            int(arguments["sandbox_frontend_jobs"]) if arguments.get("sandbox_frontend_jobs") is not None else None,
         )
     if name == "module_sandbox_matrix":
         return await context.module_sandbox_matrix(bool(arguments.get("check", False)))

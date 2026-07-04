@@ -8,6 +8,7 @@ if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
 from app.core.exceptions import NotFound, PermissionDenied
+
 from modules.agent.backend.models_prompt import AgentPrompt
 from modules.agent.backend.prompt_seeds import (
     COMPRESSION_SUMMARY_KEY,

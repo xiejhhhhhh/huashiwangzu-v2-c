@@ -114,6 +114,29 @@ def _match_sensitive(tool_name: str) -> bool:
     return False
 
 
+def classify_side_effect_level(tool_name: str) -> str:
+    """Return the workflow side-effect class for a tool name."""
+    normalized = (tool_name or "").lower()
+    if _match_sensitive(tool_name) or tool_name in ADMIN_ACTIONS:
+        return "sensitive"
+    write_terms = (
+        "create",
+        "delete",
+        "exec",
+        "generate",
+        "move",
+        "publish",
+        "replace",
+        "send",
+        "update",
+        "upload",
+        "write",
+    )
+    if any(term in normalized for term in write_terms):
+        return "workspace_write"
+    return "readonly"
+
+
 def _is_sensitive_arg_key(key: str) -> bool:
     normalized = key.lower().replace("-", "_")
     return any(part in normalized for part in _SENSITIVE_ARG_KEY_PARTS)
@@ -186,6 +209,10 @@ async def check_action_allowed(
     user_id: int,
     conversation_id: int | None = None,
     tool_args: Any | None = None,
+    workflow_run_id: int | None = None,
+    workflow_step_id: int | None = None,
+    workflow_tool_call_id: int | None = None,
+    workflow_resume_target: dict | None = None,
 ) -> dict:
     """Check whether a tool action is allowed under the agent's policy.
 
@@ -234,6 +261,38 @@ async def check_action_allowed(
             "reason": f"Action '{tool_name}' is blocked by admin policy (agent: {agent_code})",
         }
     elif policy == "confirm":
+        if workflow_run_id and workflow_tool_call_id:
+            from . import workflow_service
+
+            approval = await workflow_service.request_approval(
+                db,
+                run_id=workflow_run_id,
+                tool_call_id=workflow_tool_call_id,
+                requested_by=user_id,
+                agent_code=agent_code,
+                reason=f"Sensitive action requires confirmation: {tool_name}",
+                request_type="tool_call",
+                risk_level="sensitive",
+                decision_scope="single_call",
+                resume_target=workflow_resume_target or {
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_step_id": workflow_step_id,
+                    "tool_call_id": workflow_tool_call_id,
+                },
+            )
+            logger.info(
+                "Sensitive workflow action requires approval: tool=%s agent=%s user=%d approval_id=%d",
+                tool_name, agent_code, user_id, approval.id,
+            )
+            return {
+                "allowed": False,
+                "action": "confirm",
+                "approval_id": approval.id,
+                "tool_name": tool_name,
+                "tool_args": approval.tool_args,
+                "payload_hash": approval.payload_hash,
+                "resume_target": approval.resume_target,
+            }
         # Insert into approval queue
         from ..models import ApprovalQueue
         approval = ApprovalQueue(
@@ -270,6 +329,7 @@ async def resolve_approval(
     decision: str,
     decided_by: int,
     reason: str | None = None,
+    payload_hash: str | None = None,
 ) -> dict:
     """Admin resolves a pending approval.
 
@@ -287,6 +347,17 @@ async def resolve_approval(
         return {"error": f"Approval {approval_id} not found"}
     if approval.status != "pending":
         return {"error": f"Approval {approval_id} already {approval.status}"}
+    if approval.workflow_run_id:
+        from . import workflow_service
+
+        return await workflow_service.resolve_approval(
+            db,
+            approval_id=approval_id,
+            decision=decision,
+            decided_by=decided_by,
+            reason=reason,
+            payload_hash=payload_hash,
+        )
     approval.status = decision
     approval.decided_by = decided_by
     approval.reason = reason
@@ -325,6 +396,15 @@ async def list_pending_approvals(db: AsyncSession) -> list[dict]:
             "status": a.status,
             "requested_by": a.requested_by,
             "conversation_id": a.conversation_id,
+            "workflow_run_id": a.workflow_run_id,
+            "workflow_step_id": a.workflow_step_id,
+            "tool_call_id": a.tool_call_id,
+            "request_type": a.request_type,
+            "risk_level": a.risk_level,
+            "decision_scope": a.decision_scope,
+            "payload_hash": a.payload_hash,
+            "resume_target": a.resume_target,
+            "expires_at": a.expires_at.isoformat() if a.expires_at else None,
             "created_at": a.created_at.isoformat() if a.created_at else None,
         }
         for a in items

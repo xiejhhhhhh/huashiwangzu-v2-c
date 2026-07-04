@@ -1,7 +1,7 @@
 """Tests for signal bus."""
-import time
 import pytest
-from .signals import SignalBus, get_signal_bus, emit_signal, get_signal_summary
+
+from .signals import SignalBus, emit_signal, get_signal_bus, get_signal_summary
 
 
 class TestSignalBus:

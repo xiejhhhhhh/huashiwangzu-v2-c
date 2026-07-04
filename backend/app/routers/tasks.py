@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFound, PermissionDenied
+from app.core.exceptions import NotFound, PermissionDenied, ValidationError
 from app.database import get_db
 from app.middleware.auth import require_permission
 from app.models.system import SystemTaskQueue
@@ -150,9 +150,14 @@ async def retry_task(
     if not task:
         raise NotFound("Task not found")
     _ensure_task_owner_or_admin(task, user)
+    if task.status != "failed":
+        raise ValidationError("Only failed tasks can be retried")
     task.status = "pending"
     task.retry_count = 0
     task.error_message = None
+    task.result = None
+    task.started_at = None
+    task.completed_at = None
     await db.commit()
     return ApiResponse(data={"ok": True, "message": "Task re-queued"})
 
@@ -166,6 +171,8 @@ async def cancel_task(
     if not task:
         raise NotFound("Task not found")
     _ensure_task_owner_or_admin(task, user)
+    if task.status not in ("pending", "running"):
+        raise ValidationError("Only pending or running tasks can be cancelled")
     task.status = "failed"
     task.error_message = "Manually cancelled"
     task.completed_at = datetime.now(timezone.utc)

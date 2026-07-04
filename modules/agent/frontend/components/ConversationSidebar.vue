@@ -19,6 +19,13 @@
     </div>
 
     <div class="sidebar-actions">
+      <button class="btn-workflow-panel" :class="{ active: adminActive === 'workflows' }" @click="$emit('admin', 'workflows')" title="工作流状态">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
+          <path d="M3 3h4v4H3zM9 3h4v4H9zM3 9h4v4H3zM9 9h4v4H9z"/>
+          <path d="M7 5h2M5 7v2M11 7v2"/>
+        </svg>
+        <span>工作流</span>
+      </button>
       <button v-if="isAdmin" class="btn-admin-panel" :class="{ active: adminActive === 'engine' }" @click="$emit('admin', 'engine')" title="引擎调优面板（仅管理员）">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
           <path d="M2 12l6-10 6 10H2zM8 7v3M8 12v1"/>
@@ -239,7 +246,8 @@ function finishEdit(c: ConvItem) {
 }
 .btn-new-conv:hover { background: var(--ag-primary-light); border-color: var(--ag-primary); }
 .btn-new-conv:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-admin-panel {
+.btn-admin-panel,
+.btn-workflow-panel {
   display: flex; align-items: center; gap: var(--ag-space-sm);
   width: 100%; padding: var(--ag-space-sm) var(--ag-space-md);
   margin-bottom: var(--ag-space-sm);
@@ -248,8 +256,10 @@ function finishEdit(c: ConvItem) {
   cursor: pointer; font-size: var(--ag-font-size-base);
   transition: all var(--ag-transition-fast);
 }
-.btn-admin-panel:hover { background: var(--ag-primary-light); border-color: var(--ag-primary); color: var(--ag-primary); }
-.btn-admin-panel.active { background: var(--ag-primary-light); border-color: var(--ag-primary); color: var(--ag-primary); font-weight: 500; }
+.btn-admin-panel:hover,
+.btn-workflow-panel:hover { background: var(--ag-primary-light); border-color: var(--ag-primary); color: var(--ag-primary); }
+.btn-admin-panel.active,
+.btn-workflow-panel.active { background: var(--ag-primary-light); border-color: var(--ag-primary); color: var(--ag-primary); font-weight: 500; }
 
 /* List */
 .conv-list { flex: 1; overflow-y: auto; padding: 0 var(--ag-space-sm) var(--ag-space-sm); }

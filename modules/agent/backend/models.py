@@ -38,6 +38,15 @@ class ApprovalQueue(Base, TimestampMixin):
     conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    workflow_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    workflow_step_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tool_call_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    request_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    decision_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resume_target: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AgentConfig(Base, TimestampMixin):
@@ -298,6 +307,11 @@ class AgentCheckpoint(Base, TimestampMixin):
     step: Mapped[int] = mapped_column(Integer, default=0)
     channel_values: Mapped[dict] = mapped_column(JSON, default=dict)
     extra_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    workflow_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    workflow_step_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    agent_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    checkpoint_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    resume_cursor: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class AgentTrajectoryRecord(Base, TimestampMixin):

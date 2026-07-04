@@ -82,6 +82,57 @@ export interface DocumentProgress {
   stages: ProgressStage[]
 }
 
+export interface IngestStageStatus {
+  status: string
+  ready: boolean
+  count?: number
+  node_count?: number
+  chunk_entity_count?: number
+}
+
+export interface KnowledgeIngestStatus {
+  document_id: number
+  file_id: number
+  filename: string
+  source_available: boolean
+  source_state: string
+  stage: string
+  status: string
+  pipeline_status: string
+  task_status?: string | null
+  parse_status: string
+  vector_status: string
+  raw_status: string
+  fusion_status: string
+  stage_summary: Record<string, IngestStageStatus>
+  search_ready: boolean
+  deep_ready: boolean
+  last_error?: string | null
+  next_action: string
+}
+
+export type ExportFormat = 'markdown' | 'html' | 'json'
+
+export interface ExportResult {
+  success: boolean
+  format: ExportFormat
+  content: string
+  filename: string
+  document_id: number
+  error?: string
+}
+
+export interface PendingCountResult {
+  pending_count: number
+}
+
+export interface GovernanceCandidateList {
+  items: GovernanceCandidate[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface FusionPage {
   page: number
   page_title: string | null
@@ -160,6 +211,10 @@ export function getProgress(documentId: number): Promise<DocumentProgress> {
   return apiGet(`/knowledge/documents/${documentId}/progress`)
 }
 
+export function getIngestStatus(documentId: number): Promise<KnowledgeIngestStatus> {
+  return apiGet(`/knowledge/documents/${documentId}/ingest-status`)
+}
+
 export function getProgressBatch(documentIds: number[]): Promise<Record<string, DocumentProgress>> {
   return apiPost('/knowledge/documents/progress-batch', { document_ids: documentIds })
 }
@@ -177,6 +232,18 @@ export async function getRelations(documentId: number): Promise<FileRelation[]> 
     `/knowledge/documents/${documentId}/relations`,
   )
   return Array.isArray(data) ? data : (data.relations ?? [])
+}
+
+export function exportDocument(documentId: number, format: ExportFormat): Promise<ExportResult> {
+  return apiPost<ExportResult>('/knowledge/documents/export', { document_id: documentId, format })
+}
+
+export function getPendingCount(): Promise<PendingCountResult> {
+  return apiGet<PendingCountResult>('/knowledge/governance/pending-count')
+}
+
+export function getGovernanceCandidates(pageSize = 5): Promise<GovernanceCandidateList> {
+  return apiGet<GovernanceCandidateList>(`/knowledge/governance/candidates?audit_status=pending&page=1&page_size=${pageSize}`)
 }
 
 /** JSON 字段可能以字符串返回,统一解析为对象/数组 */

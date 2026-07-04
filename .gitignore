@@ -67,6 +67,7 @@ take_screenshot.mjs
 
 # Dev toolkit memory (防误写)
 dev_toolkit/memory/
+dev_toolkit/config.local.json
 
 # Auto-generated runtime diagnostics (never commit)
 backend/data/agent/*.json

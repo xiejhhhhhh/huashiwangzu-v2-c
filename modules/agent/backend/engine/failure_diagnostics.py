@@ -6,8 +6,7 @@ so that all exception degradation paths have a queryable audit trail."""
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, desc
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import desc, select
 
 from ..models import AgentFailureDiagnostic as FDModel
 

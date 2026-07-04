@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 try:
+    from dev_toolkit.config_loader import load_config
     from dev_toolkit.sql_guard import check_sql_readonly, readonly_psql_env
 except ModuleNotFoundError:
+    from config_loader import load_config
     from sql_guard import check_sql_readonly, readonly_psql_env
 
 TOOL_NAMES = {"db_reverse_audit"}
@@ -123,8 +125,7 @@ async def handle_tool(repo_root: Path, name: str, arguments: dict[str, Any]) -> 
 
 
 def _load_db_dsn(repo_root: Path) -> str:
-    config_path = repo_root / "dev_toolkit" / "config.json"
-    data = json.loads(config_path.read_text(encoding="utf-8"))
+    data = load_config(repo_root)
     return str(data["db_dsn"])
 
 

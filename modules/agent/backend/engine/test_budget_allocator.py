@@ -1,5 +1,5 @@
 """Tests for budget_allocator.py — diminishing returns tracker + context assembly."""
-from .budget_allocator import DiminishingBudgetTracker, DiminishingReturnRecord
+from .budget_allocator import DiminishingBudgetTracker
 
 
 class TestDiminishingBudgetTracker:

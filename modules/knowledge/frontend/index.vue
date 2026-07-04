@@ -67,7 +67,13 @@
           </div>
           <div class="head-actions">
             <button class="ghost-btn" title="询问 AI" @click="askAI">🤖 问 AI</button>
-            <button class="primary-btn" :disabled="analyzing" @click="startAnalyze">{{ analyzing ? '分析中…' : (progress?.overall_status === 'done' ? '重新分析' : '开始分析') }}</button>
+            <select v-model="exportFormat" class="export-select" :disabled="!canExport || exporting">
+              <option value="markdown">Markdown</option>
+              <option value="html">HTML</option>
+              <option value="json">JSON</option>
+            </select>
+            <button class="ghost-btn" :disabled="!canExport || exporting" @click="handleExport">{{ exporting ? '导出中…' : '导出' }}</button>
+            <button class="primary-btn" :disabled="analyzing || sourceUnavailable" @click="startAnalyze">{{ analyzing ? '分析中…' : (progress?.overall_status === 'done' ? '重新分析' : '开始分析') }}</button>
             <button class="ghost-btn danger" @click="removeDocument">删除</button>
           </div>
           <div v-if="analyzing" class="head-progress">
@@ -94,6 +100,24 @@
               <span class="pp-count">{{ stepCount(s) }}</span>
             </li>
           </ol>
+        </section>
+
+        <section v-if="ingestStatus" class="status-panel" :class="{ unavailable: sourceUnavailable }">
+          <div class="status-main">
+            <span class="status-pill" :class="statusClassForIngest">{{ ingestStatusLabel }}</span>
+            <span>{{ ingestStatusHint }}</span>
+          </div>
+          <div class="status-grid">
+            <span>当前阶段：{{ stageLabel(ingestStatus.stage) }}</span>
+            <span>可检索：{{ ingestStatus.search_ready ? '是' : '否' }}</span>
+            <span>深度分析：{{ ingestStatus.deep_ready ? '已完成' : '未完成' }}</span>
+          </div>
+          <div v-if="sourceUnavailable" class="status-help">
+            原始文件可能已删除、在回收站、无权限或路径不可用。知识库保留了历史记录，但不能继续深度分析、检索或导出；请重新上传、重新绑定源文件，或删除这条无效记录。
+          </div>
+          <div v-else-if="ingestStatus.last_error" class="status-help">
+            {{ readableFailure(ingestStatus.last_error) }}
+          </div>
         </section>
 
         <nav v-if="hasResult" class="tabs">
@@ -173,11 +197,12 @@ import WorkspaceGraph from './views/WorkspaceGraph.vue'
 import DashboardView from './views/DashboardView.vue'
 import {
   apiDelete, apiPost, apiGet,
-  startPipeline, getProgress, getProgressBatch, getFusions, getProfile, getRelations, parseJsonField,
+  startPipeline, getProgress, getIngestStatus, getProgressBatch, getFusions, getProfile, getRelations,
+  exportDocument, parseJsonField,
   getFileTree, getFileList, buildFolderTree,
   type KnowledgeDocument, type DocumentProgress, type ProgressStage,
   type FusionPage, type DocumentProfile, type FileRelation, type SearchResult,
-  type FileTreeNode,
+  type FileTreeNode, type KnowledgeIngestStatus, type ExportFormat,
 } from './api'
 import type { GraphNode } from './graph3d/types'
 
@@ -333,6 +358,7 @@ function handleGraphSelect(node: GraphNode) {
 
 // ── 进度/分析 ──
 const progress = ref<DocumentProgress | null>(null)
+const ingestStatus = ref<KnowledgeIngestStatus | null>(null)
 const fusions = ref<FusionPage[]>([])
 const profile = ref<DocumentProfile | null>(null)
 const relations = ref<FileRelation[]>([])
@@ -340,6 +366,8 @@ const query = ref('')
 const searching = ref(false)
 const searched = ref(false)
 const searchResults = ref<SearchResult[]>([])
+const exportFormat = ref<ExportFormat>('markdown')
+const exporting = ref(false)
 let pollTimer: number | null = null
 
 const analyzing = computed(() => progress.value?.overall_status === 'running')
@@ -350,12 +378,46 @@ const headStatusText = computed(() => { const p = progress.value; if (!p) return
 const progressHeadline = computed(() => { const p = progress.value; if (!p) return ''; if (p.overall_status === 'done') return '全部完成'; if (p.overall_status === 'failed') return '分析出错,可重新分析'; if (p.overall_status === 'degraded') return '分析有缺损,可重新分析'; if (p.overall_status === 'source_unavailable') return '源文件已删除或不可用'; return '正在「' + p.current_stage + '」' })
 const ringStyle = computed(() => { const pct = progress.value?.overall_percent ?? 0; return { background: `conic-gradient(#2395bc ${pct * 3.6}deg, #e6eef5 0deg)` } })
 const overallPercent = computed(() => Math.max(0, Math.min(100, progress.value?.overall_percent ?? 0)))
+const sourceUnavailable = computed(() => ingestStatus.value?.source_available === false || progress.value?.overall_status === 'source_unavailable')
+const canExport = computed(() => !!ingestStatus.value?.source_available && !!ingestStatus.value?.search_ready)
+const ingestStatusLabel = computed(() => {
+  const status = ingestStatus.value?.pipeline_status || progress.value?.overall_status || 'pending'
+  if (status === 'source_unavailable') return '源文件不可用'
+  if (status === 'deep_ready') return '深度分析完成'
+  if (status === 'search_ready') return '可检索'
+  if (status === 'failed') return '失败'
+  if (status === 'degraded') return '部分完成'
+  if (status === 'running') return '处理中'
+  if (status === 'queued') return '等待中'
+  return '待分析'
+})
+const statusClassForIngest = computed(() => {
+  const status = ingestStatus.value?.pipeline_status || progress.value?.overall_status || 'pending'
+  if (status === 'source_unavailable' || status === 'failed') return 'err'
+  if (status === 'degraded') return 'warn'
+  if (status === 'running' || status === 'queued') return 'busy'
+  if (status === 'deep_ready' || status === 'search_ready') return 'ok'
+  return ''
+})
+const ingestStatusHint = computed(() => {
+  const status = ingestStatus.value
+  if (!status) return ''
+  if (!status.source_available) return sourceStateText(status.source_state)
+  if (status.next_action === 'ready') return '可以搜索、问 AI 或导出资料内容。'
+  if (status.next_action === 'wait_for_search_index') return '正在建立检索索引，请稍后再试。'
+  if (status.next_action === 'wait_for_deep_analysis') return '检索已可用，深度分析仍在继续。'
+  if (status.next_action.includes('retry')) return '可以查看失败原因后重新分析。'
+  return '可以继续分析，让资料进入可检索状态。'
+})
 const profileEntities = computed(() => parseJsonField<Array<{ name: string }>>(profile.value?.key_entities, []).slice(0, 12))
 const profileChapters = computed(() => parseJsonField<Array<{ title?: string; page?: number }>>(profile.value?.chapter_structure, []))
 
 function fileIcon(ext?: string): string { const e = (ext || '').toLowerCase(); if (e === 'pdf') return '📕'; if (['doc','docx'].includes(e)) return '📘'; if (['xls','xlsx'].includes(e)) return '📗'; if (['ppt','pptx'].includes(e)) return '📙'; if (['png','jpg','jpeg','gif','webp'].includes(e)) return '🖼'; return '📄' }
 function docName(id: number): string { return documents.value.find(d => d.id === id)?.filename || ('资料 #'+id) }
 function statusDotClass(status?: string): string { if (status === 'done') return 'ok'; if (status === 'running' || status === 'collecting' || status === 'parsing' || status === 'fusing') return 'busy'; return 'idle' }
+function stageLabel(stage: string): string { const labels: Record<string, string> = { source: '源文件', parse: '解析', vector: '索引', raw: '原始采集', fusion: '页级融合', profile: '画像', graph: '图谱', relation: '关联', complete: '完成' }; return labels[stage] || stage }
+function sourceStateText(state: string): string { const labels: Record<string, string> = { source_file_deleted: '原始文件已删除或进入回收站。', source_file_missing: '原始文件路径不可用。', permission_denied: '当前账号没有访问原始文件的权限。', source_unavailable: '原始文件不可用。' }; return labels[state] || '原始文件不可用。' }
+function readableFailure(message: string): string { return message.replace(/^Document source file unavailable:\s*/i, '源文件不可用：') }
 function stepCount(s: ProgressStage): string { if (s.key === 'graph') return s.count ? `${s.count} 个实体` : (s.status === 'done' ? '完成' : '—'); if (s.key === 'relation') return s.count ? `${s.count} 条关联` : (s.status === 'done' ? '完成' : '—'); if (s.total <= 1) return s.status === 'done' ? '完成' : (s.status === 'running' ? '进行中' : '—'); return `${s.done}/${s.total}` }
 function confClass(c?: number): string { const v = c || 0; if (v >= 0.9) return 'high'; if (v >= 0.75) return 'mid'; return 'low' }
 function relPct(r: FileRelation): number { return Math.round((r.similarity_score || 0) * 100) }
@@ -599,7 +661,12 @@ async function openDocument(doc: KnowledgeDocument) {
   pendingPageRef.value = undefined
   active.value = doc; showWorkspace.value = false; showDashboard.value = false
   tab.value = pp ? 'reader' : 'overview'
-  progress.value = liveProgressMap.value[doc.id] || await getProgress(doc.id)
+  const [progressResult, statusResult] = await Promise.all([
+    liveProgressMap.value[doc.id] ? Promise.resolve(liveProgressMap.value[doc.id]) : getProgress(doc.id),
+    getIngestStatus(doc.id).catch(() => null),
+  ])
+  progress.value = progressResult
+  ingestStatus.value = statusResult
   fusions.value = []; profile.value = null; relations.value = []; searchResults.value = []; searched.value = false
   if (progress.value.overall_status === 'running') ensurePolling()
   if (hasResult.value) await loadResult(doc.id)
@@ -621,6 +688,10 @@ async function loadResult(docId: number) {
 
 async function startAnalyze() {
   if (!active.value) return
+  if (sourceUnavailable.value) {
+    window.alert('原始文件不可用，无法继续分析。请重新上传或删除这条无效记录。')
+    return
+  }
   const isRedo = progress.value?.overall_status === 'done'
   let forceRaw = false, forceFusion = false
 
@@ -651,7 +722,27 @@ async function startAnalyze() {
       force_fusion: forceFusion,
     })
     progress.value = await getProgress(active.value.id)
+    ingestStatus.value = await getIngestStatus(active.value.id).catch(() => ingestStatus.value)
   } catch (error) { window.alert((error as Error).message) }
+}
+
+async function handleExport() {
+  if (!active.value || !canExport.value || exporting.value) return
+  exporting.value = true
+  try {
+    const result = await exportDocument(active.value.id, exportFormat.value)
+    const blob = new Blob([result.content], { type: exportFormat.value === 'html' ? 'text/html;charset=utf-8' : 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = result.filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    window.alert('导出失败：' + String((error as Error).message || error))
+  } finally {
+    exporting.value = false
+  }
 }
 
 const showRedoDialog = ref(false)
@@ -692,6 +783,7 @@ async function pollTick() {
       if (cur) {
         const wasRunning = progress.value?.overall_status === 'running'
         progress.value = cur
+        ingestStatus.value = await getIngestStatus(active.value.id).catch(() => ingestStatus.value)
         if (wasRunning && cur.overall_status === 'done') await loadResult(active.value.id)
       }
     }
@@ -716,6 +808,9 @@ function askAI() {
   const ctx: Record<string, unknown> = {}
   if (active.value) {
     ctx.documentId = active.value.id; ctx.documentName = active.value.filename
+    ctx.searchReady = ingestStatus.value?.search_ready ?? false
+    ctx.deepReady = ingestStatus.value?.deep_ready ?? false
+    ctx.sourceAvailable = ingestStatus.value?.source_available ?? true
     ctx.question = '请帮我分析这份资料的内容'
   }
   platform.modules.openApp('agent', { prefill: ctx })
@@ -778,7 +873,10 @@ onUnmounted(stopPolling)
 .primary-btn:disabled { background: #aebfcc; cursor: not-allowed; }
 .ghost-btn { height: 36px; padding: 0 14px; border: 1px solid #d5dfeb; border-radius: 8px; background: #fff; color: #46586b; cursor: pointer; }
 .ghost-btn:hover { border-color: #bcd6e6; }
+.ghost-btn:disabled { color: #aab8c6; background: #f5f7fa; cursor: not-allowed; }
 .ghost-btn.danger:hover { border-color: #e5534b; color: #e5534b; }
+.export-select { height: 36px; border: 1px solid #d5dfeb; border-radius: 8px; background: #fff; color: #46586b; padding: 0 8px; outline: none; }
+.export-select:disabled { color: #aab8c6; background: #f5f7fa; }
 
 .progress-panel { border: 1px solid #e3e9f2; border-radius: 14px; background: #fff; padding: 20px; box-shadow: 0 2px 10px rgba(35,149,188,.05); }
 .pp-top { display: flex; align-items: center; gap: 18px; margin-bottom: 18px; }
@@ -799,6 +897,17 @@ onUnmounted(stopPolling)
 .pp-fill { display: block; height: 100%; background: linear-gradient(90deg,#2395bc,#31a1c6); border-radius: 4px; transition: width .4s ease; }
 .pp-step.done .pp-fill { background: #2bb673; }
 .pp-count { font-size: 12px; font-weight: 600; color: #5a6b7d; text-align: right; }
+
+.status-panel { border: 1px solid #d5dfeb; border-radius: 12px; background: #fff; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.status-panel.unavailable { border-color: #f1b6ae; background: #fff7f6; }
+.status-main { display: flex; align-items: center; gap: 10px; color: #46586b; font-size: 13px; }
+.status-pill { flex: none; padding: 3px 10px; border-radius: 999px; background: #eef2f7; color: #5a6b7d; font-size: 12px; font-weight: 800; }
+.status-pill.ok { background: #e3f6ec; color: #1f9d5b; }
+.status-pill.busy { background: #fdf2dd; color: #c5851a; }
+.status-pill.warn { background: #fff0d9; color: #b45309; }
+.status-pill.err { background: #fbe9e7; color: #d4544b; }
+.status-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 12px; color: #7c8da0; }
+.status-help { font-size: 12px; line-height: 1.65; color: #8a4b11; }
 
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e3e9f2; flex: none; }
 .tabs button { height: 38px; padding: 0 18px; border: none; background: transparent; color: #5a6b7d; cursor: pointer; font-size: 14px; border-radius: 8px 8px 0 0; }

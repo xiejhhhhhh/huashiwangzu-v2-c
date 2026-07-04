@@ -1,7 +1,5 @@
 """Tests for layered_memory.py — static memory file reading + formatting."""
-import tempfile
-from pathlib import Path
-from .layered_memory import read_static_memory_files, format_static_memory_for_injection, invalidate_static_memory_cache
+from .layered_memory import format_static_memory_for_injection, invalidate_static_memory_cache, read_static_memory_files
 
 
 class TestStaticMemoryReader:

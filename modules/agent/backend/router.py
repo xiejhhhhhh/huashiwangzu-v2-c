@@ -26,10 +26,19 @@ from .schemas import (
     PromptItemUpdate,
     RenameConvRequest,
     UpdatePromptRequest,
+    WorkflowApprovalRequest,
+    WorkflowArtifactRequest,
+    WorkflowCancelRequest,
+    WorkflowCreateRequest,
+    WorkflowFinalizeRequest,
+    WorkflowStepRequest,
+    WorkflowToolCallRequest,
+    WorkflowVerificationRequest,
 )
 from .services import agent_config_service, tool_discovery
 from .services import conversation_service as conv_svc
 from .services import prompt_service as prompt_svc
+from .services import workflow_service as workflow_svc
 
 logger = logging.getLogger("v2.agent").getChild("router")
 
@@ -212,6 +221,326 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db), user: U
     return await runtime.execute(payload, db, user)
 
 
+# ── Agent workflow center ──
+
+def _is_admin(user: User) -> bool:
+    return user.role == "admin"
+
+
+async def _require_workflow_visible(
+    db: AsyncSession,
+    run_id: int,
+    user: User,
+):
+    return await workflow_svc.get_workflow(db, run_id, user_id=user.id, is_admin=_is_admin(user))
+
+
+@router.get("/workflows")
+async def list_workflows(
+    status: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await run_init(db)
+    runs = await workflow_svc.list_workflows(
+        db,
+        user_id=user.id,
+        is_admin=_is_admin(user),
+        status=status,
+        limit=limit,
+    )
+    serializer = workflow_svc.workflow_to_admin_dict if _is_admin(user) else workflow_svc.workflow_to_summary
+    return ApiResponse(data={"items": [serializer(run) for run in runs], "total": len(runs)})
+
+
+@router.post("/workflows")
+async def create_workflow(
+    body: WorkflowCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await run_init(db)
+    owner_id = body.owner_id if body.owner_id and _is_admin(user) else user.id
+    run = await workflow_svc.create_workflow(
+        db,
+        title=body.title,
+        intent=body.intent,
+        source=body.source,
+        owner_id=owner_id,
+        creator_id=user.id,
+        extra_meta=body.extra_meta,
+    )
+    return ApiResponse(data={"workflow_run_id": run.id, "status": run.status})
+
+
+@router.get("/workflows/{run_id}")
+async def get_workflow(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    run = await _require_workflow_visible(db, run_id, user)
+    data = workflow_svc.workflow_to_admin_dict(run) if _is_admin(user) else workflow_svc.workflow_to_summary(run)
+    if _is_admin(user):
+        steps = await workflow_svc.list_steps(db, run_id)
+        tool_calls = await workflow_svc.list_tool_calls(db, run_id)
+        verifications = await workflow_svc.list_verifications(db, run_id)
+        failures = await workflow_svc.list_failures(db, run_id)
+        data.update({
+            "steps": [workflow_svc.step_to_dict(step) for step in steps],
+            "tool_calls": [
+                workflow_svc.tool_call_to_dict(call, include_arguments=True)
+                for call in tool_calls
+            ],
+            "verifications": [workflow_svc.verification_to_dict(item) for item in verifications],
+            "failures": [workflow_svc.failure_to_dict(item) for item in failures],
+        })
+    return ApiResponse(data=data)
+
+
+@router.get("/workflows/{run_id}/steps")
+async def list_workflow_steps(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    steps = await workflow_svc.list_steps(db, run_id)
+    return ApiResponse(data={"items": [workflow_svc.step_to_dict(step) for step in steps], "total": len(steps)})
+
+
+@router.post("/workflows/{run_id}/steps")
+async def record_workflow_step(
+    run_id: int,
+    body: WorkflowStepRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    step = await workflow_svc.create_step(
+        db,
+        run_id=run_id,
+        step_key=body.step_key,
+        title=body.title,
+        step_type=body.type,
+        order_index=body.order_index,
+        input_ref=body.input_ref,
+        max_retries=body.max_retries,
+        extra_meta=body.extra_meta,
+    )
+    if body.status:
+        step = await workflow_svc.update_step_status(
+            db,
+            step.id,
+            status=body.status,
+            run_id=run_id,
+            summary=body.summary,
+            output_ref=body.output_ref,
+        )
+    return ApiResponse(data={"step": workflow_svc.step_to_dict(step)})
+
+
+@router.get("/workflows/{run_id}/artifacts")
+async def list_workflow_artifacts(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    artifacts = await workflow_svc.list_artifacts(db, run_id)
+    if not _is_admin(user):
+        artifacts = [item for item in artifacts if item.visibility in {"user", "developer"}]
+    return ApiResponse(data={"items": [workflow_svc.artifact_to_dict(item) for item in artifacts], "total": len(artifacts)})
+
+
+@router.post("/workflows/{run_id}/artifacts")
+async def create_workflow_artifact(
+    run_id: int,
+    body: WorkflowArtifactRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    artifact = await workflow_svc.create_artifact(
+        db,
+        run_id=run_id,
+        step_id=body.step_id,
+        artifact_type=body.artifact_type,
+        storage_kind=body.storage_kind,
+        storage_ref=body.storage_ref,
+        visibility=body.visibility,
+        lifecycle=body.lifecycle,
+        ttl_seconds=body.ttl_seconds,
+        checksum=body.checksum,
+        summary=body.summary,
+        extra_meta=body.extra_meta,
+    )
+    return ApiResponse(data={"artifact": workflow_svc.artifact_to_dict(artifact)})
+
+
+@router.get("/workflows/{run_id}/verifications")
+async def list_workflow_verifications(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    verifications = await workflow_svc.list_verifications(db, run_id)
+    return ApiResponse(data={
+        "items": [workflow_svc.verification_to_dict(item) for item in verifications],
+        "total": len(verifications),
+    })
+
+
+@router.post("/workflows/{run_id}/verifications")
+async def record_workflow_verification(
+    run_id: int,
+    body: WorkflowVerificationRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    item = await workflow_svc.record_verification(
+        db,
+        run_id=run_id,
+        step_id=body.step_id,
+        verification_type=body.verification_type,
+        status=body.status,
+        command_or_capability=body.command_or_capability,
+        evidence_ref=body.evidence_ref,
+        summary=body.summary,
+        is_required_for_completion=body.is_required_for_completion,
+        duration_ms=body.duration_ms,
+        extra_meta=body.extra_meta,
+    )
+    return ApiResponse(data={"verification": workflow_svc.verification_to_dict(item)})
+
+
+@router.post("/workflows/{run_id}/tool-calls")
+async def record_workflow_tool_call(
+    run_id: int,
+    body: WorkflowToolCallRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    call = await workflow_svc.record_tool_call(
+        db,
+        run_id=run_id,
+        step_id=body.step_id,
+        tool_name=body.tool_name,
+        arguments=body.arguments,
+        target_module=body.target_module,
+        action=body.action,
+        caller=body.caller or f"user:{user.id}",
+        side_effect_level=body.side_effect_level,
+        approval_policy=body.approval_policy,
+        status=body.status,
+        idempotency_key=body.idempotency_key,
+        agent_run_id=body.agent_run_id,
+        extra_meta=body.extra_meta,
+    )
+    return ApiResponse(data={"tool_call": workflow_svc.tool_call_to_dict(call, include_arguments=_is_admin(user))})
+
+
+@router.get("/workflows/{run_id}/tool-calls")
+async def list_workflow_tool_calls(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    calls = await workflow_svc.list_tool_calls(db, run_id)
+    return ApiResponse(data={
+        "items": [
+            workflow_svc.tool_call_to_dict(call, include_arguments=_is_admin(user))
+            for call in calls
+        ],
+        "total": len(calls),
+    })
+
+
+@router.post("/workflows/{run_id}/approvals")
+async def request_workflow_approval(
+    run_id: int,
+    body: WorkflowApprovalRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    approval = await workflow_svc.request_approval(
+        db,
+        run_id=run_id,
+        tool_call_id=body.tool_call_id,
+        requested_by=user.id,
+        agent_code=body.agent_code,
+        reason=body.reason,
+        request_type=body.request_type,
+        risk_level=body.risk_level,
+        decision_scope=body.decision_scope,
+        resume_target=body.resume_target,
+    )
+    return ApiResponse(data={
+        "approval_id": approval.id,
+        "workflow_run_id": approval.workflow_run_id,
+        "workflow_step_id": approval.workflow_step_id,
+        "tool_call_id": approval.tool_call_id,
+        "status": approval.status,
+        "payload_hash": approval.payload_hash,
+        "resume_target": approval.resume_target,
+    })
+
+
+@router.post("/workflows/{run_id}/finalize")
+async def finalize_workflow(
+    run_id: int,
+    body: WorkflowFinalizeRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    run = await workflow_svc.finalize_workflow(
+        db,
+        run_id=run_id,
+        developer_summary=body.developer_summary,
+    )
+    return ApiResponse(data=workflow_svc.workflow_to_summary(run))
+
+
+@router.get("/workflows/{run_id}/failures")
+async def list_workflow_failures(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    failures = await workflow_svc.list_failures(db, run_id)
+    return ApiResponse(data={
+        "items": [workflow_svc.failure_to_dict(item) for item in failures],
+        "total": len(failures),
+    })
+
+
+@router.post("/workflows/{run_id}/cancel")
+async def cancel_workflow(
+    run_id: int,
+    body: WorkflowCancelRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    run = await workflow_svc.update_workflow_status(
+        db,
+        run_id,
+        status="cancelled",
+        terminal_status="cancelled",
+        verification_status="skipped",
+        progress_summary=body.reason or "已取消",
+    )
+    return ApiResponse(data=workflow_svc.workflow_to_summary(run))
+
+
 # ── engine批5：Admin 只读接口（重放 + 概览） ──
 
 @router.get("/admin/replay/{conversation_id}")
@@ -315,7 +644,7 @@ async def resolve_approval_endpoint(
     user: User = Depends(require_permission("admin")),
 ):
     from .handlers.admin import handle_resolve_approval
-    return await handle_resolve_approval(approval_id, body.decision, body.reason, db, user)
+    return await handle_resolve_approval(approval_id, body.decision, body.reason, db, user, body.payload_hash)
 
 
 # ── Agent Config CRUD (migrated from framework) ──
@@ -546,4 +875,5 @@ async def render_tool_guidance(
 from .handlers import (
     tool,  # noqa: F401, E402
     tool_guidance,  # noqa: F401, E402
+    workflow,  # noqa: F401, E402
 )

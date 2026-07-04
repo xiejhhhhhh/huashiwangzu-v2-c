@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateConvRequest(BaseModel):
@@ -28,6 +28,90 @@ class UpdatePromptRequest(BaseModel):
 
 class ApprovalDecision(BaseModel):
     decision: str
+    reason: str | None = None
+    payload_hash: str | None = None
+
+
+class WorkflowCreateRequest(BaseModel):
+    title: str
+    intent: str = ""
+    source: str = "manual"
+    owner_id: int | None = None
+    extra_meta: dict = Field(default_factory=dict)
+
+
+class WorkflowStepRequest(BaseModel):
+    step_key: str
+    title: str
+    type: str = "agent"
+    status: str | None = None
+    order_index: int | None = None
+    input_ref: dict | None = None
+    output_ref: dict | None = None
+    max_retries: int = 0
+    summary: str | None = None
+    extra_meta: dict = Field(default_factory=dict)
+
+
+class WorkflowToolCallRequest(BaseModel):
+    run_id: int | None = None
+    step_id: int | None = None
+    tool_name: str
+    target_module: str | None = None
+    action: str | None = None
+    caller: str | None = None
+    arguments: dict | list | str | int | float | bool | None = None
+    side_effect_level: str = "readonly"
+    approval_policy: str = "auto"
+    status: str = "planned"
+    idempotency_key: str | None = None
+    agent_run_id: str | None = None
+    extra_meta: dict = Field(default_factory=dict)
+
+
+class WorkflowArtifactRequest(BaseModel):
+    run_id: int | None = None
+    step_id: int | None = None
+    artifact_type: str
+    storage_kind: str
+    storage_ref: dict | str | None = None
+    visibility: str = "user"
+    lifecycle: str = "candidate"
+    ttl_seconds: int | None = None
+    checksum: str | None = None
+    summary: str | None = None
+    extra_meta: dict = Field(default_factory=dict)
+
+
+class WorkflowVerificationRequest(BaseModel):
+    run_id: int | None = None
+    step_id: int | None = None
+    verification_type: str
+    status: str
+    command_or_capability: str | None = None
+    evidence_ref: dict | None = None
+    summary: str | None = None
+    is_required_for_completion: bool = True
+    duration_ms: int | None = None
+    extra_meta: dict = Field(default_factory=dict)
+
+
+class WorkflowApprovalRequest(BaseModel):
+    run_id: int | None = None
+    tool_call_id: int
+    agent_code: str = "default"
+    reason: str | None = None
+    request_type: str = "tool_call"
+    risk_level: str = "dangerous"
+    decision_scope: str = "single_call"
+    resume_target: dict | None = None
+
+
+class WorkflowFinalizeRequest(BaseModel):
+    developer_summary: str | None = None
+
+
+class WorkflowCancelRequest(BaseModel):
     reason: str | None = None
 
 

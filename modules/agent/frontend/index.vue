@@ -18,6 +18,7 @@
     <EnginePanel v-if="showAdminPanel === 'engine'" class="agent-main" />
     <AgentConfigPanel v-else-if="showAdminPanel === 'config'" class="agent-main" />
     <ApprovalPanel v-else-if="showAdminPanel === 'approvals'" class="agent-main" />
+    <WorkflowList v-else-if="showAdminPanel === 'workflows'" class="agent-main" :is-admin="isAdmin" @open-approvals="toggleAdminPanel('approvals')" />
 
     <section v-else class="agent-main">
 	      <!-- 消息区域 -->
@@ -62,6 +63,7 @@ import MessageBubble from './components/MessageBubble.vue'
 import ThinkingCard from './components/ThinkingCard.vue'
 import ToolCallCard from './components/ToolCallCard.vue'
 import WorkTraceGroup from './components/WorkTraceGroup.vue'
+import WorkflowList from './components/WorkflowList.vue'
 import EnginePanel from './admin/EnginePanel.vue'
 import AgentConfigPanel from './admin/AgentConfigPanel.vue'
 import ApprovalPanel from './admin/ApprovalPanel.vue'

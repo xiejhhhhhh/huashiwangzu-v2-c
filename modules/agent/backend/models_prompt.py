@@ -1,7 +1,6 @@
+from app.models.base import Base, TimestampMixin
 from sqlalchemy import BigInteger, Boolean, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
-
-from app.models.base import Base, TimestampMixin
 
 
 class AgentPrompt(Base, TimestampMixin):

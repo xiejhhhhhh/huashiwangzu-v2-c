@@ -30,27 +30,27 @@ from typing import Any
 import httpx
 
 try:
+    from dev_toolkit.config_loader import load_config
     from dev_toolkit.process_tools import create_subprocess_exec_group, terminate_process_tree
 except ModuleNotFoundError:
+    from config_loader import load_config
     from process_tools import create_subprocess_exec_group, terminate_process_tree
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_PYTHON = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
-BACKEND_BASE = "http://127.0.0.1:33000"
-CONFIG_PATH = REPO_ROOT / "dev_toolkit" / "config.json"
+CONFIG = load_config(REPO_ROOT)
+BACKEND_BASE = str(CONFIG.get("backend_base_url") or "http://127.0.0.1:33000")
+FRONTEND_BASE = str(CONFIG.get("frontend_base_url") or "http://127.0.0.1:5173")
 SEMANTIC_COMPLETED_SCAN_LIMIT = 500
 
-with open(CONFIG_PATH, encoding="utf-8") as f:
-    CONFIG = json.load(f)
 DB_DSN = CONFIG.get("db_dsn", "")
-
-ACCOUNTS = {
-    "admin": {"username": "何焜华", "password": "123rgE123"},
-}
+ACCOUNTS = CONFIG.get("accounts", {})
+RELEASE_GATE_CONFIG = CONFIG.get("release_gate", {})
 
 results: list[dict[str, Any]] = []
 _token_cache: dict[str, tuple[str, float]] = {}
 _TOKEN_MAX_AGE = 300  # 5 min — short enough to avoid stale-after-smoke expiry
+runtime_context: dict[str, Any] = {}
 
 
 def _project_python() -> str:
@@ -63,6 +63,65 @@ def add_result(check: str, level: str, detail: str) -> None:
     print(f"  {icon} [{level:>20}] {check}: {detail[:200]}")
 
 
+def _run_git(args: list[str]) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def git_snapshot() -> dict[str, Any]:
+    status_lines = [line for line in _run_git(["status", "--short"]).splitlines() if line.strip()]
+    return {
+        "sha": _run_git(["rev-parse", "HEAD"]),
+        "short_sha": _run_git(["rev-parse", "--short", "HEAD"]),
+        "branch": _run_git(["branch", "--show-current"]),
+        "dirty": bool(status_lines),
+        "dirty_count": len(status_lines),
+        "dirty_files": status_lines[:80],
+    }
+
+
+async def _url_status(base_url: str, path: str = "/") -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=5, trust_env=False) as client:
+            resp = await client.get(path)
+        return {
+            "available": resp.status_code < 500,
+            "status_code": resp.status_code,
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+        }
+
+
+async def collect_runtime_context() -> None:
+    runtime_context.clear()
+    runtime_context.update({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "backend_base_url": BACKEND_BASE,
+        "frontend_base_url": FRONTEND_BASE,
+        "git": git_snapshot(),
+        "services": {
+            "backend": await _url_status(BACKEND_BASE, "/api/health"),
+            "frontend": await _url_status(FRONTEND_BASE, "/"),
+        },
+    })
+
+
 async def _ensure_token(*, force_refresh: bool = False) -> str:
     now = time.monotonic()
     if not force_refresh and "admin" in _token_cache:
@@ -70,6 +129,11 @@ async def _ensure_token(*, force_refresh: bool = False) -> str:
         if now - cached_at < _TOKEN_MAX_AGE:
             return cached_token
     acct = ACCOUNTS["admin"]
+    if not acct.get("username") or not acct.get("password"):
+        raise RuntimeError(
+            "dev_toolkit admin account is not configured; set dev_toolkit/config.local.json "
+            "or DEV_TOOLKIT_ADMIN_USERNAME/DEV_TOOLKIT_ADMIN_PASSWORD"
+        )
     async with httpx.AsyncClient(base_url=BACKEND_BASE, timeout=10, trust_env=False) as client:
         resp = await client.post("/api/login", json={
             "username": acct["username"],
@@ -278,6 +342,7 @@ async def check_health() -> None:
             add_result("Health check", "PASS", f"status={status}, db={d.get('database')}")
         else:
             add_result("Health check", "BLOCKER", f"status={status}, db={d.get('database')}")
+        runtime_context["health"] = d
     except Exception as e:
         add_result("Health check", "BLOCKER", str(e))
 
@@ -294,6 +359,7 @@ async def check_system_status() -> None:
         else:
             failing = [k for k in ("backend", "database", "worker") if not d.get(k, {}).get("status")]
             add_result("System status", "BLOCKER", f"failing: {', '.join(failing)}")
+        runtime_context["system_status"] = d
     except Exception as e:
         add_result("System status", "BLOCKER", str(e))
 
@@ -319,6 +385,12 @@ async def check_smoke(skip_ui: bool) -> None:
         smoke_summary = parse_prefixed_json(output, "SMOKE_JSON:")
 
         if smoke_summary:
+            runtime_context["smoke"] = {
+                "summary": smoke_summary,
+                "returncode": proc.returncode,
+                "duration_seconds": round(elapsed, 3),
+                "skip_ui": skip_ui,
+            }
             verdict = smoke_summary.get("verdict")
             counts = smoke_summary.get("counts", {})
             failed = int(counts.get("failed", 0) or 0) if isinstance(counts, dict) else 0
@@ -401,6 +473,14 @@ async def check_task_queue_audit(
         summary = d.get("summary", {})
         classification = d.get("classification", {})
         stalest = d.get("stalest_pending")
+        runtime_context["task_debt_summary"] = {
+            "summary": summary,
+            "classification": classification,
+            "recent_failed_count": d.get("recent_failed_count", classification.get("recent_failed_count", 0)),
+            "historical_debt_total": d.get("historical_debt_total", 0),
+            "stalest_pending": stalest,
+            "metadata": d.get("metadata", {}),
+        }
 
         failed = summary.get("failed", 0)
         pending = summary.get("pending", 0)
@@ -464,7 +544,7 @@ async def check_task_queue_audit(
         add_result("Queue: audit", "BLOCKER", str(e))
 
 
-async def check_sandbox_matrix() -> None:
+async def check_sandbox_matrix(sandbox_jobs: int = 1, frontend_jobs: int = 1) -> None:
     """Run module_sandbox_matrix.py and report summary."""
     proc: asyncio.subprocess.Process | None = None
     try:
@@ -473,6 +553,8 @@ async def check_sandbox_matrix() -> None:
             _project_python(),
             str(REPO_ROOT / "dev_toolkit" / "module_sandbox_matrix.py"),
             "--check", "--json",
+            "--jobs", str(max(1, sandbox_jobs)),
+            "--frontend-jobs", str(max(1, frontend_jobs)),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=REPO_ROOT,
@@ -494,6 +576,15 @@ async def check_sandbox_matrix() -> None:
             return
 
         level, detail = classify_sandbox_matrix(entries, elapsed)
+        runtime_context["sandbox_matrix"] = {
+            "total": len(entries),
+            "passed": sum(1 for e in entries if e.get("check") == "pass"),
+            "failed": sum(1 for e in entries if e.get("check") == "fail"),
+            "skipped": sum(1 for e in entries if e.get("check") == "skip"),
+            "duration_seconds": round(elapsed, 3),
+            "jobs": sandbox_jobs,
+            "frontend_jobs": frontend_jobs,
+        }
         add_result("Sandbox matrix", level, detail)
     except asyncio.TimeoutError:
         if proc is not None:
@@ -537,6 +628,7 @@ def build_release_summary(verdict: str, *, skip_ui: bool = False, preflight: boo
         "ui_skipped": skip_ui,
         "preflight": preflight,
         "gate_mode": "preflight" if preflight else ("backend_preflight" if skip_ui else "full_release"),
+        "context": runtime_context,
         "levels": levels,
         "results": results,
     }
@@ -548,6 +640,14 @@ async def main():
                         help="Skip Playwright UI tests in smoke_all")
     parser.add_argument("--preflight", action="store_true",
                         help="Run fast health/status/queue checks only; skip smoke and sandbox matrix")
+    parser.add_argument("--sandbox-jobs", type=int, default=int(RELEASE_GATE_CONFIG.get("sandbox_jobs", 1) or 1),
+                        help="Pass-through concurrency for module_sandbox_matrix --jobs")
+    parser.add_argument(
+        "--sandbox-frontend-jobs",
+        type=int,
+        default=int(RELEASE_GATE_CONFIG.get("sandbox_frontend_jobs", 1) or 1),
+        help="Pass-through concurrency for module_sandbox_matrix --frontend-jobs",
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -556,6 +656,23 @@ async def main():
     print(f"  Backend: {BACKEND_BASE}")
     print("=" * 70)
 
+    await collect_runtime_context()
+    git_info = runtime_context.get("git", {})
+    if git_info.get("dirty"):
+        add_result(
+            "Git worktree",
+            "DEBT",
+            f"dirty files={git_info.get('dirty_count', 0)}; included in machine JSON",
+        )
+    else:
+        add_result("Git worktree", "PASS", f"clean sha={git_info.get('short_sha', '')}")
+    frontend_state = runtime_context.get("services", {}).get("frontend", {})
+    add_result(
+        "Frontend availability",
+        "PASS" if frontend_state.get("available") else "DEBT",
+        f"{FRONTEND_BASE} status={frontend_state.get('status_code', frontend_state.get('error', 'unknown'))}",
+    )
+    print()
     await check_health()
     print()
     await check_system_status()
@@ -591,7 +708,7 @@ async def main():
     if args.preflight:
         add_result("Sandbox matrix", "DEBT", "--preflight used; sandbox matrix not run")
     else:
-        await check_sandbox_matrix()
+        await check_sandbox_matrix(args.sandbox_jobs, args.sandbox_frontend_jobs)
 
     print()
     print("=" * 70)

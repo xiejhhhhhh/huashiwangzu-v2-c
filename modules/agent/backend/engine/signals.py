@@ -15,7 +15,7 @@ Signal types:
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger("v2.agent").getChild("engine.signals")
 

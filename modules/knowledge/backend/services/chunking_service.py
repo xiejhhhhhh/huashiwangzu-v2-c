@@ -154,7 +154,7 @@ def _chunk_structure_aware(
     current_page: int | None = None
 
     def flush():
-        nonlocal current_chunk_text
+        nonlocal chunk_index, current_chunk_text
         if current_chunk_text.strip():
             chunks.append({
                 "block_type": "段落",
@@ -164,7 +164,6 @@ def _chunk_structure_aware(
                 "heading": current_heading,
                 "hierarchy_level": current_hierarchy,
             })
-            nonlocal chunk_index
             chunk_index += 1
         current_chunk_text = ""
 

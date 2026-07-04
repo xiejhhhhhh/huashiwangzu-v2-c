@@ -6,8 +6,8 @@ Usage:
 """
 import asyncio
 import json
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Ensure backend is importable
@@ -182,7 +182,7 @@ async def probe_stream():
         if et in ("token", "thinking"):
             pass  # just consume
         elif et == "done":
-            print(f"  [DONE]")
+            print("  [DONE]")
         elif et == "error":
             print(f"  [ERROR] {evt.get('content')}")
 
@@ -196,7 +196,7 @@ async def probe_stream():
         if et in ("token", "thinking"):
             print(f"  {et}: {evt.get('content','')[:40]}")
         elif et == "done":
-            print(f"  [DONE]")
+            print("  [DONE]")
         elif "tool_calls" in evt:
             print(f"  tool_calls: {json.dumps(evt.get('tool_calls'), ensure_ascii=False)[:200]}")
         elif et == "error":
@@ -214,7 +214,7 @@ async def probe_stream():
         if et in ("token", "thinking"):
             pass
         elif et == "done":
-            print(f"  [DONE]")
+            print("  [DONE]")
         elif "tool_calls" in evt:
             print(f"  tool_calls: {json.dumps(evt.get('tool_calls'), ensure_ascii=False)[:200]}")
         elif et == "error":

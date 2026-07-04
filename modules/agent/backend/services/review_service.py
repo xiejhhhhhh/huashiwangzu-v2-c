@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from datetime import datetime, timezone
 
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ReviewTask, ReviewResult
+from ..models import ReviewResult, ReviewTask
 
 logger = logging.getLogger("v2.agent").getChild("services.review_service")
 
