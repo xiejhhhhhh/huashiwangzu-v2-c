@@ -31,6 +31,15 @@ Large text files are parsed up to `MAX_TEXT_BYTES` plus a small multibyte safety
 includes `metadata.original_size`, `metadata.parsed_bytes`, `metadata.max_bytes`,
 `metadata.truncated`, and `metadata.encoding`.
 
+## Content IR Compatibility
+
+The parser keeps the legacy `{file_id, format, blocks, resources, metadata}` contract and also emits
+Content IR compatible fields: `schema_version`, `content_type`, `source`, `source_file_id`,
+`source_module`, `parser`, and `warnings`. Every block includes `source_ref` with `file_id`,
+`format`, `section`, and available line bounds. Empty successful parses emit an explicit paragraph
+block instead of an empty block list, so the existing Content IR normalizer can assign stable block
+ids and resources without special cases.
+
 ## Verification
 
 ```bash
@@ -65,7 +74,8 @@ curl -X POST http://127.0.0.1:33000/api/text-parser/parse \
 | File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
 | Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/text-parser/sandbox/test_module.py` |
 | Smoke | PASS | Use `call_capability` for `text-parser:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+| Content IR | PASS | Sandbox normalizes parser output with existing `normalize_ir` and checks `schema_version`, non-empty blocks, and block `source_ref`. |
+| Known debt | PASS | No module-local Content IR debt found for TXT/Markdown text parsing. |
 
 ### Reproducible Checks
 

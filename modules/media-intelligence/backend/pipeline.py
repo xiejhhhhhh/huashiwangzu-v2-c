@@ -12,6 +12,7 @@ IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "ico"}
 VIDEO_EXTENSIONS = {"mp4", "mov", "m4v", "webm", "mkv", "avi"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 SCHEMA_VERSION = "media-intelligence.analysis.v1"
+CONTENT_IR_SCHEMA_VERSION = "1.0"
 
 
 async def analyze_image_path(
@@ -118,7 +119,7 @@ async def refine_analysis_result(
     )
     stage = await get_provider("vlm_refine").run(context)
     _merge_stage(refined, stage)
-    refined["schema_version"] = SCHEMA_VERSION
+    _attach_content_ir(refined, context)
     refined["providers"] = list_providers()
     return refined
 
@@ -153,6 +154,7 @@ async def run_pipeline(context: MediaContext, layers: list[str]) -> dict[str, An
         stage = await get_provider(layer).run(context)
         _merge_stage(result, stage)
     result["confidence"] = _aggregate_confidence(result["stages"])
+    _attach_content_ir(result, context)
     return result
 
 
@@ -199,6 +201,188 @@ def _empty_result(context: MediaContext) -> dict[str, Any]:
         "model_fallback": None,
         "providers": list_providers(),
     }
+
+
+def _attach_content_ir(result: dict[str, Any], context: MediaContext) -> None:
+    metadata = _metadata_from_result(result)
+    source_ref = _base_source_ref(result, context, metadata)
+    blocks = _build_blocks(result, context, source_ref)
+    source = {
+        "module": "media-intelligence",
+        "file_id": context.file_id,
+        "filename": context.file_name,
+        "file_name": context.file_name,
+        "mime_type": _mime_type(context.extension, context.media_type),
+        "extension": context.extension,
+        "media_type": context.media_type,
+        "size_bytes": context.size_bytes,
+        "head_sha256": context.head_sha256,
+    }
+    for key in (
+        "width",
+        "height",
+        "duration_seconds",
+        "frame_rate",
+        "frame_count",
+        "format",
+        "mode",
+        "video_codec",
+    ):
+        if key in metadata:
+            source[key] = metadata[key]
+    result.update({
+        "schema_version": CONTENT_IR_SCHEMA_VERSION,
+        "module_schema_version": SCHEMA_VERSION,
+        "content_type": "image" if context.media_type == "image" else "mixed",
+        "title": context.file_name,
+        "source_file_id": context.file_id,
+        "source_module": "media-intelligence",
+        "parser": f"media-intelligence.{context.options.get('action') or 'analyze'}",
+        "source": source,
+        "blocks": blocks,
+        "resources": [],
+        "metadata": {
+            "analysis_id": result.get("analysis_id"),
+            "action": result.get("action"),
+            "media_type": context.media_type,
+            "signals": result.get("signals", {}),
+            "artifacts": result.get("artifacts", {}),
+            "tags": result.get("tags", []),
+            "stages": result.get("stages", []),
+            "degraded": result.get("degraded", []),
+            "model_fallback": result.get("model_fallback"),
+        },
+        "quality": {"confidence": result.get("confidence", 0.0)},
+    })
+
+
+def _build_blocks(result: dict[str, Any], context: MediaContext, source_ref: dict[str, Any]) -> list[dict[str, Any]]:
+    summary = str(result.get("summary") or "").strip()
+    if not summary:
+        summary = f"{context.media_type.title()} file {context.file_name} produced structured media facts."
+    if context.media_type == "image":
+        return [{
+            "type": "image",
+            "text": summary,
+            "data": {
+                "source_ref": source_ref,
+                "analysis_id": result.get("analysis_id"),
+                "artifacts": result.get("artifacts", {}),
+            },
+            "source_ref": source_ref,
+        }]
+
+    blocks: list[dict[str, Any]] = [{
+        "type": "paragraph",
+        "text": summary,
+        "data": {
+            "source_ref": source_ref,
+            "analysis_id": result.get("analysis_id"),
+            "role": "media_summary",
+        },
+        "source_ref": source_ref,
+    }]
+    artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), dict) else {}
+    keyframes = artifacts.get("keyframes") if isinstance(artifacts, dict) else []
+    if isinstance(keyframes, list):
+        for frame in keyframes:
+            if not isinstance(frame, dict):
+                continue
+            timestamp = frame.get("timestamp_seconds")
+            frame_ref = {
+                **source_ref,
+                "frame": {"index": frame.get("index"), "timestamp_seconds": timestamp},
+                "timecode": _format_timecode(timestamp),
+            }
+            blocks.append({
+                "type": "paragraph",
+                "text": f"Keyframe marker at {frame_ref['timecode']}.",
+                "data": {
+                    "source_ref": frame_ref,
+                    "keyframe": frame,
+                    "role": "keyframe_marker",
+                },
+                "source_ref": frame_ref,
+            })
+    ocr = artifacts.get("ocr") if isinstance(artifacts, dict) else None
+    if isinstance(ocr, dict) and str(ocr.get("text") or "").strip():
+        transcript_ref = {**source_ref, "transcript": {"source": "ocr", "language": ocr.get("language")}}
+        blocks.append({
+            "type": "paragraph",
+            "text": str(ocr["text"]),
+            "data": {
+                "source_ref": transcript_ref,
+                "ocr": ocr,
+                "role": "transcript",
+            },
+            "source_ref": transcript_ref,
+        })
+    if len(blocks) == 1 and result.get("degraded"):
+        degraded_ref = {**source_ref, "degraded": True}
+        blocks.append({
+            "type": "paragraph",
+            "text": "Media analysis returned structured degraded reasons; see block metadata for dependency details.",
+            "data": {
+                "source_ref": degraded_ref,
+                "degraded": result.get("degraded", []),
+                "role": "degraded_notice",
+            },
+            "source_ref": degraded_ref,
+        })
+    return blocks
+
+
+def _metadata_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    signals = result.get("signals")
+    if not isinstance(signals, dict):
+        return {}
+    metadata = signals.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _base_source_ref(result: dict[str, Any], context: MediaContext, metadata: dict[str, Any]) -> dict[str, Any]:
+    ref: dict[str, Any] = {
+        "file_id": context.file_id,
+        "filename": context.file_name,
+        "media_type": context.media_type,
+        "extension": context.extension,
+        "analysis_id": result.get("analysis_id"),
+    }
+    if context.media_type == "image":
+        ref["image"] = {
+            "width": metadata.get("width"),
+            "height": metadata.get("height"),
+            "frame_count": metadata.get("frame_count", 1),
+        }
+    else:
+        ref["video"] = {
+            "duration_seconds": metadata.get("duration_seconds"),
+            "width": metadata.get("width"),
+            "height": metadata.get("height"),
+            "frame_rate": metadata.get("frame_rate"),
+            "frame_count": metadata.get("frame_count"),
+        }
+    return ref
+
+
+def _format_timecode(value: object) -> str:
+    seconds = 0.0
+    if isinstance(value, int | float):
+        seconds = max(float(value), 0.0)
+    minutes, sec = divmod(seconds, 60)
+    hours, minute = divmod(int(minutes), 60)
+    return f"{hours:02d}:{minute:02d}:{sec:06.3f}"
+
+
+def _mime_type(extension: str, media_type: MediaType) -> str:
+    normalized = extension.lower().lstrip(".")
+    if media_type == "video":
+        return f"video/{'quicktime' if normalized == 'mov' else normalized or 'mp4'}"
+    if normalized in {"jpg", "jpeg"}:
+        return "image/jpeg"
+    if normalized:
+        return f"image/{normalized}"
+    return "image/jpeg"
 
 
 def _merge_stage(result: dict[str, Any], stage: StageResult) -> None:

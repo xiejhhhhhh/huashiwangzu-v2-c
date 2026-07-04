@@ -20,6 +20,15 @@ access is validated through the platform file permission path before this
 module reads the physical file. Parser failures are returned as structured
 validation errors instead of successful empty parses.
 
+## Content IR Compatibility
+
+The parser keeps the legacy `{file_id, format, blocks, resources, resource_diagnostics}` shape and
+adds Content IR compatible fields: `schema_version`, `content_type`, `source`, `source_file_id`,
+`source_module`, `parser`, `metadata`, and `warnings`. Blocks include `source_ref` with email
+sections (`header`, `body`, `attachment`) and message-part metadata. Attachment resources also carry
+`source_ref` with `attachment_index` and filename so Artifact, Knowledge, and Agent evidence can trace
+the extracted resource back to the email part.
+
 ## Format Support
 
 - `.eml` - Headers, plaintext body, HTML fallback body, attachment metadata and bytes.
@@ -56,7 +65,8 @@ curl -X POST http://127.0.0.1:33000/api/email-parser/parse \
 | File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
 | Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/email-parser/sandbox/test_module.py` |
 | Smoke | PASS | Use `call_capability` for `email-parser:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+| Content IR | PASS | Sandbox normalizes parser output with existing `normalize_ir` and checks `schema_version`, non-empty blocks, attachment resources, and message-part `source_ref`. |
+| Known debt | PASS | No module-local Content IR debt found for EML/MSG parsing. |
 
 ### Reproducible Checks
 

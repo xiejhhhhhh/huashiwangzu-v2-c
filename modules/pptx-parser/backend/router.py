@@ -43,6 +43,12 @@ async def _parse(params: dict, caller: str) -> dict:
 
         for slide_idx, slide in enumerate(prs.slides):
             pno = slide_idx + 1
+            slide_children = []
+            slide_source_ref = {
+                "module": "pptx-parser",
+                "file_id": file_id,
+                "slide": pno,
+            }
             for shape in slide.shapes:
                 if shape.has_text_frame:
                     for para in shape.text_frame.paragraphs:
@@ -50,7 +56,16 @@ async def _parse(params: dict, caller: str) -> dict:
                         if not text:
                             continue
                         block_type = "heading" if ("title" in str(shape.name).lower() or "标题" in str(shape.name)) else "paragraph"
-                        blocks.append({"type": block_type, "text": text, "page": pno, "resource_ref": None})
+                        slide_children.append({
+                            "type": block_type,
+                            "text": text,
+                            "page": pno,
+                            "resource_ref": None,
+                            "source_ref": {
+                                **slide_source_ref,
+                                "shape": str(shape.name),
+                            },
+                        })
                 if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                     resource_counter += 1
                     mime_type = "image/png"
@@ -79,23 +94,68 @@ async def _parse(params: dict, caller: str) -> dict:
                             error=exc,
                         ))
 
-                    blocks.append({"type": "image", "text": "", "page": pno, "resource_ref": resource_counter})
+                    source_ref = {
+                        **slide_source_ref,
+                        "shape": str(shape.name),
+                        "resource_id": resource_counter,
+                    }
+                    slide_children.append({
+                        "type": "image",
+                        "text": "",
+                        "page": pno,
+                        "resource_ref": resource_counter,
+                        "source_ref": source_ref,
+                    })
                     resources.append({
                         "id": resource_counter,
                         "type": "image",
+                        "resource_type": "image",
                         "page": pno,
                         "mime_type": mime_type,
                         "filename": f"slide{pno}_{hashlib.md5(str(shape.name).encode()).hexdigest()[:8]}.png",
                         "description": f"Slide {pno} image ({shape.name})",
+                        "source_ref": source_ref,
+                        "data_b64": base64.b64encode(img_bytes).decode("ascii") if img_bytes else "",
                         "_resource_diagnostic_recorded": extract_diagnostic_recorded,
                         "_bytes_b64": base64.b64encode(img_bytes).decode("ascii") if img_bytes else "",
                     })
 
+            if slide_children:
+                blocks.append({
+                    "type": "slide",
+                    "text": "\n".join(child.get("text", "") for child in slide_children if child.get("text")),
+                    "page": pno,
+                    "resource_ref": None,
+                    "source_ref": slide_source_ref,
+                    "children": slide_children,
+                    "data": {"slide_number": pno},
+                })
+
         return {
+            "schema_version": "content-ir/v1",
+            "content_type": "presentation",
+            "title": full_path.name,
             "file_id": file_id,
             "format": "pptx",
+            "source_file_id": file_id,
+            "source_module": "pptx-parser",
+            "parser": "pptx-parser",
+            "source": {
+                "module": "pptx-parser",
+                "file_id": file_id,
+                "filename": full_path.name,
+                "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            },
             "blocks": blocks,
             "resources": resources,
+            "metadata": {
+                "parser": "pptx-parser",
+                "format": "pptx",
+                "filename": full_path.name,
+                "slide_count": len(prs.slides),
+                "resource_count": len(resources),
+            },
+            "warnings": [],
             "resource_diagnostics": resource_diagnostics,
         }
 

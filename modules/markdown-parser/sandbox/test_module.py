@@ -1,4 +1,5 @@
 """Sandbox test for markdown-parser production parser."""
+import asyncio
 import importlib.util
 import os
 import sys
@@ -10,6 +11,13 @@ MODULE_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = MODULE_DIR.parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
 SAMPLE_DIR = Path(__file__).resolve().parent / "samples"
+NORMALIZER_PATH = REPO_ROOT / "backend" / "app" / "services" / "content" / "ir_normalizer.py"
+
+normalizer_spec = importlib.util.spec_from_file_location("content_ir_normalizer_under_test", NORMALIZER_PATH)
+if normalizer_spec is None or normalizer_spec.loader is None:
+    raise RuntimeError(f"Cannot load Content IR normalizer from {NORMALIZER_PATH}")
+normalizer = importlib.util.module_from_spec(normalizer_spec)
+normalizer_spec.loader.exec_module(normalizer)
 
 
 def load_router_module() -> ModuleType:
@@ -28,18 +36,49 @@ def load_router_module() -> ModuleType:
     return module
 
 
+def normalize(result: dict[str, Any]) -> dict[str, Any]:
+    value = asyncio.run(normalizer.normalize_ir(result))
+    assert isinstance(value, dict)
+    return value
+
+
 def validate(result: dict[str, Any], label: str) -> None:
-    assert set(result) == {"file_id", "format", "blocks", "resources"}
+    assert {
+        "schema_version",
+        "content_type",
+        "source",
+        "source_file_id",
+        "source_module",
+        "parser",
+        "file_id",
+        "format",
+        "blocks",
+        "resources",
+        "metadata",
+        "warnings",
+    } <= set(result)
+    assert result["schema_version"] == "content-ir/v1"
     blocks = result["blocks"]
     resources = result["resources"]
     assert isinstance(blocks, list)
+    assert blocks, "markdown-parser must emit a content block or explicit empty block"
     assert isinstance(resources, list)
     for block in blocks:
         assert isinstance(block, dict)
-        assert set(block) == {"type", "text", "page", "resource_ref"}
+        assert {"type", "text", "page", "resource_ref", "source_ref"} <= set(block)
+        source_ref = block["source_ref"]
+        assert isinstance(source_ref, dict)
+        assert source_ref["file_id"] == result["file_id"]
+        assert source_ref["format"] == "markdown"
+        assert "section" in source_ref
     for resource in resources:
         assert isinstance(resource, dict)
-        assert set(resource) == {"id", "type", "file_storage_id", "text_desc"}
+        assert {"id", "type", "file_storage_id", "text_desc", "source_ref"} <= set(resource)
+        assert isinstance(resource["source_ref"], dict)
+    normalized = normalize(result)
+    assert normalized["schema_version"] == "content-ir/v1"
+    assert normalized["blocks"]
+    assert all("id" in block for block in normalized["blocks"])
     print(f"  [{label}] Validation PASS ({len(blocks)} blocks, {len(resources)} resources)")
 
 

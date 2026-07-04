@@ -21,6 +21,7 @@ if str(BACKEND_ROOT) not in sys.path:
 os.environ.setdefault("JWT_SECRET", "csv-parser-sandbox-test-secret")
 
 from app.core.exceptions import ValidationError  # noqa: E402
+from app.services.content.ir_validator import validate_ir_sync  # noqa: E402
 
 
 def _load_router_module():
@@ -36,13 +37,27 @@ csv_router = _load_router_module()
 
 
 def _validate_shape(result: dict[str, object]) -> list[dict[str, object]]:
+    assert result["schema_version"] == "1.0"
+    assert result["content_type"] == "document"
+    assert result["source_module"] == "csv-parser"
+    assert result["parser"] == "csv-parser:parse"
+    assert isinstance(result["source"], dict)
     assert result["file_id"] == 0
     assert result["resources"] == []
     blocks = result["blocks"]
     assert isinstance(blocks, list)
+    assert blocks, "CSV parser must emit content or an explicit empty block"
     for block in blocks:
         assert isinstance(block, dict)
-        assert set(("type", "text", "page", "resource_ref")).issubset(block)
+        assert set(("type", "text", "page", "resource_ref", "source_ref", "data")).issubset(block)
+        source_ref = block["source_ref"]
+        assert isinstance(source_ref, dict)
+        assert source_ref
+        data = block["data"]
+        assert isinstance(data, dict)
+        assert data.get("source_ref") == source_ref
+    validation = validate_ir_sync(result)
+    assert validation.valid, [error.model_dump() for error in validation.errors]
     return blocks
 
 
@@ -61,6 +76,9 @@ def test_real_sample_csv_parses_with_unified_blocks() -> None:
     assert "表头：name | score" in text
     assert "行2：alpha | 1" in text
     assert "行3：beta | 2" in text
+    row_blocks = [block for block in _validate_shape(result) if block["source_ref"].get("kind") == "data_rows"]
+    assert row_blocks[0]["source_ref"]["line_start"] == 2
+    assert row_blocks[0]["source_ref"]["line_end"] == 3
 
 
 def test_real_sample_tsv_uses_tab_delimiter() -> None:
@@ -93,6 +111,7 @@ def test_empty_file_returns_explicit_empty_table(tmp_path: Path) -> None:
 
     assert len(blocks) == 1
     assert "空CSV/TSV文件：0列 x 0行数据" in str(blocks[0]["text"])
+    assert blocks[0]["source_ref"]["kind"] == "empty_file"
 
 
 def test_large_file_output_is_bounded(tmp_path: Path) -> None:

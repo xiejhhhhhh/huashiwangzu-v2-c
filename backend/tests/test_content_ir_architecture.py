@@ -22,6 +22,7 @@ if str(_repo_root) not in sys.path:
 
 from app.core.exceptions import ConflictError
 from app.core.exceptions import ValidationError as AppValidationError
+from app.services.content.ir_normalizer import normalize_parser_output
 from app.services.content.ir_validator import validate_ir, validate_ir_sync
 from app.services.content.ir_writer import write_ir
 
@@ -336,6 +337,126 @@ class TestValidateIR:
         result = await validate_ir(ir)
         assert result.valid is False
         assert any(e.path == "quality" and e.code == "invalid_type" for e in result.errors)
+
+
+class TestParserOutputNormalization:
+    """Tests for legacy parser output -> authoritative Content IR."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_document_parser_output_gets_source_trace(self):
+        legacy = {
+            "file_id": 101,
+            "format": "pdf",
+            "blocks": [
+                {"type": "paragraph", "text": "Page text", "page": 3, "resource_ref": None}
+            ],
+            "resources": [],
+        }
+        ir = normalize_parser_output(legacy, module="pdf-parser", filename="sample.pdf")
+
+        assert ir["schema_version"] == "1.0"
+        assert ir["source_module"] == "pdf-parser"
+        assert ir["parser"] == "pdf-parser:parse"
+        assert ir["source"] == {
+            "module": "pdf-parser",
+            "file_id": 101,
+            "filename": "sample.pdf",
+            "mime_type": None,
+            "format": "pdf",
+        }
+        assert ir["blocks"][0]["source_ref"]["page"] == 3
+        result = await validate_ir(ir)
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_table_parser_output_becomes_spreadsheet_ir(self):
+        legacy = {
+            "file_id": 102,
+            "format": "csv",
+            "content_type": "document",
+            "title": "Legacy CSV document",
+            "blocks": [
+                {"type": "paragraph", "text": "表格：2列 x 1行数据", "page": None, "resource_ref": None},
+                {"type": "table", "text": "A | B\n1 | 2", "page": None, "resource_ref": None},
+            ],
+            "resources": [],
+        }
+        ir = normalize_parser_output(legacy, module="csv-parser", filename="sample.csv")
+
+        assert ir["content_type"] == "spreadsheet"
+        assert ir["blocks"][0]["type"] == "sheet"
+        assert ir["blocks"][0]["children"]
+        assert ir["blocks"][0]["source_ref"]["sheet"] == "csv"
+        result = await validate_ir(ir)
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_markdown_mixed_parser_output_keeps_image_refs(self):
+        legacy = {
+            "schema_version": "1.0",
+            "content_type": "mixed",
+            "file_id": 105,
+            "format": "markdown",
+            "blocks": [
+                {"type": "heading", "text": "Doc", "page": None, "resource_ref": None},
+                {"type": "image", "text": "Chart", "page": None, "resource_ref": 1},
+            ],
+            "resources": [{"id": 1, "type": "image", "text_desc": "Markdown image"}],
+        }
+        ir = normalize_parser_output(legacy, module="markdown-parser", filename="doc.md")
+
+        assert ir["content_type"] == "mixed"
+        assert [block["type"] for block in ir["blocks"]] == ["heading", "image"]
+        assert ir["blocks"][1]["source_ref"]["resource_ref"] == 1
+        result = await validate_ir(ir)
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_pptx_parser_output_groups_blocks_by_slide(self):
+        legacy = {
+            "file_id": 103,
+            "format": "pptx",
+            "blocks": [
+                {"type": "heading", "text": "S1", "page": 1, "resource_ref": None},
+                {"type": "paragraph", "text": "S2 body", "page": 2, "resource_ref": None},
+            ],
+            "resources": [],
+        }
+        ir = normalize_parser_output(legacy, module="pptx-parser", filename="deck.pptx")
+
+        assert ir["content_type"] == "presentation"
+        assert [block["source_ref"]["slide"] for block in ir["blocks"]] == [1, 2]
+        assert ir["blocks"][0]["children"][0]["source_ref"]["page"] == 1
+        result = await validate_ir(ir)
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_image_vision_output_preserves_resource_evidence(self):
+        legacy = {
+            "file_id": 104,
+            "format": "png",
+            "description": "A chart image",
+            "blocks": [
+                {"type": "image", "text": "A chart image", "page": None, "resource_ref": 1}
+            ],
+            "resources": [
+                {
+                    "id": 1,
+                    "type": "image",
+                    "file_storage_id": 104,
+                    "text_desc": "A chart image",
+                    "metadata": {"width": 640, "height": 480},
+                }
+            ],
+        }
+        ir = normalize_parser_output(legacy, module="image-vision", filename="chart.png")
+
+        assert ir["content_type"] == "image"
+        assert ir["blocks"][0]["source_ref"]["resource_ref"] == 1
+        assert ir["resources"][0]["resource_type"] == "image"
+        assert ir["resources"][0]["description"] == "A chart image"
+        result = await validate_ir(ir)
+        assert result.valid is True
 
 
 # ====================================================================

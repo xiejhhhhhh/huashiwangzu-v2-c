@@ -2,13 +2,25 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import sys
 import tempfile
 from pathlib import Path
 
 from openpyxl import Workbook
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_ROOT = REPO_ROOT / "backend"
 SDIR = Path(__file__).resolve().parent / "samples"
 CORE_PATH = Path(__file__).resolve().parents[1] / "backend" / "parser_core.py"
+
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+os.environ.setdefault("JWT_SECRET", "xlsx-parser-sandbox-test-secret")
+
+from app.services.content.ir_validator import validate_ir_sync  # noqa: E402
+
 CORE_SPEC = importlib.util.spec_from_file_location("xlsx_parser_core", CORE_PATH)
 if CORE_SPEC is None or CORE_SPEC.loader is None:
     raise RuntimeError("Failed to load parser core")
@@ -21,11 +33,34 @@ parse_spreadsheet_file = parser_core.parse_spreadsheet_file
 
 
 def validate(result: dict[str, object], label: str) -> None:
-    assert all(k in result for k in ("file_id", "format", "blocks", "resources"))
+    assert all(k in result for k in (
+        "schema_version",
+        "content_type",
+        "source",
+        "source_module",
+        "parser",
+        "file_id",
+        "format",
+        "blocks",
+        "resources",
+    ))
+    assert result["schema_version"] == "1.0"
+    assert result["content_type"] == "document"
+    assert result["source_module"] == "xlsx-parser"
+    assert result["parser"] == "xlsx-parser:parse"
     assert isinstance(result["blocks"], list)
+    assert result["blocks"], f"{label} must emit content or an explicit empty block"
     for block in result["blocks"]:
         assert isinstance(block, dict)
-        assert all(k in block for k in ("type", "text", "page", "resource_ref"))
+        assert all(k in block for k in ("type", "text", "page", "resource_ref", "source_ref", "data"))
+        source_ref = block["source_ref"]
+        assert isinstance(source_ref, dict)
+        assert source_ref
+        data = block["data"]
+        assert isinstance(data, dict)
+        assert data.get("source_ref") == source_ref
+    validation = validate_ir_sync(result)
+    assert validation.valid, [error.model_dump() for error in validation.errors]
     print("  [%s] Validation PASS (%d blocks)" % (label, len(result["blocks"])))
 
 
@@ -73,7 +108,10 @@ def _assert_empty_boundary() -> None:
         path = Path(temp_dir) / "empty.xlsx"
         _write_empty_workbook(path)
         result = parse_spreadsheet_file(0, path, "xlsx")
-    assert result["blocks"] == []
+    assert result["blocks"]
+    assert result["blocks"][0]["source_ref"]["sheet"] == "Empty"
+    assert result["blocks"][0]["source_ref"]["range"] is None
+    assert "Empty sheet" in result["blocks"][0]["text"]
     assert "empty_workbook" in result.get("warnings", [])
     validate(result, "empty.xlsx")
 
@@ -115,6 +153,9 @@ def main() -> None:
     assert len(sample_xlsx["blocks"]) >= 2, "Expected multi-sheet XLSX sample"
     assert sample_xlsx["blocks"][0]["page"] == 1
     assert sample_xlsx["blocks"][1]["page"] == 2
+    assert sample_xlsx["blocks"][0]["source_ref"]["sheet_index"] == 1
+    assert sample_xlsx["blocks"][0]["source_ref"]["sheet"]
+    assert sample_xlsx["blocks"][0]["source_ref"]["range"]
 
     _assert_formula_boundary()
     _assert_empty_boundary()

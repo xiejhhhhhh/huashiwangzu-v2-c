@@ -16,6 +16,14 @@
 - Cross-module access must go through the framework capability registry or runtime SDK.
 - Framework file content access must preserve `check_file_access` semantics when `file_id` is used.
 
+## Content IR Compatibility
+
+The parser keeps the legacy `{file_id, format, blocks, resources, metadata}` shape and adds Content IR
+compatible fields: `schema_version`, `content_type`, `source`, `source_file_id`, `source_module`,
+`parser`, and `warnings`. Blocks include `source_ref` with `summary` or `data` section markers. Data
+blocks also expose field ranges and flattened JSON/YAML paths, giving consumers stable evidence
+anchors even when the original format has no line-preserving parser.
+
 ## Acceptance Matrix
 
 | Area | Status | Verification |
@@ -26,7 +34,8 @@
 | File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
 | Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/structured-parser/sandbox/test_module.py` |
 | Smoke | PASS | Use `call_capability` for `structured-parser:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+| Content IR | PASS | Sandbox normalizes parser output with existing `normalize_ir` and checks `schema_version`, non-empty blocks, and section/path `source_ref`. |
+| Known debt | PASS | No module-local Content IR debt found for JSON/YAML parsing. |
 
 ### Reproducible Checks
 

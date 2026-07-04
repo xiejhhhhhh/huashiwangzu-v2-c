@@ -27,33 +27,91 @@ def parse_docx_file(file_id: int, full_path: Path) -> dict[str, Any]:
     resources: list[dict[str, Any]] = []
     resource_diagnostics: list[dict[str, Any]] = []
     resource_counter = 0
+    paragraph_counter = 0
+    table_counter = 0
 
     for child in doc.element.body.iterchildren():
         if isinstance(child, CT_P):
             para = Paragraph(child, doc)
+            paragraph_counter += 1
             text = "\n".join(line.rstrip() for line in para.text.splitlines()).strip()
             if text:
                 style_name = str(para.style.name) if para.style else ""
                 block_type = "heading" if ("heading" in style_name.lower() or "标题" in style_name) else "paragraph"
-                blocks.append({"type": block_type, "text": text, "page": None, "resource_ref": None})
+                blocks.append({
+                    "type": block_type,
+                    "text": text,
+                    "page": None,
+                    "resource_ref": None,
+                    "source_ref": {
+                        "module": "docx-parser",
+                        "file_id": file_id,
+                        "paragraph": paragraph_counter,
+                    },
+                })
 
             for rel_id in _iter_paragraph_image_rel_ids(para):
                 resource_counter += 1
                 resource = _extract_image_resource(doc, rel_id, resource_counter, resource_diagnostics)
-                blocks.append({"type": "image", "text": "", "page": None, "resource_ref": resource_counter})
+                source_ref = {
+                    "module": "docx-parser",
+                    "file_id": file_id,
+                    "paragraph": paragraph_counter,
+                    "resource_id": resource_counter,
+                }
+                resource["source_ref"] = source_ref
+                blocks.append({
+                    "type": "image",
+                    "text": "",
+                    "page": None,
+                    "resource_ref": resource_counter,
+                    "source_ref": source_ref,
+                })
                 resources.append(resource)
 
         elif isinstance(child, CT_Tbl):
+            table_counter += 1
             table = Table(child, doc)
             table_text = _table_to_text(table)
             if table_text:
-                blocks.append({"type": "table", "text": table_text, "page": None, "resource_ref": None})
+                blocks.append({
+                    "type": "table",
+                    "text": table_text,
+                    "page": None,
+                    "resource_ref": None,
+                    "source_ref": {
+                        "module": "docx-parser",
+                        "file_id": file_id,
+                        "table": table_counter,
+                    },
+                })
 
     return {
+        "schema_version": "content-ir/v1",
+        "content_type": "document",
+        "title": full_path.name,
         "file_id": file_id,
         "format": "docx",
+        "source_file_id": file_id,
+        "source_module": "docx-parser",
+        "parser": "docx-parser",
+        "source": {
+            "module": "docx-parser",
+            "file_id": file_id,
+            "filename": full_path.name,
+            "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
         "blocks": blocks,
         "resources": resources,
+        "metadata": {
+            "parser": "docx-parser",
+            "format": "docx",
+            "filename": full_path.name,
+            "paragraph_count": paragraph_counter,
+            "table_count": table_counter,
+            "resource_count": len(resources),
+        },
+        "warnings": [],
         "resource_diagnostics": resource_diagnostics,
     }
 
@@ -116,9 +174,11 @@ def _extract_image_resource(
     return {
         "id": resource_id,
         "type": "image",
+        "resource_type": "image",
         "mime_type": mime_type,
         "filename": _image_filename(target_ref),
         "description": f"DOCX embedded image ({target_ref or rel_id})",
+        "data_b64": base64.b64encode(img_bytes).decode("ascii") if img_bytes else "",
         "_resource_diagnostic_recorded": extract_diagnostic_recorded,
         "_bytes_b64": base64.b64encode(img_bytes).decode("ascii") if img_bytes else "",
     }

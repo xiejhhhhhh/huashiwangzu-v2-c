@@ -1,17 +1,26 @@
 """Sandbox tests for text-parser module."""
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from pathlib import Path
+from types import ModuleType
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "samples"
 PARSER_PATH = Path(__file__).resolve().parents[1] / "backend" / "parser.py"
+NORMALIZER_PATH = Path(__file__).resolve().parents[3] / "backend" / "app" / "services" / "content" / "ir_normalizer.py"
 
 spec = importlib.util.spec_from_file_location("text_parser_core", PARSER_PATH)
 if spec is None or spec.loader is None:
     raise RuntimeError("Failed to load text-parser backend parser")
 parser = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(parser)
+
+normalizer_spec = importlib.util.spec_from_file_location("content_ir_normalizer_under_test", NORMALIZER_PATH)
+if normalizer_spec is None or normalizer_spec.loader is None:
+    raise RuntimeError("Failed to load Content IR normalizer")
+normalizer: ModuleType = importlib.util.module_from_spec(normalizer_spec)
+normalizer_spec.loader.exec_module(normalizer)
 
 
 def _block_texts(result: dict[str, object]) -> list[str]:
@@ -20,16 +29,45 @@ def _block_texts(result: dict[str, object]) -> list[str]:
     return [str(block["text"]) for block in blocks]
 
 
+def _normalized(result: dict[str, object]) -> dict[str, object]:
+    value = asyncio.run(normalizer.normalize_ir(result))
+    assert isinstance(value, dict)
+    return value
+
+
 def _assert_valid_shape(result: dict[str, object]) -> None:
-    assert {"file_id", "format", "blocks", "resources", "metadata"} <= set(result)
+    assert {
+        "schema_version",
+        "content_type",
+        "source",
+        "source_file_id",
+        "source_module",
+        "parser",
+        "file_id",
+        "format",
+        "blocks",
+        "resources",
+        "metadata",
+    } <= set(result)
+    assert result["schema_version"] == "content-ir/v1"
     blocks = result["blocks"]
     resources = result["resources"]
     metadata = result["metadata"]
     assert isinstance(blocks, list)
+    assert blocks, "successful text parses must emit a content block or explicit empty block"
     assert isinstance(resources, list)
     assert isinstance(metadata, dict)
     for block in blocks:
-        assert {"type", "text", "page", "resource_ref"} <= set(block)
+        assert {"type", "text", "page", "resource_ref", "source_ref"} <= set(block)
+        source_ref = block["source_ref"]
+        assert isinstance(source_ref, dict)
+        assert source_ref["file_id"] == result["file_id"]
+        assert source_ref["format"] == result["format"]
+        assert "section" in source_ref
+    normalized = _normalized(result)
+    assert normalized["schema_version"] == "content-ir/v1"
+    assert normalized["blocks"]
+    assert all("id" in block for block in normalized["blocks"])
 
 
 def test_plain_text_sample_parses_paragraphs() -> None:
@@ -63,9 +101,11 @@ def test_empty_file_is_successful_empty_parse(tmp_path: Path) -> None:
     result = parser.parse_text_file(3, sample, "txt")
 
     _assert_valid_shape(result)
-    assert result["blocks"] == []
+    assert _block_texts(result) == ["(empty text file)"]
     assert result["metadata"]["original_size"] == 0
     assert result["metadata"]["truncated"] is False
+    empty_ref = result["blocks"][0]["source_ref"]
+    assert empty_ref["empty"] is True
 
 
 def test_gbk_encoded_text_decodes_without_replacement(tmp_path: Path) -> None:

@@ -201,9 +201,38 @@ async def _detect_objects(params: dict[str, Any], caller: str) -> dict[str, Any]
 async def _summarize_media(params: dict[str, Any], caller: str) -> dict[str, Any]:
     analysis = params.get("analysis")
     if isinstance(analysis, dict):
+        source = analysis.get("source") if isinstance(analysis.get("source"), dict) else {}
+        summary = str(analysis.get("summary", ""))
+        source_ref = {
+            "file_id": source.get("file_id"),
+            "filename": source.get("filename") or source.get("file_name"),
+            "media_type": source.get("media_type"),
+            "analysis_id": analysis.get("analysis_id"),
+            "transcript": {"source": "existing_analysis_summary"},
+        }
         return {
-            "schema_version": "media-intelligence.summary.v1",
-            "summary": str(analysis.get("summary", "")),
+            "schema_version": "1.0",
+            "module_schema_version": "media-intelligence.summary.v1",
+            "content_type": "text",
+            "title": str(source_ref.get("filename") or "media-summary"),
+            "source_file_id": source_ref.get("file_id"),
+            "source_module": "media-intelligence",
+            "parser": "media-intelligence.summarize_media",
+            "source": {
+                "module": "media-intelligence",
+                "file_id": source_ref.get("file_id"),
+                "filename": source_ref.get("filename"),
+                "mime_type": None,
+            },
+            "blocks": [{
+                "type": "paragraph",
+                "text": summary,
+                "data": {"source_ref": source_ref, "role": "summary"},
+                "source_ref": source_ref,
+            }],
+            "resources": [],
+            "metadata": {"source_analysis_id": analysis.get("analysis_id")},
+            "summary": summary,
             "source_analysis_id": analysis.get("analysis_id"),
             "warnings": ["Summary returned from existing analysis payload."],
         }

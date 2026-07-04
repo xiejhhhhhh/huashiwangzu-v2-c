@@ -13,6 +13,7 @@ MAX_STRUCTURED_BYTES: Final[int] = 2 * 1024 * 1024
 MAX_EMITTED_FIELDS: Final[int] = 3000
 DATA_BLOCK_BATCH_SIZE: Final[int] = 30
 MAX_FLATTEN_DEPTH: Final[int] = 10
+SCHEMA_VERSION: Final[str] = "content-ir/v1"
 
 
 class StructuredParseError(ValueError):
@@ -30,8 +31,36 @@ class FlattenedData:
     truncated: bool
 
 
-def _block(block_type: str, text: str) -> dict[str, object]:
-    return {"type": block_type, "text": text, "page": None, "resource_ref": None}
+def _block(block_type: str, text: str, source_ref: dict[str, object]) -> dict[str, object]:
+    return {
+        "type": block_type,
+        "text": text,
+        "page": None,
+        "resource_ref": None,
+        "source_ref": source_ref,
+    }
+
+
+def _source_ref(
+    file_id: int,
+    file_format: str,
+    section: str,
+    **extra: object,
+) -> dict[str, object]:
+    source_ref: dict[str, object] = {
+        "file_id": file_id,
+        "format": file_format,
+        "section": section,
+    }
+    source_ref.update(extra)
+    return source_ref
+
+
+def _path_from_flattened_line(line: str) -> str:
+    if ":" not in line:
+        return "$"
+    path = line.split(":", 1)[0].strip()
+    return path or "$"
 
 
 def _format_scalar(value: object) -> str:
@@ -119,14 +148,44 @@ def _build_result(
         omitted = flattened.total_fields - len(flattened.lines)
         summary += f"\n仅输出前 {len(flattened.lines)} 个字段，剩余 {omitted} 个字段已省略。"
 
-    blocks = [_block("paragraph", summary)]
+    output_format = "yaml" if ext == "yml" else ext
+    blocks = [_block(
+        "paragraph",
+        summary,
+        _source_ref(file_id, output_format, "summary", empty=empty_file),
+    )]
     for start in range(0, len(flattened.lines), DATA_BLOCK_BATCH_SIZE):
         batch = flattened.lines[start:start + DATA_BLOCK_BATCH_SIZE]
-        blocks.append(_block("paragraph", "\n".join(batch)))
+        paths = [_path_from_flattened_line(line) for line in batch]
+        blocks.append(_block(
+            "paragraph",
+            "\n".join(batch),
+            _source_ref(
+                file_id,
+                output_format,
+                "data",
+                field_start=start + 1,
+                field_end=start + len(batch),
+                paths=paths,
+            ),
+        ))
 
     return {
+        "schema_version": SCHEMA_VERSION,
+        "content_type": "text",
+        "title": f"{output_format} structured data",
+        "source_file_id": file_id,
+        "source_module": "structured-parser",
+        "parser": "structured-parser",
+        "source": {
+            "module": "structured-parser",
+            "file_id": file_id,
+            "filename": None,
+            "mime_type": None,
+            "format": output_format,
+        },
         "file_id": file_id,
-        "format": "yaml" if ext == "yml" else ext,
+        "format": output_format,
         "blocks": blocks,
         "resources": [],
         "metadata": {
@@ -137,6 +196,7 @@ def _build_result(
             "max_emitted_fields": MAX_EMITTED_FIELDS,
             "empty_file": empty_file,
         },
+        "warnings": [],
     }
 
 

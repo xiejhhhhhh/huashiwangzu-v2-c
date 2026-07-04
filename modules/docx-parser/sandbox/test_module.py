@@ -1,6 +1,8 @@
 
 """Sandbox test for docx-parser module."""
+import asyncio
 import base64
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -11,11 +13,13 @@ BACKEND_DIR = MODULE_DIR / "backend"
 REPO_BACKEND_DIR = Path(__file__).resolve().parents[3] / "backend"
 sys.path.insert(0, str(REPO_BACKEND_DIR))
 sys.path.insert(0, str(BACKEND_DIR))
+os.environ.setdefault("JWT_SECRET", "docx-parser-sandbox-test-secret")
 
 if not SAMPLE.exists():
     print("ERROR: sample.docx not found")
     sys.exit(1)
 
+from app.services.content.ir_normalizer import normalize_ir  # noqa: E402
 from docx import Document  # noqa: E402
 from docx.shared import Inches  # noqa: E402
 from parser import parse_docx_file  # noqa: E402
@@ -27,13 +31,26 @@ PNG_1X1_B64 = (
 
 
 def validate_shape(result: dict) -> None:
+    assert result["schema_version"] == "content-ir/v1"
+    assert result["content_type"] == "document"
     assert result["format"] == "docx"
+    assert result["source"]["module"] == "docx-parser"
+    assert result["source_file_id"] == result["file_id"]
+    assert isinstance(result["metadata"], dict)
+    assert isinstance(result["warnings"], list)
     assert isinstance(result["blocks"], list)
     assert isinstance(result["resources"], list)
     assert isinstance(result["resource_diagnostics"], list)
     for block in result["blocks"]:
-        assert all(key in block for key in ("type", "text", "page", "resource_ref"))
+        assert all(key in block for key in ("type", "text", "page", "resource_ref", "source_ref"))
         assert block["type"] in {"heading", "paragraph", "table", "image"}
+        assert block["source_ref"]["module"] == "docx-parser"
+        assert block["source_ref"]["file_id"] == result["file_id"]
+        assert "paragraph" in block["source_ref"] or "table" in block["source_ref"]
+    if result["blocks"]:
+        normalized = asyncio.run(normalize_ir(result))
+        assert normalized["schema_version"] == "content-ir/v1"
+        assert normalized["blocks"]
 
 
 def test_sample_docx() -> None:
@@ -68,7 +85,10 @@ def test_generated_image_docx() -> None:
     assert len(result["resources"]) == 1
     resource = result["resources"][0]
     assert resource["id"] == image_blocks[0]["resource_ref"]
+    assert resource["resource_type"] == "image"
     assert resource["mime_type"] == "image/png"
+    assert resource["source_ref"]["paragraph"] >= 1
+    assert resource["data_b64"]
     assert resource["_bytes_b64"]
 
 

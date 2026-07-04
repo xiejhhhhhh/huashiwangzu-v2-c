@@ -51,8 +51,10 @@ async def _parse(params: dict, caller: str) -> dict:
         resources = []
         resource_diagnostics = []
         resource_counter = 0
+        page_count = 0
 
         with pdfplumber.open(str(full_path)) as pdf:
+            page_count = len(pdf.pages)
             for page_idx, page in enumerate(pdf.pages):
                 pno = page_idx + 1
 
@@ -62,7 +64,17 @@ async def _parse(params: dict, caller: str) -> dict:
                     block_text = "\n".join(lines).strip()
                     if block_text:
                         block_type = "heading" if pno == 1 and len(lines) <= 5 else "paragraph"
-                        blocks.append({"type": block_type, "text": block_text, "page": pno, "resource_ref": None})
+                        blocks.append({
+                            "type": block_type,
+                            "text": block_text,
+                            "page": pno,
+                            "resource_ref": None,
+                            "source_ref": {
+                                "module": "pdf-parser",
+                                "file_id": file_id,
+                                "page": pno,
+                            },
+                        })
 
                 tables = page.extract_tables() or []
                 for table in tables:
@@ -74,12 +86,36 @@ async def _parse(params: dict, caller: str) -> dict:
                         rows.append(" | ".join(cells))
                     table_text = "\n".join(rows)
                     if table_text.strip():
-                        blocks.append({"type": "table", "text": table_text, "page": pno, "resource_ref": None})
+                        blocks.append({
+                            "type": "table",
+                            "text": table_text,
+                            "page": pno,
+                            "resource_ref": None,
+                            "source_ref": {
+                                "module": "pdf-parser",
+                                "file_id": file_id,
+                                "page": pno,
+                                "table": len(rows),
+                            },
+                        })
 
                 for img in page.images:
                     resource_counter += 1
                     xref = img.get("xref") or img.get("name", "")
-                    blocks.append({"type": "image", "text": "", "page": pno, "resource_ref": resource_counter})
+                    source_ref = {
+                        "module": "pdf-parser",
+                        "file_id": file_id,
+                        "page": pno,
+                        "xref": str(xref),
+                        "resource_id": resource_counter,
+                    }
+                    blocks.append({
+                        "type": "image",
+                        "text": "",
+                        "page": pno,
+                        "resource_ref": resource_counter,
+                        "source_ref": source_ref,
+                    })
 
                     img_bytes = b""
                     extract_diagnostic_recorded = False
@@ -131,19 +167,42 @@ async def _parse(params: dict, caller: str) -> dict:
                     resources.append({
                         "id": resource_counter,
                         "type": "image",
+                        "resource_type": "image",
                         "page": pno,
                         "mime_type": "image/png",
                         "filename": f"page{pno}_xref{xref}.png",
                         "description": f"PDF page {pno} embedded image (xref={xref})",
+                        "source_ref": source_ref,
+                        "data_b64": base64.b64encode(img_bytes).decode("ascii") if img_bytes else "",
                         "_resource_diagnostic_recorded": extract_diagnostic_recorded,
                         "_bytes_b64": base64.b64encode(img_bytes).decode("ascii") if img_bytes else "",
                     })
 
         return {
+            "schema_version": "content-ir/v1",
+            "content_type": "document",
+            "title": full_path.name,
             "file_id": file_id,
             "format": "pdf",
+            "source_file_id": file_id,
+            "source_module": "pdf-parser",
+            "parser": "pdf-parser",
+            "source": {
+                "module": "pdf-parser",
+                "file_id": file_id,
+                "filename": full_path.name,
+                "mime_type": "application/pdf",
+            },
             "blocks": blocks,
             "resources": resources,
+            "metadata": {
+                "parser": "pdf-parser",
+                "format": "pdf",
+                "filename": full_path.name,
+                "page_count": page_count,
+                "resource_count": len(resources),
+            },
+            "warnings": [],
             "resource_diagnostics": resource_diagnostics,
         }
 

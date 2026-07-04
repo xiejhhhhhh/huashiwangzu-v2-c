@@ -13,7 +13,7 @@ Parse PDF files into unified content blocks via pdfplumber.
 
 | Module | Action | Input | Output |
 |--------|--------|-------|--------|
-| `pdf-parser` | `parse` | `{"file_id": int}` | Unified content block skeleton |
+| `pdf-parser` | `parse` | `{"file_id": int}` | Content IR-compatible document blocks |
 
 ## Dependencies
 
@@ -22,6 +22,15 @@ Parse PDF files into unified content blocks via pdfplumber.
 ## Format Support
 
 - `.pdf` — Text extraction, table extraction, embedded image detection
+
+## Content IR Contract
+
+- `schema_version`: `content-ir/v1`
+- `content_type`: `document`
+- Top-level source fields: `source`, `source_file_id`, `source_module`, `parser`
+- Block types: `heading`, `paragraph`, `table`, `image`
+- Resources: detected images with `resource_type`, `mime_type`, optional `data_b64`, and `source_ref`
+- Source trace: page number on every block/resource `source_ref`; image resources also include xref/name when available
 
 ## Verification
 
@@ -54,7 +63,7 @@ curl -X POST http://127.0.0.1:33000/api/pdf-parser/parse \
 | File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
 | Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/pdf-parser/sandbox/test_module.py` |
 | Smoke | PASS | Use `call_capability` for `pdf-parser:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+| Content IR | PASS | Parser returns `schema_version`, source metadata, non-empty sample blocks, and page-level `source_ref`; sandbox normalizes through existing Content IR normalizer. |
 
 ### Reproducible Checks
 

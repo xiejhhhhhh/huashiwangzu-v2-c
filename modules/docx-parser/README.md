@@ -13,7 +13,7 @@ Parse DOCX files into unified content blocks (paragraphs, tables, inline images)
 
 | Module | Action | Input | Output |
 |--------|--------|-------|--------|
-| `docx-parser` | `parse` | `{"file_id": int}` | Unified content block skeleton |
+| `docx-parser` | `parse` | `{"file_id": int}` | Content IR-compatible document blocks |
 
 The backend capability uses the framework uploaded-file runner, so `file_id`
 access is validated through the platform file permission path before the module
@@ -27,6 +27,15 @@ files are not wrapped as successful parse results.
 ## Format Support
 
 - `.docx` — Paragraphs, tables, inline images
+
+## Content IR Contract
+
+- `schema_version`: `content-ir/v1`
+- `content_type`: `document`
+- Top-level source fields: `source`, `source_file_id`, `source_module`, `parser`
+- Block types: `heading`, `paragraph`, `table`, `image`
+- Resources: inline images with `resource_type`, `mime_type`, `data_b64`, and `source_ref`
+- Source trace: paragraph/table/resource positions in `source_ref`; DOCX pages are not available from `python-docx`, so legacy `page` remains `null`
 
 ## Verification
 
@@ -61,7 +70,7 @@ curl -X POST http://127.0.0.1:33000/api/docx-parser/parse \
 | File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
 | Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/docx-parser/sandbox/test_module.py` |
 | Smoke | PASS | Use `call_capability` for `docx-parser:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+| Content IR | PASS | Parser returns `schema_version`, source metadata, non-empty sample blocks, and block/resource `source_ref`; sandbox normalizes through existing Content IR normalizer. |
 
 ### Reproducible Checks
 

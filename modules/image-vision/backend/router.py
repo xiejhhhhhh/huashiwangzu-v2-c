@@ -10,7 +10,13 @@ from app.services.module_registry import register_capability
 from app.services.uploaded_file_runner import run_uploaded_file_capability
 from fastapi import APIRouter, Depends
 
-from .image_analysis import analyze_image_bytes, build_local_summary, build_vlm_prompt, should_use_vlm
+from .image_analysis import (
+    analyze_image_bytes,
+    build_content_ir_output,
+    build_local_summary,
+    build_vlm_prompt,
+    should_use_vlm,
+)
 
 router = APIRouter(prefix="/api/image-vision", tags=["image-vision"])
 
@@ -230,26 +236,24 @@ async def _describe(params: dict, caller: str) -> dict:
             warnings.append(f"Analysis resource persistence failed: {exc}")
             LOGGER.warning("Failed to persist image-vision result to Resource: %s", exc)
 
-        block_ref = resource_id if resource_id else 1
-        blocks = [
-            {"type": "image", "text": description, "page": None, "resource_ref": block_ref},
-            {"type": "paragraph", "text": local_summary, "page": None, "resource_ref": block_ref},
-        ]
-        resources = [
-            {
-                "id": block_ref,
-                "type": "image",
-                "file_storage_id": file_id,
-                "text_desc": description,
-                "metadata": local_analysis,
-            },
-        ]
+        ir_output = build_content_ir_output(
+            file_id=file_id,
+            filename=filename,
+            extension=ext,
+            description=description,
+            local_summary=local_summary,
+            local_analysis=local_analysis,
+            resource_id=resource_id,
+            semantic_description=semantic_description,
+            analysis_strategy=analysis_strategy,
+            model_fallback=model_fallback,
+            warnings=warnings,
+        )
 
         return {
+            **ir_output,
             "file_id": file_id,
             "format": ext,
-            "blocks": blocks,
-            "resources": resources,
             "resource_id": resource_id,
             "description": description,
             "semantic_description": semantic_description,

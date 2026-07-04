@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -9,8 +10,10 @@ from pathlib import Path
 from PIL import Image
 
 MODULE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = MODULE_ROOT.parents[1]
 SAMPLE = Path(__file__).resolve().parent / "samples" / "sample.png"
 ANALYZER_PATH = MODULE_ROOT / "backend" / "image_analysis.py"
+NORMALIZER_PATH = REPO_ROOT / "backend" / "app" / "services" / "content" / "ir_normalizer.py"
 
 
 def _load_analyzer():
@@ -23,11 +26,31 @@ def _load_analyzer():
     return module
 
 
+def _load_normalizer():
+    spec = importlib.util.spec_from_file_location("content_ir_normalizer", NORMALIZER_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load ir_normalizer.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_local_analysis_contract() -> None:
     analyzer = _load_analyzer()
+    normalizer = _load_normalizer()
     raw = SAMPLE.read_bytes()
     result = analyzer.analyze_image_bytes(raw, SAMPLE.name, "png")
     summary = analyzer.build_local_summary(result)
+    ir = analyzer.build_content_ir_output(
+        file_id=101,
+        filename=SAMPLE.name,
+        extension="png",
+        description=summary,
+        local_summary=summary,
+        local_analysis=result,
+    )
+    normalized_ir = asyncio.run(normalizer.normalize_ir(ir))
 
     assert result["analyzer"] == "pillow-local-v1"
     assert result["format"] in {"PNG", "png"}
@@ -36,6 +59,18 @@ def test_local_analysis_contract() -> None:
     assert result["color"]["dominant_colors"]
     assert result["hashes"]["average_hash"]
     assert "本地图片分析" in summary
+    assert normalized_ir["schema_version"] == "1.0"
+    assert normalized_ir["content_type"] == "image"
+    assert normalized_ir["source"]["module"] == "image-vision"
+    assert normalized_ir["blocks"]
+    assert normalized_ir["blocks"][0]["type"] == "image"
+    assert normalized_ir["blocks"][0]["id"]
+    source_ref = normalized_ir["blocks"][0]["data"]["source_ref"]
+    assert source_ref["file_id"] == 101
+    assert source_ref["filename"] == SAMPLE.name
+    assert source_ref["image"]["width"] == result["dimensions"]["width"]
+    assert source_ref["image"]["height"] == result["dimensions"]["height"]
+    assert normalized_ir["resources"][0]["resource_type"] == "image"
 
 
 def test_vlm_decision_skips_blank_image() -> None:
@@ -64,7 +99,7 @@ def main() -> None:
     print("image-vision sandbox test")
     print("=" * 60)
     test_local_analysis_contract()
-    print("  Local analysis contract PASS")
+    print("  Local analysis + Content IR contract PASS")
     test_vlm_decision_skips_blank_image()
     print("  VLM auto-skip decision PASS")
     print("PASS: image-vision sandbox test")

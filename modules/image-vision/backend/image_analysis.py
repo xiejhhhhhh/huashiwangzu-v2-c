@@ -9,6 +9,7 @@ from PIL import Image, ImageStat, UnidentifiedImageError
 LOCAL_ANALYZER_VERSION = "pillow-local-v1"
 MAX_ANALYSIS_SIDE = 128
 EDGE_THRESHOLD = 18
+CONTENT_IR_SCHEMA_VERSION = "1.0"
 
 
 def analyze_image_bytes(raw: bytes, filename: str, ext: str) -> dict[str, object]:
@@ -93,6 +94,106 @@ def build_vlm_prompt(local_summary: str, extra_prompt: str | None = None) -> str
     return f"{task}\n已知本地事实：{local_summary}"
 
 
+def build_content_ir_output(
+    *,
+    file_id: int,
+    filename: str,
+    extension: str,
+    description: str,
+    local_summary: str,
+    local_analysis: dict[str, object],
+    resource_id: int | str | None = None,
+    semantic_description: str | None = None,
+    analysis_strategy: dict[str, object] | None = None,
+    model_fallback: dict[str, object] | None = None,
+    warnings: list[str] | None = None,
+) -> dict[str, object]:
+    block_ref: int | str = resource_id if resource_id else 1
+    dimensions = _dict_value(local_analysis, "dimensions")
+    animation = _dict_value(local_analysis, "animation")
+    width = _int_value(dimensions, "width")
+    height = _int_value(dimensions, "height")
+    frame_count = _int_value(animation, "frame_count") or 1
+    source_ref = {
+        "file_id": file_id,
+        "filename": filename,
+        "image": {
+            "extension": extension,
+            "width": width,
+            "height": height,
+            "frame_count": frame_count,
+        },
+    }
+    block_data = {
+        "source_ref": source_ref,
+        "local_analysis": local_analysis,
+        "semantic_description": semantic_description,
+    }
+    blocks = [
+        {
+            "type": "image",
+            "text": description,
+            "resource_ref": block_ref,
+            "data": block_data,
+            "source_ref": source_ref,
+        },
+        {
+            "type": "paragraph",
+            "text": local_summary,
+            "resource_ref": block_ref,
+            "data": {
+                "source_ref": source_ref,
+                "role": "local_summary",
+            },
+            "source_ref": source_ref,
+        },
+    ]
+    resources = [
+        {
+            "id": block_ref,
+            "type": "image",
+            "resource_type": "image",
+            "file_storage_id": file_id,
+            "mime_type": _mime_type_for_extension(extension),
+            "filename": filename,
+            "description": description,
+            "text_desc": description,
+            "metadata": local_analysis,
+            "vlm_metadata": {
+                "semantic_description": semantic_description,
+                "analysis_strategy": analysis_strategy or {},
+                "model_fallback": model_fallback or {},
+            },
+            "width": width or None,
+            "height": height or None,
+        },
+    ]
+    return {
+        "schema_version": CONTENT_IR_SCHEMA_VERSION,
+        "content_type": "image",
+        "title": filename,
+        "source_file_id": file_id,
+        "source_module": "image-vision",
+        "parser": "image-vision.describe",
+        "source": {
+            "module": "image-vision",
+            "file_id": file_id,
+            "filename": filename,
+            "mime_type": _mime_type_for_extension(extension),
+        },
+        "blocks": blocks,
+        "resources": resources,
+        "metadata": {
+            "format": extension,
+            "analysis_strategy": analysis_strategy or {},
+            "model_fallback": model_fallback or {},
+            "local_analyzer": str(local_analysis.get("analyzer") or LOCAL_ANALYZER_VERSION),
+        },
+        "warnings": warnings or [],
+        "quality": _dict_value(local_analysis, "quality"),
+    }
+
+
 def _analyze_loaded_image(image: Image.Image, raw: bytes, filename: str, ext: str) -> dict[str, object]:
     width, height = image.size
     rgba = image.convert("RGBA")
@@ -161,6 +262,23 @@ def _analyze_loaded_image(image: Image.Image, raw: bytes, filename: str, ext: st
             "orientation": image.getexif().get(274) if image.getexif() else None,
         },
     }
+
+
+def _mime_type_for_extension(extension: str) -> str:
+    normalized = extension.lower().lstrip(".")
+    if normalized in {"jpg", "jpeg"}:
+        return "image/jpeg"
+    if normalized == "png":
+        return "image/png"
+    if normalized == "gif":
+        return "image/gif"
+    if normalized == "webp":
+        return "image/webp"
+    if normalized == "bmp":
+        return "image/bmp"
+    if normalized == "ico":
+        return "image/x-icon"
+    return "image/jpeg"
 
 
 def _thumbnail_copy(image: Image.Image, max_side: int) -> Image.Image:

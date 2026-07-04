@@ -20,6 +20,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("JWT_SECRET", "structured-parser-sandbox-secret")
 
 from app.core.exceptions import ValidationError  # noqa: E402
+from app.services.content.ir_normalizer import normalize_ir  # noqa: E402
 from backend.router import _parse as router_parse  # noqa: E402
 from parser import (  # noqa: E402
     MAX_STRUCTURED_BYTES,
@@ -31,15 +32,39 @@ from parser import (  # noqa: E402
 
 
 def validate_shape(result: dict[str, object], label: str) -> None:
-    assert all(key in result for key in ("file_id", "format", "blocks", "resources"))
+    assert all(key in result for key in (
+        "schema_version",
+        "content_type",
+        "source",
+        "source_file_id",
+        "source_module",
+        "parser",
+        "file_id",
+        "format",
+        "blocks",
+        "resources",
+        "metadata",
+        "warnings",
+    ))
+    assert result["schema_version"] == "content-ir/v1"
     blocks = result["blocks"]
     resources = result["resources"]
     assert isinstance(blocks, list)
+    assert blocks, "structured-parser must emit summary or data blocks"
     assert isinstance(resources, list)
     for block in blocks:
         assert isinstance(block, dict)
-        assert all(key in block for key in ("type", "text", "page", "resource_ref"))
+        assert all(key in block for key in ("type", "text", "page", "resource_ref", "source_ref"))
         assert block["type"] in {"paragraph"}
+        source_ref = block["source_ref"]
+        assert isinstance(source_ref, dict)
+        assert source_ref["file_id"] == result["file_id"]
+        assert source_ref["format"] == result["format"]
+        assert source_ref["section"] in {"summary", "data"}
+    normalized = asyncio.run(normalize_ir(result))
+    assert normalized["schema_version"] == "content-ir/v1"
+    assert normalized["blocks"]
+    assert all("id" in block for block in normalized["blocks"])
     print(f"  [{label}] Validation PASS ({len(blocks)} blocks)")
 
 

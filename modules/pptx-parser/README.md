@@ -13,7 +13,7 @@ Parse PPTX files into unified content blocks (slide text, picture detection).
 
 | Module | Action | Input | Output |
 |--------|--------|-------|--------|
-| `pptx-parser` | `parse` | `{"file_id": int}` | Unified content block skeleton |
+| `pptx-parser` | `parse` | `{"file_id": int}` | Content IR-compatible presentation slide blocks |
 
 ## Dependencies
 
@@ -22,6 +22,16 @@ Parse PPTX files into unified content blocks (slide text, picture detection).
 ## Format Support
 
 - `.pptx` — Slide text, picture detection
+
+## Content IR Contract
+
+- `schema_version`: `content-ir/v1`
+- `content_type`: `presentation`
+- Top-level source fields: `source`, `source_file_id`, `source_module`, `parser`
+- Top-level block type: `slide`
+- Nested block types: `heading`, `paragraph`, `image`
+- Resources: slide images with `resource_type`, `mime_type`, `data_b64`, and `source_ref`
+- Source trace: slide number on every slide block, nested block, and resource `source_ref`; nested blocks also include shape name when available
 
 ## Verification
 
@@ -43,7 +53,7 @@ python3.14 scripts/check-capability-drift.py
 | File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
 | Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py` |
 | Smoke | PASS | Use `call_capability` for `pptx-parser:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+| Content IR | PASS | Parser returns `schema_version`, presentation slide blocks, non-empty sample blocks, and slide-level `source_ref`; sandbox normalizes through existing Content IR normalizer. |
 
 ### Reproducible Checks
 

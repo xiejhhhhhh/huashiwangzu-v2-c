@@ -7,6 +7,7 @@ uploaded-file records, OCR engines, small-model adapters, ASR, or VLM keys.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import struct
 import sys
@@ -26,6 +27,20 @@ from media_intelligence_import import load_pipeline, load_router
 pipeline = load_pipeline()
 router = load_router()
 local_algorithms = sys.modules["media_intelligence_backend.providers.local_algorithms"]
+NORMALIZER_PATH = BACKEND_ROOT / "app" / "services" / "content" / "ir_normalizer.py"
+
+
+def _load_normalizer():
+    spec = importlib.util.spec_from_file_location("content_ir_normalizer", NORMALIZER_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load ir_normalizer.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+normalizer = _load_normalizer()
 
 
 def _write_png(path: Path, width: int = 2, height: int = 3) -> None:
@@ -58,12 +73,25 @@ def test_analyze_image_contract() -> None:
             )
         )
 
-    assert result["schema_version"] == "media-intelligence.analysis.v1"
+    normalized_ir = asyncio.run(normalizer.normalize_ir(result))
+
+    assert result["schema_version"] == "1.0"
+    assert result["module_schema_version"] == "media-intelligence.analysis.v1"
+    assert result["content_type"] == "image"
     assert result["media_type"] == "image"
     assert result["source"]["width"] == 2
     assert result["source"]["height"] == 3
+    assert result["source"]["module"] == "media-intelligence"
     assert result["signals"]["metadata"]["format"] == "png"
     assert result["signals"]["metadata"]["mode"] == "RGB"
+    assert normalized_ir["blocks"]
+    assert normalized_ir["blocks"][0]["type"] == "image"
+    assert normalized_ir["blocks"][0]["id"]
+    image_ref = normalized_ir["blocks"][0]["data"]["source_ref"]
+    assert image_ref["file_id"] == 7
+    assert image_ref["filename"] == "sample.png"
+    assert image_ref["image"]["width"] == 2
+    assert image_ref["image"]["height"] == 3
     assert result["artifacts"]["embedding"]["algorithm"] == "average_intensity_hash"
     assert result["artifacts"]["embedding"]["dimensions"] == 64
     assert [stage["stage"] for stage in result["stages"]] == [
@@ -89,9 +117,14 @@ def test_missing_ffprobe_returns_structured_degraded(monkeypatch: pytest.MonkeyP
         )
 
     assert result["media_type"] == "video"
+    assert result["schema_version"] == "1.0"
+    assert result["content_type"] == "mixed"
+    assert result["blocks"]
+    assert result["blocks"][0]["data"]["source_ref"]["video"]
     assert result["artifacts"]["keyframes"] == []
     assert result["stages"][0]["provider"] == "local_algorithms.local_facts"
     assert result["stages"][0]["status"] == "degraded"
+    assert result["blocks"][-1]["data"]["source_ref"]["degraded"] is True
     assert result["degraded"][0]["code"] == "ffprobe_missing"
     assert result["degraded"][0]["dependency"] == "ffprobe"
     assert result["degraded"][0]["install_command"] == "brew install ffmpeg"
@@ -111,7 +144,11 @@ def test_vlm_refine_existing_analysis_contract() -> None:
         "summary": "local summary",
     }
     result = asyncio.run(pipeline.refine_analysis_result(analysis, "focus on product labels"))
-    assert result["schema_version"] == "media-intelligence.analysis.v1"
+    normalized_ir = asyncio.run(normalizer.normalize_ir(result))
+    assert result["schema_version"] == "1.0"
+    assert result["module_schema_version"] == "media-intelligence.analysis.v1"
+    assert normalized_ir["blocks"]
+    assert normalized_ir["blocks"][0]["data"]["source_ref"]["image"]
     assert result["summary"]
     assert result["stages"][-1]["stage"] == "vlm_refine"
     assert result["model_fallback"]["fallback_used"] is True
@@ -147,6 +184,31 @@ def test_capability_file_params_normalize_valid_values() -> None:
     assert result["max_keyframes"] == 12
 
 
+def test_summarize_existing_analysis_returns_content_ir() -> None:
+    result = asyncio.run(
+        router._summarize_media(
+            {
+                "analysis": {
+                    "analysis_id": "a2",
+                    "source": {"file_id": 9, "file_name": "clip.mp4", "media_type": "video"},
+                    "summary": "Transcript summary",
+                },
+            },
+            "user:1",
+        )
+    )
+    normalized_ir = asyncio.run(normalizer.normalize_ir(result))
+
+    assert result["schema_version"] == "1.0"
+    assert result["module_schema_version"] == "media-intelligence.summary.v1"
+    assert normalized_ir["blocks"]
+    assert normalized_ir["blocks"][0]["type"] == "paragraph"
+    source_ref = normalized_ir["blocks"][0]["data"]["source_ref"]
+    assert source_ref["file_id"] == 9
+    assert source_ref["filename"] == "clip.mp4"
+    assert source_ref["transcript"]["source"] == "existing_analysis_summary"
+
+
 if __name__ == "__main__":
     test_analyze_image_contract()
     test_missing_ffprobe_returns_structured_degraded(pytest.MonkeyPatch())
@@ -154,4 +216,5 @@ if __name__ == "__main__":
     test_media_type_resolution()
     test_capability_file_params_reject_invalid_values()
     test_capability_file_params_normalize_valid_values()
+    test_summarize_existing_analysis_returns_content_ir()
     print("PASS: media-intelligence sandbox contract")

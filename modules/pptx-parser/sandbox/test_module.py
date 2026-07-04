@@ -22,6 +22,7 @@ if str(BACKEND_ROOT) not in sys.path:
 os.environ.setdefault("JWT_SECRET", "pptx-parser-sandbox-test-secret")
 
 from app.core.exceptions import ValidationError  # noqa: E402
+from app.services.content.ir_normalizer import normalize_ir  # noqa: E402
 
 
 def load_router() -> ModuleType:
@@ -64,16 +65,35 @@ async def parse_with_file(
     return await router._parse(params or {"file_id": 1}, "user:1")
 
 
-def validate_success(result: dict[str, Any]) -> None:
+async def validate_success(result: dict[str, Any]) -> None:
     assert result["file_id"] == 1
+    assert result["schema_version"] == "content-ir/v1"
+    assert result["content_type"] == "presentation"
     assert result["format"] == "pptx"
+    assert result["source"]["module"] == "pptx-parser"
+    assert result["source_file_id"] == result["file_id"]
     assert result["blocks"], "sample.pptx should produce content blocks"
     assert "resources" in result
     assert "resource_diagnostics" in result
 
     for block in result["blocks"]:
-        assert set(("type", "text", "page", "resource_ref")).issubset(block)
+        assert block["type"] == "slide"
+        assert set(("type", "text", "page", "resource_ref", "source_ref", "children")).issubset(block)
         assert isinstance(block["page"], int)
+        assert block["source_ref"]["slide"] == block["page"]
+        assert block["children"]
+        for child in block["children"]:
+            assert set(("type", "text", "page", "resource_ref", "source_ref")).issubset(child)
+            assert child["type"] in {"heading", "paragraph", "table", "image"}
+            assert child["source_ref"]["module"] == "pptx-parser"
+            assert child["source_ref"]["slide"] == block["page"]
+    for resource in result["resources"]:
+        assert resource["resource_type"] == "image"
+        assert resource["source_ref"]["slide"] >= 1
+
+    normalized = await normalize_ir(result)
+    assert normalized["schema_version"] == "content-ir/v1"
+    assert normalized["blocks"]
 
     print(
         "  Validation PASS (%d blocks, %d resources)"
@@ -113,8 +133,8 @@ async def run_sandbox_contract() -> None:
     router = load_router()
     result = await parse_with_file(router, SAMPLE)
     for block in result["blocks"][:8]:
-        print("    [%s] p=%s %s" % (block["type"], block["page"], block["text"][:70]))
-    validate_success(result)
+        print("    [%s] slide=%s %s" % (block["type"], block["page"], block["text"][:70]))
+    await validate_success(result)
     await validate_bad_inputs(router)
     print("PASS: pptx-parser sandbox test")
 

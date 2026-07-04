@@ -15,6 +15,9 @@ class EmailParseError(ValueError):
     """Raised when the input is not a parseable email file."""
 
 
+SCHEMA_VERSION = "content-ir/v1"
+
+
 class _HtmlTextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -67,20 +70,45 @@ def _parse_eml_file(file_id: int, full_path: Path) -> dict[str, Any]:
     if not any(headers.values()):
         raise EmailParseError("Input does not look like a structured email message")
 
-    body_text, resources, attachment_blocks = _extract_eml_payload(msg)
+    body_text, resources, attachment_blocks = _extract_eml_payload(file_id, msg)
 
-    blocks = _build_header_blocks(headers)
+    blocks = _build_header_blocks(file_id, headers)
     if body_text:
-        blocks.append({"type": "paragraph", "text": body_text, "page": None, "resource_ref": None})
+        blocks.append(_content_block(file_id, "paragraph", body_text, "body"))
     elif resources:
-        blocks.append({"type": "paragraph", "text": "(email has no text body)", "page": None, "resource_ref": None})
+        blocks.append(_content_block(
+            file_id,
+            "paragraph",
+            "(email has no text body)",
+            "body",
+            empty=True,
+        ))
     blocks.extend(attachment_blocks)
 
+    return _build_result(file_id, blocks, resources)
+
+
+def _build_result(file_id: int, blocks: list[dict[str, Any]], resources: list[dict[str, Any]]) -> dict[str, Any]:
     return {
+        "schema_version": SCHEMA_VERSION,
+        "content_type": "mixed",
+        "title": "Email message",
+        "source_file_id": file_id,
+        "source_module": "email-parser",
+        "parser": "email-parser",
+        "source": {
+            "module": "email-parser",
+            "file_id": file_id,
+            "filename": None,
+            "mime_type": "message/rfc822",
+            "format": "email",
+        },
         "file_id": file_id,
         "format": "email",
         "blocks": blocks,
         "resources": resources,
+        "metadata": {},
+        "warnings": [],
         "resource_diagnostics": [],
     }
 
@@ -111,21 +139,21 @@ def _parse_msg_file(file_id: int, full_path: Path) -> dict[str, Any]:
                 html_body = _decode_bytes(html_body)
             body_text = _html_to_text(str(html_body))
 
-        resources, attachment_blocks = _extract_msg_attachments(msg_obj)
+        resources, attachment_blocks = _extract_msg_attachments(file_id, msg_obj)
 
-        blocks = _build_header_blocks(headers)
+        blocks = _build_header_blocks(file_id, headers)
         if body_text:
-            blocks.append({"type": "paragraph", "text": body_text, "page": None, "resource_ref": None})
+            blocks.append(_content_block(file_id, "paragraph", body_text, "body"))
         elif resources:
-            blocks.append({"type": "paragraph", "text": "(email has no text body)", "page": None, "resource_ref": None})
+            blocks.append(_content_block(
+                file_id,
+                "paragraph",
+                "(email has no text body)",
+                "body",
+                empty=True,
+            ))
         blocks.extend(attachment_blocks)
-        return {
-            "file_id": file_id,
-            "format": "email",
-            "blocks": blocks,
-            "resources": resources,
-            "resource_diagnostics": [],
-        }
+        return _build_result(file_id, blocks, resources)
     except EmailParseError:
         raise
     except Exception as exc:
@@ -146,7 +174,35 @@ def _extract_headers(msg: Message) -> dict[str, str]:
     }
 
 
-def _build_header_blocks(headers: dict[str, str]) -> list[dict[str, Any]]:
+def _source_ref(file_id: int, section: str, **extra: object) -> dict[str, object]:
+    source_ref: dict[str, object] = {
+        "file_id": file_id,
+        "format": "email",
+        "section": section,
+        "message_part": section,
+    }
+    source_ref.update(extra)
+    return source_ref
+
+
+def _content_block(
+    file_id: int,
+    block_type: str,
+    text: str,
+    section: str,
+    resource_ref: int | None = None,
+    **source_extra: object,
+) -> dict[str, Any]:
+    return {
+        "type": block_type,
+        "text": text,
+        "page": None,
+        "resource_ref": resource_ref,
+        "source_ref": _source_ref(file_id, section, **source_extra),
+    }
+
+
+def _build_header_blocks(file_id: int, headers: dict[str, str]) -> list[dict[str, Any]]:
     subject = headers.get("subject") or "(no subject)"
     header_lines = [
         f"From: {headers.get('from') or 'unknown'}",
@@ -156,12 +212,12 @@ def _build_header_blocks(headers: dict[str, str]) -> list[dict[str, Any]]:
         header_lines.append(f"Cc: {headers['cc']}")
     header_lines.append(f"Date: {headers.get('date') or 'unknown'}")
     return [
-        {"type": "heading", "text": f"Email: {subject}", "page": None, "resource_ref": None},
-        {"type": "paragraph", "text": "\n".join(header_lines), "page": None, "resource_ref": None},
+        _content_block(file_id, "heading", f"Email: {subject}", "header", header="subject"),
+        _content_block(file_id, "paragraph", "\n".join(header_lines), "header", header="routing"),
     ]
 
 
-def _extract_eml_payload(msg: Message) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+def _extract_eml_payload(file_id: int, msg: Message) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     plain_parts: list[str] = []
     html_parts: list[str] = []
     resources: list[dict[str, Any]] = []
@@ -180,18 +236,22 @@ def _extract_eml_payload(msg: Message) -> tuple[str, list[dict[str, Any]], list[
             resource_id = len(resources) + 1
             payload = part.get_payload(decode=True) or b""
             resource = _build_resource(
+                source_file_id=file_id,
                 resource_id=resource_id,
                 filename=filename or f"attachment_{resource_id}",
                 mime_type=content_type,
                 data=payload,
             )
             resources.append(resource)
-            attachment_blocks.append({
-                "type": "paragraph",
-                "text": f"Attachment: {resource['filename']}",
-                "page": None,
-                "resource_ref": resource_id,
-            })
+            attachment_blocks.append(_content_block(
+                file_id,
+                "paragraph",
+                f"Attachment: {resource['filename']}",
+                "attachment",
+                resource_id,
+                attachment_index=resource_id,
+                filename=resource["filename"],
+            ))
             continue
 
         body = _decode_part_text(part)
@@ -210,7 +270,7 @@ def _extract_eml_payload(msg: Message) -> tuple[str, list[dict[str, Any]], list[
     return body_text, resources, attachment_blocks
 
 
-def _extract_msg_attachments(msg_obj: object) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _extract_msg_attachments(file_id: int, msg_obj: object) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     resources: list[dict[str, Any]] = []
     attachment_blocks: list[dict[str, Any]] = []
     for attachment in getattr(msg_obj, "attachments", []) or []:
@@ -226,22 +286,32 @@ def _extract_msg_attachments(msg_obj: object) -> tuple[list[dict[str, Any]], lis
             data = data.encode("utf-8")
         mime_type = getattr(attachment, "mimetype", None) or "application/octet-stream"
         resource = _build_resource(
+            source_file_id=file_id,
             resource_id=resource_id,
             filename=str(filename),
             mime_type=str(mime_type),
             data=data,
         )
         resources.append(resource)
-        attachment_blocks.append({
-            "type": "paragraph",
-            "text": f"Attachment: {resource['filename']}",
-            "page": None,
-            "resource_ref": resource_id,
-        })
+        attachment_blocks.append(_content_block(
+            file_id,
+            "paragraph",
+            f"Attachment: {resource['filename']}",
+            "attachment",
+            resource_id,
+            attachment_index=resource_id,
+            filename=resource["filename"],
+        ))
     return resources, attachment_blocks
 
 
-def _build_resource(resource_id: int, filename: str, mime_type: str, data: bytes) -> dict[str, Any]:
+def _build_resource(
+    source_file_id: int,
+    resource_id: int,
+    filename: str,
+    mime_type: str,
+    data: bytes,
+) -> dict[str, Any]:
     resource_type = "image" if mime_type.startswith("image/") else "attachment"
     description = f"Email attachment: {filename}"
     return {
@@ -253,6 +323,15 @@ def _build_resource(resource_id: int, filename: str, mime_type: str, data: bytes
         "description": description,
         "file_storage_id": None,
         "text_desc": description,
+        "source_file_id": source_file_id,
+        "source_ref": {
+            "file_id": source_file_id,
+            "format": "email",
+            "section": "attachment",
+            "message_part": "attachment",
+            "attachment_index": resource_id,
+            "filename": filename,
+        },
         "_bytes_b64": base64.b64encode(data).decode("ascii") if data else "",
     }
 

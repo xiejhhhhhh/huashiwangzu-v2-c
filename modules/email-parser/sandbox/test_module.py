@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from email.message import EmailMessage
@@ -12,6 +13,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PARSER_PATH = REPO_ROOT / "modules" / "email-parser" / "backend" / "parser.py"
+NORMALIZER_PATH = REPO_ROOT / "backend" / "app" / "services" / "content" / "ir_normalizer.py"
 SAMPLE = Path(__file__).resolve().parent / "samples" / "sample.eml"
 
 
@@ -25,7 +27,26 @@ def load_parser() -> ModuleType:
     return module
 
 
+normalizer_spec = importlib.util.spec_from_file_location("content_ir_normalizer_under_test", NORMALIZER_PATH)
+if normalizer_spec is None or normalizer_spec.loader is None:
+    raise RuntimeError(f"Unable to load Content IR normalizer from {NORMALIZER_PATH}")
+normalizer = importlib.util.module_from_spec(normalizer_spec)
+normalizer_spec.loader.exec_module(normalizer)
+
+
+def normalize(result: dict[str, Any]) -> dict[str, Any]:
+    value = asyncio.run(normalizer.normalize_ir(result))
+    assert isinstance(value, dict)
+    return value
+
+
 def validate_success(result: dict[str, Any], *, expected_resources: int = 0) -> None:
+    assert result["schema_version"] == "content-ir/v1"
+    assert result["content_type"] == "mixed"
+    assert result["source_module"] == "email-parser"
+    assert result["parser"] == "email-parser"
+    assert isinstance(result["source"], dict)
+    assert result["source"]["module"] == "email-parser"
     assert result["file_id"] == 1
     assert result["format"] == "email"
     assert isinstance(result["blocks"], list)
@@ -34,9 +55,14 @@ def validate_success(result: dict[str, Any], *, expected_resources: int = 0) -> 
     assert isinstance(result["resource_diagnostics"], list)
 
     for block in result["blocks"]:
-        assert set(("type", "text", "page", "resource_ref")).issubset(block)
+        assert set(("type", "text", "page", "resource_ref", "source_ref")).issubset(block)
         assert block["type"] in {"heading", "paragraph"}
         assert isinstance(block["text"], str)
+        source_ref = block["source_ref"]
+        assert isinstance(source_ref, dict)
+        assert source_ref["file_id"] == result["file_id"]
+        assert source_ref["format"] == "email"
+        assert source_ref["section"] in {"header", "body", "attachment"}
 
     assert len(result["resources"]) == expected_resources
     for resource in result["resources"]:
@@ -49,10 +75,19 @@ def validate_success(result: dict[str, Any], *, expected_resources: int = 0) -> 
             "description",
             "file_storage_id",
             "text_desc",
+            "source_file_id",
+            "source_ref",
             "_bytes_b64",
         )).issubset(resource)
         assert resource["filename"]
         assert resource["description"]
+        assert resource["source_file_id"] == result["file_id"]
+        assert isinstance(resource["source_ref"], dict)
+
+    normalized = normalize(result)
+    assert normalized["schema_version"] == "content-ir/v1"
+    assert normalized["blocks"]
+    assert all("id" in block for block in normalized["blocks"])
 
 
 def write_message(message: EmailMessage) -> Path:
