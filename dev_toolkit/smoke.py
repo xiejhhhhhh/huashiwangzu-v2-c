@@ -62,6 +62,76 @@ def _json_or_raw(resp: httpx.Response) -> dict:
         return {"raw": resp.text[:500]}
 
 
+def _non_empty_error(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _legacy_code_failure(value: Any) -> bool:
+    if value in (None, "", 0, "0"):
+        return False
+    if isinstance(value, bool):
+        return value is not False
+    if isinstance(value, int | float):
+        return value != 0
+    if isinstance(value, str):
+        try:
+            return float(value.strip()) != 0
+        except ValueError:
+            return False
+    return False
+
+
+def _semantic_failure_reason(payload: Any, *, _depth: int = 0) -> str | None:
+    if _depth > 8:
+        return None
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text or text[0] not in "{[":
+            return None
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("success") is False:
+        return _non_empty_error(payload.get("error")) or "success=false"
+    error = _non_empty_error(payload.get("error"))
+    if error:
+        return error
+    status = payload.get("status")
+    if isinstance(status, str) and status.lower() in {"failed", "error"}:
+        return f"status={status}"
+    if "code" in payload and _legacy_code_failure(payload.get("code")):
+        return (
+            _non_empty_error(payload.get("message"))
+            or _non_empty_error(payload.get("msg"))
+            or f"code={payload.get('code')}"
+        )
+    for key in ("data", "result"):
+        inner = payload.get(key)
+        if isinstance(inner, (dict, str)):
+            reason = _semantic_failure_reason(inner, _depth=_depth + 1)
+            if reason:
+                return reason
+    return None
+
+
+def _http_envelope_ok(response: dict) -> bool:
+    status = response.get("status")
+    if isinstance(status, int) and not 200 <= status < 300:
+        return False
+    return _semantic_failure_reason(response.get("data", response)) is None
+
+
 async def _request_with_auth(
     method: str,
     path: str,
@@ -152,7 +222,7 @@ async def _await_queue_settle(
 
 async def _read_queue_state() -> dict:
     r = await probe("GET", "/api/tasks/worker/status")
-    if r.get("status") != 200:
+    if r.get("status") != 200 or not _http_envelope_ok(r):
         raise RuntimeError(f"Queue status probe failed: status={r.get('status')}, data={r.get('data')}")
     return r.get("data", {}).get("data", r.get("data", {}))
 
@@ -175,6 +245,8 @@ async def _quick_queue_quiet_probe(
 
 def _cap_ok(r: dict) -> bool:
     """Check capability inner success (data.data.success), fallback to data.success."""
+    if not _http_envelope_ok(r):
+        return False
     data = r.get("data", {})
     inner = data.get("data")
     if isinstance(inner, dict) and "success" in inner:
@@ -605,7 +677,7 @@ async def health_check():
     try:
         r = await probe("GET", "/api/health")
         h = r.get("data", {}).get("data", r.get("data", {}))
-        ok = h.get("status") == "ok"
+        ok = _http_envelope_ok(r) and h.get("status") == "ok"
         module_errors = h.get("module_errors")
         add_result("后端 health", ok, f"db={h.get('database')}, module_errors={module_errors}")
     except Exception as e:

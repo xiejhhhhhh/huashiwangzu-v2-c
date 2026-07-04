@@ -20,11 +20,7 @@
 	    </button>
 	    <div v-show="isOpen && message.eventType === 'tool_result'" class="tool-body">
 	      <div v-if="errorText" class="tool-error">{{ errorText }}</div>
-	      <div v-if="referenceList.length" class="tool-refs">
-	        <span v-for="ref in referenceList" :key="`${ref.ref_key}:${ref.ref_id}`" class="tool-ref-chip">
-	          {{ refLabel(ref) }}
-	        </span>
-	      </div>
+	      <EvidenceReferenceList v-if="referenceList.length" :references="referenceList" dense class="tool-refs" />
 	      <template v-if="hasImage(message.toolResult)">
 	        <div class="tool-images">
           <img
@@ -44,6 +40,12 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { apiFetchRaw } from '../api'
+import EvidenceReferenceList from './EvidenceReferenceList.vue'
+import {
+  collectEvidenceReferences,
+  type EvidenceReference,
+} from './evidenceReferences'
 
 const props = defineProps<{
   message: {
@@ -52,7 +54,7 @@ const props = defineProps<{
 	    toolResult?: unknown
 	    toolStatus?: string
 	    toolError?: string
-	    toolReferences?: ToolReference[]
+	    toolReferences?: EvidenceReference[]
 	    durationMs?: number
 	  }
 	}>()
@@ -95,14 +97,6 @@ interface ImageEntry {
   [key: string]: unknown
 }
 
-interface ToolReference {
-  type: string
-  ref_key: string
-  ref_id: string
-  title?: string
-  source?: string
-}
-
 function hasImage(r: unknown): boolean {
   if (!r || typeof r !== 'object') return false
   const obj = r as Record<string, unknown>
@@ -122,18 +116,6 @@ function extractImages(r: unknown): ImageEntry[] {
   }
   return []
 }
-
-const REF_LABELS: Record<string, string> = {
-  file_id: '文件',
-  package_id: '内容包',
-  artifact_id: '产物',
-  document_id: '文档',
-  chunk_id: '片段',
-  page: '页码',
-  source_file_id: '源文件',
-}
-
-const REF_KEYS = new Set(Object.keys(REF_LABELS))
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -173,51 +155,30 @@ const errorText = computed(() => {
   return typeof message === 'string' ? message : ''
 })
 
-function collectReferences(value: unknown, refs: ToolReference[], seen: Set<string>, depth = 0) {
-  if (depth > 5 || refs.length >= 40) return
-  if (Array.isArray(value)) {
-    for (const item of value.slice(0, 50)) collectReferences(item, refs, seen, depth + 1)
-    return
-  }
-  if (!isRecord(value)) return
-  for (const [key, child] of Object.entries(value)) {
-    if (REF_KEYS.has(key) && child !== null && typeof child !== 'object') {
-      const refId = String(child).trim()
-      const dedupeKey = `${key}:${refId}`
-      if (refId && !seen.has(dedupeKey)) {
-        seen.add(dedupeKey)
-        refs.push({
-          type: key.endsWith('_id') ? key.slice(0, -3).replace(/_/g, '-') : key.replace(/_/g, '-'),
-          ref_key: key,
-          ref_id: refId,
-          title: `${REF_LABELS[key] || key} ${refId}`,
-          source: key,
-        })
-      }
-    }
-    collectReferences(child, refs, seen, depth + 1)
-  }
-}
-
-const referenceList = computed<ToolReference[]>(() => {
+const referenceList = computed<EvidenceReference[]>(() => {
   if (props.message.toolReferences?.length) return props.message.toolReferences
-  const refs: ToolReference[] = []
-  collectReferences(props.message.toolResult, refs, new Set<string>())
-  return refs
+  return collectEvidenceReferences(props.message.toolResult, {
+    sourceTool: props.message.toolName,
+    status: props.message.toolStatus,
+  })
 })
-
-function refLabel(ref: ToolReference): string {
-  return ref.title || `${REF_LABELS[ref.ref_key] || ref.type} ${ref.ref_id}`
-}
 
 function formatResult(r: unknown): string {
   if (typeof r === 'string') return r
   try { return JSON.stringify(r, null, 2) } catch { return String(r) }
 }
 
-function openImage(fileId: number) {
-  const url = `/api/files/download/${fileId}`
-  window.open(url, '_blank')
+async function openImage(fileId: number) {
+  try {
+    const response = await apiFetchRaw(`/files/download/${fileId}`)
+    if (!response.ok) throw new Error(`文件下载接口返回 ${response.status}`)
+    const blob = await response.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    window.open(objectUrl, '_blank', 'noopener')
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+  } catch (error: unknown) {
+    console.warn('[agent] open image failed', error)
+  }
 }
 </script>
 
@@ -312,24 +273,7 @@ function openImage(fileId: number) {
   line-height: var(--ag-line-height-base);
   word-break: break-word;
 }
-.tool-refs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: var(--ag-space-xs);
-}
-.tool-ref-chip {
-  max-width: 240px;
-  padding: 1px 6px;
-  border-radius: var(--ag-radius-sm);
-  border: 1px solid var(--ag-border-light);
-  background: var(--ag-bg-card);
-  color: var(--ag-text-secondary);
-  font-size: var(--ag-font-size-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.tool-refs { margin-bottom: var(--ag-space-xs); }
 .tool-body pre {
   white-space: pre-wrap;
   word-break: break-all;

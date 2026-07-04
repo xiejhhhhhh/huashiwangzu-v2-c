@@ -253,6 +253,11 @@ async def test_workflow_http_routes_create_verify_and_finalize(
         assert detail["status"] == "waiting"
         assert "tool_calls" in detail
 
+        response = await client.get(f"/api/agent/workflows/{run_id}/multi-agent-summary", headers=_headers(admin))
+        assert response.status_code == 200
+        summary = response.json()["data"]
+        assert summary == {"items": [], "total": 0}
+
         response = await client.post(
             f"/api/agent/workflows/{run_id}/verifications",
             json={

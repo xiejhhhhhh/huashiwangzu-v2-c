@@ -908,6 +908,17 @@ async def list_failures(db: AsyncSession, run_id: int) -> list[AgentFailureRecor
     return list(result.scalars().all())
 
 
+async def get_multi_agent_summary(
+    db: AsyncSession,
+    run_id: int,
+    *,
+    include_hidden_artifacts: bool = False,
+) -> dict:
+    from .workflow_summary_service import get_multi_agent_summary as aggregate_summary
+
+    return await aggregate_summary(db, run_id, include_hidden_artifacts=include_hidden_artifacts)
+
+
 async def ensure_workflow_owner_from_caller(
     db: AsyncSession,
     run_id: int,

@@ -56,3 +56,30 @@ def test_release_gate_response_fails_closed_without_machine_json() -> None:
     assert result["verdict"] == "INVALID_GATE_OUTPUT"
     assert result["invalid_output"] is True
     assert "human only" in result["output_tail"]
+
+
+def test_release_gate_response_does_not_clean_pass_when_summary_has_debt() -> None:
+    output = 'human\nRELEASE_GATE_JSON: {"verdict": "PASS", "has_debt": true}\n'
+    result = build_release_gate_response(
+        output=output,
+        returncode=0,
+        skip_ui=False,
+        duration_seconds=0.5,
+    )
+
+    assert result["success"] is False
+    assert result["clean_pass"] is False
+    assert result["has_debt"] is True
+
+
+def test_release_gate_response_honors_summary_clean_pass_false() -> None:
+    output = 'human\nRELEASE_GATE_JSON: {"verdict": "PASS", "clean_pass": false}\n'
+    result = build_release_gate_response(
+        output=output,
+        returncode=0,
+        skip_ui=False,
+        duration_seconds=0.5,
+    )
+
+    assert result["success"] is False
+    assert result["clean_pass"] is False

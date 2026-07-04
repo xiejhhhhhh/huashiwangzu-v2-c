@@ -19,6 +19,7 @@ from app.services.task_queue_audit_service import (
     reconcile_orphan_running,
     reconcile_stale_pending,
 )
+from app.services.task_worker import has_task_handler
 
 router = APIRouter(prefix="/api/tasks", tags=["system-tasks"])
 
@@ -186,6 +187,8 @@ async def submit_task(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
+    if not has_task_handler(payload.task_type):
+        raise ValidationError(f"No handler registered for task_type '{payload.task_type}'")
     task = SystemTaskQueue(
         task_type=payload.task_type,
         module=payload.module,

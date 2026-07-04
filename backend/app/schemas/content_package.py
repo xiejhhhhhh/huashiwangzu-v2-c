@@ -104,6 +104,11 @@ class PackageSummary(BaseModel):
     package_type: str
     source_extension: str
     status: str
+    publish_status: str = "draft_package"
+    published_artifact_id: int | None = None
+    published_file_id: int | None = None
+    published_version_id: int | None = None
+    download_url: str | None = None
     current_version_id: int | None
     manifest_json: dict | None = None
     created_at: datetime | None = None
@@ -176,3 +181,15 @@ class ExportRequest(BaseModel):
 class PublishRequest(BaseModel):
     target_file_id: int | None = None
     conflict_policy: str = "create_version"
+
+
+class PublishResponse(BaseModel):
+    package_id: int
+    artifact_id: int
+    file_id: int
+    download_url: str | None = None
+    published_version_id: int | None = None
+    status: str
+    publish_status: str = "published_artifact/file"
+    target_file_id: int | None = None
+    published: bool = True

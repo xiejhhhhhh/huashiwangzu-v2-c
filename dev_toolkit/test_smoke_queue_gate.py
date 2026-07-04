@@ -23,6 +23,25 @@ def test_smoke_queue_gate_ignores_external_failed_count_cleanup() -> None:
     assert smoke._no_new_queue_failures(failed_now=9, baseline_failed=10)
 
 
+def test_cap_ok_rejects_outer_or_inner_semantic_failure() -> None:
+    assert not smoke._cap_ok({
+        "status": 200,
+        "data": {"success": False, "data": {"success": True}, "error": "outer failed"},
+    })
+    assert not smoke._cap_ok({
+        "status": 200,
+        "data": {"success": True, "data": {"error": "inner failed"}},
+    })
+    assert not smoke._cap_ok({
+        "status": 500,
+        "data": {"success": True, "data": {"ok": True}},
+    })
+    assert smoke._cap_ok({
+        "status": 200,
+        "data": {"success": True, "data": {"ok": True}},
+    })
+
+
 def test_smoke_samples_queue_before_business_steps(monkeypatch) -> None:
     order: list[str] = []
 
@@ -56,6 +75,27 @@ def test_smoke_samples_queue_before_business_steps(monkeypatch) -> None:
     assert order[0] == "queue_status"
     assert order.index("queue_status") < order.index("business")
     assert order.count("settle:1") == 1
+
+
+def test_read_queue_state_rejects_success_false_body(monkeypatch) -> None:
+    async def fake_probe(method: str, path: str, body: dict | None = None, role: str = "admin") -> dict:
+        return {
+            "status": 200,
+            "data": {
+                "success": False,
+                "error": "queue broken",
+                "data": {"failed": 0, "pending": 0},
+            },
+        }
+
+    monkeypatch.setattr(smoke, "probe", fake_probe)
+
+    try:
+        asyncio.run(smoke._read_queue_state())
+    except RuntimeError as exc:
+        assert "Queue status probe failed" in str(exc)
+        return
+    raise AssertionError("success:false queue body must fail closed")
 
 
 def test_ensure_token_caches_by_role(monkeypatch) -> None:

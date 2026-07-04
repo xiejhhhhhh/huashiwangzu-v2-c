@@ -80,6 +80,14 @@ async def _cap_list_workflow_artifacts(params: dict, caller: str) -> dict:
         return {"items": [svc.artifact_to_dict(item) for item in visible], "total": len(visible)}
 
 
+async def _cap_get_multi_agent_summary(params: dict, caller: str) -> dict:
+    run_id = int(params.get("run_id") or params.get("workflow_run_id") or 0)
+    async with AsyncSessionLocal() as db:
+        owner_id, is_admin = await _caller_context(db, caller)
+        await svc.get_workflow(db, run_id, user_id=owner_id, is_admin=is_admin)
+        return await svc.get_multi_agent_summary(db, run_id, include_hidden_artifacts=is_admin)
+
+
 async def _cap_record_workflow_step(params: dict, caller: str) -> dict:
     run_id = int(params.get("run_id") or params.get("workflow_run_id") or 0)
     async with AsyncSessionLocal() as db:
@@ -269,6 +277,15 @@ capabilities = [
         _cap_list_workflow_artifacts,
         "列出 workflow artifacts",
         "列出workflow产物",
+        {"run_id": {"type": "integer"}},
+        "viewer",
+    ),
+    (
+        "agent",
+        "get_multi_agent_summary",
+        _cap_get_multi_agent_summary,
+        "汇总 workflow 子代理/步骤执行结果",
+        "汇总多代理结果",
         {"run_id": {"type": "integer"}},
         "viewer",
     ),

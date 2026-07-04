@@ -10,6 +10,8 @@ class FakeConnection:
         sql = str(statement)
         if "GROUP BY status" in sql:
             return FakeRows([])
+        if "SELECT result" in sql and "framework_system_task_queues" in sql:
+            return FakeRows([])
         if "SELECT count(*)" in sql:
             return FakeScalar(0)
         return FakeScalar(1)
@@ -52,10 +54,23 @@ class SemanticFailureConnection(FakeConnection):
         sql = str(statement)
         if "GROUP BY status" in sql:
             return FakeRows([])
-        if "completed_at >= NOW() - INTERVAL '24 hours'" in sql:
-            return FakeScalar(2)
-        if "status = 'completed'" in sql and "SELECT count(*)" in sql:
-            return FakeScalar(3)
+        if "SELECT result" in sql and "completed_at >= NOW() - INTERVAL '24 hours'" in sql:
+            return FakeRows([
+                ('{"success":false,"error":"compact false"}',),
+                ('{"error":"error-only"}',),
+                ('{"success":true,"data":{"success":false,"error":"nested false"}}',),
+                ('{"status":"error"}',),
+                ('{"code":1,"msg":"legacy failed"}',),
+            ])
+        if "SELECT result" in sql and "status = 'completed'" in sql:
+            return FakeRows([
+                ('{"success":false,"error":"compact false"}',),
+                ('{"error":"error-only"}',),
+                ('{"success":true,"data":{"success":false,"error":"nested false"}}',),
+                ('{"status":"error"}',),
+                ('{"code":1,"msg":"legacy failed"}',),
+                ('{"success":true,"data":{"ok":true}}',),
+            ])
         if "SELECT count(*)" in sql:
             return FakeScalar(0)
         return FakeScalar(1)
@@ -76,9 +91,30 @@ class HistoricalDebtConnection(FakeConnection):
         sql = str(statement)
         if "GROUP BY status" in sql:
             return FakeRows([("failed", 905), ("pending", 1)])
+        if "SELECT result" in sql and "framework_system_task_queues" in sql:
+            return FakeRows([])
         if "SELECT count(*)" in sql:
             return FakeScalar(0)
         return FakeScalar(1)
+
+
+class HistoricalSemanticDebtConnection(FakeConnection):
+    async def execute(self, statement: object) -> object:
+        sql = str(statement)
+        if "GROUP BY status" in sql:
+            return FakeRows([])
+        if "SELECT result" in sql and "completed_at >= NOW() - INTERVAL '24 hours'" in sql:
+            return FakeRows([])
+        if "SELECT result" in sql and "status = 'completed'" in sql:
+            return FakeRows([('{"success":true,"data":{"error":"old nested error"}}',)])
+        if "SELECT count(*)" in sql:
+            return FakeScalar(0)
+        return FakeScalar(1)
+
+
+class HistoricalSemanticDebtEngine:
+    def connect(self) -> FakeConnectionContext:
+        return FakeConnectionContext(HistoricalSemanticDebtConnection())
 
 
 class HistoricalDebtEngine:
@@ -191,8 +227,8 @@ async def test_health_endpoint_reports_task_semantic_failures_as_degraded() -> N
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["status"] == "degraded"
-    assert data["task_queue"]["semantic_failed_completed_24h"] == 2
-    assert data["task_queue"]["semantic_failed_completed_total"] == 3
+    assert data["task_queue"]["semantic_failed_completed_24h"] == 5
+    assert data["task_queue"]["semantic_failed_completed_total"] == 5
 
 
 @pytest.mark.asyncio
@@ -214,4 +250,25 @@ async def test_health_endpoint_reports_historical_failed_debt_without_degrading_
     assert data["task_queue"]["failed"] == 905
     assert data["task_queue"]["historical_failed_debt"] == 905
     assert data["task_queue"]["pending"] == 1
+    assert data["task_queue"]["debt_status"] == "debt"
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_reports_old_semantic_debt_without_degrading_live_health() -> None:
+    transport = ASGITransport(app=app)
+
+    with patch("app.database.engine", HistoricalSemanticDebtEngine()), patch(
+        "app.services.task_worker.worker_health",
+        return_value={"running": True, "registered_handlers": [], "last_active": None},
+    ), patch("app.services.event_bus.get_event_log", return_value=[]), patch(
+        "app.routers.registry.get_module_load_errors", return_value={}
+    ):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/health")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "ok"
+    assert data["task_queue"]["semantic_failed_completed_24h"] == 0
+    assert data["task_queue"]["semantic_failed_completed_total"] == 1
     assert data["task_queue"]["debt_status"] == "debt"

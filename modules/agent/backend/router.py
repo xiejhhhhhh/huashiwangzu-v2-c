@@ -296,6 +296,11 @@ async def get_workflow(
             "verifications": [workflow_svc.verification_to_dict(item) for item in verifications],
             "failures": [workflow_svc.failure_to_dict(item) for item in failures],
         })
+    data["multi_agent_summary"] = await workflow_svc.get_multi_agent_summary(
+        db,
+        run_id,
+        include_hidden_artifacts=_is_admin(user),
+    )
     return ApiResponse(data=data)
 
 
@@ -308,6 +313,20 @@ async def list_workflow_steps(
     await _require_workflow_visible(db, run_id, user)
     steps = await workflow_svc.list_steps(db, run_id)
     return ApiResponse(data={"items": [workflow_svc.step_to_dict(step) for step in steps], "total": len(steps)})
+
+
+@router.get("/workflows/{run_id}/multi-agent-summary")
+async def get_workflow_multi_agent_summary(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    await _require_workflow_visible(db, run_id, user)
+    return ApiResponse(data=await workflow_svc.get_multi_agent_summary(
+        db,
+        run_id,
+        include_hidden_artifacts=_is_admin(user),
+    ))
 
 
 @router.post("/workflows/{run_id}/steps")

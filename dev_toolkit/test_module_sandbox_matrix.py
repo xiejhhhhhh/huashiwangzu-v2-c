@@ -56,6 +56,7 @@ def test_markdown_output(matrix_results: list[dict]) -> None:
     output = module_sandbox_matrix.format_markdown(matrix_results, run_all=False, passed=True)
     assert "# Module Sandbox Verification Matrix" in output
     assert "| Module | Sandbox |" in output
+    assert "README Acceptance" in output
     assert "**Summary**" in output
 
 
@@ -143,6 +144,40 @@ def test_check_fails_when_frontend_build_fails(monkeypatch) -> None:
     assert entries[0]["check"] == "fail"
     assert entries[0]["exit_code"] == 1
     assert "vite failed" in entries[0]["stderr_tail"]
+
+
+def test_extract_chunk_warnings_detects_vite_large_chunk_warning() -> None:
+    output = "\n".join([
+        "vite v5.0.0 building",
+        "(!) Some chunks are larger than 500 kB after minification. Consider code-splitting.",
+    ])
+
+    warnings = module_sandbox_matrix.extract_chunk_warnings(output)
+
+    assert len(warnings) == 1
+    assert "Some chunks are larger" in warnings[0]
+
+
+def test_check_records_frontend_chunk_warnings(monkeypatch) -> None:
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="(!) Some chunks are larger than 500 kB after minification.",
+            stderr="",
+        )
+
+    monkeypatch.setattr(module_sandbox_matrix.subprocess, "run", fake_run)
+    entries = [{
+        "module": "front-only",
+        "check": "pass",
+        "backend_test_cmd": None,
+        "frontend_build_cmd": "cd modules/front-only/sandbox && npm run build",
+    }]
+
+    assert module_sandbox_matrix.check_sandbox_matrix(entries, quiet=True)
+    assert entries[0]["check"] == "pass"
+    assert entries[0]["chunk_warnings"]
 
 
 def test_frontend_install_needed_when_vite_bin_missing(tmp_path: Path) -> None:

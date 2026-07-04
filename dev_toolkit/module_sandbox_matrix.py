@@ -9,6 +9,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -22,6 +23,11 @@ BACKEND_PYTHON = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
 MODULES_DIR = REPO_ROOT / "modules"
 
 MANDATORY_PARSERS = {"pdf", "docx", "xlsx", "xls", "pptx", "txt", "md", "csv"}
+CHUNK_WARNING_PATTERNS = (
+    re.compile(r"some chunks are larger", re.IGNORECASE),
+    re.compile(r"chunk size limit", re.IGNORECASE),
+    re.compile(r"after minification", re.IGNORECASE),
+)
 
 
 def _frontend_install_needed(sandbox_dir: Path) -> bool:
@@ -48,6 +54,46 @@ def _available_module_keys() -> list[str]:
         p.name for p in MODULES_DIR.iterdir()
         if p.is_dir() and not p.name.startswith("_")
     )
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _readme_acceptance_info(module_dir: Path) -> dict:
+    readme = module_dir / "README.md"
+    if not readme.exists():
+        return {
+            "readme_exists": False,
+            "readme_acceptance_matrix": False,
+            "readme_acceptance_reason": "README.md missing",
+        }
+
+    text = _read_text(readme)
+    lower = text.lower()
+    has_acceptance = any(marker in lower for marker in ("验收", "验证", "acceptance"))
+    has_repro_command = any(
+        marker in lower
+        for marker in (
+            "sandbox",
+            "test_module.py",
+            "npm run build",
+            "backend/.venv/bin/python",
+            "pytest",
+        )
+    )
+    ok = has_acceptance and has_repro_command
+    reason = "" if ok else "README.md lacks reproducible acceptance/sandbox commands"
+    return {
+        "readme_exists": True,
+        "readme_acceptance_matrix": ok,
+        "readme_acceptance_reason": reason,
+    }
 
 
 def parse_requested_modules(module_args: list[str] | None, modules_arg: str | None) -> list[str] | None:
@@ -83,6 +129,7 @@ def _resolve_module_keys(module_keys: list[str] | None = None) -> list[str]:
 
 
 def _build_entry(key: str) -> dict:
+    module_dir = MODULES_DIR / key
     sandbox_dir = MODULES_DIR / key / "sandbox"
     backend_dir = MODULES_DIR / key / "backend"
 
@@ -126,6 +173,7 @@ def _build_entry(key: str) -> dict:
     elif not has_test_module:
         reason = "missing test_module.py"
 
+    readme_info = _readme_acceptance_info(module_dir)
     return {
         "module": key,
         "has_sandbox": has_sandbox,
@@ -137,6 +185,7 @@ def _build_entry(key: str) -> dict:
         "frontend_dev_cmd": frontend_dev,
         "backend_test_cmd": backend_test_cmd,
         "reason": reason,
+        **readme_info,
     }
 
 
@@ -161,12 +210,26 @@ def _prepare_command(command_text: str) -> tuple[list[str], Path, dict[str, str]
 
 
 def _record_command_result(command_results: list[dict], name: str, proc: subprocess.CompletedProcess) -> None:
+    output = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+    warnings = extract_chunk_warnings(output)
     command_results.append({
         "name": name,
         "exit_code": proc.returncode,
         "stdout_tail": proc.stdout.strip()[-500:] if proc.stdout else "",
         "stderr_tail": proc.stderr.strip()[-500:] if proc.stderr else "",
+        "chunk_warnings": warnings,
     })
+
+
+def extract_chunk_warnings(output: str) -> list[str]:
+    warnings: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(pattern.search(stripped) for pattern in CHUNK_WARNING_PATTERNS):
+            warnings.append(stripped[:300])
+    return warnings[:5]
 
 
 def _check_entry(
@@ -253,6 +316,10 @@ def _check_entry(
                 log_lines.append(f"  {command_name}: FAIL command not found: {e}\n")
 
     entry["command_results"] = command_results
+    chunk_warnings: list[str] = []
+    for result in command_results:
+        chunk_warnings.extend(result.get("chunk_warnings") or [])
+    entry["chunk_warnings"] = chunk_warnings[:5]
     entry["check"] = "pass" if entry_pass else "fail"
     first_failed = next((r for r in command_results if r.get("exit_code") != 0), None)
     if first_failed:
@@ -310,8 +377,8 @@ def format_markdown(results: list[dict], run_all: bool, passed: bool) -> str:
         f"Auto-run: {'yes' if run_all else 'no'}",
         f"Overall: {'PASS' if passed else 'FAIL' if run_all else 'N/A (--check not run)'}",
         "",
-        "| Module | Sandbox | test_module.py | Backend | Samples | Check | Reason |",
-        "|--------|---------|---------------|---------|---------|-------|--------|",
+        "| Module | Sandbox | test_module.py | Backend | Samples | README Acceptance | Check | Reason |",
+        "|--------|---------|---------------|---------|---------|-------------------|-------|--------|",
     ]
     for entry in results:
         status = entry.get("check", "skip")
@@ -325,6 +392,7 @@ def format_markdown(results: list[dict], run_all: bool, passed: bool) -> str:
             f"| {'✅' if entry['has_test_module'] else '❌'} "
             f"| {'✅' if entry['has_backend'] else '❌'} "
             f"| {'✅' if entry['has_samples'] else '❌'} "
+            f"| {'✅' if entry.get('readme_acceptance_matrix') else '❌'} "
             f"| {status_icon} "
             f"| {reason} |"
         )

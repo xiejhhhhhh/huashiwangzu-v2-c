@@ -117,6 +117,20 @@ def test_sandbox_matrix_skips_are_debt_not_clean_pass() -> None:
     assert "skip" in detail
 
 
+def test_sandbox_matrix_chunk_warnings_are_debt() -> None:
+    level, detail = release_gate.classify_sandbox_matrix(
+        [
+            {"module": "agent", "check": "pass"},
+            {"module": "viewer", "check": "pass", "chunk_warnings": ["large chunk"]},
+        ],
+        elapsed=1.2,
+    )
+
+    assert level == "DEBT"
+    assert "chunk warnings" in detail
+    assert "viewer" in detail
+
+
 def test_asset_marker_predicate_includes_required_test_marker() -> None:
     predicate = release_gate._asset_marker_predicate("f", "name")
 
@@ -253,6 +267,15 @@ def test_preflight_does_not_run_smoke_or_sandbox(monkeypatch) -> None:
             release_gate.add_result("ContentPackage lifecycle debt", "PASS", "ok", {"source_unavailable": 0})
             release_gate.add_result("Test data pollution", "PASS", "ok", {"active_test_files": 0})
 
+        async def fake_capability_drift() -> None:
+            release_gate.add_result("Capability drift", "PASS", "ok")
+
+        def fake_readme_acceptance_matrix() -> None:
+            release_gate.add_result("README acceptance matrix", "PASS", "ok")
+
+        def fake_component_key_contracts() -> None:
+            release_gate.add_result("Component key contracts", "PASS", "ok")
+
         monkeypatch.setattr(sys, "argv", ["release_gate.py", "--preflight"])
         monkeypatch.setattr(release_gate, "check_health", fake_check_health)
         monkeypatch.setattr(release_gate, "check_system_status", fake_check_system_status)
@@ -261,6 +284,9 @@ def test_preflight_does_not_run_smoke_or_sandbox(monkeypatch) -> None:
         monkeypatch.setattr(release_gate, "check_smoke", forbidden_smoke)
         monkeypatch.setattr(release_gate, "check_sandbox_matrix", forbidden_sandbox)
         monkeypatch.setattr(release_gate, "check_asset_lifecycle_debt", fake_asset_lifecycle_debt)
+        monkeypatch.setattr(release_gate, "check_capability_drift", fake_capability_drift)
+        monkeypatch.setattr(release_gate, "check_readme_acceptance_matrix", fake_readme_acceptance_matrix)
+        monkeypatch.setattr(release_gate, "check_component_key_contracts", fake_component_key_contracts)
 
         anyio.run(release_gate.main)
 
@@ -295,6 +321,91 @@ def test_audit_failed_count_fails_closed_on_missing_summary() -> None:
     raise AssertionError("missing summary.failed should not default to zero")
 
 
+def test_fetch_task_queue_audit_rejects_success_false_with_fake_summary(monkeypatch) -> None:
+    async def fake_probe(method: str, path: str, body: dict | None = None) -> dict:
+        return {
+            "success": False,
+            "error": "audit failed",
+            "data": {"summary": {"failed": 0}},
+        }
+
+    monkeypatch.setattr(release_gate, "probe", fake_probe)
+
+    with pytest.raises(ValueError, match="audit failed"):
+        anyio.run(release_gate.fetch_task_queue_audit)
+
+
+def test_check_health_rejects_outer_success_false(monkeypatch) -> None:
+    original = list(release_gate.results)
+    try:
+        release_gate.results[:] = []
+
+        async def fake_probe(method: str, path: str, body: dict | None = None) -> dict:
+            return {
+                "success": False,
+                "error": "health wrapper failed",
+                "data": {"status": "ok", "database": "ok"},
+            }
+
+        monkeypatch.setattr(release_gate, "probe", fake_probe)
+        anyio.run(release_gate.check_health)
+        assert release_gate.results[-1]["level"] == "BLOCKER"
+        assert "health wrapper failed" in release_gate.results[-1]["detail"]
+    finally:
+        release_gate.results[:] = original
+
+
+def test_check_system_status_rejects_outer_success_false(monkeypatch) -> None:
+    original = list(release_gate.results)
+    try:
+        release_gate.results[:] = []
+
+        async def fake_probe(method: str, path: str, body: dict | None = None) -> dict:
+            return {
+                "success": False,
+                "error": "status wrapper failed",
+                "data": {
+                    "backend": {"status": True},
+                    "database": {"status": True},
+                    "worker": {"status": True},
+                },
+            }
+
+        monkeypatch.setattr(release_gate, "probe", fake_probe)
+        anyio.run(release_gate.check_system_status)
+        assert release_gate.results[-1]["level"] == "BLOCKER"
+        assert "status wrapper failed" in release_gate.results[-1]["detail"]
+    finally:
+        release_gate.results[:] = original
+
+
+def test_check_smoke_requires_machine_json(monkeypatch) -> None:
+    original = list(release_gate.results)
+    try:
+        release_gate.results[:] = []
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"All green!\n", b""
+
+        async def fake_create_subprocess_exec_group(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(
+            release_gate,
+            "create_subprocess_exec_group",
+            fake_create_subprocess_exec_group,
+        )
+        anyio.run(release_gate.check_smoke, True)
+        assert release_gate.results[-1]["check"] == "Smoke test (backends)"
+        assert release_gate.results[-1]["level"] == "BLOCKER"
+        assert "missing SMOKE_JSON" in release_gate.results[-1]["detail"]
+    finally:
+        release_gate.results[:] = original
+
+
 def test_task_result_semantic_failure_contract() -> None:
     assert release_gate._task_result_is_semantic_failure({"success": False, "error": "bad"}) == (
         True,
@@ -302,16 +413,24 @@ def test_task_result_semantic_failure_contract() -> None:
     )
     assert release_gate._task_result_is_semantic_failure({"status": "failed"}) == (
         True,
-        "Task result status=failed",
+        "status=failed",
     )
     assert release_gate._task_result_is_semantic_failure({"error": "bad"}) == (True, "bad")
+    assert release_gate._task_result_is_semantic_failure({"code": 1, "msg": "legacy"}) == (
+        True,
+        "legacy",
+    )
+    assert release_gate._task_result_is_semantic_failure({
+        "success": True,
+        "data": {"success": False, "error": "nested"},
+    }) == (True, "nested")
     assert release_gate._task_result_is_semantic_failure({"status": "skipped", "reason": "empty"}) == (
         False,
         None,
     )
     assert release_gate._task_result_is_semantic_failure({"success": True, "error": "legacy-note"}) == (
-        False,
-        None,
+        True,
+        "legacy-note",
     )
 
 
@@ -338,6 +457,7 @@ def test_release_summary_keeps_result_data_and_clean_release_ready() -> None:
     try:
         release_gate.results[:] = []
         release_gate.add_result("Knowledge lifecycle debt", "DEBT", "source_unavailable=1", {"source_unavailable": 1})
+        release_gate.add_result("Contract drift", "BLOCKER", "missing live capability")
         summary = release_gate.build_release_summary("PASS_WITH_DEBT")
 
         assert summary["clean_pass"] is False
@@ -345,8 +465,127 @@ def test_release_summary_keeps_result_data_and_clean_release_ready() -> None:
         assert summary["release_safe"] is True
         assert summary["deploy_allowed"] is True
         assert summary["results"][0]["data"] == {"source_unavailable": 1}
+        assert summary["blockers"][0]["check"] == "Contract drift"
+        assert summary["debts"][0]["check"] == "Knowledge lifecycle debt"
+        assert summary["compact_summary"]["blockers"] == summary["blockers"]
+        assert summary["compact_summary"]["debts"] == summary["debts"]
     finally:
         release_gate.results[:] = original
+
+
+def test_capability_drift_missing_live_is_blocker(tmp_path: Path) -> None:
+    manifest_dir = tmp_path / "modules" / "agent"
+    manifest_dir.mkdir(parents=True)
+    manifests = [{
+        "key": "agent",
+        "path": manifest_dir / "manifest.json",
+        "module_dir": manifest_dir,
+        "data": {
+            "key": "agent",
+            "public_actions": [{"action": "chat"}],
+        },
+    }]
+
+    level, detail, data = release_gate.classify_capability_drift(
+        [],
+        manifests=manifests,
+        source_registered={("agent", "chat")},
+    )
+
+    assert level == "BLOCKER"
+    assert "missing_live=1" in detail
+    assert data["missing_live"] == [("agent", "chat")]
+
+
+def test_capability_drift_manifest_source_gap_is_debt(tmp_path: Path) -> None:
+    manifest_dir = tmp_path / "modules" / "agent"
+    manifest_dir.mkdir(parents=True)
+    manifests = [{
+        "key": "agent",
+        "path": manifest_dir / "manifest.json",
+        "module_dir": manifest_dir,
+        "data": {
+            "key": "agent",
+            "public_actions": [{"action": "chat"}],
+        },
+    }]
+
+    level, detail, data = release_gate.classify_capability_drift(
+        [{"module": "agent", "action": "chat"}],
+        manifests=manifests,
+        source_registered=set(),
+    )
+
+    assert level == "DEBT"
+    assert "manifest_not_source=1" in detail
+    assert data["manifest_not_source"] == [("agent", "chat")]
+
+
+def test_readme_acceptance_matrix_changed_module_missing_is_blocker(tmp_path: Path) -> None:
+    module_dir = tmp_path / "modules" / "new-module"
+    module_dir.mkdir(parents=True)
+    manifests = [{
+        "key": "new-module",
+        "path": module_dir / "manifest.json",
+        "module_dir": module_dir,
+        "data": {"key": "new-module"},
+    }]
+
+    level, detail, data = release_gate.classify_readme_acceptance_matrix(
+        manifests,
+        changed_modules={"new-module"},
+    )
+
+    assert level == "BLOCKER"
+    assert "changed_missing=1" in detail
+    assert data["changed_missing_modules"] == ["new-module"]
+
+
+def test_readme_acceptance_matrix_old_missing_is_debt(tmp_path: Path) -> None:
+    module_dir = tmp_path / "modules" / "old-module"
+    module_dir.mkdir(parents=True)
+    manifests = [{
+        "key": "old-module",
+        "path": module_dir / "manifest.json",
+        "module_dir": module_dir,
+        "data": {"key": "old-module"},
+    }]
+
+    level, detail, data = release_gate.classify_readme_acceptance_matrix(
+        manifests,
+        changed_modules=set(),
+    )
+
+    assert level == "DEBT"
+    assert "missing=1" in detail
+    assert data["missing_modules"] == ["old-module"]
+
+
+def test_component_key_contracts_enforce_window_type_rules(tmp_path: Path) -> None:
+    normal_dir = tmp_path / "normal"
+    background_dir = tmp_path / "background"
+    normal_dir.mkdir()
+    background_dir.mkdir()
+    manifests = [
+        {
+            "key": "normal-app",
+            "path": normal_dir / "manifest.json",
+            "module_dir": normal_dir,
+            "data": {"key": "normal-app", "window_type": "normal", "component_key": ""},
+        },
+        {
+            "key": "service-app",
+            "path": background_dir / "manifest.json",
+            "module_dir": background_dir,
+            "data": {"key": "service-app", "window_type": "background-service", "component_key": "index.vue"},
+        },
+    ]
+
+    level, detail, data = release_gate.classify_component_key_contracts(manifests)
+
+    assert level == "BLOCKER"
+    assert "issues=2" in detail
+    assert {issue["module"] for issue in data["issues"]} == {"normal-app", "service-app"}
 
 
 def test_asset_lifecycle_gate_classification(monkeypatch) -> None:
@@ -386,8 +625,57 @@ def test_asset_lifecycle_gate_classification(monkeypatch) -> None:
 
         assert checks["Knowledge lifecycle debt"]["level"] == "DEBT"
         assert checks["ContentPackage lifecycle debt"]["level"] == "DEBT"
-        assert checks["Test data pollution"]["level"] == "DEBT"
+        assert checks["Test data pollution"]["level"] == "BLOCKER"
         assert release_gate.runtime_context["knowledge_lifecycle_debt"]["source_unavailable"] == 2
+    finally:
+        release_gate.results[:] = original_results
+        release_gate.runtime_context.clear()
+        release_gate.runtime_context.update(original_context)
+
+
+@pytest.mark.parametrize(
+    "pollution_key",
+    [
+        "active_test_files",
+        "recycled_test_files",
+        "knowledge_documents_from_test_files",
+        "content_packages_from_test_files",
+    ],
+)
+def test_test_data_pollution_any_domain_blocks_release(monkeypatch, pollution_key: str) -> None:
+    original_results = list(release_gate.results)
+    original_context = dict(release_gate.runtime_context)
+    try:
+        release_gate.results[:] = []
+        release_gate.runtime_context.clear()
+        monkeypatch.setattr(
+            release_gate,
+            "audit_knowledge_lifecycle_debt",
+            lambda: {"source_unavailable": 0, "source_recycled": 0, "source_missing": 0},
+        )
+        monkeypatch.setattr(
+            release_gate,
+            "audit_content_package_lifecycle_debt",
+            lambda: {
+                "source_unavailable": 0,
+                "archived_by_lifecycle": 0,
+                "unarchived_source_unavailable": 0,
+                "missing_current_version": 0,
+            },
+        )
+        pollution = {
+            "active_test_files": 0,
+            "recycled_test_files": 0,
+            "knowledge_documents_from_test_files": 0,
+            "content_packages_from_test_files": 0,
+        }
+        pollution[pollution_key] = 1
+        monkeypatch.setattr(release_gate, "audit_test_data_pollution", lambda: pollution)
+
+        release_gate.check_asset_lifecycle_debt()
+        checks = {item["check"]: item for item in release_gate.results}
+
+        assert checks["Test data pollution"]["level"] == "BLOCKER"
     finally:
         release_gate.results[:] = original_results
         release_gate.runtime_context.clear()
@@ -430,6 +718,7 @@ def test_asset_lifecycle_gate_all_archived_content_is_not_debt(monkeypatch) -> N
         checks = {item["check"]: item for item in release_gate.results}
 
         assert checks["ContentPackage lifecycle debt"]["level"] == "PASS"
+        assert checks["Test data pollution"]["level"] == "PASS"
     finally:
         release_gate.results[:] = original_results
         release_gate.runtime_context.clear()

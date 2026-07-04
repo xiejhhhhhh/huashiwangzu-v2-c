@@ -584,14 +584,27 @@ async def test_completed_semantic_failure_is_audit_and_governance_readonly_debt(
             parameters={"marker": marker, "owner_id": 4, "conversation_id": 79},
             result=task_result,
         )
+        nested_task_result = {
+            "success": True,
+            "data": {"code": 1, "msg": "legacy nested failure"},
+        }
+        nested_task_id = await _create_task(
+            "profile_evolve",
+            "completed",
+            module="agent",
+            completed_at=now - timedelta(hours=2),
+            parameters={"marker": marker, "owner_id": 4, "conversation_id": 80},
+            result=nested_task_result,
+        )
 
         async with AsyncSessionLocal() as db:
             audit_result = await audit.audit_task_queue(db)
 
         semantic = audit_result["completed_semantic_failures"]
-        assert audit_result["classification"]["completed_semantic_failure_count"] >= baseline_count + 1
+        assert audit_result["classification"]["completed_semantic_failure_count"] >= baseline_count + 2
         assert semantic["mutates_rows"] is False
         assert any(sample["id"] == task_id for sample in semantic["samples"])
+        assert any(sample["id"] == nested_task_id for sample in semantic["samples"])
 
         async with AsyncSessionLocal() as db:
             plan = await govern_task_queue_debt(

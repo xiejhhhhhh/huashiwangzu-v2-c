@@ -2,16 +2,28 @@
   <div class="taskbar-notifications-wrapper" ref="notificationContainer">
     <el-badge :value="feedbackSignalCount" :hidden="feedbackSignalCount === 0" class="taskbar-notifications-badge">
       <button
+        ref="notificationButton"
         class="taskbar-notifications-button"
         :class="buttonStatusClass"
         type="button"
         :title="buttonTitle"
-        @click.stop="toggleNotificationPanel"
+        aria-label="打开反馈中心"
+        :aria-expanded="showNotificationPanel ? 'true' : 'false'"
+        aria-controls="taskbar-notifications-panel"
+        @click.stop="handleToggleNotificationPanel"
       >
         <el-icon :size="18"><Bell /></el-icon>
       </button>
     </el-badge>
-    <div v-if="showNotificationPanel" class="taskbar-notifications-panel" @click.stop>
+    <div
+      v-if="showNotificationPanel"
+      id="taskbar-notifications-panel"
+      ref="notificationPanel"
+      class="taskbar-notifications-panel"
+      tabindex="-1"
+      @click.stop
+      @keydown.esc.stop.prevent="closeNotificationPanel"
+    >
       <NotifyPanel
         :show="showNotificationPanel"
         :items="notificationList"
@@ -37,7 +49,7 @@ import { Bell } from '@element-plus/icons-vue'
 import { useNotifications } from '@/shared/composables/use-notifications'
 import type { ActionItem } from '@/shared/composables/use-notifications'
 import NotifyPanel from '@/shared/components/notification-panel.vue'
-import { computed } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 
 const emit = defineEmits<{
   'open-app': [id: string, payload?: Record<string, unknown>]
@@ -61,6 +73,9 @@ const {
   dismissActionItem,
   retryFeedbackLoad,
 } = useNotifications()
+
+const notificationButton = ref<HTMLButtonElement | null>(null)
+const notificationPanel = ref<HTMLElement | null>(null)
 
 const buttonTitle = computed(() => {
   if (hasFeedbackLoadError.value) return '反馈中心加载失败'
@@ -88,6 +103,20 @@ const buttonStatusClass = computed(() => {
   if ((workflow && workflow.active_count > 0) || (tasks && tasks.summary.running + tasks.summary.pending > 0)) return 'status-processing'
   return ''
 })
+
+async function handleToggleNotificationPanel() {
+  toggleNotificationPanel()
+  if (showNotificationPanel.value) {
+    await nextTick()
+    notificationPanel.value?.focus()
+  }
+}
+
+function closeNotificationPanel() {
+  if (!showNotificationPanel.value) return
+  showNotificationPanel.value = false
+  void nextTick(() => notificationButton.value?.focus())
+}
 
 function handleActionPrimary(item: ActionItem) {
   if (item.source_type === 'notification') {
@@ -120,28 +149,80 @@ function handleActionSecondary(item: ActionItem, actionId: string) {
   line-height: 16px;
   padding: 0 5px;
   border: none;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.44);
 }
 .taskbar-notifications-button {
-  width: 28px; height: 28px; border: none; background: transparent;
-  color: #dbeafe; cursor: pointer; border-radius: 4px;
-  display: flex; align-items: center; justify-content: center;
-  opacity: .82; transition: background .12s, opacity .12s;
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #dbeafe;
+  cursor: pointer;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: .86;
+  transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, opacity .16s ease, transform .16s ease;
 }
-.taskbar-notifications-button:hover { background: rgba(255,255,255,.08); opacity: 1; }
-.taskbar-notifications-button.status-failed { color: #fecaca; background: rgba(239, 68, 68, .16); }
-.taskbar-notifications-button.status-confirm { color: #fde68a; background: rgba(245, 158, 11, .16); }
-.taskbar-notifications-button.status-partial { color: #fed7aa; background: rgba(249, 115, 22, .14); }
-.taskbar-notifications-button.status-processing { color: #bae6fd; background: rgba(14, 165, 233, .14); }
+.taskbar-notifications-button::after {
+  content: '';
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.36);
+}
+.taskbar-notifications-button:hover {
+  background: rgba(255,255,255,.12);
+  border-color: rgba(255,255,255,.14);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+.taskbar-notifications-button:focus-visible {
+  outline: 2px solid rgba(191, 219, 254, .9);
+  outline-offset: 2px;
+}
+.taskbar-notifications-button.status-failed {
+  color: #fecaca;
+  background: rgba(239, 68, 68, .18);
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, .18);
+}
+.taskbar-notifications-button.status-failed::after { background: #ef4444; }
+.taskbar-notifications-button.status-confirm {
+  color: #fde68a;
+  background: rgba(245, 158, 11, .18);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .18);
+}
+.taskbar-notifications-button.status-confirm::after { background: #f59e0b; }
+.taskbar-notifications-button.status-partial {
+  color: #fed7aa;
+  background: rgba(249, 115, 22, .16);
+  box-shadow: inset 0 0 0 1px rgba(251, 146, 60, .18);
+}
+.taskbar-notifications-button.status-partial::after { background: #f97316; }
+.taskbar-notifications-button.status-processing {
+  color: #bae6fd;
+  background: rgba(14, 165, 233, .16);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, .18);
+}
+.taskbar-notifications-button.status-processing::after { background: #38bdf8; }
 .taskbar-notifications-panel {
   position: absolute;
   bottom: 44px;
   right: 0;
-  width: 340px;
-  max-height: 440px;
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(560px, calc(100vh - 72px));
   overflow-y: auto;
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 12px;
+  box-shadow: 0 22px 70px rgba(15,23,42,0.36), 0 0 0 1px rgba(15,23,42,0.08);
+  backdrop-filter: blur(22px);
   z-index: 11000;
 }
 </style>

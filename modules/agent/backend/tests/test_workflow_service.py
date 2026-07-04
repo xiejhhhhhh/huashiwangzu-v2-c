@@ -144,6 +144,147 @@ async def test_create_start_step_tool_call_and_artifact_flow(
 
 
 @pytest.mark.asyncio
+async def test_multi_agent_summary_empty_workflow_returns_empty_items(
+    db: AsyncSession,
+    cleanup_runs: list[int],
+) -> None:
+    run = await _new_run(db, cleanup_runs)
+
+    summary = await svc.get_multi_agent_summary(db, run.id)
+    assert summary == {"items": [], "total": 0}
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_summary_aggregates_step_tool_artifact_failure_and_verification(
+    db: AsyncSession,
+    cleanup_runs: list[int],
+) -> None:
+    run = await _new_run(db, cleanup_runs)
+    await svc.start_workflow(db, run.id)
+
+    completed_step = await svc.create_step(
+        db,
+        run_id=run.id,
+        step_key="research-agent",
+        title="Research agent",
+        step_type="subagent",
+        input_ref={"document_id": "doc-input-3"},
+    )
+    await svc.update_step_status(
+        db,
+        completed_step.id,
+        status="completed",
+        summary="Research completed",
+        output_ref={"chunk_id": "chunk-output-9", "page": 4},
+    )
+    completed_call = await svc.record_tool_call(
+        db,
+        run_id=run.id,
+        step_id=completed_step.id,
+        tool_name="knowledge__search",
+        arguments={"query": "contract"},
+        status="running",
+    )
+    completed_call = await svc.update_tool_call_status(
+        db,
+        completed_call.id,
+        status="completed",
+        result_ref={"artifact_refs": [{"type": "file", "ref_key": "file_id", "ref_id": "1001"}]},
+    )
+    artifact = await svc.create_artifact(
+        db,
+        run_id=run.id,
+        step_id=completed_step.id,
+        artifact_type="subagent_result",
+        storage_kind="inline_summary",
+        storage_ref={"refs": [{"type": "document", "ref_key": "document_id", "ref_id": "doc-7", "package_id": "pkg-9"}]},
+        summary="Research evidence",
+    )
+    verification = await svc.record_verification(
+        db,
+        run_id=run.id,
+        step_id=completed_step.id,
+        verification_type="manual_review",
+        status="pass",
+        summary="Evidence checked",
+        evidence_ref={"source_file_id": 9901},
+    )
+
+    failed_step = await svc.create_step(
+        db,
+        run_id=run.id,
+        step_key="writer-agent",
+        title="Writer agent",
+        step_type="subagent",
+    )
+    failed_call = await svc.record_tool_call(
+        db,
+        run_id=run.id,
+        step_id=failed_step.id,
+        tool_name="office-gen__write_ir",
+        arguments={"title": "draft"},
+        status="running",
+    )
+    await svc.update_tool_call_status(
+        db,
+        failed_call.id,
+        status="failed",
+        error_signature="IR validation failed",
+    )
+    failure = await svc.record_failure(
+        db,
+        run_id=run.id,
+        step_id=failed_step.id,
+        tool_call_id=failed_call.id,
+        failure_type="tool_error",
+        error_signature="write_ir rejected payload",
+        next_action="retry",
+        evidence_ref={"artifact_id": "failed-ir"},
+        handoff_note="Need regenerate valid IR",
+    )
+    await svc.record_verification(
+        db,
+        run_id=run.id,
+        step_id=failed_step.id,
+        verification_type="schema_check",
+        status="fail",
+        summary="Schema failed",
+    )
+
+    summary = await svc.get_multi_agent_summary(db, run.id)
+    assert summary["total"] == 2
+    first, second = summary["items"]
+    assert first["id"] == f"step:{completed_step.id}"
+    assert first["status"] == "completed"
+    assert first["completion_summary"] == "Research completed"
+    assert first["artifact_ids"] == [artifact.id]
+    assert first["tool_call_ids"] == [completed_call.id]
+    assert first["verification_ids"] == [verification.id]
+    assert {ref["ref_key"] for ref in first["reference_ids"]} >= {
+        "file_id",
+        "document_id",
+        "source_file_id",
+        "chunk_id",
+        "page",
+        "package_id",
+    }
+    file_ref = next(ref for ref in first["reference_ids"] if ref["ref_key"] == "file_id")
+    assert file_ref["source_tool"] == "knowledge__search"
+    assert file_ref["status"] == "completed"
+    chunk_ref = next(ref for ref in first["reference_ids"] if ref["ref_key"] == "chunk_id")
+    assert chunk_ref["source_tool"] == "research-agent"
+    assert chunk_ref["status"] == "completed"
+    assert first["next_action"] == "review_artifacts"
+
+    assert second["id"] == f"step:{failed_step.id}"
+    assert second["status"] == "failed"
+    assert second["failure_reason"] == "Need regenerate valid IR"
+    assert second["failure_ids"] == [failure.id]
+    assert second["next_action"] == "retry"
+    assert any(ref["ref_key"] == "artifact_id" and ref["ref_id"] == "failed-ir" for ref in second["reference_ids"])
+
+
+@pytest.mark.asyncio
 async def test_child_resources_must_belong_to_workflow_run(
     db: AsyncSession,
     cleanup_runs: list[int],

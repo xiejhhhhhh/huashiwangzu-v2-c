@@ -5,7 +5,7 @@ from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
-from app.services.module_registry import call_capability, list_capabilities
+from app.services.module_registry import call_capability, list_capabilities, semantic_failure_reason
 
 router = APIRouter(prefix="/api/modules", tags=["modules"])
 
@@ -25,10 +25,9 @@ async def module_call(payload: ModuleCallRequest, user: User = Depends(require_p
         caller=f"user:{user.id}",
         caller_role=user.role,
     )
-    if isinstance(result, dict) and result.get("success") is False:
-        raise ValidationError(
-            str(result.get("error") or f"{payload.target_module}:{payload.action} failed")
-        )
+    failure_reason = semantic_failure_reason(result)
+    if failure_reason:
+        raise ValidationError(str(failure_reason or f"{payload.target_module}:{payload.action} failed"))
     return ApiResponse(data=result)
 
 

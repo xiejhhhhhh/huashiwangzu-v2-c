@@ -35,6 +35,76 @@ class ContentExportService:
     def __init__(self):
         self.package_svc = ContentPackageService()
 
+    async def _ensure_publish_access(
+        self,
+        db: AsyncSession,
+        pkg_info: dict[str, Any],
+        owner_id: int,
+    ) -> None:
+        if pkg_info.get("owner_id") != owner_id:
+            raise ValidationError("Publish requires package owner access")
+        source_file_id = pkg_info.get("source_file_id")
+        if not source_file_id:
+            return
+
+        from app.services.file_service import check_file_write_access
+
+        await check_file_write_access(db, int(source_file_id), owner_id)
+
+    async def _mark_package_published(
+        self,
+        db: AsyncSession,
+        package_id: int,
+        owner_id: int,
+        artifact: dict[str, Any],
+        file_id: int,
+    ) -> None:
+        await self.package_svc.mark_published(
+            db,
+            package_id,
+            owner_id=owner_id,
+            artifact_id=int(artifact["id"]),
+            file_id=file_id,
+            published_version_id=artifact.get("current_version_id"),
+            download_url=f"/api/files/download/{file_id}",
+            open_url=f"/api/files/preview/{file_id}",
+            desktop_visible=True,
+        )
+
+    def _publish_response(
+        self,
+        *,
+        package_id: int,
+        artifact: dict[str, Any],
+        file_id: int,
+        status: str,
+        fmt: str,
+        target_file_id: int | None = None,
+    ) -> dict[str, Any]:
+        download_url = f"/api/files/download/{file_id}"
+        open_url = f"/api/files/preview/{file_id}"
+        artifact_payload = {
+            **artifact,
+            "download_url": download_url,
+            "open_url": open_url,
+            "desktop_visible": True,
+        }
+        return {
+            "package_id": package_id,
+            "artifact_id": artifact["id"],
+            "artifact": artifact_payload,
+            "file_id": file_id,
+            "download_url": download_url,
+            "open_url": open_url,
+            "desktop_visible": True,
+            "published_version_id": artifact.get("current_version_id"),
+            "status": status,
+            "publish_status": "published_artifact/file",
+            "format": fmt,
+            "target_file_id": target_file_id,
+            "published": True,
+        }
+
     async def export(
         self, db: AsyncSession, package_id: int,
         target_format: str | None = None,
@@ -45,7 +115,9 @@ class ContentExportService:
             db, package_id=package_id, owner_id=owner_id,
         )
 
-        fmt = (target_format or pkg_info["source_extension"]).lower().strip(".")
+        fmt = (target_format or pkg_info.get("source_extension") or "").lower().strip(".")
+        if not fmt and not pkg_info.get("source_file_id"):
+            fmt = "txt"
 
         if fmt not in EXPORT_ADAPTER_MAP:
             if fmt in {"doc", "ppt", "xls"}:
@@ -132,6 +204,8 @@ class ContentExportService:
         owner_id: int | None = None,
         conflict_policy: str = "create_version",
     ) -> dict[str, Any]:
+        if owner_id is None:
+            raise ValidationError("Publish requires an authenticated owner")
         if target_file_id is not None:
             return await self._publish_to_target_file(
                 db,
@@ -141,12 +215,17 @@ class ContentExportService:
                 conflict_policy=conflict_policy,
             )
 
+        pkg_info = await self.package_svc.get_package(
+            db, package_id=package_id, owner_id=owner_id,
+        )
+        await self._ensure_publish_access(db, pkg_info, owner_id)
         export_result = await self.export(db, package_id, owner_id=owner_id)
+        publish_owner_id = int(pkg_info["owner_id"])
 
         from app.services.artifact_service import create_artifact
         artifact = await create_artifact(
             db,
-            owner_id=owner_id or 0,
+            owner_id=publish_owner_id,
             name=export_result["file_name"].rsplit(".", 1)[0],
             extension=export_result["file_name"].rsplit(".", 1)[-1] if "." in export_result["file_name"] else "",
             file_id=export_result["file_id"],
@@ -156,11 +235,20 @@ class ContentExportService:
             conflict_policy=conflict_policy,
         )
 
-        return {
-            "artifact": artifact,
-            "file_id": export_result["file_id"],
-            "package_id": package_id,
-        }
+        await self._mark_package_published(
+            db,
+            package_id,
+            publish_owner_id,
+            artifact,
+            int(export_result["file_id"]),
+        )
+        return self._publish_response(
+            package_id=package_id,
+            artifact=artifact,
+            file_id=int(export_result["file_id"]),
+            status="published",
+            fmt=str(export_result.get("format") or artifact.get("extension") or ""),
+        )
 
     async def _publish_to_target_file(
         self,
@@ -181,6 +269,7 @@ class ContentExportService:
         pkg_info = await self.package_svc.get_package(
             db, package_id=package_id, owner_id=owner_id,
         )
+        await self._ensure_publish_access(db, pkg_info, owner_id)
         file_path, _, fmt, should_cleanup = await self._compile_publish_source(
             db,
             pkg_info,
@@ -217,15 +306,21 @@ class ContentExportService:
                 except Exception:
                     pass
 
-        return {
-            "artifact": artifact,
-            "file_id": target_file_id,
-            "target_file_id": target_file_id,
-            "package_id": package_id,
-            "format": target_file.extension or fmt,
-            "status": "replaced",
-            "published": True,
-        }
+        await self._mark_package_published(
+            db,
+            package_id,
+            int(pkg_info["owner_id"]),
+            artifact,
+            target_file_id,
+        )
+        return self._publish_response(
+            package_id=package_id,
+            artifact=artifact,
+            file_id=target_file_id,
+            status="replaced",
+            fmt=target_file.extension or fmt,
+            target_file_id=target_file_id,
+        )
 
     async def _compile_publish_source(
         self,

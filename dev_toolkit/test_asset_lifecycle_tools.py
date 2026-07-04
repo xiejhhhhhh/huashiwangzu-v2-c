@@ -18,11 +18,35 @@ def test_cleanup_sql_protects_shared_physical_storage() -> None:
     sql = tools._cleanup_sql(10)
 
     assert "candidate_docs" in sql
+    assert "archived_docs" in sql
+    assert "archived_packages" in sql
+    assert "deleted_recycle" in sql
+    assert "deleted_files" in sql
     assert "d.filename" in sql
+    assert "archived_by_test_data_cleanup" in sql
+    assert "source_permanently_deleted" in sql
+    assert "framework_file_recycle_items" in sql
+    assert "framework_file_items" in sql
+    assert "framework_content_packages" in sql
+    assert "kb_documents" in sql
+    assert "source_file_id in (select id from candidate_files)" in sql
+    assert "origin_id in (select id from candidate_files)" in sql
     assert "candidate_storage_paths" in sql
     assert "f.id not in (select id from candidate_files)" in sql
     assert "f.storage_path = cf.storage_path" in sql
     assert "f.md5_hash = cf.md5_hash" in sql
+
+
+def test_audit_sql_reports_all_pollution_domains() -> None:
+    sql = tools._audit_sql(10)
+
+    assert "active_test_files" in sql
+    assert "recycled_test_files" in sql
+    assert "knowledge_documents_from_test_files" in sql
+    assert "content_packages_from_test_files" in sql
+    assert "uploads_test_artifacts" in sql
+    assert "candidate_file_count" in sql
+    assert "like '%test-%'" not in tools._marker_predicate("f.name")
 
 
 def test_cleanup_requires_confirm(monkeypatch, tmp_path: Path) -> None:

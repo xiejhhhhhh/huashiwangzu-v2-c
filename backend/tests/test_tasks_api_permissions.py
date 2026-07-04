@@ -31,6 +31,11 @@ async def _cleanup(marker: str) -> None:
                 SystemTaskQueue.task_type.like(f"test_task_api_{marker}%")
             )
         )
+        await db.execute(
+            delete(SystemTaskQueue).where(
+                SystemTaskQueue.parameters.like(f"%{marker}%")
+            )
+        )
         await db.commit()
 
 
@@ -184,7 +189,7 @@ async def test_admin_can_submit_and_manage_any_task() -> None:
                 "/api/tasks/submit",
                 json={
                     "module": "test",
-                    "task_type": f"test_task_api_{marker}_submitted",
+                    "task_type": "_echo",
                     "parameters": {"marker": marker},
                 },
                 headers=admin_headers,
@@ -213,6 +218,43 @@ async def test_admin_can_submit_and_manage_any_task() -> None:
             listed_ids = {item["id"] for item in response.json()["data"]}
             assert editor_task_id in listed_ids
             assert submitted_id in listed_ids
+    finally:
+        await _cleanup(marker)
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_submit_unknown_task_type() -> None:
+    marker = uuid4().hex
+    admin = await _user("admin")
+    await _cleanup(marker)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/tasks/submit",
+                json={
+                    "module": "test",
+                    "task_type": f"test_task_api_{marker}_unknown",
+                    "parameters": {"marker": marker},
+                },
+                headers=_headers(admin),
+            )
+            assert response.status_code == 422
+            data = response.json()
+            assert data["success"] is False
+            assert "No handler registered" in data["error"]
+
+        async with AsyncSessionLocal() as db:
+            count = len(
+                (
+                    await db.execute(
+                        select(SystemTaskQueue).where(
+                            SystemTaskQueue.parameters.like(f"%{marker}%")
+                        )
+                    )
+                ).scalars().all()
+            )
+        assert count == 0
     finally:
         await _cleanup(marker)
 

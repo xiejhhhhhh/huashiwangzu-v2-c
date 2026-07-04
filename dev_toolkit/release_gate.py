@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +40,7 @@ except ModuleNotFoundError:
     from sql_guard import readonly_psql_env
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+MODULES_DIR = REPO_ROOT / "modules"
 BACKEND_PYTHON = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
 CONFIG = load_config(REPO_ROOT)
 BACKEND_BASE = str(CONFIG.get("backend_base_url") or "http://127.0.0.1:33000")
@@ -68,6 +70,75 @@ def add_result(check: str, level: str, detail: str, data: dict[str, Any] | None 
     print(f"  {icon} [{level:>20}] {check}: {detail[:200]}")
 
 
+def _non_empty_error(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _legacy_code_failure(value: Any) -> bool:
+    if value in (None, "", 0, "0"):
+        return False
+    if isinstance(value, bool):
+        return value is not False
+    if isinstance(value, int | float):
+        return value != 0
+    if isinstance(value, str):
+        try:
+            return float(value.strip()) != 0
+        except ValueError:
+            return False
+    return False
+
+
+def semantic_failure_reason(payload: Any, *, _depth: int = 0) -> str | None:
+    if _depth > 8:
+        return None
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text or text[0] not in "{[":
+            return None
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("success") is False:
+        return _non_empty_error(payload.get("error")) or "success=false"
+    error = _non_empty_error(payload.get("error"))
+    if error:
+        return error
+    status = payload.get("status")
+    if isinstance(status, str) and status.lower() in {"failed", "error"}:
+        return f"status={status}"
+    if "code" in payload and _legacy_code_failure(payload.get("code")):
+        return (
+            _non_empty_error(payload.get("message"))
+            or _non_empty_error(payload.get("msg"))
+            or f"code={payload.get('code')}"
+        )
+    for key in ("data", "result"):
+        inner = payload.get(key)
+        if isinstance(inner, (dict, str)):
+            reason = semantic_failure_reason(inner, _depth=_depth + 1)
+            if reason:
+                return reason
+    return None
+
+
+def ensure_envelope_success(payload: Any, label: str) -> None:
+    reason = semantic_failure_reason(payload)
+    if reason:
+        raise ValueError(f"{label} semantic failure: {reason}")
+
+
 def _run_git(args: list[str]) -> str:
     try:
         proc = subprocess.run(
@@ -93,6 +164,21 @@ def git_snapshot() -> dict[str, Any]:
         "dirty_count": len(status_lines),
         "dirty_files": status_lines[:80],
     }
+
+
+def changed_module_keys(status_lines: list[str] | None = None) -> set[str]:
+    lines = status_lines
+    if lines is None:
+        lines = [line for line in _run_git(["status", "--short"]).splitlines() if line.strip()]
+    changed: set[str] = set()
+    for line in lines:
+        path = line[3:].strip()
+        if path.startswith('"') and path.endswith('"'):
+            continue
+        match = re.match(r"modules/([^/]+)/", path)
+        if match and not match.group(1).startswith("_"):
+            changed.add(match.group(1))
+    return changed
 
 
 async def _url_status(base_url: str, path: str = "/") -> dict[str, Any]:
@@ -162,13 +248,22 @@ async def probe(method: str, path: str, body: dict | None = None) -> dict:
             headers["Authorization"] = f"Bearer {token}"
             resp = await client.request(method, path, json=body, headers=headers)
         try:
-            return resp.json()
+            payload = resp.json()
         except Exception:
-            return {"raw": resp.text[:500], "status": resp.status_code}
+            payload = {"raw": resp.text[:500]}
+        if not 200 <= resp.status_code < 300:
+            return {
+                "success": False,
+                "error": f"HTTP {resp.status_code}",
+                "status_code": resp.status_code,
+                "data": payload,
+            }
+        return payload
 
 
 async def fetch_task_queue_audit() -> dict[str, Any]:
     r = await probe("GET", "/api/tasks/worker/audit")
+    ensure_envelope_success(r, "task queue audit")
     if not isinstance(r, dict):
         raise TypeError(f"unexpected response type: {type(r)}")
     d = r
@@ -188,16 +283,8 @@ def audit_failed_count(audit: dict[str, Any]) -> int:
 
 
 def _task_result_is_semantic_failure(result: dict[str, Any] | None) -> tuple[bool, str | None]:
-    if not isinstance(result, dict):
-        return False, None
-    if result.get("success") is False:
-        return True, str(result.get("error") or "Task result success=false")
-    status = result.get("status")
-    if isinstance(status, str) and status.lower() in {"failed", "error"}:
-        return True, str(result.get("error") or f"Task result status={status}")
-    if result.get("error") not in (None, "") and result.get("success") is not True:
-        return True, str(result.get("error"))
-    return False, None
+    reason = semantic_failure_reason(result)
+    return reason is not None, reason
 
 
 def _decode_task_result(raw_result: Any) -> dict[str, Any] | None:
@@ -476,17 +563,259 @@ def parse_prefixed_json(output: str, prefix: str) -> dict[str, Any] | None:
     return None
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"__error__": str(exc), "__path__": str(path.relative_to(REPO_ROOT))}
+    return data if isinstance(data, dict) else {"__error__": "manifest is not an object"}
+
+
+def load_module_manifests() -> list[dict[str, Any]]:
+    manifests: list[dict[str, Any]] = []
+    if not MODULES_DIR.exists():
+        return manifests
+    for path in sorted(MODULES_DIR.glob("*/manifest.json")):
+        if path.parent.name.startswith("_"):
+            continue
+        data = _read_json(path)
+        key = str(data.get("key") or path.parent.name)
+        manifests.append({
+            "key": key,
+            "path": path,
+            "module_dir": path.parent,
+            "data": data,
+        })
+    return manifests
+
+
+def _public_action_names(actions: Any) -> set[str]:
+    if isinstance(actions, dict):
+        return {str(action) for action in actions if action}
+    if isinstance(actions, list):
+        return {
+            str(item.get("action"))
+            for item in actions
+            if isinstance(item, dict) and item.get("action")
+        }
+    return set()
+
+
+def scan_manifest_public_actions(manifests: list[dict[str, Any]] | None = None) -> set[tuple[str, str]]:
+    entries: set[tuple[str, str]] = set()
+    for item in manifests or load_module_manifests():
+        data = item.get("data") or {}
+        if data.get("__error__"):
+            continue
+        module_key = str(data.get("key") or item.get("key"))
+        for action in _public_action_names(data.get("public_actions")):
+            entries.add((module_key, action))
+    return entries
+
+
+def scan_source_registered_capabilities() -> set[tuple[str, str]]:
+    """Best-effort static scan for register_capability declarations.
+
+    The live registry is authoritative. This scan catches common literal and
+    tuple-list registrations so drift is visible without importing modules.
+    """
+    manifests = load_module_manifests()
+    module_keys = {str(item["key"]) for item in manifests}
+    known_modules = module_keys | {"content", "_self"}
+    entries: set[tuple[str, str]] = set()
+    paths = [p for p in MODULES_DIR.glob("*/backend/**/*.py") if not p.parent.name.startswith("_")]
+    paths.extend((REPO_ROOT / "backend" / "app" / "routers").glob("*.py"))
+    direct = re.compile(
+        r"register_capability\(\s*['\"]([A-Za-z0-9_-]+)['\"]\s*,\s*['\"]([A-Za-z0-9_-]+)['\"]"
+    )
+    tuple_decl = re.compile(
+        r"\(\s*['\"]([A-Za-z0-9_-]+)['\"]\s*,\s*['\"]([A-Za-z0-9_-]+)['\"]\s*,"
+    )
+    cap_handler_tuple = re.compile(r"\(\s*['\"]([A-Za-z0-9_-]+)['\"]\s*,\s*_cap_")
+
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "register_capability" not in text:
+            continue
+        entries.update(direct.findall(text))
+        for module_key, action in tuple_decl.findall(text):
+            if module_key in known_modules:
+                entries.add((module_key, action))
+        if "register_capability(" in text and '"content"' in text:
+            for action in cap_handler_tuple.findall(text):
+                entries.add(("content", action))
+    return entries
+
+
+async def fetch_live_capabilities() -> list[dict[str, Any]]:
+    payload = await probe("GET", "/api/modules/capabilities")
+    ensure_envelope_success(payload, "module capabilities")
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if not isinstance(data, list):
+        raise TypeError("module capabilities payload is not a list")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def classify_capability_drift(
+    live_capabilities: list[dict[str, Any]],
+    *,
+    manifests: list[dict[str, Any]] | None = None,
+    source_registered: set[tuple[str, str]] | None = None,
+) -> tuple[str, str, dict[str, Any]]:
+    manifests = manifests or load_module_manifests()
+    manifest_modules = {str(item["key"]) for item in manifests}
+    manifest_actions = scan_manifest_public_actions(manifests)
+    source_actions = source_registered if source_registered is not None else scan_source_registered_capabilities()
+    live_actions = {
+        (str(item.get("module")), str(item.get("action")))
+        for item in live_capabilities
+        if item.get("module") and item.get("action")
+    }
+    live_public = {item for item in live_actions if item[0] in manifest_modules}
+    source_public = {item for item in source_actions if item[0] in manifest_modules}
+
+    missing_live = sorted(manifest_actions - live_public)
+    undeclared_live = sorted(live_public - manifest_actions)
+    source_not_live = sorted(source_public - live_public)
+    manifest_not_source = sorted(manifest_actions - source_public)
+
+    data = {
+        "manifest_count": len(manifest_actions),
+        "live_public_count": len(live_public),
+        "source_public_count": len(source_public),
+        "missing_live": missing_live[:20],
+        "undeclared_live": undeclared_live[:20],
+        "source_not_live": source_not_live[:20],
+        "manifest_not_source": manifest_not_source[:20],
+        "missing_live_count": len(missing_live),
+        "undeclared_live_count": len(undeclared_live),
+        "source_not_live_count": len(source_not_live),
+        "manifest_not_source_count": len(manifest_not_source),
+    }
+    if missing_live or undeclared_live or source_not_live:
+        level = "BLOCKER"
+    elif manifest_not_source:
+        level = "DEBT"
+    else:
+        level = "PASS"
+    detail = (
+        f"manifest={len(manifest_actions)}, live={len(live_public)}, source={len(source_public)}, "
+        f"missing_live={len(missing_live)}, undeclared_live={len(undeclared_live)}, "
+        f"source_not_live={len(source_not_live)}, manifest_not_source={len(manifest_not_source)}"
+    )
+    return level, detail, data
+
+
+def _readme_acceptance_ok(module_dir: Path) -> bool:
+    readme = module_dir / "README.md"
+    if not readme.exists():
+        return False
+    try:
+        text = readme.read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    has_acceptance = any(marker in text for marker in ("验收", "验证", "acceptance"))
+    has_command = any(
+        marker in text
+        for marker in ("sandbox", "test_module.py", "npm run build", "backend/.venv/bin/python", "pytest")
+    )
+    return has_acceptance and has_command
+
+
+def classify_readme_acceptance_matrix(
+    manifests: list[dict[str, Any]] | None = None,
+    changed_modules: set[str] | None = None,
+) -> tuple[str, str, dict[str, Any]]:
+    manifests = manifests or load_module_manifests()
+    changed_modules = changed_modules if changed_modules is not None else changed_module_keys()
+    missing = sorted(
+        str(item["key"])
+        for item in manifests
+        if not _readme_acceptance_ok(Path(item["module_dir"]))
+    )
+    changed_missing = sorted(key for key in missing if key in changed_modules)
+    data = {
+        "module_count": len(manifests),
+        "missing_count": len(missing),
+        "changed_missing_count": len(changed_missing),
+        "missing_modules": missing[:30],
+        "changed_missing_modules": changed_missing[:30],
+    }
+    if changed_missing:
+        level = "BLOCKER"
+    elif missing:
+        level = "DEBT"
+    else:
+        level = "PASS"
+    detail = (
+        f"modules={len(manifests)}, missing={len(missing)}, "
+        f"changed_missing={len(changed_missing)}"
+    )
+    return level, detail, data
+
+
+def classify_component_key_contracts(
+    manifests: list[dict[str, Any]] | None = None,
+) -> tuple[str, str, dict[str, Any]]:
+    manifests = manifests or load_module_manifests()
+    issues: list[dict[str, str]] = []
+    for item in manifests:
+        data = item.get("data") or {}
+        module_key = str(item["key"])
+        if data.get("__error__"):
+            issues.append({"module": module_key, "issue": str(data["__error__"])})
+            continue
+        component_key = str(data.get("component_key") or "").strip()
+        window_type = str(data.get("window_type") or "normal")
+        module_dir = Path(item["module_dir"])
+        if window_type == "background-service":
+            if component_key:
+                issues.append({
+                    "module": module_key,
+                    "issue": "background-service must use empty component_key",
+                })
+            continue
+        if not component_key:
+            issues.append({"module": module_key, "issue": "normal app has empty component_key"})
+            continue
+        if not (module_dir / "frontend" / component_key).exists():
+            issues.append({"module": module_key, "issue": f"component_key target missing: {component_key}"})
+    data = {
+        "module_count": len(manifests),
+        "issue_count": len(issues),
+        "issues": issues[:30],
+    }
+    level = "BLOCKER" if issues else "PASS"
+    detail = f"modules={len(manifests)}, issues={len(issues)}"
+    return level, detail, data
+
+
 def classify_sandbox_matrix(entries: list[dict[str, Any]], elapsed: float) -> tuple[str, str]:
     total = len(entries)
     passed = sum(1 for e in entries if e.get("check") == "pass")
     failed = sum(1 for e in entries if e.get("check") == "fail")
     skipped = sum(1 for e in entries if e.get("check") == "skip")
+    chunk_warning_modules = [
+        str(e.get("module"))
+        for e in entries
+        if e.get("chunk_warnings")
+        or any(result.get("chunk_warnings") for result in e.get("command_results", []) if isinstance(result, dict))
+    ]
 
     if failed > 0:
         fail_names = [e["module"] for e in entries if e.get("check") == "fail"]
         return (
             "BLOCKER",
             f"{total} modules, {passed} pass, {failed} fail ({', '.join(fail_names)}), {skipped} skip ({elapsed:.0f}s)",
+        )
+    if chunk_warning_modules:
+        return (
+            "DEBT",
+            f"{total} modules, {passed} pass, {skipped} skip, chunk warnings in {len(chunk_warning_modules)} "
+            f"({', '.join(chunk_warning_modules[:5])}) ({elapsed:.0f}s)",
         )
     if skipped > 0:
         return "DEBT", f"{total} modules, {passed} pass, {skipped} skip ({elapsed:.0f}s) — skipped is tracked debt"
@@ -496,6 +825,7 @@ def classify_sandbox_matrix(entries: list[dict[str, Any]], elapsed: float) -> tu
 async def check_health() -> None:
     try:
         r = await probe("GET", "/api/health")
+        ensure_envelope_success(r, "health")
         d = r.get("data", r)
         status = d.get("status", "unknown")
         if status == "ok":
@@ -510,6 +840,7 @@ async def check_health() -> None:
 async def check_system_status() -> None:
     try:
         r = await probe("GET", "/api/system/status")
+        ensure_envelope_success(r, "system status")
         d = r.get("data", r)
         backend_ok = d.get("backend", {}).get("status") is True
         db_ok = d.get("database", {}).get("status") is True
@@ -571,31 +902,9 @@ async def check_smoke(skip_ui: bool) -> None:
                            f"{elapsed:.0f}s, unknown smoke verdict={verdict!r}")
             return
 
-        # Parse the red-green matrix footer
-        total = "-"
-        green = "-"
-        red = "-"
-        for line in output.splitlines():
-            if "总计" in line or "Total" in line:
-                parts = line.split()
-                for i, p in enumerate(parts):
-                    if p.isdigit():
-                        if total == "-":
-                            total = p
-                        elif green == "-":
-                            green = p
-                        elif red == "-":
-                            red = p
-                            break
-            if "全绿" in line or "All green" in line:
-                red = "0"
-
-        if passed and (red == "-" or red == "0" or red == "0"):
-            add_result("Smoke test (backends)", "PASS",
-                       f"{elapsed:.0f}s, all green")
-        elif passed:
-            add_result("Smoke test (backends)", "DEBT",
-                       f"{elapsed:.0f}s, passed but red count uncertain, see raw output")
+        if passed:
+            add_result("Smoke test (backends)", "BLOCKER",
+                       f"{elapsed:.0f}s, missing SMOKE_JSON machine summary")
         else:
             # Extract failure count from output
             fail_lines = [line for line in output.splitlines() if "R]" in line or "❌" in line or "[R]" in line]
@@ -750,7 +1059,7 @@ def check_asset_lifecycle_debt() -> None:
             )
         )
         active = int(pollution.get("active_test_files") or 0)
-        level = "BLOCKER" if active > 0 else ("DEBT" if total > 0 else "PASS")
+        level = "BLOCKER" if total > 0 else "PASS"
         detail = (
             f"active={active}, recycled={pollution.get('recycled_test_files', 0)}, "
             f"knowledge={pollution.get('knowledge_documents_from_test_files', 0)}, "
@@ -760,6 +1069,34 @@ def check_asset_lifecycle_debt() -> None:
         add_result("Test data pollution", level, detail, pollution)
     except Exception as exc:
         add_result("Test data pollution", "BLOCKER", str(exc))
+
+
+async def check_capability_drift() -> None:
+    try:
+        live = await fetch_live_capabilities()
+        level, detail, data = classify_capability_drift(live)
+        runtime_context["capability_drift"] = data
+        add_result("Capability drift", level, detail, data)
+    except Exception as exc:
+        add_result("Capability drift", "BLOCKER", str(exc))
+
+
+def check_readme_acceptance_matrix() -> None:
+    try:
+        level, detail, data = classify_readme_acceptance_matrix()
+        runtime_context["readme_acceptance_matrix"] = data
+        add_result("README acceptance matrix", level, detail, data)
+    except Exception as exc:
+        add_result("README acceptance matrix", "BLOCKER", str(exc))
+
+
+def check_component_key_contracts() -> None:
+    try:
+        level, detail, data = classify_component_key_contracts()
+        runtime_context["component_key_contracts"] = data
+        add_result("Component key contracts", level, detail, data)
+    except Exception as exc:
+        add_result("Component key contracts", "BLOCKER", str(exc))
 
 
 async def check_sandbox_matrix(sandbox_jobs: int = 1, frontend_jobs: int = 1) -> None:
@@ -794,11 +1131,19 @@ async def check_sandbox_matrix(sandbox_jobs: int = 1, frontend_jobs: int = 1) ->
             return
 
         level, detail = classify_sandbox_matrix(entries, elapsed)
+        chunk_warning_modules = [
+            str(e.get("module"))
+            for e in entries
+            if e.get("chunk_warnings")
+            or any(result.get("chunk_warnings") for result in e.get("command_results", []) if isinstance(result, dict))
+        ]
         runtime_context["sandbox_matrix"] = {
             "total": len(entries),
             "passed": sum(1 for e in entries if e.get("check") == "pass"),
             "failed": sum(1 for e in entries if e.get("check") == "fail"),
             "skipped": sum(1 for e in entries if e.get("check") == "skip"),
+            "chunk_warning_count": len(chunk_warning_modules),
+            "chunk_warning_modules": chunk_warning_modules[:10],
             "duration_seconds": round(elapsed, 3),
             "jobs": sandbox_jobs,
             "frontend_jobs": frontend_jobs,
@@ -826,6 +1171,18 @@ def get_final_verdict() -> str:
     return "PASS"
 
 
+def _compact_items(levels: set[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "check": str(item.get("check", "")),
+            "level": str(item.get("level", "")),
+            "detail": str(item.get("detail", ""))[:300],
+        }
+        for item in results
+        if item.get("level") in levels
+    ]
+
+
 def build_release_summary(verdict: str, *, skip_ui: bool = False, preflight: bool = False) -> dict[str, Any]:
     levels: dict[str, int] = {}
     for result in results:
@@ -838,12 +1195,28 @@ def build_release_summary(verdict: str, *, skip_ui: bool = False, preflight: boo
         or levels.get("DEBT", 0) > 0
         or levels.get("SKIPPED_WITH_REASON", 0) > 0
     )
+    clean_pass = summary_verdict == "PASS" and not skip_ui and not preflight
+    clean_release_ready = clean_pass and not has_debt
+    release_safe = summary_verdict in {"PASS", "PASS_WITH_DEBT"}
+    deploy_allowed = release_safe
+    blockers = _compact_items({"BLOCKER"})
+    debts = _compact_items({"DEBT", "SKIPPED_WITH_REASON"})
+    compact_summary = {
+        "verdict": summary_verdict,
+        "blockers": blockers,
+        "debts": debts,
+        "clean_release_ready": clean_release_ready,
+        "deploy_allowed": deploy_allowed,
+    }
     return {
         "verdict": summary_verdict,
-        "clean_pass": summary_verdict == "PASS" and not skip_ui and not preflight,
-        "clean_release_ready": summary_verdict == "PASS" and not skip_ui and not preflight and not has_debt,
-        "release_safe": summary_verdict in {"PASS", "PASS_WITH_DEBT"},
-        "deploy_allowed": summary_verdict in {"PASS", "PASS_WITH_DEBT"},
+        "blockers": blockers,
+        "debts": debts,
+        "compact_summary": compact_summary,
+        "clean_pass": clean_pass,
+        "clean_release_ready": clean_release_ready,
+        "release_safe": release_safe,
+        "deploy_allowed": deploy_allowed,
         "has_debt": has_debt,
         "ui_skipped": skip_ui,
         "preflight": preflight,
@@ -926,6 +1299,12 @@ async def main():
     await check_task_queue_audit(baseline_failed, baseline_semantic_failed_completed)
     print()
     check_asset_lifecycle_debt()
+    print()
+    await check_capability_drift()
+    print()
+    check_readme_acceptance_matrix()
+    print()
+    check_component_key_contracts()
     print()
     if args.preflight:
         add_result("Sandbox matrix", "DEBT", "--preflight used; sandbox matrix not run")

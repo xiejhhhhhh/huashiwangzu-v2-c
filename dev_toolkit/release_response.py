@@ -57,7 +57,14 @@ def build_release_gate_response(
     if ui_skipped and returncode == 0 and verdict == "PASS":
         verdict = "PASS_WITH_DEBT"
     summary_has_debt = bool(summary.get("has_debt"))
-    clean_pass = returncode == 0 and verdict == "PASS" and not ui_skipped
+    summary_clean_pass = summary.get("clean_pass")
+    clean_pass = (
+        returncode == 0
+        and verdict == "PASS"
+        and not ui_skipped
+        and not summary_has_debt
+        and summary_clean_pass is not False
+    )
     release_safe = returncode == 0 and verdict in {"PASS", "PASS_WITH_DEBT"}
     deploy_allowed = release_safe
     has_debt = summary_has_debt or verdict == "PASS_WITH_DEBT" or ui_skipped

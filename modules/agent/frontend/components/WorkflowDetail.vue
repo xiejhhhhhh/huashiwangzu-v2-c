@@ -34,6 +34,48 @@
         <p v-else class="workflow-muted">暂无产物</p>
       </div>
 
+      <div class="workflow-detail__section">
+        <h4>子代理/步骤</h4>
+        <div v-if="multiAgentSummary.length" class="multi-agent-list">
+          <article
+            v-for="(item, index) in multiAgentSummary"
+            :key="multiAgentItemKey(item, index)"
+            class="multi-agent-row"
+          >
+            <div class="multi-agent-row__top">
+              <strong>{{ multiAgentTitle(item, index) }}</strong>
+              <WorkflowStatusBadge :status="item.status" />
+            </div>
+            <dl class="multi-agent-fields">
+              <div>
+                <dt>完成摘要</dt>
+                <dd>{{ item.completion_summary || '暂无完成摘要' }}</dd>
+              </div>
+              <div>
+                <dt>失败原因</dt>
+                <dd>{{ item.failure_reason || '无失败原因' }}</dd>
+              </div>
+              <div>
+                <dt>引用/产物 ID</dt>
+                <dd>
+                  <EvidenceReferenceList
+                    v-if="multiAgentEvidenceReferences(item).length"
+                    :references="multiAgentEvidenceReferences(item)"
+                    dense
+                  />
+                  <template v-else>暂无引用或产物</template>
+                </dd>
+              </div>
+              <div>
+                <dt>下一步建议</dt>
+                <dd>{{ item.next_action || '暂无下一步建议' }}</dd>
+              </div>
+            </dl>
+          </article>
+        </div>
+        <p v-else class="workflow-muted">还没有子代理或步骤摘要；任务开始分派后会在这里显示。</p>
+      </div>
+
       <div v-if="workflowNeedsConfirmation" class="confirmation-strip">
         <span>该任务正等待确认</span>
         <button v-if="isAdmin" type="button" @click="$emit('openApprovals')">打开审批</button>
@@ -65,6 +107,9 @@
                     <span>{{ step.type || '-' }}</span>
                     <span v-if="step.error_signature">{{ step.error_signature }}</span>
                   </div>
+                  <div v-if="stepEvidenceReferences(step).length" class="ledger-row__refs">
+                    <EvidenceReferenceList :references="stepEvidenceReferences(step)" dense />
+                  </div>
                 </article>
               </div>
               <p v-else class="workflow-muted">暂无步骤记录</p>
@@ -85,6 +130,9 @@
                     <span v-if="toolCall.arguments_hash">args: {{ shortHash(toolCall.arguments_hash) }}</span>
                     <span v-if="toolCall.idempotency_key">idem: {{ shortHash(toolCall.idempotency_key) }}</span>
                   </div>
+                  <div v-if="toolCallEvidenceReferences(toolCall).length" class="ledger-row__refs">
+                    <EvidenceReferenceList :references="toolCallEvidenceReferences(toolCall)" dense />
+                  </div>
                 </article>
               </div>
               <p v-else class="workflow-muted">暂无工具调用</p>
@@ -103,6 +151,9 @@
                     <span>{{ verification.is_required_for_completion ? 'required' : 'optional' }}</span>
                     <span v-if="verification.duration_ms">{{ verification.duration_ms }}ms</span>
                   </div>
+                  <div v-if="verificationEvidenceReferences(verification).length" class="ledger-row__refs">
+                    <EvidenceReferenceList :references="verificationEvidenceReferences(verification)" dense />
+                  </div>
                 </article>
               </div>
               <p v-else class="workflow-muted">暂无验证记录</p>
@@ -119,6 +170,9 @@
                   <div class="ledger-row__meta">
                     <span>{{ failure.next_action || '-' }}</span>
                     <span>{{ failure.retryable ? 'retryable' : 'not retryable' }}</span>
+                  </div>
+                  <div v-if="failureEvidenceReferences(failure).length" class="ledger-row__refs">
+                    <EvidenceReferenceList :references="failureEvidenceReferences(failure)" dense />
                   </div>
                 </article>
               </div>
@@ -137,6 +191,9 @@
                     <span>{{ artifact.lifecycle || '-' }}</span>
                     <span>{{ artifact.visibility || '-' }}</span>
                     <span v-if="artifact.storage_ref">{{ compactValue(artifact.storage_ref) }}</span>
+                  </div>
+                  <div v-if="artifactEvidenceReferences(artifact).length" class="ledger-row__refs">
+                    <EvidenceReferenceList :references="artifactEvidenceReferences(artifact)" dense />
                   </div>
                 </article>
               </div>
@@ -158,9 +215,18 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { apiGet } from '../api'
+import EvidenceReferenceList from './EvidenceReferenceList.vue'
 import WorkflowStatusBadge from './WorkflowStatusBadge.vue'
+import {
+  collectEvidenceReferences,
+  evidenceReferencesFromIds,
+  type EvidenceReference,
+} from './evidenceReferences'
 import type {
   JsonValue,
+  MultiAgentSummaryItem,
+  MultiAgentSummaryResponse,
+  MultiAgentSummarySource,
   WorkflowArtifact,
   WorkflowDetailPayload,
   WorkflowFailure,
@@ -193,6 +259,7 @@ const toolCalls = ref<WorkflowToolCall[]>([])
 const artifacts = ref<WorkflowArtifact[]>([])
 const verifications = ref<WorkflowVerification[]>([])
 const failures = ref<WorkflowFailure[]>([])
+const multiAgentSummary = ref<MultiAgentSummaryItem[]>([])
 let requestToken = 0
 
 const currentWorkflow = computed<WorkflowDetailPayload | WorkflowSummary | null>(() => detail.value || props.summary || null)
@@ -218,11 +285,19 @@ async function loadDetail() {
   artifacts.value = []
   verifications.value = []
   failures.value = []
+  multiAgentSummary.value = normalizeMultiAgentSummary(props.summary?.multi_agent_summary)
   if (!runId) return
   loading.value = true
   try {
     const payload = await apiGet<WorkflowDetailPayload>(`/agent/workflows/${runId}`)
-    if (token === requestToken) detail.value = payload
+    if (token === requestToken) {
+      detail.value = payload
+      multiAgentSummary.value = normalizeMultiAgentSummary(payload.multi_agent_summary)
+      if (multiAgentSummary.value.length === 0) {
+        const optionalSummary = await fetchOptionalMultiAgentSummary(runId)
+        if (token === requestToken) multiAgentSummary.value = optionalSummary
+      }
+    }
   } catch (error: unknown) {
     if (token === requestToken) loadError.value = readableError(error)
   } finally {
@@ -256,6 +331,20 @@ async function loadLedger(runId: number) {
   } finally {
     ledgerLoading.value = false
   }
+}
+
+async function fetchOptionalMultiAgentSummary(runId: number): Promise<MultiAgentSummaryItem[]> {
+  try {
+    const payload = await apiGet<MultiAgentSummaryResponse>(`/agent/workflows/${runId}/multi-agent-summary`)
+    return normalizeMultiAgentSummary(payload)
+  } catch {
+    return []
+  }
+}
+
+function normalizeMultiAgentSummary(source: MultiAgentSummarySource | undefined): MultiAgentSummaryItem[] {
+  if (!source) return []
+  return Array.isArray(source) ? source : source.items ?? []
 }
 
 interface ListPayload<T> {
@@ -323,6 +412,64 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function shortHash(value: string): string {
   return value.length > 14 ? `${value.slice(0, 10)}...` : value
+}
+
+function multiAgentItemKey(item: MultiAgentSummaryItem, index: number): string {
+  const stableId = item.id ?? item.agent_id ?? item.step_id
+  return stableId === undefined || stableId === null ? `multi-agent-${index}` : `multi-agent-${String(stableId)}-${index}`
+}
+
+function multiAgentTitle(item: MultiAgentSummaryItem, index: number): string {
+  return item.title || item.agent_name || item.name || item.step_key || `步骤 #${index + 1}`
+}
+
+function multiAgentEvidenceReferences(item: MultiAgentSummaryItem): EvidenceReference[] {
+  return [
+    ...collectEvidenceReferences(item.reference_ids, {
+      sourceTool: item.step_key || item.agent_name || item.name || item.title,
+      status: item.status,
+    }),
+    ...evidenceReferencesFromIds('artifact_id', item.artifact_ids, {
+      sourceTool: item.step_key || item.agent_name || item.name || item.title,
+      status: item.status,
+    }),
+  ]
+}
+
+function stepEvidenceReferences(step: WorkflowStep): EvidenceReference[] {
+  const sourceTool = step.step_key || step.title || `step:${step.id}`
+  return [
+    ...collectEvidenceReferences(step.input_ref, { sourceTool, status: step.status }),
+    ...collectEvidenceReferences(step.output_ref, { sourceTool, status: step.status }),
+  ]
+}
+
+function toolCallEvidenceReferences(toolCall: WorkflowToolCall): EvidenceReference[] {
+  return collectEvidenceReferences(toolCall.result_ref, {
+    sourceTool: toolCall.tool_name,
+    status: toolCall.status,
+  })
+}
+
+function artifactEvidenceReferences(artifact: WorkflowArtifact): EvidenceReference[] {
+  return collectEvidenceReferences(artifact.storage_ref, {
+    sourceTool: artifact.artifact_type || artifact.storage_kind,
+    status: artifact.lifecycle,
+  })
+}
+
+function verificationEvidenceReferences(verification: WorkflowVerification): EvidenceReference[] {
+  return collectEvidenceReferences(verification.evidence_ref, {
+    sourceTool: verification.verification_type,
+    status: verification.status,
+  })
+}
+
+function failureEvidenceReferences(failure: WorkflowFailure): EvidenceReference[] {
+  return collectEvidenceReferences(failure.evidence_ref, {
+    sourceTool: failure.failure_type,
+    status: failure.next_action,
+  })
 }
 
 function toolTarget(toolCall: WorkflowToolCall): string {
@@ -418,6 +565,56 @@ function readableError(error: unknown): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.multi-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ag-space-sm);
+}
+.multi-agent-row {
+  min-width: 0;
+  padding: var(--ag-space-md);
+  background: var(--ag-bg-card);
+  border: 1px solid var(--ag-border-light);
+  border-radius: var(--ag-radius-md);
+}
+.multi-agent-row__top {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ag-space-sm);
+  margin-bottom: var(--ag-space-sm);
+}
+.multi-agent-row__top strong {
+  min-width: 0;
+  color: var(--ag-text-primary);
+  font-size: var(--ag-font-size-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.multi-agent-fields {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ag-space-sm) var(--ag-space-md);
+}
+.multi-agent-fields div {
+  min-width: 0;
+}
+.multi-agent-fields dt {
+  margin-bottom: 2px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-font-size-xs);
+}
+.multi-agent-fields dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-font-size-sm);
+  line-height: var(--ag-line-height-base);
+  word-break: break-word;
+}
 .confirmation-strip {
   display: flex;
   align-items: center;
@@ -478,6 +675,7 @@ function readableError(error: unknown): string {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--ag-space-md);
   padding: var(--ag-space-md);
   background: var(--ag-bg-card);
@@ -510,6 +708,10 @@ function readableError(error: unknown): string {
   flex-wrap: wrap;
   gap: var(--ag-space-xs);
 }
+.ledger-row__refs {
+  flex-basis: 100%;
+  min-width: 0;
+}
 .workflow-muted {
   margin: 0;
   color: var(--ag-text-tertiary);
@@ -517,6 +719,8 @@ function readableError(error: unknown): string {
 }
 @media (max-width: 900px) {
   .workflow-detail__summary-grid { grid-template-columns: 1fr; }
+  .multi-agent-row__top { align-items: flex-start; }
+  .multi-agent-fields { grid-template-columns: 1fr; }
   .ledger-row { flex-direction: column; }
   .ledger-row__meta { max-width: none; justify-content: flex-start; }
 }

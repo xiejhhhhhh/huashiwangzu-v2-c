@@ -15,6 +15,7 @@ export interface WorkflowSummary {
   queue_task_ids?: JsonValue
   release_gate_verdict?: string | null
   dirty_worktree_state?: JsonValue
+  multi_agent_summary?: MultiAgentSummarySource
 }
 
 export interface WorkflowListPayload {
@@ -23,6 +24,35 @@ export interface WorkflowListPayload {
 }
 
 export type WorkflowListResponse = WorkflowSummary[] | WorkflowListPayload
+
+export type MultiAgentSummaryStatus = 'running' | 'completed' | 'failed' | 'blocked'
+export type MultiAgentReferenceId = string | number | JsonRecord
+
+export interface MultiAgentSummaryItem {
+  id?: MultiAgentReferenceId | null
+  agent_id?: MultiAgentReferenceId | null
+  step_id?: MultiAgentReferenceId | null
+  name?: string | null
+  agent_name?: string | null
+  title?: string | null
+  step_key?: string | null
+  status: MultiAgentSummaryStatus | string
+  completion_summary?: string | null
+  failure_reason?: string | null
+  reference_ids?: MultiAgentReferenceId[]
+  artifact_ids?: MultiAgentReferenceId[]
+  next_action?: string | null
+  updated_at?: string | null
+}
+
+export interface MultiAgentSummaryPayload {
+  items?: MultiAgentSummaryItem[]
+  generated_at?: string | null
+  source?: string | null
+}
+
+export type MultiAgentSummarySource = MultiAgentSummaryItem[] | MultiAgentSummaryPayload
+export type MultiAgentSummaryResponse = MultiAgentSummarySource
 
 export interface WorkflowStep {
   id: number
@@ -37,6 +67,8 @@ export interface WorkflowStep {
   error_class?: string | null
   error_signature?: string | null
   summary?: string | null
+  input_ref?: JsonValue
+  output_ref?: JsonValue
   started_at?: string | null
   finished_at?: string | null
 }
@@ -56,6 +88,7 @@ export interface WorkflowToolCall {
   idempotency_key?: string | null
   error_class?: string | null
   error_signature?: string | null
+  result_ref?: JsonValue
   started_at?: string | null
   finished_at?: string | null
 }
@@ -109,4 +142,5 @@ export interface WorkflowDetailPayload extends WorkflowSummary {
   artifacts?: WorkflowArtifact[]
   verifications?: WorkflowVerification[]
   failures?: WorkflowFailure[]
+  multi_agent_summary?: MultiAgentSummarySource
 }

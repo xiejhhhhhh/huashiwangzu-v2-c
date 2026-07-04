@@ -13,6 +13,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.system import SystemTaskQueue
+from app.services.module_registry import semantic_failure_reason
 
 logger = logging.getLogger("v2.task_queue_audit")
 
@@ -36,16 +37,7 @@ def _decode_task_result(raw_result: Any) -> dict[str, Any] | None:
 
 
 def _task_result_semantic_failure_reason(result: dict[str, Any] | None) -> str | None:
-    if not isinstance(result, dict):
-        return None
-    if result.get("success") is False:
-        return str(result.get("error") or "Task result success=false")
-    status = result.get("status")
-    if isinstance(status, str) and status.lower() in {"failed", "error"}:
-        return str(result.get("error") or f"Task result status={status}")
-    if result.get("error") not in (None, "") and result.get("success") is not True:
-        return str(result.get("error"))
-    return None
+    return semantic_failure_reason(result)
 
 
 def _semantic_failure_sample(task: SystemTaskQueue, reason: str) -> dict:

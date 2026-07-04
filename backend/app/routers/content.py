@@ -554,12 +554,19 @@ async def _cap_export(params: dict, caller: str) -> dict:
 async def _cap_publish(params: dict, caller: str) -> dict:
     package_id = params.get("package_id")
     target_file_id = params.get("target_file_id")
+    conflict_policy = params.get("conflict_policy", "create_version")
     if not package_id:
         return {"success": False, "error": "package_id required"}
     owner_id = resolve_caller_user_id(caller)
     async with AsyncSessionLocal() as db:
         try:
-            result = await export_svc.publish(db, package_id, target_file_id=target_file_id, owner_id=owner_id)
+            result = await export_svc.publish(
+                db,
+                package_id,
+                target_file_id=target_file_id,
+                owner_id=owner_id,
+                conflict_policy=conflict_policy,
+            )
             return {"success": True, "data": result}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1053,7 +1060,7 @@ def _register_editor_caps():
         ("append_blocks", _cap_append_blocks, "Append new blocks to a package", {"package_id": "int", "blocks": "list[{type, text, data?, style?}]", "expected_version_id": "int (optional)"}),
         ("replace_text", _cap_replace_text, "Find and replace text across blocks", {"package_id": "int", "request": "{old_text, new_text, scope}", "expected_version_id": "int (optional)"}),
         ("export", _cap_export, "Export content package to a physical file", {"package_id": "int", "target_format": "str (optional)"}),
-        ("publish", _cap_publish, "Publish content package as an artifact", {"package_id": "int", "target_file_id": "int (optional)"}),
+        ("publish", _cap_publish, "Publish content package as an artifact", {"package_id": "int", "target_file_id": "int (optional)", "conflict_policy": "str (optional)"}),
         ("restore_version", _cap_restore_version, "Restore a previous version", {"package_id": "int", "version_id": "int"}),
         ("store_resource", _cap_store_resource, "Store an extracted embedded resource (data_b64, mime_type, filename, description, ocr_text, vlm_metadata, file_id, package_id, block_id)", {"data_b64": "string", "resource_type": "string", "mime_type": "string", "filename": "string", "description": "string (optional)", "ocr_text": "string (optional)", "vlm_metadata": "object (optional)", "file_id": "int (optional)", "package_id": "int (optional)", "block_id": "string (optional)"}),
         ("write_ir", _cap_write_ir, "Write validated Content IR to canonical DB source", {"content_ir": "object", "file_id": "int (optional)", "source_file_id": "int (optional)", "expected_version_id": "int (optional)"}),

@@ -339,6 +339,52 @@ class ContentPackageService:
             "resource_refs": refs,
         }
 
+    async def mark_published(
+        self,
+        db: AsyncSession,
+        package_id: int,
+        *,
+        owner_id: int,
+        artifact_id: int,
+        file_id: int,
+        published_version_id: int | None,
+        download_url: str | None,
+        open_url: str | None = None,
+        desktop_visible: bool = True,
+    ) -> dict[str, Any]:
+        pkg = await db.get(ContentPackage, package_id)
+        if not pkg or pkg.deleted:
+            raise NotFound("ContentPackage not found")
+        if pkg.owner_id != owner_id:
+            if pkg.source_file_id:
+                await check_file_access(db, pkg.source_file_id, owner_id)
+            else:
+                raise PermissionDenied("Permission denied")
+
+        manifest = {}
+        if pkg.manifest_json:
+            try:
+                loaded = json.loads(pkg.manifest_json)
+                if isinstance(loaded, dict):
+                    manifest = loaded
+            except (json.JSONDecodeError, TypeError):
+                manifest = {}
+
+        manifest["publish"] = {
+            "publish_status": "published_artifact/file",
+            "artifact_id": artifact_id,
+            "file_id": file_id,
+            "published_version_id": published_version_id,
+            "download_url": download_url,
+            "open_url": open_url,
+            "desktop_visible": desktop_visible,
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+        pkg.manifest_json = json.dumps(manifest, ensure_ascii=False)
+        await db.commit()
+        await db.refresh(pkg)
+        return self._package_to_dict(pkg)
+
     async def list_blocks(
         self, db: AsyncSession, package_id: int,
         block_type: str | None = None, page: int | None = None,
@@ -683,6 +729,12 @@ class ContentPackageService:
                 manifest = json.loads(pkg.manifest_json)
             except (json.JSONDecodeError, TypeError):
                 pass
+        publish_meta = {}
+        if isinstance(manifest, dict) and isinstance(manifest.get("publish"), dict):
+            publish_meta = manifest["publish"]
+        publish_status = publish_meta.get("publish_status")
+        if not publish_status:
+            publish_status = "compiled_preview" if pkg.current_version_id else "draft_package"
         return {
             "id": pkg.id,
             "owner_id": pkg.owner_id,
@@ -694,6 +746,13 @@ class ContentPackageService:
             "manifest": manifest,
             "current_version_id": pkg.current_version_id,
             "status": pkg.status,
+            "publish_status": publish_status,
+            "published_artifact_id": publish_meta.get("artifact_id"),
+            "published_file_id": publish_meta.get("file_id"),
+            "published_version_id": publish_meta.get("published_version_id"),
+            "download_url": publish_meta.get("download_url"),
+            "open_url": publish_meta.get("open_url"),
+            "desktop_visible": publish_meta.get("desktop_visible"),
             "parse_error": pkg.parse_error,
             "source_hash": pkg.source_hash,
             **package_lifecycle_fields(pkg),

@@ -14,6 +14,7 @@ from sqlalchemy import and_, or_, select, update
 
 from app.database import AsyncSessionLocal
 from app.models.system import SystemTaskQueue
+from app.services.module_registry import semantic_failure_reason
 
 logger = logging.getLogger("v2.task_worker")
 
@@ -33,6 +34,10 @@ def register_task_handler(task_type: str, handler: TaskHandler) -> None:
     """模块调用此函数注册自己的任务处理器。"""
     _HANDLERS[task_type] = handler
     logger.info("Registered task handler: %s", task_type)
+
+
+def has_task_handler(task_type: str) -> bool:
+    return task_type in _HANDLERS
 
 
 async def _echo_handler(parameters: dict) -> dict:
@@ -114,16 +119,8 @@ async def _recover_orphan_running_tasks() -> None:
 
 def _result_is_semantic_failure(result: dict | None) -> tuple[bool, str | None]:
     """Return whether a handler result is a business failure contract."""
-    if not isinstance(result, dict):
-        return False, None
-    if result.get("success") is False:
-        return True, str(result.get("error") or "Task result success=false")
-    status = result.get("status")
-    if isinstance(status, str) and status.lower() in {"failed", "error"}:
-        return True, str(result.get("error") or f"Task result status={status}")
-    if result.get("error") not in (None, "") and result.get("success") is not True:
-        return True, str(result.get("error"))
-    return False, None
+    reason = semantic_failure_reason(result)
+    return reason is not None, reason
 
 
 async def _claim_one_task(db) -> SystemTaskQueue | None:

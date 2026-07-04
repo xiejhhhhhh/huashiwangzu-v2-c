@@ -67,19 +67,16 @@ import WorkflowList from './components/WorkflowList.vue'
 import EnginePanel from './admin/EnginePanel.vue'
 import AgentConfigPanel from './admin/AgentConfigPanel.vue'
 import ApprovalPanel from './admin/ApprovalPanel.vue'
+import {
+  collectEvidenceReferences,
+  type EvidenceReference,
+} from './components/evidenceReferences'
 import './components/style-variables.css'
 
 // ── 类型 ──
 interface ConvItem { id: number; title: string; status?: string }
 interface ModelProfile { key: string; name: string; provider: string; model: string }
 interface RefItem { type: string; title: string; source: string; excerpt: string; url?: string }
-interface ToolReference {
-  type: string
-  ref_key: string
-  ref_id: string
-  title?: string
-  source?: string
-}
 interface ApiBody<T> { success: boolean; data: T; error?: string | null }
 interface UsageData {
   prompt_tokens?: number
@@ -100,7 +97,7 @@ interface MsgItem {
 	  toolStatus?: string
 	  toolError?: string
 	  toolCallId?: string
-	  toolReferences?: ToolReference[]
+	  toolReferences?: EvidenceReference[]
 	  thinking?: string
   references?: RefItem[]
   tool_events?: unknown[]
@@ -419,6 +416,7 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
   const toolStatus = (event?.status as string) || ''
   const toolError = (event?.error_class as string) || (event?.failure_kind as string) || ''
   const effectiveName = (event?.effective_tool_name as string) || name || 'unknown'
+  const toolReferences = eventToolReferences(event, result, effectiveName, toolStatus)
   for (let i = messages.length - 1; i >= 0; i--) {
     const sameCall = toolCallId && messages[i].toolCallId === toolCallId
     const sameName = !toolCallId && messages[i].eventType === 'tool_call' && messages[i].toolName === name
@@ -431,6 +429,7 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
         toolStatus,
         toolError,
         toolCallId,
+        toolReferences,
         durationMs: durationMs || 0,
       }
       merged = true
@@ -446,9 +445,23 @@ function applyToolResultEvent(name: string, result: unknown, messages: MsgItem[]
       toolStatus,
       toolError,
       toolCallId,
+      toolReferences,
       durationMs: durationMs || 0,
     } as MsgItem)
   }
+}
+
+function eventToolReferences(
+  event: Record<string, unknown> | undefined,
+  result: unknown,
+  toolName: string,
+  status: string,
+): EvidenceReference[] {
+  return [
+    ...collectEvidenceReferences(event?.references, { sourceTool: toolName, status }),
+    ...collectEvidenceReferences(event?.result_ref, { sourceTool: toolName, status }),
+    ...collectEvidenceReferences(result, { sourceTool: toolName, status }),
+  ]
 }
 
 	let abortController: AbortController | null = null

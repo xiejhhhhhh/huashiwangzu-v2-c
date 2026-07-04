@@ -29,6 +29,7 @@
           <p>{{ workflow.progress_summary || '暂无进度摘要' }}</p>
           <div class="workflow-card__meta">
             <span>{{ workflowNeedsConfirmation(workflow) ? '需要确认' : '无需确认' }}</span>
+            <span v-if="multiAgentSummaryCount(workflow) > 0">子代理/步骤 {{ multiAgentSummaryCount(workflow) }}</span>
             <span>{{ formatDateTime(workflow.updated_at) }}</span>
           </div>
         </button>
@@ -50,7 +51,7 @@ import { computed, onMounted, ref } from 'vue'
 import { apiGet } from '../api'
 import WorkflowDetail from './WorkflowDetail.vue'
 import WorkflowStatusBadge from './WorkflowStatusBadge.vue'
-import type { WorkflowListResponse, WorkflowSummary } from './workflowTypes'
+import type { MultiAgentSummarySource, WorkflowListResponse, WorkflowSummary } from './workflowTypes'
 
 withDefaults(defineProps<{
   isAdmin?: boolean
@@ -96,6 +97,15 @@ function normalizeWorkflowList(payload: WorkflowListResponse): WorkflowSummary[]
 
 function workflowNeedsConfirmation(workflow: WorkflowSummary): boolean {
   return Boolean(workflow.needs_confirmation || workflow.status === 'needs_confirmation')
+}
+
+function multiAgentSummaryCount(workflow: WorkflowSummary): number {
+  return countMultiAgentSummary(workflow.multi_agent_summary)
+}
+
+function countMultiAgentSummary(source: MultiAgentSummarySource | undefined): number {
+  if (!source) return 0
+  return Array.isArray(source) ? source.length : source.items?.length ?? 0
 }
 
 function formatDateTime(value: string | null | undefined): string {

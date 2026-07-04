@@ -7,6 +7,7 @@ import { buildRestoreWindowList } from './desktop-session-restore'
 
 const WINDOW_TYPE_BACKGROUND_SERVICE = 'background-service'
 const WINDOW_TYPE_NORMAL = 'normal'
+type WindowGeometry = { x: number; y: number; width: number; height: number }
 
 const windows = reactive<WindowState[]>([])
 let nextZIndex = 100
@@ -92,7 +93,9 @@ function openWindow(appKey: string, payload?: unknown): string | null {
 function closeWindow(id: string) {
   const idx = windows.findIndex(w => w.id === id)
   if (idx === -1) return
+  const wasActive = windows[idx].isActive
   windows.splice(idx, 1)
+  if (wasActive) activateTopmostVisibleWindow()
 }
 
 function toggleMinimized(id: string) {
@@ -101,19 +104,18 @@ function toggleMinimized(id: string) {
   w.minimized = !w.minimized
   if (w.minimized) {
     w.isActive = false
-    const next = [...windows].reverse().find(x => !x.minimized)
-    if (next) { next.isActive = true }
+    activateTopmostVisibleWindow(w.id)
   } else { activateWindow(id) }
 }
 
-function toggleMaximized(id: string) {
+function toggleMaximized(id: string, restoreState?: WindowGeometry) {
   const w = windows.find(x => x.id === id)
   if (!w) return
   if (w.maximized) {
     if (w.preMaximizeState) { w.x = w.preMaximizeState.x; w.y = w.preMaximizeState.y; w.width = w.preMaximizeState.width; w.height = w.preMaximizeState.height }
     w.maximized = false
   } else {
-    w.preMaximizeState = { x: w.x, y: w.y, width: w.width, height: w.height }
+    w.preMaximizeState = restoreState ? { ...restoreState } : { x: w.x, y: w.y, width: w.width, height: w.height }
     w.x = 0; w.y = 0
     w.width = desktopContainerSize.width
     w.height = desktopContainerSize.height - 48
@@ -126,6 +128,16 @@ function activateWindow(id: string) {
   if (!w) return
   windows.forEach(x => x.isActive = false)
   w.isActive = true; w.zIndex = nextZIndex++; w.minimized = false
+}
+
+function activateTopmostVisibleWindow(excludeId?: string) {
+  const next = windows
+    .filter(w => w.id !== excludeId && !w.minimized && w.windowType !== WINDOW_TYPE_BACKGROUND_SERVICE)
+    .sort((a, b) => b.zIndex - a.zIndex)[0]
+  if (!next) return
+  windows.forEach(w => { w.isActive = false })
+  next.isActive = true
+  next.zIndex = nextZIndex++
 }
 
 function setContainerSize(width: number, height: number) {
