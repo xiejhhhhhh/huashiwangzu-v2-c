@@ -76,6 +76,43 @@ def test_document_lifecycle_filters_unavailable_sources() -> None:
     print("  [DOCUMENT-LIFECYCLE] Source filtering valid")
 
 
+def test_lifecycle_debt_governance_contract() -> None:
+    """Lifecycle debt audit/archive capability must be dry-run and confirm guarded."""
+    audit = {
+        "dry_run": True,
+        "matched": 2,
+        "summary": {"source_file_deleted": 1, "source_file_missing": 1},
+        "source_recycled_count": 1,
+        "source_missing_count": 1,
+        "candidate_document_ids": [10, 11],
+        "sample_documents": [
+            {"document_id": 10, "reason": "source_file_deleted", "source_lifecycle_state": "source_recycled"},
+            {"document_id": 11, "reason": "source_file_missing", "source_lifecycle_state": "source_missing"},
+        ],
+        "recommended_action": "archive_source_unavailable_documents",
+    }
+    archive_dry_run = {
+        "dry_run": True,
+        "action": "archive_source_unavailable_documents",
+        "selected": 2,
+        "changed": 0,
+        "requires_confirm": True,
+        "confirm_token": "ARCHIVE_SOURCE_UNAVAILABLE",
+    }
+
+    assert audit["dry_run"] is True
+    assert audit["matched"] == 2
+    assert audit["source_recycled_count"] == 1
+    assert audit["source_missing_count"] == 1
+    assert {item["source_lifecycle_state"] for item in audit["sample_documents"]} == {
+        "source_recycled",
+        "source_missing",
+    }
+    assert archive_dry_run["changed"] == 0
+    assert archive_dry_run["confirm_token"] == "ARCHIVE_SOURCE_UNAVAILABLE"
+    print("  [LIFECYCLE-DEBT] Governance contract valid")
+
+
 def test_pipeline_lifecycle_skips_before_parse_or_index() -> None:
     """Pipeline must stop unavailable sources before writing derived artifacts."""
     source_state = {"available": False, "reason": "source_file_deleted"}

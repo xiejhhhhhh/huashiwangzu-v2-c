@@ -219,6 +219,48 @@
       "min_role": "admin"
     },
     {
+      "action": "audit_lifecycle_debt",
+      "description": "审计源文件已删除或缺失的 active 知识库文档",
+      "parameters": {
+        "limit": {
+          "type": "integer",
+          "description": "最多返回候选文档数（默认500）"
+        },
+        "reason": {
+          "type": "string",
+          "description": "source_file_deleted、source_file_missing 或 source_unavailable"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "archive_source_unavailable_documents",
+      "description": "dry-run 或确认归档源文件不可用的知识库文档",
+      "parameters": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "最多归档文档数（默认100）"
+        },
+        "reason": {
+          "type": "string",
+          "description": "source_file_deleted、source_file_missing 或 source_unavailable"
+        },
+        "confirm": {
+          "type": "string",
+          "description": "真实执行必须为 ARCHIVE_SOURCE_UNAVAILABLE"
+        },
+        "audit_reason": {
+          "type": "string",
+          "description": "治理原因说明"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
       "action": "get_evidence_detail",
       "description": "获取证据详情",
       "parameters": {
@@ -314,6 +356,16 @@
       "event": "file.uploaded",
       "handler": "on_file_uploaded",
       "description": "文件上传后自动登记到知识库并触发分析"
+    },
+    {
+      "event": "file.deleted",
+      "handler": "file_lifecycle_service",
+      "description": "源文件进入回收站后标记知识文档源不可用"
+    },
+    {
+      "event": "file.restored",
+      "handler": "file_lifecycle_service",
+      "description": "源文件恢复后恢复或重新入队知识文档"
     }
   ],
   "db_migration_declaration": [],

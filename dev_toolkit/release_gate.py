@@ -32,9 +32,11 @@ import httpx
 try:
     from dev_toolkit.config_loader import load_config
     from dev_toolkit.process_tools import create_subprocess_exec_group, terminate_process_tree
+    from dev_toolkit.sql_guard import readonly_psql_env
 except ModuleNotFoundError:
     from config_loader import load_config
     from process_tools import create_subprocess_exec_group, terminate_process_tree
+    from sql_guard import readonly_psql_env
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_PYTHON = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
@@ -57,8 +59,11 @@ def _project_python() -> str:
     return str(BACKEND_PYTHON if BACKEND_PYTHON.exists() else Path(sys.executable))
 
 
-def add_result(check: str, level: str, detail: str) -> None:
-    results.append({"check": check, "level": level, "detail": detail})
+def add_result(check: str, level: str, detail: str, data: dict[str, Any] | None = None) -> None:
+    item = {"check": check, "level": level, "detail": detail}
+    if data is not None:
+        item["data"] = data
+    results.append(item)
     icon = {"PASS": "✅", "BLOCKER": "🔴", "DEBT": "🟡", "SKIPPED_WITH_REASON": "⏭️"}.get(level, "❓")
     print(f"  {icon} [{level:>20}] {check}: {detail[:200]}")
 
@@ -281,6 +286,125 @@ def find_semantic_failed_completed_tasks(limit: int = SEMANTIC_COMPLETED_SCAN_LI
         if "psycopg2 is required" not in str(exc):
             raise
         return _find_semantic_failed_completed_tasks_via_backend_python(limit)
+
+
+def _run_psql_json(sql: str) -> dict[str, Any]:
+    if not DB_DSN:
+        raise RuntimeError("dev_toolkit config missing db_dsn")
+    proc = subprocess.run(
+        ["psql", DB_DSN, "-t", "-A", "-q", "-c", sql],
+        cwd=str(REPO_ROOT),
+        env=readonly_psql_env(os.environ),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise RuntimeError(f"psql failed: {detail[:500]}")
+    output = proc.stdout.strip()
+    return json.loads(output) if output else {}
+
+
+def _asset_marker_predicate(alias: str, column: str) -> str:
+    markers = ("smoke-", "e2e-", "recycle-", "test-", "pytest-")
+    field = f"lower(coalesce({alias}.{column}, ''))"
+    return "(" + " or ".join(f"{field} like '%{marker}%'" for marker in markers) + ")"
+
+
+def audit_knowledge_lifecycle_debt() -> dict[str, Any]:
+    return _run_psql_json(
+        """
+select json_build_object(
+  'active_docs', count(*),
+  'source_available', count(*) filter (where fi.id is not null and fi.deleted=false),
+  'source_recycled', count(*) filter (where fi.id is not null and fi.deleted=true),
+  'source_missing', count(*) filter (where fi.id is null),
+  'source_unavailable', count(*) filter (where fi.id is null or fi.deleted=true),
+  'sample_document_ids', coalesce((
+    select json_agg(id) from (
+      select d2.id
+      from kb_documents d2
+      left join framework_file_items fi2 on fi2.id = d2.file_id
+      where d2.deleted=false and (fi2.id is null or fi2.deleted=true)
+      order by d2.id desc
+      limit 10
+    ) s
+  ), '[]'::json)
+)
+from kb_documents d
+left join framework_file_items fi on fi.id = d.file_id
+where d.deleted=false;
+"""
+    )
+
+
+def audit_content_package_lifecycle_debt() -> dict[str, Any]:
+    return _run_psql_json(
+        """
+select json_build_object(
+  'active_packages', count(*),
+  'source_available', count(*) filter (where p.source_file_id is not null and fi.id is not null and fi.deleted=false),
+  'source_recycled', count(*) filter (where p.source_file_id is not null and fi.id is not null and fi.deleted=true),
+  'source_missing', count(*) filter (where p.source_file_id is not null and fi.id is null),
+  'without_source_file_id', count(*) filter (where p.source_file_id is null),
+  'source_unavailable', count(*) filter (where p.source_file_id is not null and (fi.id is null or fi.deleted=true)),
+  'archived_by_lifecycle', count(*) filter (
+    where p.status='archived'
+      and p.parse_error in ('source_file_deleted', 'source_file_missing', 'source_file_permanently_deleted')
+  ),
+  'missing_current_version', count(*) filter (where p.current_version_id is null),
+  'sample_package_ids', coalesce((
+    select json_agg(id) from (
+      select p2.id
+      from framework_content_packages p2
+      left join framework_file_items fi2 on fi2.id = p2.source_file_id
+      where p2.deleted=false and p2.source_file_id is not null and (fi2.id is null or fi2.deleted=true)
+      order by p2.id desc
+      limit 10
+    ) s
+  ), '[]'::json)
+)
+from framework_content_packages p
+left join framework_file_items fi on fi.id = p.source_file_id
+where p.deleted=false;
+"""
+    )
+
+
+def audit_test_data_pollution() -> dict[str, Any]:
+    file_marker = _asset_marker_predicate("f", "name")
+    storage_marker = _asset_marker_predicate("f", "storage_path")
+    doc_marker = _asset_marker_predicate("d", "filename")
+    return _run_psql_json(
+        f"""
+with marker_files as (
+  select f.id, f.deleted
+  from framework_file_items f
+  where {file_marker} or {storage_marker}
+),
+marker_docs as (
+  select d.id, d.deleted
+  from kb_documents d
+  left join marker_files mf on mf.id = d.file_id
+  where mf.id is not null or {doc_marker}
+),
+marker_packages as (
+  select p.id, p.deleted
+  from framework_content_packages p
+  join marker_files mf on mf.id = p.source_file_id
+)
+select json_build_object(
+  'active_test_files', (select count(*) from marker_files where deleted=false),
+  'recycled_test_files', (select count(*) from marker_files where deleted=true),
+  'knowledge_documents_from_test_files', (select count(*) from marker_docs where deleted=false),
+  'content_packages_from_test_files', (select count(*) from marker_packages where deleted=false),
+  'uploads_test_artifacts', (select count(*) from marker_files),
+  'markers', json_build_array('smoke-', 'e2e-', 'recycle-', 'test-', 'pytest-')
+)::text;
+"""
+    )
 
 
 def classify_semantic_failed_completed(
@@ -544,6 +668,63 @@ async def check_task_queue_audit(
         add_result("Queue: audit", "BLOCKER", str(e))
 
 
+def check_asset_lifecycle_debt() -> None:
+    try:
+        knowledge = audit_knowledge_lifecycle_debt()
+        unavailable = int(knowledge.get("source_unavailable") or 0)
+        level = "DEBT" if unavailable > 0 else "PASS"
+        detail = (
+            f"source_unavailable={unavailable}, source_recycled={knowledge.get('source_recycled', 0)}, "
+            f"source_missing={knowledge.get('source_missing', 0)}"
+        )
+        runtime_context["knowledge_lifecycle_debt"] = knowledge
+        add_result("Knowledge lifecycle debt", level, detail, knowledge)
+    except Exception as exc:
+        add_result("Knowledge lifecycle debt", "BLOCKER", str(exc))
+
+    try:
+        content = audit_content_package_lifecycle_debt()
+        unavailable = int(content.get("source_unavailable") or 0)
+        missing_current = int(content.get("missing_current_version") or 0)
+        if missing_current > 0:
+            level = "BLOCKER"
+        elif unavailable > 0:
+            level = "DEBT"
+        else:
+            level = "PASS"
+        detail = (
+            f"source_unavailable={unavailable}, archived={content.get('archived_by_lifecycle', 0)}, "
+            f"missing_current_version={missing_current}"
+        )
+        runtime_context["content_package_lifecycle_debt"] = content
+        add_result("ContentPackage lifecycle debt", level, detail, content)
+    except Exception as exc:
+        add_result("ContentPackage lifecycle debt", "BLOCKER", str(exc))
+
+    try:
+        pollution = audit_test_data_pollution()
+        total = sum(
+            int(pollution.get(key) or 0)
+            for key in (
+                "active_test_files",
+                "recycled_test_files",
+                "knowledge_documents_from_test_files",
+                "content_packages_from_test_files",
+            )
+        )
+        active = int(pollution.get("active_test_files") or 0)
+        level = "BLOCKER" if active > 0 else ("DEBT" if total > 0 else "PASS")
+        detail = (
+            f"active={active}, recycled={pollution.get('recycled_test_files', 0)}, "
+            f"knowledge={pollution.get('knowledge_documents_from_test_files', 0)}, "
+            f"content={pollution.get('content_packages_from_test_files', 0)}"
+        )
+        runtime_context["test_data_pollution"] = pollution
+        add_result("Test data pollution", level, detail, pollution)
+    except Exception as exc:
+        add_result("Test data pollution", "BLOCKER", str(exc))
+
+
 async def check_sandbox_matrix(sandbox_jobs: int = 1, frontend_jobs: int = 1) -> None:
     """Run module_sandbox_matrix.py and report summary."""
     proc: asyncio.subprocess.Process | None = None
@@ -623,6 +804,7 @@ def build_release_summary(verdict: str, *, skip_ui: bool = False, preflight: boo
     return {
         "verdict": summary_verdict,
         "clean_pass": summary_verdict == "PASS" and not skip_ui and not preflight,
+        "clean_release_ready": summary_verdict == "PASS" and not skip_ui and not preflight and not has_debt,
         "release_safe": summary_verdict in {"PASS", "PASS_WITH_DEBT"},
         "has_debt": has_debt,
         "ui_skipped": skip_ui,
@@ -704,6 +886,8 @@ async def main():
         _token_cache.clear()
     print()
     await check_task_queue_audit(baseline_failed, baseline_semantic_failed_completed)
+    print()
+    check_asset_lifecycle_debt()
     print()
     if args.preflight:
         add_result("Sandbox matrix", "DEBT", "--preflight used; sandbox matrix not run")

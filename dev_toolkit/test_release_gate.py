@@ -183,6 +183,7 @@ def test_skip_ui_marks_release_summary_as_debt() -> None:
         preflight_summary = release_gate.build_release_summary("PASS", preflight=True)
         assert preflight_summary["verdict"] == "PASS_WITH_DEBT"
         assert preflight_summary["clean_pass"] is False
+        assert preflight_summary["clean_release_ready"] is False
         assert preflight_summary["release_safe"] is True
         assert preflight_summary["has_debt"] is True
         assert preflight_summary["gate_mode"] == "preflight"
@@ -193,6 +194,7 @@ def test_skip_ui_marks_release_summary_as_debt() -> None:
 
         assert verdict == "PASS_WITH_DEBT"
         assert summary["clean_pass"] is False
+        assert summary["clean_release_ready"] is False
         assert summary["release_safe"] is True
         assert summary["has_debt"] is True
         assert summary["ui_skipped"] is True
@@ -227,6 +229,11 @@ def test_preflight_does_not_run_smoke_or_sandbox(monkeypatch) -> None:
         async def forbidden_sandbox() -> None:
             raise AssertionError("preflight must not run sandbox")
 
+        def fake_asset_lifecycle_debt() -> None:
+            release_gate.add_result("Knowledge lifecycle debt", "PASS", "ok", {"source_unavailable": 0})
+            release_gate.add_result("ContentPackage lifecycle debt", "PASS", "ok", {"source_unavailable": 0})
+            release_gate.add_result("Test data pollution", "PASS", "ok", {"active_test_files": 0})
+
         monkeypatch.setattr(sys, "argv", ["release_gate.py", "--preflight"])
         monkeypatch.setattr(release_gate, "check_health", fake_check_health)
         monkeypatch.setattr(release_gate, "check_system_status", fake_check_system_status)
@@ -234,6 +241,7 @@ def test_preflight_does_not_run_smoke_or_sandbox(monkeypatch) -> None:
         monkeypatch.setattr(release_gate, "find_semantic_failed_completed_tasks", lambda *_args, **_kwargs: (0, []))
         monkeypatch.setattr(release_gate, "check_smoke", forbidden_smoke)
         monkeypatch.setattr(release_gate, "check_sandbox_matrix", forbidden_sandbox)
+        monkeypatch.setattr(release_gate, "check_asset_lifecycle_debt", fake_asset_lifecycle_debt)
 
         anyio.run(release_gate.main)
 
@@ -246,6 +254,7 @@ def test_preflight_does_not_run_smoke_or_sandbox(monkeypatch) -> None:
         assert checks["Sandbox matrix"]["level"] == "DEBT"
         assert summary["gate_mode"] == "preflight"
         assert summary["clean_pass"] is False
+        assert summary["clean_release_ready"] is False
     finally:
         release_gate.results[:] = original
 
@@ -303,6 +312,61 @@ def test_semantic_failed_completed_delta_is_blocker_only_for_new_growth() -> Non
 
     assert release_gate.classify_semantic_failed_completed(0, 0)[0] == "PASS"
     assert release_gate.classify_semantic_failed_completed(0, None)[0] == "BLOCKER"
+
+
+def test_release_summary_keeps_result_data_and_clean_release_ready() -> None:
+    original = list(release_gate.results)
+    try:
+        release_gate.results[:] = []
+        release_gate.add_result("Knowledge lifecycle debt", "DEBT", "source_unavailable=1", {"source_unavailable": 1})
+        summary = release_gate.build_release_summary("PASS_WITH_DEBT")
+
+        assert summary["clean_pass"] is False
+        assert summary["clean_release_ready"] is False
+        assert summary["release_safe"] is True
+        assert summary["results"][0]["data"] == {"source_unavailable": 1}
+    finally:
+        release_gate.results[:] = original
+
+
+def test_asset_lifecycle_gate_classification(monkeypatch) -> None:
+    original_results = list(release_gate.results)
+    original_context = dict(release_gate.runtime_context)
+    try:
+        release_gate.results[:] = []
+        release_gate.runtime_context.clear()
+        monkeypatch.setattr(
+            release_gate,
+            "audit_knowledge_lifecycle_debt",
+            lambda: {"source_unavailable": 2, "source_recycled": 2, "source_missing": 0},
+        )
+        monkeypatch.setattr(
+            release_gate,
+            "audit_content_package_lifecycle_debt",
+            lambda: {"source_unavailable": 3, "archived_by_lifecycle": 1, "missing_current_version": 0},
+        )
+        monkeypatch.setattr(
+            release_gate,
+            "audit_test_data_pollution",
+            lambda: {
+                "active_test_files": 0,
+                "recycled_test_files": 4,
+                "knowledge_documents_from_test_files": 1,
+                "content_packages_from_test_files": 1,
+            },
+        )
+
+        release_gate.check_asset_lifecycle_debt()
+        checks = {item["check"]: item for item in release_gate.results}
+
+        assert checks["Knowledge lifecycle debt"]["level"] == "DEBT"
+        assert checks["ContentPackage lifecycle debt"]["level"] == "DEBT"
+        assert checks["Test data pollution"]["level"] == "DEBT"
+        assert release_gate.runtime_context["knowledge_lifecycle_debt"]["source_unavailable"] == 2
+    finally:
+        release_gate.results[:] = original_results
+        release_gate.runtime_context.clear()
+        release_gate.runtime_context.update(original_context)
 
 
 if __name__ == "__main__":

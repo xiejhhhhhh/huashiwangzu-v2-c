@@ -44,6 +44,8 @@ HTTP 前缀：`/api/knowledge`
 | `knowledge:get_pending_count` | none |
 | `knowledge:get_evidence_detail` | `entity_id` |
 | `knowledge:get_ingest_status` | `document_id` |
+| `knowledge:audit_lifecycle_debt` | `limit`, `reason` |
+| `knowledge:archive_source_unavailable_documents` | `dry_run`, `limit`, `reason`, `confirm`, `audit_reason` |
 
 ## 数据表
 
@@ -118,6 +120,7 @@ class ContentBlock(BaseModel):
 - 前端只向用户表达：源文件可用/不可用、可搜索、可深度分析、可导出、图谱可用/暂无数据、治理待办。
 - 图谱没有实体或关系时显示“图谱暂无数据”，不作为致命失败；搜索和导出仍按 `search_ready` 判断。
 - `source_unavailable` 必须给处理路径：提示去桌面/回收站恢复或重新上传源文件，并提供确认后的删除无效知识记录入口。
+- 生命周期治理能力必须默认 dry-run：`knowledge:audit_lifecycle_debt` 返回 source recycled/missing 计数、候选文档和建议动作；`knowledge:archive_source_unavailable_documents` 只有在 `dry_run=false` 且 `confirm="ARCHIVE_SOURCE_UNAVAILABLE"` 时才软归档文档（`kb_documents.deleted=true`），不物理删除 chunks/raw/fusions。
 
 ## 边界
 

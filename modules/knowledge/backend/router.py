@@ -42,6 +42,10 @@ from .services.governance_service import (
     reject_candidate,
 )
 from .services.ingest_status_service import get_ingest_status
+from .services.lifecycle_debt_service import (
+    archive_source_unavailable_documents,
+    audit_lifecycle_debt,
+)
 from .services.pipeline_debt_api import (
     cap_apply_pipeline_debt,
     cap_classify_pipeline_debt,
@@ -113,6 +117,12 @@ class PipelineRunReconcileRequest(BaseModel):
     limit: int = Field(default=500, ge=1, le=5000)
     run_ids: list[int] = Field(default_factory=list)
     dry_run: bool = True
+class LifecycleArchiveRequest(BaseModel):
+    dry_run: bool = True
+    limit: int = Field(default=100, ge=1, le=5000)
+    reason: Literal["source_file_deleted", "source_file_missing", "source_unavailable"] = "source_unavailable"
+    confirm: str = ""
+    audit_reason: str = ""
 
 @router.get("/health")
 async def health():
@@ -686,6 +696,33 @@ async def api_orphan_pipeline_run_reconcile_apply(
     )
     return ApiResponse(data=result)
 
+@router.get("/governance/lifecycle-debt/dry-run")
+async def api_lifecycle_debt_dry_run(
+    limit: int = Query(default=500, ge=1, le=5000),
+    reason: Literal["source_file_deleted", "source_file_missing", "source_unavailable"] = Query(default="source_unavailable"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    result = await audit_lifecycle_debt(db, user.id, limit=limit, reason=reason)
+    return ApiResponse(data=result)
+
+@router.post("/governance/lifecycle-debt/archive")
+async def api_archive_lifecycle_debt(
+    payload: LifecycleArchiveRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    result = await archive_source_unavailable_documents(
+        db,
+        user.id,
+        dry_run=payload.dry_run,
+        limit=payload.limit,
+        reason=payload.reason,
+        confirm=payload.confirm,
+        audit_reason=payload.audit_reason,
+    )
+    return ApiResponse(data=result)
+
 # ── Cross-module capabilities ───────────────────────────────
 
 async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> ApiResponse:
@@ -815,6 +852,31 @@ async def _cap_reconcile_orphan_pipeline_runs(params: dict, caller: str) -> dict
             dry_run=dry_run,
         )
 
+async def _cap_audit_lifecycle_debt(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    limit = int(params.get("limit", 500) or 500)
+    reason = str(params.get("reason", "source_unavailable") or "source_unavailable")
+    async with AsyncSessionLocal() as db:
+        return await audit_lifecycle_debt(db, owner_id, limit=limit, reason=reason)
+
+async def _cap_archive_source_unavailable_documents(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    limit = int(params.get("limit", 100) or 100)
+    reason = str(params.get("reason", "source_unavailable") or "source_unavailable")
+    dry_run = bool(params.get("dry_run", True))
+    confirm = str(params.get("confirm", "") or "")
+    audit_reason = str(params.get("reason_text", params.get("audit_reason", "")) or "")
+    async with AsyncSessionLocal() as db:
+        return await archive_source_unavailable_documents(
+            db,
+            owner_id,
+            dry_run=dry_run,
+            limit=limit,
+            reason=reason,
+            confirm=confirm,
+            audit_reason=audit_reason,
+        )
+
 async def _cap_get_evidence_detail(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     entity_id = int(params.get("entity_id", 0) or 0)
@@ -911,6 +973,29 @@ register_capability(
         "limit": {"type": "integer", "description": "Maximum orphan runs to inspect, default 500"},
         "run_ids": {"type": "array", "description": "Optional run IDs to restrict apply/dry-run"},
         "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "audit_lifecycle_debt", _cap_audit_lifecycle_debt,
+    description="Audit active knowledge documents whose source files are recycled or missing",
+    brief="审计知识库源文件债",
+    parameters={
+        "limit": {"type": "integer", "description": "Maximum candidate documents to return, default 500"},
+        "reason": {"type": "string", "description": "source_file_deleted, source_file_missing, or source_unavailable"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "archive_source_unavailable_documents", _cap_archive_source_unavailable_documents,
+    description="Dry-run or archive active knowledge documents whose source files are unavailable",
+    brief="归档源不可用文档",
+    parameters={
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+        "limit": {"type": "integer", "description": "Maximum documents to archive, default 100"},
+        "reason": {"type": "string", "description": "source_file_deleted, source_file_missing, or source_unavailable"},
+        "confirm": {"type": "string", "description": "ARCHIVE_SOURCE_UNAVAILABLE required for apply"},
+        "audit_reason": {"type": "string", "description": "Operator reason recorded in result"},
     },
     min_role="admin",
 )

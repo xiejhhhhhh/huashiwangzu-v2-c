@@ -12,6 +12,7 @@ def test_release_gate_response_does_not_map_debt_to_clean_success() -> None:
 
     assert result["success"] is False
     assert result["clean_pass"] is False
+    assert result["clean_release_ready"] is False
     assert result["release_safe"] is True
     assert result["has_debt"] is True
     assert result["ui_skipped"] is True
@@ -29,6 +30,7 @@ def test_release_gate_response_forces_skip_ui_pass_to_debt() -> None:
 
     assert result["success"] is False
     assert result["clean_pass"] is False
+    assert result["clean_release_ready"] is False
     assert result["release_safe"] is True
     assert result["has_debt"] is True
     assert result["ui_skipped"] is True
@@ -46,6 +48,7 @@ def test_release_gate_response_fails_closed_without_machine_json() -> None:
 
     assert result["success"] is False
     assert result["clean_pass"] is False
+    assert result["clean_release_ready"] is False
     assert result["release_safe"] is False
     assert result["verdict"] == "INVALID_GATE_OUTPUT"
     assert result["invalid_output"] is True

@@ -17,6 +17,12 @@ from app.schemas.content_package import (
     ReplaceTextRequest,
 )
 from app.services.content.export_service import ContentExportService
+from app.services.content.package_lifecycle_service import (
+    audit_content_package_lifecycle_debt,
+    handle_file_deleted,
+    handle_file_permanently_deleted,
+    handle_file_restored,
+)
 from app.services.content.package_service import ContentPackageService, is_package_consumable_status
 from app.services.content.pipeline_service import ContentPipelineService
 from app.services.content.resource_service import ResourceService
@@ -856,6 +862,37 @@ async def _on_file_uploaded(payload: dict, caller: str, caller_role: str) -> dic
         return {"success": False, "error": str(e)}
 
 
+async def _on_file_deleted(payload: dict, caller: str, caller_role: str) -> dict:
+    file_id = int(payload.get("file_id", 0) or 0)
+    if file_id <= 0:
+        return {"success": False, "error": "file_id required"}
+    async with AsyncSessionLocal() as db:
+        return await handle_file_deleted(db, file_id)
+
+
+async def _on_file_restored(payload: dict, caller: str, caller_role: str) -> dict:
+    file_id = int(payload.get("file_id", 0) or 0)
+    if file_id <= 0:
+        return {"success": False, "error": "file_id required"}
+    async with AsyncSessionLocal() as db:
+        return await handle_file_restored(db, file_id)
+
+
+async def _on_file_permanently_deleted(payload: dict, caller: str, caller_role: str) -> dict:
+    file_id = int(payload.get("file_id", 0) or 0)
+    if file_id <= 0:
+        return {"success": False, "error": "file_id required"}
+    async with AsyncSessionLocal() as db:
+        return await handle_file_permanently_deleted(db, file_id)
+
+
+async def _cap_audit_lifecycle_debt(params: dict, caller: str) -> dict:
+    limit = int(params.get("limit", 20) or 20)
+    limit = max(1, min(limit, 500))
+    async with AsyncSessionLocal() as db:
+        return await audit_content_package_lifecycle_debt(db, limit=limit)
+
+
 async def _cap_store_analysis_resource(params: dict, caller: str) -> dict:
     """Store VLM/analysis result as a Resource (viewer-safe, requires file_id).
 
@@ -918,6 +955,10 @@ async def _cap_store_analysis_resource(params: dict, caller: str) -> dict:
 from app.services.module_events import register_module_event_handler
 
 register_module_event_handler("file.uploaded", _on_file_uploaded, "content")
+register_module_event_handler("file.deleted", _on_file_deleted, "content")
+register_module_event_handler("file.restored", _on_file_restored, "content")
+register_module_event_handler("file.permanent_deleted", _on_file_permanently_deleted, "content")
+register_module_event_handler("file.permanently_deleted", _on_file_permanently_deleted, "content")
 
 # ── Register capabilities ────────────────────────────────────────
 
@@ -950,6 +991,7 @@ def _register_viewer_caps():
         ("list_versions", _cap_list_versions, "List all versions of a content package", {"package_id": "int"}),
         ("list_resources", _cap_list_resources, "List resources referenced by a package", {"package_id": "int"}),
         ("get_resource", _cap_get_resource, "Get resource metadata by ID", {"resource_id": "int"}),
+        ("audit_lifecycle_debt", _cap_audit_lifecycle_debt, "Audit ContentPackage source-file lifecycle debt", {"limit": "int (optional)"}),
         ("validate_ir", _cap_validate_ir, "Validate Content IR structure and semantics", {"content_ir": "object"}),
         ("normalize_ir", _cap_normalize_ir, "Normalize Content IR (fill defaults, ids)", {"content_ir": "object"}),
         ("compile", _cap_compile, "Compile ContentPackage to temporary physical file for download", {"package_id": "int", "target_format": "str (optional)"}),

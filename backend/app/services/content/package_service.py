@@ -24,6 +24,7 @@ from app.schemas.content_package import (
     BlockUpdateRequest,
     ReplaceTextRequest,
 )
+from app.services.content.package_lifecycle_service import package_lifecycle_fields
 from app.services.content.resource_service import ResourceService
 from app.services.file_service import check_file_access, get_file_record
 from app.services.module_registry import call_capability
@@ -695,6 +696,7 @@ class ContentPackageService:
             "status": pkg.status,
             "parse_error": pkg.parse_error,
             "source_hash": pkg.source_hash,
+            **package_lifecycle_fields(pkg),
             "created_at": pkg.created_at.isoformat() if pkg.created_at else None,
             "updated_at": pkg.updated_at.isoformat() if pkg.updated_at else None,
         }

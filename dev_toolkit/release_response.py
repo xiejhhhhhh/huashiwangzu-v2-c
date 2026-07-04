@@ -33,6 +33,7 @@ def build_release_gate_response(
         return {
             "success": False,
             "clean_pass": False,
+            "clean_release_ready": False,
             "release_safe": False,
             "has_debt": False,
             "verdict": "INVALID_GATE_OUTPUT",
@@ -58,12 +59,14 @@ def build_release_gate_response(
     clean_pass = returncode == 0 and verdict == "PASS" and not ui_skipped
     release_safe = returncode == 0 and verdict in {"PASS", "PASS_WITH_DEBT"}
     has_debt = summary_has_debt or verdict == "PASS_WITH_DEBT" or ui_skipped
+    clean_release_ready = clean_pass and not has_debt and bool(summary.get("clean_release_ready", clean_pass))
     gate_mode = summary.get("gate_mode")
     if not isinstance(gate_mode, str) or not gate_mode:
         gate_mode = "backend_preflight" if ui_skipped else "full_release"
     return {
         "success": clean_pass,
         "clean_pass": clean_pass,
+        "clean_release_ready": clean_release_ready,
         "release_safe": release_safe,
         "has_debt": has_debt,
         "verdict": verdict,

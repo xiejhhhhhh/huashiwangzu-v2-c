@@ -25,6 +25,9 @@ try:
     from dev_toolkit.agent_board_tools import handle_tool as agent_board_handle_tool
     from dev_toolkit.agent_board_tools import handles_tool as agent_board_handles_tool
     from dev_toolkit.agent_board_tools import tool_definitions as agent_board_tool_definitions
+    from dev_toolkit.asset_lifecycle_tools import handle_tool as asset_lifecycle_handle_tool
+    from dev_toolkit.asset_lifecycle_tools import handles_tool as asset_lifecycle_handles_tool
+    from dev_toolkit.asset_lifecycle_tools import tool_definitions as asset_lifecycle_tool_definitions
     from dev_toolkit.code_tools import handle_tool as code_handle_tool
     from dev_toolkit.code_tools import handles_tool as code_handles_tool
     from dev_toolkit.code_tools import lint as code_lint
@@ -86,6 +89,9 @@ except ModuleNotFoundError:
     from agent_board_tools import handle_tool as agent_board_handle_tool
     from agent_board_tools import handles_tool as agent_board_handles_tool
     from agent_board_tools import tool_definitions as agent_board_tool_definitions
+    from asset_lifecycle_tools import handle_tool as asset_lifecycle_handle_tool
+    from asset_lifecycle_tools import handles_tool as asset_lifecycle_handles_tool
+    from asset_lifecycle_tools import tool_definitions as asset_lifecycle_tool_definitions
     from code_tools import handle_tool as code_handle_tool
     from code_tools import handles_tool as code_handles_tool
     from code_tools import lint as code_lint
@@ -1756,6 +1762,7 @@ async def list_tools() -> list[Tool]:
         *tool_usage_tool_definitions(),
         *tool_job_tool_definitions(),
         *agent_board_tool_definitions(),
+        *asset_lifecycle_tool_definitions(),
         *opencode_tool_definitions(),
         *opencode_pty_tool_definitions(),
     ]
@@ -1799,6 +1806,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await tool_job_handle_tool(REPO_ROOT, name, arguments)
         elif agent_board_handles_tool(name):
             result = await agent_board_handle_tool(REPO_ROOT, name, arguments)
+        elif asset_lifecycle_handles_tool(name):
+            result = await asset_lifecycle_handle_tool(REPO_ROOT, name, arguments)
         elif opencode_handles_tool(name):
             result = await opencode_handle_tool(REPO_ROOT, name, arguments)
         elif opencode_pty_handles_tool(name):

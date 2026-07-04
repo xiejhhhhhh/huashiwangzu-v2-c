@@ -1,10 +1,12 @@
 import logging
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import require_permission
+from app.models.recycle import RecycleItem
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.schemas.recycle import RecycleItemResponse, RestoreRequest
@@ -60,7 +62,14 @@ async def delete_permanently(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
+    file_id: int | None = None
+    if body.item_type == "file":
+        recycle = await db.get(RecycleItem, body.id)
+        if recycle and recycle.owner_id == user.id and recycle.item_type == "file":
+            file_id = int(recycle.origin_id)
     await recycle_service.delete_permanently(db, body.item_type, body.id, user.id)
+    if file_id:
+        await _emit_file_event("file.permanent_deleted", file_id, user)
     return ApiResponse(data={"message": "Deleted"})
 
 
@@ -69,5 +78,14 @@ async def empty_trash(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
+    rows = await db.execute(
+        select(RecycleItem.origin_id).where(
+            RecycleItem.owner_id == user.id,
+            RecycleItem.item_type == "file",
+        )
+    )
+    file_ids = [int(file_id) for file_id in rows.scalars().all()]
     await recycle_service.empty_trash(db, user.id)
+    for file_id in file_ids:
+        await _emit_file_event("file.permanent_deleted", file_id, user)
     return ApiResponse(data={"message": "Trash emptied"})
