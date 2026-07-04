@@ -108,7 +108,16 @@ class ContentBlock(BaseModel):
 ### 导出
 
 - `POST /api/knowledge/documents/export` — 导出 Markdown/HTML/JSON
-- 导出依赖 DocumentIr，新增格式自动获得导出能力
+- 导出格式后端强校验，仅允许 `markdown`、`html`、`json`；非法格式返回统一错误，不静默降级。
+- 导出内容采用单一 canonical source：优先页级融合 `kb_page_fusions`，没有融合内容时回退 `kb_chunks`，避免 fusion 与 chunk 重复输出。
+- 导出结果包含 `document_id`、`title`、`format`、`source_status`、`search_ready`、`deep_ready`、`block_count/evidence_count` 等 metadata。
+- 导出依赖 DocumentIr，新增格式自动获得导出能力。
+
+### 用户状态与源文件不可用
+
+- 前端只向用户表达：源文件可用/不可用、可搜索、可深度分析、可导出、图谱可用/暂无数据、治理待办。
+- 图谱没有实体或关系时显示“图谱暂无数据”，不作为致命失败；搜索和导出仍按 `search_ready` 判断。
+- `source_unavailable` 必须给处理路径：提示去桌面/回收站恢复或重新上传源文件，并提供确认后的删除无效知识记录入口。
 
 ## 边界
 

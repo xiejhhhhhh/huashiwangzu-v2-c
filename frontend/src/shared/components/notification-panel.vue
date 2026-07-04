@@ -7,27 +7,40 @@
       </el-tag>
     </div>
 
-    <div v-if="hasActionItems" class="feedback-section">
+    <div v-if="actionItems.length" class="feedback-section">
       <div class="feedback-section-title">需要处理</div>
-      <div v-if="agentNeedsConfirmation > 0" class="feedback-action-row urgent">
-        <div>
-          <div class="feedback-action-title">有 Agent 工作需要确认</div>
-          <div class="feedback-action-copy">继续执行前需要你确认下一步。</div>
+      <div
+        v-for="actionItem in actionItems"
+        :key="actionItem.id"
+        class="feedback-action-row"
+        :class="actionItemClass(actionItem)"
+      >
+        <div class="feedback-action-body">
+          <div class="feedback-action-title-row">
+            <span class="feedback-action-title">{{ actionItem.title }}</span>
+            <el-tag :type="actionItemTagType(actionItem)" size="small">{{ actionItem.visible_status }}</el-tag>
+          </div>
+          <div class="feedback-action-copy">{{ actionItem.description }}</div>
+          <div v-if="actionItem.secondary_actions.length" class="feedback-secondary-actions">
+            <button
+              v-for="secondary in actionItem.secondary_actions"
+              :key="secondary.id"
+              class="feedback-secondary-link"
+              type="button"
+              @click="emit('action-secondary', actionItem, secondary.id)"
+            >
+              {{ secondary.label }}
+            </button>
+          </div>
         </div>
-        <button class="feedback-link" type="button" @click="emit('open-agent')">去 Agent 查看</button>
-      </div>
-      <div v-if="agentFailedOrPartial > 0" class="feedback-action-row warning">
-        <div>
-          <div class="feedback-action-title">有 Agent 工作未完全完成</div>
-          <div class="feedback-action-copy">失败或部分完成的工作需要查看原因和产物状态。</div>
-        </div>
-        <button class="feedback-link" type="button" @click="emit('open-agent')">去 Agent 查看</button>
-      </div>
-      <div v-if="taskProblemTotal > 0" class="feedback-action-row warning">
-        <div>
-          <div class="feedback-action-title">后台任务有失败或债务</div>
-          <div class="feedback-action-copy">失败 {{ taskDebtSummary?.summary.failed ?? 0 }}，近期失败 {{ taskDebtSummary?.classification.recent_failed_count ?? 0 }}，历史债务 {{ taskDebtSummary?.historical_debt_total ?? 0 }}。</div>
-        </div>
+        <button
+          v-if="actionItem.action_label"
+          class="feedback-link"
+          type="button"
+          @click="emit('action-primary', actionItem)"
+        >
+          {{ actionItem.action_label }}
+        </button>
       </div>
     </div>
 
@@ -93,20 +106,27 @@
 
 <script setup lang="ts">
 import type { NotificationItem } from '@/shared/api/types'
-import type { AgentWorkflowSummary, TaskDebtSummary } from '@/shared/composables/use-notifications'
+import type {
+  ActionItem,
+  AgentWorkflowSummary,
+  TaskDebtSummary,
+} from '@/shared/composables/use-notifications'
 import { computed } from 'vue'
 
 const props = defineProps<{
  show: boolean
  items: NotificationItem[]
- taskDebtSummary?: TaskDebtSummary | null
- agentWorkflowSummary?: AgentWorkflowSummary | null
- feedbackSignalCount?: number
+  taskDebtSummary?: TaskDebtSummary | null
+  agentWorkflowSummary?: AgentWorkflowSummary | null
+  actionItems?: ActionItem[]
+  feedbackSignalCount?: number
 }>()
 
 const emit = defineEmits<{
   'mark-read': [id: number]
   'mark-all-read': []
+  'action-primary': [item: ActionItem]
+  'action-secondary': [item: ActionItem, actionId: string]
   'open-agent': []
 }>()
 
@@ -150,14 +170,13 @@ const taskProblemTotal = computed(() => {
     + summary.classification.orphan_running_debt_count
     + summary.classification.completed_semantic_failure_count
 })
-const agentNeedsConfirmation = computed(() => props.agentWorkflowSummary?.needs_confirmation_count ?? 0)
-const agentFailedOrPartial = computed(() => {
-  const summary = props.agentWorkflowSummary
-  if (!summary) return 0
-  return summary.failed_count + summary.partial_count
-})
-const hasActionItems = computed(() => agentNeedsConfirmation.value + agentFailedOrPartial.value + taskProblemTotal.value > 0)
-const isEmpty = computed(() => props.items.length === 0 && taskSignalTotal.value === 0 && (props.agentWorkflowSummary?.total ?? 0) === 0)
+const actionItems = computed(() => props.actionItems ?? [])
+const isEmpty = computed(() => (
+  props.items.length === 0
+  && taskSignalTotal.value === 0
+  && (props.agentWorkflowSummary?.total ?? 0) === 0
+  && actionItems.value.length === 0
+))
 const taskStatusText = computed(() => {
   if (taskProblemTotal.value > 0) return '部分完成'
   if ((props.taskDebtSummary?.summary.running ?? 0) > 0) return '处理中'
@@ -171,8 +190,23 @@ function userStatusLabel(status: string) {
   if (['running', 'processing', 'in_progress'].includes(value)) return '处理中'
   if (['needs_confirmation', 'manual_required', 'waiting_approval', 'paused'].includes(value)) return '需要确认'
   if (['completed', 'done', 'pass', 'clean_completed'].includes(value)) return '已完成'
+  if (['cancelled', 'canceled'].includes(value)) return '已取消'
   if (['failed', 'fail', 'blocked', 'rejected'].includes(value)) return '失败'
   return '部分完成'
+}
+
+function actionItemClass(item: ActionItem): string {
+  if (item.severity === 'error') return 'urgent'
+  if (item.severity === 'warning') return 'warning'
+  if (item.severity === 'success') return 'success'
+  return 'info'
+}
+
+function actionItemTagType(item: ActionItem) {
+  if (item.severity === 'error') return 'danger'
+  if (item.severity === 'warning') return 'warning'
+  if (item.severity === 'success') return 'success'
+  return 'info'
 }
 
 function handleMarkRead(id: number) {
@@ -231,11 +265,26 @@ function handleMarkAllRead() {
 }
 
 .feedback-action-row.urgent .feedback-action-title {
-  color: #9a6700;
+  color: #b42318;
 }
 
 .feedback-action-row.warning .feedback-action-title {
   color: #b45309;
+}
+
+.feedback-action-row.success .feedback-action-title {
+  color: #1f7a4d;
+}
+
+.feedback-action-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.feedback-action-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .feedback-action-title {
@@ -248,6 +297,25 @@ function handleMarkAllRead() {
   font-size: 12px;
   line-height: 1.45;
   color: var(--text-secondary);
+}
+
+.feedback-secondary-actions {
+  margin-top: 5px;
+  display: flex;
+  gap: 10px;
+}
+
+.feedback-secondary-link {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.feedback-secondary-link:hover {
+  color: #1f86a9;
 }
 
 .feedback-link {

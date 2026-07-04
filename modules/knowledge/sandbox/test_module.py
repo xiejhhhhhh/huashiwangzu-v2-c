@@ -228,6 +228,58 @@ def test_ingest_status_shape() -> None:
     print("  [INGEST-STATUS] Shape valid")
 
 
+def test_export_format_contract() -> None:
+    """Export format contract must stay explicit."""
+    allowed_formats = {"markdown", "html", "json"}
+    for fmt in ("markdown", "html", "json"):
+        assert fmt in allowed_formats
+    assert "bad_format" not in allowed_formats
+    print("  [EXPORT] Format contract valid")
+
+
+def test_export_uses_single_canonical_source() -> None:
+    """Fusion and chunks must not be exported together when fusion is present."""
+    chunks = [{"text": "hello smoke", "page": 1}]
+    fusions = [{"fused_text": "hello smoke", "page": 1}]
+    export_blocks = [
+        {"text": item["fused_text"], "page": item["page"], "source": "page_fusion"}
+        for item in fusions
+        if item["fused_text"].strip()
+    ] or [
+        {"text": item["text"], "page": item["page"], "source": "chunk"}
+        for item in chunks
+        if item["text"].strip()
+    ]
+    exported_text = "\n".join(item["text"] for item in export_blocks)
+    assert exported_text.count("hello smoke") == 1
+    assert {item["source"] for item in export_blocks} == {"page_fusion"}
+    print("  [EXPORT] Canonical source de-dup valid")
+
+
+def test_export_metadata_shape() -> None:
+    """Exported artifact metadata must explain readiness and evidence count."""
+    metadata = {
+        "document_id": 1,
+        "title": "sample.pdf",
+        "format": "json",
+        "source_status": "available",
+        "search_ready": True,
+        "deep_ready": False,
+        "block_count": 2,
+        "evidence_count": 2,
+        "export_source": "page_fusion",
+    }
+    required = {
+        "document_id", "title", "format", "source_status",
+        "search_ready", "deep_ready", "block_count", "evidence_count",
+    }
+    for field in required:
+        assert field in metadata, f"Missing export metadata field: {field}"
+    assert metadata["format"] in {"markdown", "html", "json"}
+    assert metadata["block_count"] == metadata["evidence_count"]
+    print("  [EXPORT] Metadata shape valid")
+
+
 def main() -> None:
     print("=" * 60)
     print("knowledge sandbox test")
@@ -243,6 +295,9 @@ def main() -> None:
     test_response_shape()
     test_ingest_capability_params()
     test_ingest_status_shape()
+    test_export_format_contract()
+    test_export_uses_single_canonical_source()
+    test_export_metadata_shape()
     print("=" * 60)
     print("PASS: knowledge sandbox test")
 

@@ -1014,7 +1014,7 @@ async def api_chunk_document(
 
 class ExportRequest(BaseModel):
     document_id: int
-    format: str = "markdown"  # markdown / html / json
+    format: Literal["markdown", "html", "json"] = "markdown"
 
 
 @router.post("/documents/export")
@@ -1064,9 +1064,11 @@ async def _cap_export(params: dict, caller: str) -> dict:
     from .services.export_service import export_document
 
     document_id = int(params.get("document_id", 0))
-    fmt = params.get("format", "markdown")
+    fmt = str(params.get("format", "markdown") or "markdown").lower().strip()
     if document_id <= 0:
-        return {"error": "document_id is required"}
+        return {"success": False, "error": "document_id is required"}
+    if fmt not in {"markdown", "html", "json"}:
+        return {"success": False, "error": "Unsupported export format. Use markdown, html, or json."}
 
     owner_id = None
     if caller.startswith("user:"):
@@ -1076,6 +1078,8 @@ async def _cap_export(params: dict, caller: str) -> dict:
         if owner_id is not None:
             await get_live_document_or_raise(db, document_id, owner_id)
         result = await export_document(db, document_id, fmt=fmt, owner_id=owner_id)
+        if not result.get("success"):
+            return {"success": False, "error": str(result.get("error") or "Export failed")}
         return result
 register_capability(
     "knowledge", "export", _cap_export,

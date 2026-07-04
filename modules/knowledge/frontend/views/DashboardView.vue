@@ -32,6 +32,10 @@
               <td v-if="isFailed(d)">
                 <button class="retrigger-btn" :disabled="isTriggered(d.id)" @click="handleRetrigger(d.id)">{{ triggeredSet.has(d.id) ? '已触发' : '🔄 重新触发' }}</button>
               </td>
+              <td v-else-if="d.source_available === false" class="source-actions">
+                <button class="retrigger-btn" @click="showReuploadHint(d)">重新上传</button>
+                <button class="retrigger-btn danger" @click="archiveUnavailable(d)">删除无效记录</button>
+              </td>
               <td v-else></td>
             </tr>
           </tbody>
@@ -47,6 +51,10 @@
               <span class="stuck-name">{{ d.filename }}</span>
               <span class="tag" :class="d.source_available === false ? 'source' : 'err'">{{ d.source_available === false ? '源文件不可用' : '失败' }}</span>
               <button v-if="d.source_available !== false" class="retrigger-btn" :disabled="isTriggered(d.id)" @click="handleRetrigger(d.id)">{{ triggeredSet.has(d.id) ? '已触发' : '🔄 重新触发' }}</button>
+              <template v-else>
+                <button class="retrigger-btn" @click="showReuploadHint(d)">重新上传</button>
+                <button class="retrigger-btn danger" @click="archiveUnavailable(d)">删除无效记录</button>
+              </template>
             </div>
           </div>
         <div v-else class="db-empty">暂无卡住文件</div>
@@ -102,9 +110,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
-  getDashboardStats, getGovernanceCandidates, getPendingCount, startPipeline,
+  apiDelete, getDashboardStats, getGovernanceCandidates, getPendingCount, startPipeline,
   type DashboardStats, type DocProgressEntry, type GovernanceCandidate,
 } from '../api'
+
+const props = defineProps<{
+  initialShowGovernance?: boolean
+}>()
 
 const s = ref<DashboardStats>({
   total_documents: 0, completed_documents: 0, running_documents: 0, failed_documents: 0,
@@ -120,7 +132,7 @@ const triggeringSet = ref(new Set<number>())
 const pendingCount = ref(0)
 const governanceCandidates = ref<GovernanceCandidate[]>([])
 const governanceCandidatesUnavailable = ref(false)
-const showGovernance = ref(false)
+const showGovernance = ref(props.initialShowGovernance === true)
 
 const hasCategories = computed(() => Object.keys(s.value.entity_category_distribution).length > 0)
 
@@ -133,7 +145,7 @@ function statusClass(st: string): string {
 }
 function statusText(st: string): string {
   if (st === 'done') return '✓ 完成'
-  if (st === 'running') return '进行中'
+  if (st === 'running' || st === 'collecting' || st === 'parsing' || st === 'fusing') return '进行中'
   if (st === 'failed' || st === 'error') return '✗ 失败'
   if (st === 'source_unavailable') return '源文件不可用'
   return '待处理'
@@ -198,6 +210,21 @@ async function handleRetrigger(docId: number) {
   }
 }
 
+function showReuploadHint(doc: DocProgressEntry) {
+  window.alert(`请在桌面重新上传「${doc.filename}」，系统会自动登记新的知识库资料。若原文件在回收站，请先到桌面文件管理器恢复。`)
+}
+
+async function archiveUnavailable(doc: DocProgressEntry) {
+  if (!window.confirm(`确认删除「${doc.filename}」这条无效知识库记录？这不会删除任何源文件。`)) return
+  try {
+    await apiDelete(`/knowledge/documents/${doc.id}`)
+    await refreshStats()
+  } catch (e) {
+    console.error('[kb-dashboard] archive unavailable failed:', e)
+    window.alert('删除无效记录失败: ' + String((e as Error).message || e))
+  }
+}
+
 function isTriggered(docId: number): boolean {
   return triggeredSet.value.has(docId) || triggeringSet.value.has(docId)
 }
@@ -251,12 +278,15 @@ onMounted(async () => {
 .stuck-item:last-child, .dup-item:last-child, .recent-item:last-child { border-bottom: none; }
 .stuck-name, .dup-name, .recent-name { color: #2a3a48; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .stuck-item .tag { flex: none; }
+.source-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .dup-cnt { font-size: 12px; color: #8aa0b5; flex: none; }
 .candidate-doc { font-size: 12px; color: #8aa0b5; flex: none; }
 .recent-date { font-size: 12px; color: #8aa0b5; flex: none; }
 .retrigger-btn { height: 28px; padding: 0 10px; border: 1px solid #2395bc; border-radius: 6px; background: #fff; color: #2395bc; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex: none; transition: all .2s; }
 .retrigger-btn:hover { background: #eaf6fb; }
 .retrigger-btn:disabled { border-color: #c2cdda; color: #aab8c6; background: #f5f7fa; cursor: not-allowed; }
+.retrigger-btn.danger { border-color: #f5c6c2; color: #b42318; }
+.retrigger-btn.danger:hover { background: #fff1f0; }
 .db-empty { color: #9aabbd; font-size: 13px; padding: 20px; text-align: center; border: 1px dashed #e3e9f2; border-radius: 10px; }
 .cat-list { border: 1px solid #e3e9f2; border-radius: 10px; background: #fff; padding: 8px 14px; }
 .cat-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }

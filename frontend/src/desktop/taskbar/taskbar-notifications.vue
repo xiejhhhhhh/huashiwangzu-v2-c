@@ -17,9 +17,12 @@
         :items="notificationList"
         :task-debt-summary="taskDebtSummary"
         :agent-workflow-summary="agentWorkflowSummary"
+        :action-items="actionItems"
         :feedback-signal-count="feedbackSignalCount"
         @mark-read="markRead"
         @mark-all-read="markAllRead"
+        @action-primary="handleActionPrimary"
+        @action-secondary="handleActionSecondary"
         @open-agent="emit('open-app', 'agent')"
       />
     </div>
@@ -29,11 +32,12 @@
 <script setup lang="ts">
 import { Bell } from '@element-plus/icons-vue'
 import { useNotifications } from '@/shared/composables/use-notifications'
+import type { ActionItem } from '@/shared/composables/use-notifications'
 import NotifyPanel from '@/shared/components/notification-panel.vue'
 import { computed } from 'vue'
 
 const emit = defineEmits<{
-  'open-app': [id: string]
+  'open-app': [id: string, payload?: Record<string, unknown>]
 }>()
 
 const {
@@ -41,11 +45,13 @@ const {
   notificationList,
   taskDebtSummary,
   agentWorkflowSummary,
+  actionItems,
   feedbackSignalCount,
   showNotificationPanel,
   toggleNotificationPanel,
   markRead,
   markAllRead,
+  dismissActionItem,
 } = useNotifications()
 
 const buttonTitle = computed(() => {
@@ -70,6 +76,24 @@ const buttonStatusClass = computed(() => {
   if ((workflow && workflow.active_count > 0) || (tasks && tasks.summary.running + tasks.summary.pending > 0)) return 'status-processing'
   return ''
 })
+
+function handleActionPrimary(item: ActionItem) {
+  if (item.source_type === 'notification') {
+    void markRead(Number(item.source_id))
+    return
+  }
+  if (item.action_target) {
+    emit('open-app', item.action_target.app_key, item.action_target.payload)
+  }
+}
+
+function handleActionSecondary(item: ActionItem, actionId: string) {
+  if (item.source_type === 'notification' && actionId === 'archive') {
+    void markRead(Number(item.source_id))
+    return
+  }
+  dismissActionItem(item.id)
+}
 </script>
 
 <style scoped>

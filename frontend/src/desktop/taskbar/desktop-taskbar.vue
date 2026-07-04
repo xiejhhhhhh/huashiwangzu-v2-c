@@ -20,7 +20,7 @@
       <div v-if="!items.length" class="taskbar-empty">没有打开的窗口</div>
     </div>
     <div class="taskbar-right">
-      <TaskbarNotifications @open-app="(id: string) => $emit('openTrayApp', id)" />
+      <TaskbarNotifications @open-app="(id: string, payload?: Record<string, unknown>) => $emit('openTrayApp', id, payload)" />
       <TrayLauncher v-if="trayApps?.length" :app-list="trayApps" @openApp="(id: string) => $emit('openTrayApp', id)" />
       <div class="taskbar-clock">{{ clockText }}</div>
     </div>
@@ -43,7 +43,7 @@ const props = defineProps<{
 defineEmits<{
   (e: 'switchWindow', id: string): void
   (e: 'openLauncher'): void
-  (e: 'openTrayApp', id: string): void
+  (e: 'openTrayApp', id: string, payload?: Record<string, unknown>): void
 }>()
 
 const clockText = ref('')

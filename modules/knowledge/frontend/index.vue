@@ -43,7 +43,7 @@
 
       <!-- 看板 -->
       <template v-else-if="showDashboard && !active">
-        <DashboardView />
+        <DashboardView :initial-show-governance="showGovernanceFromPayload" />
       </template>
 
       <!-- 无选中：欢迎 -->
@@ -72,7 +72,7 @@
               <option value="html">HTML</option>
               <option value="json">JSON</option>
             </select>
-            <button class="ghost-btn" :disabled="!canExport || exporting" @click="handleExport">{{ exporting ? '导出中…' : '导出' }}</button>
+            <button class="ghost-btn" :disabled="exporting" @click="handleExport">{{ exporting ? '导出中…' : '导出' }}</button>
             <button class="primary-btn" :disabled="analyzing || sourceUnavailable" @click="startAnalyze">{{ analyzing ? '分析中…' : (progress?.overall_status === 'done' ? '重新分析' : '开始分析') }}</button>
             <button class="ghost-btn danger" @click="removeDocument">删除</button>
           </div>
@@ -111,9 +111,15 @@
             <span>当前阶段：{{ stageLabel(ingestStatus.stage) }}</span>
             <span>可检索：{{ ingestStatus.search_ready ? '是' : '否' }}</span>
             <span>深度分析：{{ ingestStatus.deep_ready ? '已完成' : '未完成' }}</span>
+            <span>可导出：{{ canExport ? '是' : '否' }}</span>
+            <span>{{ graphSemanticText }}</span>
           </div>
           <div v-if="sourceUnavailable" class="status-help">
             原始文件可能已删除、在回收站、无权限或路径不可用。知识库保留了历史记录，但不能继续深度分析、检索或导出；请重新上传、重新绑定源文件，或删除这条无效记录。
+            <div class="status-actions">
+              <button class="ghost-btn" @click="guideSourceRestore">重新上传/恢复源文件</button>
+              <button class="ghost-btn danger" @click="removeDocument">删除无效记录</button>
+            </div>
           </div>
           <div v-else-if="ingestStatus.last_error" class="status-help">
             {{ readableFailure(ingestStatus.last_error) }}
@@ -191,7 +197,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, nextTick } from 'vue'
+import { computed, onMounted, onUnmounted, ref, nextTick, watch } from 'vue'
 import { initRuntime, platform } from '../runtime'
 import WorkspaceGraph from './views/WorkspaceGraph.vue'
 import DashboardView from './views/DashboardView.vue'
@@ -206,6 +212,12 @@ import {
 } from './api'
 import type { GraphNode } from './graph3d/types'
 
+const props = defineProps<{
+  documentId?: number
+  view?: string
+  showGovernance?: boolean
+}>()
+
 const documents = ref<KnowledgeDocument[]>([])
 const active = ref<KnowledgeDocument | null>(null)
 const showWorkspace = ref(false)
@@ -215,6 +227,7 @@ const isAdminOrEditor = computed(() => userRole.value === 'admin' || userRole.va
 const activeId = computed(() => active.value?.id ?? null)
 const keyword = ref('')
 const tab = ref<'overview' | 'reader' | 'relation' | 'search'>('overview')
+const showGovernanceFromPayload = computed(() => props.showGovernance === true)
 
 // ── 文件树 ──
 const fileTree = ref<FileTreeNode[]>([])
@@ -380,6 +393,15 @@ const ringStyle = computed(() => { const pct = progress.value?.overall_percent ?
 const overallPercent = computed(() => Math.max(0, Math.min(100, progress.value?.overall_percent ?? 0)))
 const sourceUnavailable = computed(() => ingestStatus.value?.source_available === false || progress.value?.overall_status === 'source_unavailable')
 const canExport = computed(() => !!ingestStatus.value?.source_available && !!ingestStatus.value?.search_ready)
+const graphSemanticText = computed(() => {
+  const graph = ingestStatus.value?.stage_summary.graph
+  if (!graph) return '图谱暂无数据'
+  if (graph.ready) return '图谱可用'
+  if ((graph.count ?? 0) === 0 && (graph.chunk_entity_count ?? 0) === 0) {
+    return '图谱暂无数据：当前文档未抽取到可用实体或关系，不影响搜索和导出。'
+  }
+  return '图谱生成中'
+})
 const ingestStatusLabel = computed(() => {
   const status = ingestStatus.value?.pipeline_status || progress.value?.overall_status || 'pending'
   if (status === 'source_unavailable') return '源文件不可用'
@@ -414,7 +436,7 @@ const profileChapters = computed(() => parseJsonField<Array<{ title?: string; pa
 
 function fileIcon(ext?: string): string { const e = (ext || '').toLowerCase(); if (e === 'pdf') return '📕'; if (['doc','docx'].includes(e)) return '📘'; if (['xls','xlsx'].includes(e)) return '📗'; if (['ppt','pptx'].includes(e)) return '📙'; if (['png','jpg','jpeg','gif','webp'].includes(e)) return '🖼'; return '📄' }
 function docName(id: number): string { return documents.value.find(d => d.id === id)?.filename || ('资料 #'+id) }
-function statusDotClass(status?: string): string { if (status === 'done') return 'ok'; if (status === 'running' || status === 'collecting' || status === 'parsing' || status === 'fusing') return 'busy'; return 'idle' }
+function statusDotClass(status?: string): string { if (status === 'done') return 'ok'; if (status === 'running' || status === 'collecting' || status === 'parsing' || status === 'fusing') return 'busy'; if (status === 'failed' || status === 'source_unavailable') return 'failed'; return 'idle' }
 function stageLabel(stage: string): string { const labels: Record<string, string> = { source: '源文件', parse: '解析', vector: '索引', raw: '原始采集', fusion: '页级融合', profile: '画像', graph: '图谱', relation: '关联', complete: '完成' }; return labels[stage] || stage }
 function sourceStateText(state: string): string { const labels: Record<string, string> = { source_file_deleted: '原始文件已删除或进入回收站。', source_file_missing: '原始文件路径不可用。', permission_denied: '当前账号没有访问原始文件的权限。', source_unavailable: '原始文件不可用。' }; return labels[state] || '原始文件不可用。' }
 function readableFailure(message: string): string { return message.replace(/^Document source file unavailable:\s*/i, '源文件不可用：') }
@@ -508,6 +530,23 @@ async function loadFileTree() {
     // ── 自动登记未入库的已支持格式文件（上传即分析零点击） ──
     await autoRegisterUnregistered()
   } catch (e) { console.error('[kb] loadFileTree:', e) }
+}
+
+async function applyOpenPayload() {
+  if (typeof props.documentId === 'number' && props.documentId > 0) {
+    const doc = documents.value.find(d => d.id === props.documentId)
+    if (doc) {
+      await openDocument(doc)
+      return
+    }
+    openDashboard()
+    return
+  }
+  if (props.view === 'dashboard') {
+    openDashboard()
+  } else if (props.view === 'workspace') {
+    openWorkspace()
+  }
 }
 
 /** 知识库支持的格式集合 */
@@ -727,7 +766,14 @@ async function startAnalyze() {
 }
 
 async function handleExport() {
-  if (!active.value || !canExport.value || exporting.value) return
+  if (!active.value || exporting.value) return
+  if (!canExport.value) {
+    const reason = sourceUnavailable.value
+      ? '源文件不可用，不能导出。请先恢复源文件、重新上传，或删除这条无效记录。'
+      : '这份资料还没有建立可检索内容，完成分析后才能导出。'
+    window.alert(reason)
+    return
+  }
   exporting.value = true
   try {
     const result = await exportDocument(active.value.id, exportFormat.value)
@@ -743,6 +789,11 @@ async function handleExport() {
   } finally {
     exporting.value = false
   }
+}
+
+function guideSourceRestore() {
+  platform.modules.openApp('desktop')
+  window.alert('如果源文件在回收站，请在桌面文件管理器中恢复；如果源文件已丢失，请重新上传同一资料，系统会生成新的知识库记录。')
 }
 
 const showRedoDialog = ref(false)
@@ -819,8 +870,14 @@ function askAI() {
 onMounted(async () => {
   await initRuntime('knowledge')
   await Promise.all([loadFileTree(), loadUserRole()])
+  await applyOpenPayload()
 })
 onUnmounted(stopPolling)
+
+watch(
+  () => [props.documentId, props.view, props.showGovernance] as const,
+  () => { void applyOpenPayload() },
+)
 </script>
 
 <style scoped>
@@ -849,6 +906,7 @@ onUnmounted(stopPolling)
 .tree-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .tree-dot.ok { background: #2bb673; }
 .tree-dot.busy { background: #f0b240; animation: pulse 1s infinite; }
+.tree-dot.failed { background: #e5534b; }
 .tree-dot.idle { background: #c2cdda; }
 .tree-pct { font-size: 10px; font-weight: 700; color: #f0941f; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
@@ -908,6 +966,7 @@ onUnmounted(stopPolling)
 .status-pill.err { background: #fbe9e7; color: #d4544b; }
 .status-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 12px; color: #7c8da0; }
 .status-help { font-size: 12px; line-height: 1.65; color: #8a4b11; }
+.status-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
 
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e3e9f2; flex: none; }
 .tabs button { height: 38px; padding: 0 18px; border: none; background: transparent; color: #5a6b7d; cursor: pointer; font-size: 14px; border-radius: 8px 8px 0 0; }

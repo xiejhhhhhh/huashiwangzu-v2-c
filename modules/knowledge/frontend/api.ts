@@ -119,6 +119,17 @@ export interface ExportResult {
   content: string
   filename: string
   document_id: number
+  metadata?: {
+    document_id: number
+    title: string
+    format: ExportFormat
+    source_status: string
+    search_ready: boolean
+    deep_ready: boolean
+    block_count: number
+    evidence_count: number
+    export_source: string
+  }
   error?: string
 }
 
