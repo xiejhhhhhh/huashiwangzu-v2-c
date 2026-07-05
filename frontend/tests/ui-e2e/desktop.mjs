@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 
 import { BASE_URL } from './state.mjs'
-import { ADMIN_PASS, ADMIN_USER } from './auth.mjs'
+import { ADMIN_PASS, ADMIN_USER, refreshAdminStorageState } from './auth.mjs'
 
 export async function gotoDesktop(page) {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -16,6 +16,10 @@ export async function gotoDesktop(page) {
       await page.locator('input[placeholder="密码"]').fill(ADMIN_PASS)
       await page.locator('button').filter({ hasText: '登录' }).click({ force: true })
       await loginResponse
+      const token = await refreshAdminStorageState()
+      await page.evaluate((freshToken) => {
+        localStorage.setItem('v2_auth_token', freshToken)
+      }, token).catch(() => {})
       await page.goto(`${BASE_URL}/desktop`, { waitUntil: 'domcontentloaded' })
     }
     const returnedToLogin = await page.locator('.login-page').isVisible().catch(() => false)
