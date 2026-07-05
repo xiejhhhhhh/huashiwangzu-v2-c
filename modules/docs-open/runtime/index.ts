@@ -240,6 +240,7 @@ let __redirecting = false
 
 function _handle401(status: number): boolean {
   if (status !== 401) return false
+  if (_config?.mode === 'framework') return true
   localStorage.removeItem(TOKEN_KEY)
   if (!__redirecting) {
     __redirecting = true
