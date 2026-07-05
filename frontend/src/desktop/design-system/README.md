@@ -1,20 +1,16 @@
 # Desktop Design System
 
-This directory contains desktop-shell-specific design token extensions.
+Desktop shell token extensions live here. Business modules should prefer shared base tokens.
 
 ## Token Layers
 
 ```text
-Base tokens      -> frontend/src/styles/theme.css
-Desktop tokens   -> frontend/src/desktop/design-system/desktop-design-tokens.css
+Base tokens     -> frontend/src/styles/theme.css
+Desktop tokens  -> frontend/src/desktop/design-system/desktop-design-tokens.css
 ```
 
-Base tokens are shared by the whole frontend. Desktop tokens are opt-in variables for shell components such as windows, taskbar, launcher, menus, and tray surfaces.
+## Rules
 
-## Usage
-
-1. Business module content should prefer base tokens from `theme.css`.
-2. Desktop shell components may use `--desktop-*` variables.
-3. Desktop tokens must not leak into reusable business module styles.
-4. New desktop-only tokens belong in this directory and must use the `--desktop-` prefix.
-
+1. Shell components may use `--desktop-*` variables.
+2. Business modules should use shared base tokens unless a platform contract explicitly exposes a desktop token.
+3. New desktop-only tokens belong here and must use the `--desktop-` prefix.

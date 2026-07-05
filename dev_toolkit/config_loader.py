@@ -22,7 +22,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "editor": {"username": "", "password": "", "role": "editor"},
         "viewer": {"username": "", "password": "", "role": "viewer"},
     },
-    "memory_dir": "开发文档/项目记忆",
+    "memory_dir": "backend/logs/project_memory",
     "embedding_cache": "dev_toolkit/memory_embeddings.json",
     "log_dir": "backend/logs",
     "release_gate": {
@@ -60,6 +60,9 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
         "DEV_TOOLKIT_FRONTEND_BASE_URL": "frontend_base_url",
         "DEV_TOOLKIT_DB_DSN": "db_dsn",
         "DEV_TOOLKIT_BGE_M3_URL": "bge_m3_url",
+        "DEV_TOOLKIT_MEMORY_DIR": "memory_dir",
+        "DEV_TOOLKIT_EMBEDDING_CACHE": "embedding_cache",
+        "DEV_TOOLKIT_LOG_DIR": "log_dir",
     }
     for env_name, key in direct.items():
         value = _env(env_name)

@@ -1,46 +1,107 @@
-# markdown-parser
+# markdown-parser — Markdown Parser
 
 ## Responsibility
 
-`markdown-parser` is a parser service in the V2 desktop/module architecture. It is declared by `manifest.json` and must be consumed through the framework runtime, HTTP router, or capability registry rather than direct cross-module imports.
+Markdown Parser
 
-## Public Capabilities
+## Manifest Contract
 
-| Capability | min_role | Notes |
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"markdown-parser"` |
+| name | `"Markdown Parser"` |
+| category | `"tools"` |
+| window_type | `"background-service"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/markdown-parser"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/markdown-parser` |
+<!-- /DOCS-SYNC -->
+
+## Current Capabilities
+
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
+
+## HTTP API / Endpoint Families
+
+Backend HTTP prefix: `/api/markdown-parser`
+
+| Family | Methods | Purpose |
 |---|---|---|
-| `markdown-parser:parse` | viewer | Parse Markdown files into unified content blocks with heading levels |
+| `health` | GET | Endpoint family under `/api/markdown-parser` |
+| `parse` | POST | Endpoint family under `/api/markdown-parser` |
+
+## Public Actions / Capability Contract
+
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
+
+Total public actions: 1
+
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `parse` | `viewer` | `file_id` | Parse Markdown files into unified content blocks with heading levels |
+<!-- /DOCS-SYNC -->
+
+## Data Ownership
+
+| Table / Prefix | Purpose |
+|---|---|
+| `markdown_parser_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
+
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
+
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | not present |
+| `runtime/index.ts` | not present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `modules/markdown-parser/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="markdown-parser", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/markdown-parser/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module markdown-parser --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
+
+## Reproducible Checks
+
+```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
+PYTHONPATH=backend backend/.venv/bin/python modules/markdown-parser/sandbox/test_module.py
+# No frontend sandbox build for this module
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module markdown-parser --check
+```
 
 ## Boundaries
 
-- Business logic stays inside this module directory.
-- Cross-module access must go through the framework capability registry or runtime SDK.
-- Framework file content access must preserve `check_file_access` semantics when `file_id` is used.
-
-## Content IR Compatibility
-
-The parser keeps the legacy `{file_id, format, blocks, resources}` shape and adds Content IR
-compatible fields: `schema_version`, `content_type`, `source`, `source_file_id`, `source_module`,
-`parser`, `metadata`, and `warnings`. Blocks include `source_ref` with file id, format, section, and
-line bounds where Markdown exposes them. Image resources also carry `source_ref`, and empty successful
-parses emit an explicit paragraph block so the existing Content IR normalizer can produce block ids.
-
-## Acceptance Matrix
-
-| Area | Status | Verification |
-|---|---|---|
-| Manifest contract | PASS | `manifest.json` key `markdown-parser`, window `background-service`, formats: Not format-bound. |
-| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
-| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/markdown-parser/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `markdown-parser:<action>` and release smoke/capability drift gates. |
-| Content IR | PASS | Sandbox normalizes parser output with existing `normalize_ir` and checks `schema_version`, non-empty blocks/resources shape, and `source_ref`. |
-| Known debt | PASS | No module-local Content IR debt found for Markdown parsing. |
-
-### Reproducible Checks
-
-```bash
-PYTHONPATH=backend backend/.venv/bin/python modules/markdown-parser/sandbox/test_module.py
-backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module markdown-parser --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
-```
+- Keep module business code and data inside `modules/markdown-parser/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

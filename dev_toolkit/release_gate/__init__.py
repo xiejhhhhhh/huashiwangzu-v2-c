@@ -17,6 +17,7 @@ from dev_toolkit.release_gate.checks import (  # noqa: E402,F401
     check_asset_lifecycle_debt,
     check_capability_drift,
     check_component_key_contracts,
+    check_docs_currentness,
     check_health,
     check_readme_acceptance_matrix,
     check_sandbox_matrix,
@@ -98,6 +99,7 @@ _PROPAGATED_ATTRS: dict[str, tuple[object, ...]] = {
     "classify_readme_acceptance_matrix": (_checks,),
     "classify_sandbox_matrix": (_checks,),
     "classify_semantic_failed_completed": (_checks,),
+    "docs_audit": (_checks,),
     "ensure_envelope_success": (_checks,),
 }
 

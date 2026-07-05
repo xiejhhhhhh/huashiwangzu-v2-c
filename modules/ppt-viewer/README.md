@@ -1,57 +1,106 @@
-# ppt-viewer — PowerPoint file viewer
+# ppt-viewer — 演示文稿查看器
 
 ## Responsibility
-Opens and renders `.pptx` / `.ppt` presentation files in the desktop shell. Pure frontend viewer — no backend, no cross-module capabilities.
 
-## Public capabilities
-None. Passive file viewer only.
+演示文稿查看器
 
-## HTTP endpoints
-None. No `route_prefix` and no backend router.
+## Manifest Contract
 
-## Data tables
-None.
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"ppt-viewer"` |
+| name | `"演示文稿查看器"` |
+| category | `"file-viewer"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `true` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `None` |
+| backend.enabled | `false` |
+| backend.router | `None` |
+| actual backend prefix | `N/A` |
+<!-- /DOCS-SYNC -->
 
-## How to query/use
-The desktop shell opens this viewer when a user double-clicks a `.pptx` or `.ppt` file. Uses `sort_order: 50` for file-open scheduling (lowest priority among file-viewers).
+## Current Capabilities
 
-## Boundaries/notes
-- Frontend-only module; no backend or runtime.
-- Default window 1000×700, supports multiple instances.
-- Relies on framework file service to fetch presentation content.
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-## Sandbox verification
+## HTTP API / Endpoint Families
 
-```bash
-cd modules/ppt-viewer/sandbox
-npm install
-npm run build
+Backend HTTP prefix: `N/A`
 
-cd ../../../frontend
-npm run build
+| Family | Methods | Purpose |
+|---|---|---|
+| N/A | N/A | No backend HTTP router |
 
-cd ..
-backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --check
-```
+## Public Actions / Capability Contract
 
-Expected result: `ppt-viewer` passes through its sandbox frontend build. There is no `sandbox/test_module.py` because this module has no backend router, no samples, and no cross-module capability.
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-## Acceptance Matrix
+Total public actions: 0
 
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| N/A | N/A | none | No public backend capability |
+<!-- /DOCS-SYNC -->
+
+## Data Ownership
+
+| Table / Prefix | Purpose |
+|---|---|
+| `ppt_viewer_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
+
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
+
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | not present |
+| `sandbox/test_module.py` | not present |
+| `sandbox/package.json` | present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `ppt-viewer`, window `normal`, formats: pptx, ppt. |
-| Backend capability | SKIP | No backend capability; passive frontend module. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | Uses framework file preview/open dispatch; no direct cross-module table access. |
-| Sandbox | PASS | `cd modules/ppt-viewer/sandbox && npm run build` |
-| Smoke | PASS | `npm --prefix frontend run build` plus desktop open-dispatch/browser test when UI is in scope. |
-| Known debt | DEBT | Pure frontend viewer/editor; UI coverage depends on Playwright desktop-open tests. |
+| Manifest contract | PASS | `modules/ppt-viewer/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="ppt-viewer", include_parameters=true)` |
+| Backend sandbox | SKIP | `N/A` |
+| Frontend sandbox | PASS | `cd modules/ppt-viewer/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module ppt-viewer --check` |
+| Known debt | DEBT | UI-only module; backend sandbox test not applicable. |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
+# No backend sandbox test for this module
 cd modules/ppt-viewer/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module ppt-viewer --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/ppt-viewer/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

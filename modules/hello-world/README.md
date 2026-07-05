@@ -1,43 +1,106 @@
-# Hello World Module
+# hello-world — Hello World
 
-Sample module for scaffolding and integration testing.
+## Responsibility
 
-## Capability
+Hello World
 
-No HTTP API or capability registered. Used as a minimal verification target in framework tests.
+## Manifest Contract
 
-## Verification
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"hello-world"` |
+| name | `"Hello World"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `true` |
+| show_on_desktop | `true` |
+| route_prefix | `None` |
+| backend.enabled | `false` |
+| backend.router | `None` |
+| actual backend prefix | `N/A` |
+<!-- /DOCS-SYNC -->
 
-```bash
-cd modules/hello-world/sandbox
-npm install
-npm run build
+## Current Capabilities
 
-cd ../../../frontend
-npm run build
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-cd ..
-backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --check
-```
+## HTTP API / Endpoint Families
 
-Expected result: `hello-world` passes through its sandbox frontend build and remains registered in the main frontend build. There is no `sandbox/test_module.py` because this sample has no backend router, samples, data tables, or cross-module capability.
+Backend HTTP prefix: `N/A`
 
-## Acceptance Matrix
+| Family | Methods | Purpose |
+|---|---|---|
+| N/A | N/A | No backend HTTP router |
 
+## Public Actions / Capability Contract
+
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
+
+Total public actions: 0
+
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| N/A | N/A | none | No public backend capability |
+<!-- /DOCS-SYNC -->
+
+## Data Ownership
+
+| Table / Prefix | Purpose |
+|---|---|
+| `hello_world_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
+
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
+
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | not present |
+| `sandbox/test_module.py` | not present |
+| `sandbox/package.json` | present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `hello-world`, window `normal`, formats: Not format-bound. |
-| Backend capability | SKIP | No backend capability; passive frontend module. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `cd modules/hello-world/sandbox && npm run build` |
-| Smoke | PASS | `npm --prefix frontend run build` plus desktop open-dispatch/browser test when UI is in scope. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/hello-world/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="hello-world", include_parameters=true)` |
+| Backend sandbox | SKIP | `N/A` |
+| Frontend sandbox | PASS | `cd modules/hello-world/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module hello-world --check` |
+| Known debt | DEBT | UI-only module; backend sandbox test not applicable. |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
+# No backend sandbox test for this module
 cd modules/hello-world/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module hello-world --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/hello-world/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

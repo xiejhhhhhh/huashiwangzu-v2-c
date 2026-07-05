@@ -1,65 +1,110 @@
-# scheduler — Scheduled task manager
+# scheduler — 定时任务
 
 ## Responsibility
-Creates, lists, and cancels scheduled tasks. Tasks are stored in the framework's `SystemTaskQueue` and executed by the framework worker. On execution, results are pushed to the user via the `im:notify` capability.
 
-## Public capabilities
+定时任务
 
-| Capability | Parameters | Returns | min_role |
-|---|---|---|---|
-| `scheduler:create` | `title` (str), `action_description` (str), `scheduled_at` (str?), `recur` (str?) | `{id}` | editor |
-| `scheduler:list` | (none) | `[{id, title, status, scheduled_at, recur, ...}]` | viewer |
-| `scheduler:cancel` | `task_id` (int) | `{id, status}` | editor |
+## Manifest Contract
 
-Recurrence: `hourly` / `daily` / `weekly` / `cron:HH:MM`.
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"scheduler"` |
+| name | `"定时任务"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/scheduler"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/scheduler` |
+<!-- /DOCS-SYNC -->
 
-## HTTP endpoints
+## Current Capabilities
 
-All under `/api/scheduler`:
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-| Method | Path | Purpose |
+## HTTP API / Endpoint Families
+
+Backend HTTP prefix: `/api/scheduler`
+
+| Family | Methods | Purpose |
 |---|---|---|
-| POST | `/create` | Create a scheduled task |
-| GET | `/list` | List current user's scheduled tasks |
-| POST | `/cancel` | Cancel a pending scheduled task |
+| `cancel` | POST | Endpoint family under `/api/scheduler` |
+| `create` | POST | Endpoint family under `/api/scheduler` |
+| `list` | GET | Endpoint family under `/api/scheduler` |
 
-## Data tables
-None. Uses framework's `framework_system_task_queues` table (module="scheduler") for persistence.
+## Public Actions / Capability Contract
 
-## How to query/use
-Agent calls `scheduler:create` to schedule future actions, `scheduler:list` to review, `scheduler:cancel` to abort. All via `call_capability("scheduler", "create", {...})`.
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-## Verification
+Total public actions: 3
 
-```bash
-PYTHONPATH=backend backend/.venv/bin/python modules/scheduler/sandbox/test_module.py
-python3.14 scripts/check-capability-drift.py
-```
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `cancel` | `editor` | `task_id` | 取消自己创建的定时任务 |
+| `create` | `editor` | `action_description`, `recur`, `scheduled_at`, `title` | 创建定时任务：传入标题、时间/周期、动作描述，到期自动执行并推送结果到本人 IM |
+| `list` | `viewer` | none | 列出自己创建的定时任务 |
+<!-- /DOCS-SYNC -->
 
-## Boundaries/notes
-- `scheduled_at` ISO 8601 format; if empty, runs immediately.
-- `recur` supports hourly, daily, weekly, or cron:HH:MM (UTC).
-- Task execution handler `scheduled_agent_job` is registered with `register_task_handler`.
-- On execution, pushes notification via `im:notify` (falls back to log if IM unavailable).
-- Only the task creator can list/cancel their own tasks.
-- `creator_id` isolation enforced at API and capability levels.
+## Data Ownership
 
-## Acceptance Matrix
+| Table / Prefix | Purpose |
+|---|---|
+| `scheduler_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
+
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `scheduler`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 3 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/scheduler/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `scheduler:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/scheduler/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="scheduler", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/scheduler/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module scheduler --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/scheduler/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module scheduler --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/scheduler/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

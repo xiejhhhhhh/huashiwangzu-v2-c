@@ -1,135 +1,136 @@
-# memory — Agent memory & experience engine
+# memory — 记忆
 
 ## Responsibility
-Powers the agent's memory system: stores facts, preferences, conventions, and success experience; provides semantic recall, fusion, self-optimization (dream), and reinforcement learning via experience feedback. Uses pgvector (1024-dim) for vector similarity search.
 
-## Public capabilities
+Long-term memory module for facts, semantic recall, memory links, experience records, stable rules, and dream/rethink maintenance.
 
-19 capabilities registered:
+## Manifest Contract
 
-| Capability | Parameters | Returns | min_role |
-|---|---|---|---|
-| `memory:save` | `text` (str), `tags` (str?), `source` (str?) | `{id, embedding_updated, post_save_enqueued}` | viewer |
-| `memory:recall` | `query` (str), `limit` (int?), `expand_chain` (bool?) | `[{id, text, summary, tags, confidence, similarity, ...}]` | viewer |
-| `memory:list` | `limit` (int?), `offset` (int?) | `[{id, text, ...}]` | viewer |
-| `memory:delete` | `id` (int) | `{id, status}` | viewer |
-| `memory:fuse` | `query` (str), `ids` ([int]) | `{fused, source_ids}` | viewer |
-| `memory:rethink` | `id` (int), `text` (str), `tags` (str?) | `{id, status}` | viewer |
-| `memory:replace` | `id` (int), `old_text` (str), `new_text` (str) | `{id, status}` | viewer |
-| `memory:insert` | `id` (int), `text` (str) | `{id, status}` | viewer |
-| `memory:dream` | (none) | `{memory: {merged, links_created, decayed}, experience: {merged, deactivated}}` | editor |
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"memory"` |
+| name | `"记忆"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/memory"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/memory` |
+<!-- /DOCS-SYNC -->
 
-Experience and governance capabilities (also registered under memory module):
-| `memory:save_experience` | `trigger_condition` (str), `steps` (str\|list), `tools_used` (str?), `source_conversation_id` (int?) | `{id, deduplicated, success_weight}` | viewer |
-| `memory:match_experience` | `query` (str), `limit` (int?) | `[{id, trigger_condition, steps, success_weight, similarity, ...}]` | viewer |
-| `memory:experience_feedback` | `experience_id` (int), `success` (bool), `note` (str?) | `{id, success_weight, fail_count}` | viewer |
-| `memory:overview_stats` | none | `{memory, experience}` aggregate counts | admin |
-| `memory:backfill_embeddings` | `dry_run` (bool), `limit` (int?), `owner_id` (int?), `run_dream` (bool?) | record embedding backfill report | admin |
-| `memory:backfill_links` | `dry_run` (bool), `limit` (int?), `owner_id` (int?) | missing semantic link report | admin |
-| `memory:backfill_chunk_embeddings` | `dry_run` (bool), `limit` (int?), `owner_id` (int?) | chunk embedding backfill report | admin |
-| `memory:recall_stable_rules` | `rule_types` (list[str]?) | active stable rules sorted by priority | viewer |
-| `memory:recall_chunk` | `query` (str), `limit` (int?) | chunk-level memory hits with provenance | viewer |
-| `memory:save_stable_rule` | `rule_type` (str), `content` (str), `priority` (int?), `source` (str?) | `{id, status}` | viewer |
+## Current Capabilities
 
-## HTTP endpoints
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-All under `/api/memory`:
+## HTTP API / Endpoint Families
 
-| Method | Path | Purpose |
+Backend HTTP prefix: `/api/memory`
+
+| Family | Methods | Purpose |
 |---|---|---|
-| POST | `/save` | Save a memory (sync embedding + async distill) |
-| POST | `/recall` | Hybrid semantic recall (vector → rerank → keyword → chain expand) |
-| GET | `/list` | List memories (paginated, newest first) |
-| POST | `/delete` | Delete a memory (cascade deletes links) |
-| POST | `/fuse` | On-demand fusion of multiple memories into a query-tailored brief |
-| POST | `/rethink` | Rewrite a memory entirely |
-| POST | `/replace` | Replace a text fragment in a memory |
-| POST | `/insert` | Append text to a memory |
-| POST | `/dream` | Trigger dream self-optimization (admin only) |
+| `delete` | POST | Endpoint family under `/api/memory` |
+| `dream` | POST | Endpoint family under `/api/memory` |
+| `fuse` | POST | Endpoint family under `/api/memory` |
+| `insert` | POST | Endpoint family under `/api/memory` |
+| `list` | GET | Endpoint family under `/api/memory` |
+| `recall` | POST | Endpoint family under `/api/memory` |
+| `replace` | POST | Endpoint family under `/api/memory` |
+| `rethink` | POST | Endpoint family under `/api/memory` |
+| `save` | POST | Endpoint family under `/api/memory` |
 
-## Data tables
+## Public Actions / Capability Contract
 
-All `agent_*` prefix (shared with agent's `agent_*` convention):
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-| Table | Purpose |
+Total public actions: 19
+
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `backfill_chunk_embeddings` | `admin` | `dry_run`, `limit`, `owner_id` | Admin governance: safely backfill missing memory_chunk embeddings with dry-run support |
+| `backfill_embeddings` | `admin` | `dry_run`, `limit`, `owner`, `owner_id`, `run_dream` | Admin governance: safely backfill missing memory record embeddings with dry-run, owner, limit, and optional dream linking |
+| `backfill_links` | `admin` | `dry_run`, `limit`, `owner_id` | Admin governance: backfill missing memory_links between existing memory records using vector similarity. Dry-run safe. |
+| `delete` | `viewer` | `id` | 删除一条记忆 |
+| `dream` | `editor` | none | 触发记忆自优化（去重合并 + 建链 + 衰减），后台运行不阻塞 |
+| `experience_feedback` | `viewer` | `experience_id`, `note`, `success`, `team_owner_ids` | 反馈经验执行结果：成功则权重 +1，失败则失败次数 +1 并记录注释 |
+| `fuse` | `viewer` | `ids`, `query` | 将多条记忆融合成贴合查询的一段简报（即时融合，on-demand） |
+| `insert` | `viewer` | `id`, `text` | 向已有记忆追加内容 |
+| `list` | `viewer` | `limit`, `offset` | 列出自己所有的记忆 |
+| `match_experience` | `viewer` | `limit`, `query`, `team_owner_ids` | 语义匹配当前用户输入相关的成功经验（纯语义，零硬编码规则） |
+| `overview_stats` | `admin` | none | Admin overview: aggregated memory & experience statistics (total_count, with_embedding, avg_confidence, link_count, experience counts, etc.) |
+| `recall` | `viewer` | `expand_chain`, `limit`, `query` | 语义检索自己的记忆（向量语义召回 + 重排 + 可选顺链扩展），不再仅靠关键词 |
+| `recall_chunk` | `viewer` | `limit`, `query` | 语义检索 chunk 级记忆（带 provenance 溯源信息），返回最小粒度段落 |
+| `recall_stable_rules` | `viewer` | `rule_types` | 获取当前用户所有活跃的稳定规则记忆（项目边界、用户偏好、硬约束等），按优先级降序返回 |
+| `replace` | `viewer` | `id`, `new_text`, `old_text` | 替换记忆中的某段文本（精确片段替换） |
+| `rethink` | `viewer` | `id`, `tags`, `text` | 整条重写一条记忆（自编辑工具，如用户纠正错误时） |
+| `save` | `viewer` | `source`, `tags`, `text` | 保存一段记忆（事实/偏好/约定），自动提取摘要和向量用于语义检索 |
+| `save_experience` | `viewer` | `scope`, `source_conversation_id`, `steps`, `tools_used`, `trigger_condition` | 保存一条成功经验（包含触发条件、有序步骤、工具列表），自动向量化并去重 |
+| `save_stable_rule` | `viewer` | `content`, `priority`, `rule_type`, `source` | 保存一条稳定规则记忆（项目边界/用户偏好/硬约束/长期规则），不参与向量衰减 |
+<!-- /DOCS-SYNC -->
+
+## Data Ownership
+
+| Table / Prefix | Purpose |
 |---|---|
-| `memory_records` | Memory entries with text, summary, tags, confidence, recency_score, embedding (Vector(1024)) |
-| `memory_links` | Directed weighted links between memories (from_id, to_id, relation, weight) |
-| `memory_experiences` | Success experiences with trigger_condition, steps, tools_used, success_weight, fail_count, trigger_embedding (Vector(1024)) |
+| `memory_chunks` | Owned by `memory` module |
+| `memory_experiences` | Owned by `memory` module |
+| `memory_links` | Owned by `memory` module |
+| `memory_records` | Owned by `memory` module |
+| `memory_stable_rules` | Owned by `memory` module |
 
-## How to query/use
-Agent engine calls memory capabilities during conversations: `save` for facts, `recall`/`match_experience` for retrieval, `fuse` for summarization, `dream` for periodic optimization. All calls go through framework `call_capability("memory", "...", {...})`.
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-## Frontend Structure
+## Cross-Module Dependencies
 
-Memory 前端已具备最小产品化管理面，用于查看、检索和清理当前用户自己的记忆：
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-| 路径 | 作用 |
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
 |---|---|
-| `frontend/index.vue` | 桌面入口，两栏布局：列表/搜索 + 详情面板 |
-| `frontend/composables/useMemoryOverview.ts` | 列表加载、语义/关键词检索、选择、删除和空态状态组合 |
-| `frontend/api/index.ts` | `listMemories` / `recallMemories` / `deleteMemory` API 包装 |
-| `frontend/types/index.ts` | 记忆记录、列表响应、删除响应和检索模式类型 |
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
 
-UI 展示字段包括 memory id、类型、来源、创建时间、可信度、新近度、标签、关键词、会话关联、访问次数和语义相似度。空态明确提示“暂无记忆；需要先在 Agent 中产生记忆”。删除通过 Memory 自有 `/api/memory/delete` 能力执行，不读写其他模块数据。
+## Acceptance
 
-## Verification
-
-```bash
-PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py
-python3.14 scripts/check-capability-drift.py
-```
-
-## Boundaries/notes
-- Embeddings use framework `model_services.get_embedding()` (bge-m3, 1024 dim).
-- Embedding writes validate exactly 1024 finite numeric dimensions before storing. Wrong backend/model dimensions are logged and treated as a failed embedding, not fake success.
-- Cheap model for distillation/fusion uses `deepseek-v4-flash` via framework gateway.
-- Recall pipeline: vector cosine ≥ 0.3 → rerank via framework → top_k → optional chain expansion (links ≥ 0.4).
-- Dream runs merge (duplicates ≥ 0.92 similarity), link creation (≥ 0.55), and decay (30d, access < 3).
-- Experience dedup threshold = 0.85; net weight = success_weight - fail_count × 2.
-- Experience dream also merges near-duplicates and deactivates low-quality (net ≤ 0, fail ≥ 3).
-- Post-save processing (embedding + LLM distillation) is offloaded via `SystemTaskQueue` (`memory_post_save` handler).
-- All queries scoped by `owner_id` — users only see their own memories.
-- `memory_records` and `memory_links` tables are shared memory infrastructure; `memory_experiences` is the experience learning subsystem.
-- Deleting or merging a memory also deletes dependent `memory_chunks` and `memory_links`; `run_init()` prunes historical orphan chunks/links and ensures vector indexes for both record and chunk recall.
-- Capability inputs clamp/validate `limit`, `offset`, ids, booleans, stable-rule filters, experience feedback fields, and non-empty text/query fields so bad tool parameters return structured validation errors instead of HTTP 500.
-- Save/edit paths expose `embedding_updated` and `post_save_enqueued` once the module is freshly loaded, making embedding and distillation follow-up health visible instead of silently pretending all downstream work succeeded.
-- `recall_chunk` increments `memory_chunks.access_count`; `recall_stable_rules` increments `memory_stable_rules.hit_count`.
-- Experience matching falls back to keyword search over trigger/steps/tools when embeddings are unavailable or vector search returns no hits.
-
-## Latest audit notes
-
-2026-07-03 r2 sweep:
-
-- DB reverse audit: `memory_records` 43 total / 20 with embeddings / 23 missing; `memory_chunks` 12 total / all embedded; `memory_links` 50; `memory_stable_rules` 7; `memory_experiences` 0 and confirmed as expected-empty until the experience flow is used.
-- SQL cleanup check after live probes: temporary r2 test rows 0, orphan chunks 0, orphan links 0, self-links 0.
-- Fixed confirmed 500s: bad `memory:experience_feedback` parameters and non-string/list/object `memory:save_experience.steps` now return structured 422 validation errors.
-- Hardened experience chain: strict boolean feedback parsing, positive id coercion, owner id coercion, source conversation id coercion, keyword fallback for match, and note type validation.
-- Hardened recall/governance chain: chunk recall and stable-rule recall now persist hit counters; init now includes idempotent chunk/stable-rule ALTERs and self-link cleanup.
-- Live probes passed for invalid parameter 422s, save/recall/list/delete, save/match/feedback experience, dream, dry-run backfill embeddings/links, and test-data cleanup.
-
-2026-07-03 quality pass:
-
-- Live dry-run found `memory_records`: 43 total, 20 with embeddings, 23 missing; `memory_chunks`: 13 total, all with embeddings. Use `memory:backfill_embeddings` with `dry_run=false` after confirming embedding service health.
-- DB shape audit found 1 orphan chunk and 8 orphan links before this pass; module initialization now removes those safely.
-- Bad `limit` parameters previously produced 500 for `memory:list`, `memory:recall`, and `memory:recall_chunk`; the module now validates them before SQL execution.
-
-## Acceptance Matrix
-
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `memory`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 19 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `memory:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/memory/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="memory", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module memory --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module memory --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/memory/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

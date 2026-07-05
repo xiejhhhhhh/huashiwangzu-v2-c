@@ -1,115 +1,115 @@
-# 公众号写作助手（wechat-writer）
+# wechat-writer — 公众号写作助手
 
-## 业务目标
+## Responsibility
 
-解决华哥写公众号文章「憋选题、搭框架、成文」耗时过长的痛点。订阅号「华世王镞问题肌修护专家」，每篇要保证专业性和品牌调性（俏小喵）。本模块把「憋一篇文章」从几小时压到几十分钟——AI 出选题/大纲/初稿，同事改定即可。
+WeChat writing module for prompt-managed article/draft generation and content validation workflows.
 
-## 能力清单
+## Manifest Contract
 
-### 跨模块能力（通过 `register_capability` 注册）
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"wechat-writer"` |
+| name | `"公众号写作助手"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `true` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/wechat-writer"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/wechat-writer` |
+<!-- /DOCS-SYNC -->
 
-| 能力 | 说明 | 参数 |
-|------|------|------|
-| `wechat-writer:generate_topics` | 根据创作方向生成公众号选题建议 | `direction` (string) |
-| `wechat-writer:generate_outline` | 根据选题生成文章大纲 | `topic`, `direction` |
-| `wechat-writer:generate_article` | 根据大纲生成完整初稿 | `topic`, `outline`, `direction` |
-| `wechat-writer:validate_content` | 校验成分/功效内容专业性（接知识库） | `content` |
+## Current Capabilities
 
-### HTTP API 端点（前缀 `/api/wechat-writer`）
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/topics` | 生成选题 |
-| POST | `/outline` | 生成大纲 |
-| POST | `/article` | 生成文章 |
-| POST | `/validate` | 校验内容 |
-| GET | `/drafts` | 列表草稿 |
-| POST | `/drafts` | 创建草稿 |
-| GET | `/drafts/{id}` | 获取草稿 |
-| PUT | `/drafts/{id}` | 更新草稿 |
-| DELETE | `/drafts/{id}` | 删除草稿 |
-| GET | `/prompts` | 列表提示词 |
-| POST | `/prompts` | 保存提示词 |
-| DELETE | `/prompts/{id}` | 删除提示词 |
+## HTTP API / Endpoint Families
 
-## 数据表
+Backend HTTP prefix: `/api/wechat-writer`
 
-| 表名 | 说明 | 关键字段 |
-|------|------|----------|
-| `wechat_drafts` | 文章草稿 | `owner_id`, `title`, `outline`(JSON), `content`, `status`, `version` |
-| `wechat_prompts` | 提示词模板 | `owner_id`, `key`, `content`, `category` (system/topic/outline/article/validation/custom) |
+| Family | Methods | Purpose |
+|---|---|---|
+| `article` | POST | Endpoint family under `/api/wechat-writer` |
+| `drafts` | DELETE/GET/POST/PUT | Endpoint family under `/api/wechat-writer` |
+| `outline` | POST | Endpoint family under `/api/wechat-writer` |
+| `prompts` | DELETE/GET/POST | Endpoint family under `/api/wechat-writer` |
+| `topics` | POST | Endpoint family under `/api/wechat-writer` |
+| `validate` | POST | Endpoint family under `/api/wechat-writer` |
 
-所有查询带 `owner_id` 隔离。
+## Public Actions / Capability Contract
 
-## 业务流程
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-1. **选题**：用户输入创作方向 → AI 生成 5 个选题建议 → 用户选定一个
-2. **大纲**：选定选题 → AI 生成详细大纲（含成分标记） → 用户确认
-3. **成文**：按大纲 → AI 生成 1500-2500 字初稿 → 用户编辑修改
-4. **校验**：自动/手动触发成分功效校验 → 调用知识库搜索 + AI 科学审核
-5. **保存**：草稿可随时保存，多版本管理
+Total public actions: 4
 
-## 底座能力接入
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `generate_article` | `editor` | `direction`, `outline`, `topic` | 根据大纲生成完整初稿 |
+| `generate_outline` | `editor` | `direction`, `topic` | 根据选题生成文章大纲 |
+| `generate_topics` | `editor` | `direction` | 根据产品/季节/问题肌主题生成选题建议 |
+| `validate_content` | `editor` | `content` | 校验成分/功效内容的专业性 |
+<!-- /DOCS-SYNC -->
 
-| 底座 | 用法 |
-|------|------|
-| 模型网关 | `gateway.service.chat(messages, profile_key="deepseek-v4-flash")` |
-| 知识库 | `call_capability("knowledge", "search", {query, top_k})` 校验成分功效 |
-| 提示词存 DB | `wechat_prompts` 表动态加载，支持运行时编辑 |
+## Data Ownership
 
-## 目录结构
+| Table / Prefix | Purpose |
+|---|---|
+| `wechat_drafts` | Owned by `wechat-writer` module |
+| `wechat_prompts` | Owned by `wechat-writer` module |
 
-```text
-modules/wechat-writer/
-  manifest.json          — 模块注册信息
-  frontend/
-    index.vue            — 主入口
-    generate-panel.vue   — 创作面板（选题→大纲→成文→校验）
-    drafts-panel.vue     — 草稿列表
-    prompts-panel.vue    — 提示词管理
-  backend/
-    router.py            — HTTP 端点 + 能力注册
-    services.py          — 业务逻辑（生成/校验/CRUD）
-    models.py            — SQLAlchemy ORM 模型
-    init_db.py           — 建表 + 默认提示词种子
-  runtime/
-    index.ts             — 运行时中间层
-  sandbox/               — 独立开发环境
-```
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-## 配置
+## Cross-Module Dependencies
 
-默认提示词（5条）在 `init_db.py` 的 `DEFAULT_PROMPTS` 中，启动时自动写入 `wechat_prompts` 表。用户可通过前端「提示词管理」页面实时编辑。
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-当前写作模型：`deepseek-v4-flash`（可通过 `WRITING_PROFILE` 在 `services.py` 中切换）。
+## File Access / Permission Boundary
 
-## 验收命令
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
-```bash
-cd /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2
-backend/.venv/bin/python -m ruff check modules/wechat-writer/backend/init_db.py modules/wechat-writer/backend/router.py modules/wechat-writer/backend/services.py modules/wechat-writer/sandbox/test_module.py
-PYTHONPATH=backend:. backend/.venv/bin/python -m pytest modules/wechat-writer/sandbox/test_module.py
-```
+## Frontend / Backend Structure
 
-`sandbox/test_module.py` 不调用真实模型网关或数据库；它会在 running event loop 中真调用 `_run_startup_init()`，用假 `run_init()` 验证模块启动初始化不会再触发 `asyncio.run()` 的协程未 await 警告。
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | present |
 
-## Acceptance Matrix
+## Acceptance
 
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `wechat-writer`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 4 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/wechat-writer/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `wechat-writer:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/wechat-writer/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="wechat-writer", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/wechat-writer/sandbox/test_module.py` |
+| Frontend sandbox | PASS | `cd modules/wechat-writer/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module wechat-writer --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/wechat-writer/sandbox/test_module.py
 cd modules/wechat-writer/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module wechat-writer --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/wechat-writer/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

@@ -1,77 +1,107 @@
-# Email Parser Module
+# email-parser — Email Parser
 
-Parse EML and MSG email files into unified content blocks and attachment resources.
+## Responsibility
 
-## API
+Email Parser
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/email-parser/health` | GET | Module health check |
-| `/api/email-parser/parse` | POST | Parse an email file by `file_id` |
+## Manifest Contract
 
-## Capability
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"email-parser"` |
+| name | `"Email Parser"` |
+| category | `"tools"` |
+| window_type | `"background-service"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/email-parser"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/email-parser` |
+<!-- /DOCS-SYNC -->
 
-| Module | Action | Input | Output |
-|--------|--------|-------|--------|
-| `email-parser` | `parse` | `{"file_id": int}` | Unified email content blocks and resources |
+## Current Capabilities
 
-The backend capability uses the framework uploaded-file runner, so `file_id`
-access is validated through the platform file permission path before this
-module reads the physical file. Parser failures are returned as structured
-validation errors instead of successful empty parses.
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-## Content IR Compatibility
+## HTTP API / Endpoint Families
 
-The parser keeps the legacy `{file_id, format, blocks, resources, resource_diagnostics}` shape and
-adds Content IR compatible fields: `schema_version`, `content_type`, `source`, `source_file_id`,
-`source_module`, `parser`, `metadata`, and `warnings`. Blocks include `source_ref` with email
-sections (`header`, `body`, `attachment`) and message-part metadata. Attachment resources also carry
-`source_ref` with `attachment_index` and filename so Artifact, Knowledge, and Agent evidence can trace
-the extracted resource back to the email part.
+Backend HTTP prefix: `/api/email-parser`
 
-## Format Support
+| Family | Methods | Purpose |
+|---|---|---|
+| `health` | GET | Endpoint family under `/api/email-parser` |
+| `parse` | POST | Endpoint family under `/api/email-parser` |
 
-- `.eml` - Headers, plaintext body, HTML fallback body, attachment metadata and bytes.
-- `.msg` - Headers, body, and attachments when `extract-msg` is installed in the backend environment.
+## Public Actions / Capability Contract
 
-## Verification
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-```bash
-# Module lint
-cd /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2
-backend/.venv/bin/ruff check modules/email-parser/backend/router.py modules/email-parser/backend/parser.py modules/email-parser/sandbox/test_module.py
+Total public actions: 1
 
-# Sandbox parser contract test with real sample + generated boundary fixtures
-backend/.venv/bin/python modules/email-parser/sandbox/test_module.py
-backend/.venv/bin/python -m pytest modules/email-parser/sandbox/test_module.py
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `parse` | `viewer` | `file_id` | Parse EML/MSG email files into unified content blocks with headers and body |
+<!-- /DOCS-SYNC -->
 
-# Health check
-curl http://127.0.0.1:33000/api/email-parser/health
+## Data Ownership
 
-# Parse a file
-curl -X POST http://127.0.0.1:33000/api/email-parser/parse \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{"file_id": <id>}'
-```
+| Table / Prefix | Purpose |
+|---|---|
+| `email_parser_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-## Acceptance Matrix
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | not present |
+| `runtime/index.ts` | not present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `email-parser`, window `background-service`, formats: Not format-bound. |
-| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
-| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/email-parser/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `email-parser:<action>` and release smoke/capability drift gates. |
-| Content IR | PASS | Sandbox normalizes parser output with existing `normalize_ir` and checks `schema_version`, non-empty blocks, attachment resources, and message-part `source_ref`. |
-| Known debt | PASS | No module-local Content IR debt found for EML/MSG parsing. |
+| Manifest contract | PASS | `modules/email-parser/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="email-parser", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/email-parser/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module email-parser --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/email-parser/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module email-parser --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/email-parser/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

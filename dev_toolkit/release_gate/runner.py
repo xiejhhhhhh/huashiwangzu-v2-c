@@ -38,6 +38,7 @@ def _default_api() -> SimpleNamespace:
         check_asset_lifecycle_debt=checks.check_asset_lifecycle_debt,
         check_capability_drift=checks.check_capability_drift,
         check_component_key_contracts=checks.check_component_key_contracts,
+        check_docs_currentness=checks.check_docs_currentness,
         check_health=checks.check_health,
         check_model_fallback_summary=smoke_gate.check_model_fallback_summary,
         check_readme_acceptance_matrix=checks.check_readme_acceptance_matrix,
@@ -150,6 +151,8 @@ async def main(argv: list[str] | None = None, *, api: Any | None = None) -> None
     api.check_readme_acceptance_matrix()
     print()
     api.check_component_key_contracts()
+    print()
+    api.check_docs_currentness()
     print()
     if args.preflight:
         api.add_result("Sandbox matrix", "DEBT", "--preflight used; sandbox matrix not run")

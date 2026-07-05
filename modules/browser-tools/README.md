@@ -1,63 +1,123 @@
-# browser-tools
+# browser-tools — 浏览器工具
 
 ## Responsibility
 
-`browser-tools` is a background capability service in the V2 desktop/module architecture. It is declared by `manifest.json` and must be consumed through the framework runtime, HTTP router, or capability registry rather than direct cross-module imports.
+浏览器工具
 
-## Public Capabilities
+## Manifest Contract
 
-| Capability | min_role | Notes |
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"browser-tools"` |
+| name | `"浏览器工具"` |
+| category | `"tools"` |
+| window_type | `"background-service"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/browser-tools"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/browser-tools` |
+<!-- /DOCS-SYNC -->
+
+## Current Capabilities
+
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
+
+## HTTP API / Endpoint Families
+
+Backend HTTP prefix: `/api/browser-tools`
+
+| Family | Methods | Purpose |
 |---|---|---|
-| `browser-tools:open` | viewer | 在隔离浏览器中打开 URL。适用于 JS 渲染页面、登录态页面。Cookie/localStorage 不返回给调用方。 |
-| `browser-tools:read_text` | viewer | 提取当前页面的可见文本内容（截断保护）。返回标题/URL/可见文本。 |
-| `browser-tools:list_links` | viewer | 列出当前页面的可见链接（不含 Cookie/隐私数据）。 |
-| `browser-tools:click` | viewer | 点击页面元素。支持 CSS selector 或按可见文本点击。 |
-| `browser-tools:type` | viewer | 向输入框输入文本。先清空再输入，带打字延迟。 |
-| `browser-tools:wait_for` | viewer | 等待页面元素出现/导航完成。 |
-| `browser-tools:screenshot` | viewer | 截图并保存到工作区（非 base64）。用 terminal-tools:publish 交付桌面。 |
-| `browser-tools:download` | viewer | 下载文件到工作区。支持浏览器上下文下载或直链 HTTP 下载；session_id 与 url 至少提供一个。 |
-| `browser-tools:close` | viewer | 关闭浏览器会话，释放隔离上下文资源。 |
+| `click` | POST | Endpoint family under `/api/browser-tools` |
+| `close` | POST | Endpoint family under `/api/browser-tools` |
+| `download` | POST | Endpoint family under `/api/browser-tools` |
+| `health` | GET | Endpoint family under `/api/browser-tools` |
+| `list-links` | POST | Endpoint family under `/api/browser-tools` |
+| `open` | POST | Endpoint family under `/api/browser-tools` |
+| `read-text` | POST | Endpoint family under `/api/browser-tools` |
+| `screenshot` | POST | Endpoint family under `/api/browser-tools` |
+| `type` | POST | Endpoint family under `/api/browser-tools` |
+| `wait-for` | POST | Endpoint family under `/api/browser-tools` |
+
+## Public Actions / Capability Contract
+
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
+
+Total public actions: 9
+
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `click` | `viewer` | `selector`, `session_id`, `text`, `timeout` | 点击页面元素。支持 CSS selector 或按可见文本点击。 |
+| `close` | `viewer` | `session_id` | 关闭浏览器会话，释放隔离上下文资源。 |
+| `download` | `viewer` | `session_id`, `timeout`, `url` | 下载文件到工作区。支持浏览器上下文下载或直链 HTTP 下载；session_id 与 url 至少提供一个。 |
+| `list_links` | `viewer` | `session_id` | 列出当前页面的可见链接（不含 Cookie/隐私数据）。 |
+| `open` | `viewer` | `height`, `session_id`, `timeout`, `url`, `width` | 在隔离浏览器中打开 URL。适用于 JS 渲染页面、登录态页面。Cookie/localStorage 不返回给调用方。 |
+| `read_text` | `viewer` | `session_id` | 提取当前页面的可见文本内容（截断保护）。返回标题/URL/可见文本。 |
+| `screenshot` | `viewer` | `full_page`, `session_id` | 截图并保存到工作区（非 base64）。用 terminal-tools:publish 交付桌面。 |
+| `type` | `viewer` | `selector`, `session_id`, `text`, `timeout` | 向输入框输入文本。先清空再输入，带打字延迟。 |
+| `wait_for` | `viewer` | `selector`, `session_id`, `timeout`, `wait_for_navigation` | 等待页面元素出现/导航完成。 |
+<!-- /DOCS-SYNC -->
+
+## Data Ownership
+
+| Table / Prefix | Purpose |
+|---|---|
+| `browser_tools_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
+
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
+
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | not present |
+| `runtime/index.ts` | not present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
+| Area | Status | Verification |
+|---|---|---|
+| Manifest contract | PASS | `modules/browser-tools/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="browser-tools", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/browser-tools/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module browser-tools --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
+
+## Reproducible Checks
+
+```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
+PYTHONPATH=backend backend/.venv/bin/python modules/browser-tools/sandbox/test_module.py
+# No frontend sandbox build for this module
+backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module browser-tools --check
+```
 
 ## Boundaries
 
-- Business logic stays inside this module directory.
-- Cross-module access must go through the framework capability registry or runtime SDK.
-- Framework file content access must preserve `check_file_access` semantics when `file_id` is used.
-- URL inputs only allow public `http`/`https` targets. `file://`, embedded credentials, localhost, private ranges, link-local metadata endpoints, DNS failures, and redirects to blocked targets fail closed.
-- Browser sessions use isolated Playwright contexts and are bound to the caller. Cookie/localStorage are never returned.
-- Screenshot and download artifacts are written only to the caller's terminal workspace. Results return `workspace_path` plus `filename`/`size`, not host absolute paths; pass `workspace_path` to `terminal-tools:publish` when the artifact should become a desktop file.
-- Timeouts are clamped to 1-60 seconds. Downloads stream to disk with a 50 MB cap, screenshots are capped at 5 MB, and extracted text is capped at 512 KB.
-- Failures return `success:false` through the capability handler and direct HTTP routes raise framework `ValidationError`; no 200-style fake success is used for blocked URLs, missing sessions, oversized downloads/screenshots, or cleanup degradation.
-
-## Result Shapes
-
-| Capability | Success data shape |
-|---|---|
-| `open` | `{session_id, title, url, visible_text_preview}` |
-| `read_text` | `{session_id, title, url, visible_text, buttons}` |
-| `list_links` | `{session_id, links, total}` |
-| `click` / `wait_for` | `{session_id, url, title}` |
-| `type` | `{session_id, selector, typed_length}` |
-| `screenshot` | `{session_id, workspace_path, filename, size, full_page, note}` |
-| `download` | `{session_id, workspace_path, filename, size, note}` |
-| `close` | `{session_id, closed, degraded, cleanup_errors}` |
-
-## Acceptance Matrix
-
-| Area | Status | Verification |
-|---|---|---|
-| Manifest contract | PASS | `manifest.json` key `browser-tools`, window `background-service`, formats: Not format-bound. |
-| Backend capability | PASS | 9 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/browser-tools/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `browser-tools:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep component_key empty so the launcher never opens a blank background window. |
-
-### Reproducible Checks
-
-```bash
-PYTHONPATH=backend backend/.venv/bin/python modules/browser-tools/sandbox/test_module.py
-backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module browser-tools --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
-```
+- Keep module business code and data inside `modules/browser-tools/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

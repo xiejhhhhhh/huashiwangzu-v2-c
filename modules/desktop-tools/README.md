@@ -1,119 +1,124 @@
-# Desktop Tools Module
+# desktop-tools — Desktop Tools
 
-A **bridge module** that exposes the framework's desktop/file capabilities to the Agent via the cross-module capability registry. The Agent's tool discovery (`tool_discovery.build_tools`) automatically discovers these capabilities and converts them into LLM function-calling tools — **zero Agent code changes required**.
+## Responsibility
 
-## Skills Exposed
+Desktop Tools
 
-| Skill | Description | Backend |
-|-------|-------------|---------|
-| `desktop-tools:list_files` | List files in a folder (or root) | Framework file service |
-| `desktop-tools:search_files` | Search files by keyword / extension | Framework file service |
-| `desktop-tools:read_file` | Read file content (routes to format parsers) | Parser modules via `call_capability` |
-| `desktop-tools:list_apps` | List desktop applications | Framework app registry |
-| `desktop-tools:get_file` | Get one file's metadata | Framework file service |
-| `desktop-tools:create_file` | Create a text file in the framework file system | Framework upload service |
-| `desktop-tools:replace_file` | Replace file content from text, artifact, or another file | Framework file/content services |
-| `desktop-tools:delete_file` | Soft-delete a file to trash | Framework file service |
-| `desktop-tools:rename_file` | Rename a file | Framework file service |
-| `desktop-tools:copy_file` | Copy a file within the current user's file space | Framework file ops service |
-| `desktop-tools:list_versions` | List artifact versions | Framework artifact service |
-| `desktop-tools:restore_version` | Restore an artifact version | Framework artifact service |
-| `desktop-tools:replace_file_from_artifact` | Replace a desktop file from artifact content | Framework artifact service |
-| `desktop-tools:publish_artifact` | Publish an artifact as a desktop file | Framework artifact service |
-| `desktop-tools:refresh` | Return a desktop refresh acknowledgement | Stateless bridge |
+## Manifest Contract
 
-## Key Design
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"desktop-tools"` |
+| name | `"Desktop Tools"` |
+| category | `"tools"` |
+| window_type | `"background-service"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/desktop-tools"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/desktop-tools` |
+<!-- /DOCS-SYNC -->
 
-### Owner Isolation
+## Current Capabilities
 
-All capabilities enforce **owner isolation**. File reads use framework `check_file_access`, so owner and shared-file permissions are respected before disk reads. File mutations call the framework write/delete/rename/copy services, which enforce owner or write access. The `caller` string (e.g. `"user:42"`) is parsed to extract the user ID.
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-### Read File Pipeline
+## HTTP API / Endpoint Families
 
-`desktop:read_file` is the connector that chains format parser modules:
+Backend HTTP prefix: `/api/desktop-tools`
 
-```
-file_id → detect extension → call_capability("{ext}-parser", "parse", {file_id}) → unified content blocks → plain text
-```
+| Family | Methods | Purpose |
+|---|---|---|
+| `health` | GET | Endpoint family under `/api/desktop-tools` |
+| `list-apps` | GET | Endpoint family under `/api/desktop-tools` |
+| `list-files` | POST | Endpoint family under `/api/desktop-tools` |
+| `read-file` | POST | Endpoint family under `/api/desktop-tools` |
+| `search-files` | POST | Endpoint family under `/api/desktop-tools` |
 
-Parser mapping:
+## Public Actions / Capability Contract
 
-| Extension | Parser Module |
-|-----------|---------------|
-| `pdf` | `pdf-parser` |
-| `docx` | `docx-parser` |
-| `xlsx`, `xls`, `csv` | `xlsx-parser` |
-| `pptx` | `pptx-parser` |
-| `txt`, `md`, `markdown`, `text`, `log` | `text-parser` (or direct read fallback) |
-| `json`, `xml`, `yaml`, `yml` | Direct text read |
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-Output is capped to protect Agent context. `read_file` returns at most 20000 text characters and at most 80 content blocks, with `truncated` and `limits` metadata when content is clipped. Parser failures for non-text formats raise a real unified API error instead of returning a fake-success payload.
+Total public actions: 15
 
-### Stateless Bridge
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `copy_file` | `editor` | `file_id`, `target_folder_id` | Copy a file. |
+| `create_file` | `editor` | `content`, `extension`, `folder_id`, `name` | Create a new file with text content. |
+| `delete_file` | `editor` | `file_id` | Soft-delete a file. |
+| `get_file` | `viewer` | `file_id` | Get a single file's metadata by file_id. |
+| `list_apps` | `viewer` | object | List desktop applications available to the current user. |
+| `list_files` | `viewer` | `folder_id`, `page`, `page_size` | List files in a folder (or root). Returns file name, type, size, and id. |
+| `list_versions` | `viewer` | `artifact_id` | List file versions (via artifact). |
+| `publish_artifact` | `editor` | `artifact_id`, `target_file_id` | Publish an artifact to the desktop as a file. |
+| `read_file` | `viewer` | `file_id` | Read file content by file_id. Routes to format parsers (PDF, DOCX, XLSX, etc.) and returns text content capped at 20000 chars with truncation metadata. |
+| `refresh` | `viewer` | object | Trigger desktop file list refresh. |
+| `rename_file` | `editor` | `file_id`, `new_name` | Rename a file. |
+| `replace_file` | `editor` | `new_content`, `old_file_id`, `source_artifact_id`, `source_file_id` | Replace file content from text, artifact, or another file. No base64 needed. |
+| `replace_file_from_artifact` | `editor` | `source_artifact_id`, `target_file_id` | Replace a desktop file using content from an artifact. No base64 needed. |
+| `restore_version` | `editor` | `artifact_id`, `version_id` | Restore a file to a previous version. |
+| `search_files` | `viewer` | `extension`, `keyword`, `page`, `page_size` | Search files by keyword and/or extension. Returns matching file metadata. |
+<!-- /DOCS-SYNC -->
 
-This module stores no data. It is a pure bridge between the framework's existing capabilities and the Agent's skill discovery system.
+## Data Ownership
 
-## Agent Integration
+| Table / Prefix | Purpose |
+|---|---|
+| `desktop_tools_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-The Agent's `tool_discovery.build_tools(role)` calls `list_capabilities(role)` which returns all registered capabilities including those from `desktop-tools`. Each capability becomes a function-calling tool that the LLM can invoke. The Agent can now answer:
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-- "What files are on my desktop?"
-- "Find PDF files about reports"
-- "Read that document"
-- "What apps can I open?"
+## Cross-Module Dependencies
 
-## Verification
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-```bash
-# Run sandbox test
-PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py
+## File Access / Permission Boundary
 
-# Check capabilities are registered (requires running backend)
-curl http://127.0.0.1:33000/api/modules/capabilities | jq
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
-# Call a capability directly
-curl -X POST http://127.0.0.1:33000/api/modules/call \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"target_module":"desktop-tools","action":"list_files","parameters":{"folder_id":0}}'
+## Frontend / Backend Structure
 
-# Read a PDF file via Agent chain
-curl -X POST http://127.0.0.1:33000/api/modules/call \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"target_module":"desktop-tools","action":"read_file","parameters":{"file_id":42}}'
-```
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | present |
 
-## Sandbox Development
+## Acceptance
 
-```bash
-# Frontend sandbox
-cd modules/desktop-tools/sandbox
-npm install
-npm run dev
-
-# Backend sandbox test
-cd /path/to/华世王镞_v2
-PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py
-```
-
-## Acceptance Matrix
-
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `desktop-tools`, window `background-service`, formats: Not format-bound. |
-| Backend capability | PASS | 15 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
-| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `desktop-tools:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep component_key empty so the launcher never opens a blank background window. |
+| Manifest contract | PASS | `modules/desktop-tools/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="desktop-tools", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py` |
+| Frontend sandbox | PASS | `cd modules/desktop-tools/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module desktop-tools --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py
 cd modules/desktop-tools/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module desktop-tools --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/desktop-tools/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

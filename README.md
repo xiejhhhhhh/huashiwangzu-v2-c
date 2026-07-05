@@ -1,45 +1,29 @@
 # Huashiwangzu V2
 
-Huashiwangzu V2 is a rebuilt desktop-style business platform.
+Huashiwangzu V2 is a clean rebuild of a desktop-style business platform.
 
-## Current Architecture
+## Architecture
 
 ```text
-frontend/   Vue desktop shell
+frontend/   Vue desktop shell and platform UI
 backend/    FastAPI platform service layer
 modules/    Business modules and desktop apps
-开发文档/     User-facing development documentation
+开发文档/    Current development documentation
 ```
 
-The old Laravel/PHP tree is no longer part of V2. Missing behavior should be referenced from V1 or historical versions, then rebuilt under the V2 architecture.
+## Start Here
 
-## Technology Stack
+- Agent hard rules: `AGENTS.md`
+- Current project entry: `开发文档/README.md`
+- Agent handoff workflow: `开发文档/agent_handoff/START_HERE.md`
+- Toolkit MCP: `dev_toolkit/README.md`
 
-| Layer | Stack |
-|---|---|
-| Frontend | Vue 3, TypeScript, Vite, Element Plus |
-| Backend | Python 3.14+, FastAPI, SQLAlchemy async |
-| Database | PostgreSQL 17, pgvector |
-| Module model | `modules/*/manifest.json` plus mandatory sandbox self-test |
-
-## Documentation
-
-Start here:
-
-```text
-开发文档/README.md
-```
-
-Agent rules:
-
-```text
-AGENTS.md
-```
-
-## Common Commands
+## Core Commands
 
 ```bash
-cd backend && pytest
 cd frontend && npm run build
+cd backend && .venv/bin/python -m pytest
+python3.14 dev_toolkit/release_gate.py --preflight --skip-ui
 ```
 
+Business behavior belongs in `modules/`. Framework capabilities belong in `frontend/` or `backend/`.

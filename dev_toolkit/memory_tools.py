@@ -47,6 +47,8 @@ def parse_frontmatter(content: str) -> dict[str, Any]:
 def list_memories(repo_root: Path, memory_dir: Path) -> list[dict[str, Any]]:
     """Return all memories sorted by created desc."""
     memories: list[dict[str, Any]] = []
+    if not memory_dir.exists():
+        return memories
     for path in sorted(memory_dir.iterdir()):
         if path.suffix != ".md" or path.stem.startswith("_"):
             continue
@@ -60,6 +62,7 @@ def list_memories(repo_root: Path, memory_dir: Path) -> list[dict[str, Any]]:
 
 
 def update_index(repo_root: Path, memory_dir: Path) -> None:
+    memory_dir.mkdir(parents=True, exist_ok=True)
     index_path = memory_dir / "_索引.md"
     lines = ["# 项目记忆索引\n", "\n", "每条记忆一条记录:\n", "- `[slug](slug.md)` — type — tags — created\n", "\n", "---\n", "\n"]
     for memory in list_memories(repo_root, memory_dir):
@@ -98,6 +101,7 @@ def load_embedding_cache(embedding_cache_path: Path) -> dict[str, list[float]]:
 
 
 def save_embedding_cache(embedding_cache_path: Path, cache: dict[str, list[float]]) -> None:
+    embedding_cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = embedding_cache_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
     tmp.replace(embedding_cache_path)
@@ -159,6 +163,7 @@ async def memory_write(
     agent: str = "",
 ) -> str:
     """Write a project memory markdown file and update indexes/cache."""
+    memory_dir.mkdir(parents=True, exist_ok=True)
     slug = slugify(title)
     path = memory_dir / f"{slug}.md"
     tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
@@ -223,6 +228,7 @@ async def mcp_feedback(
     notes: str = "",
 ) -> str:
     """Write a structured markdown feedback record about MCP usability."""
+    memory_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
     rating = feedback_rating(rating)
     agent = (agent or "unknown").strip()

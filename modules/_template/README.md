@@ -1,6 +1,6 @@
 # Module Template
 
-Copy this directory to create a new module.
+Copy this directory to create a new module. Keep this README structure in every new module so `docs_sync` can refresh generated facts.
 
 ## Quick Start
 
@@ -8,87 +8,140 @@ Copy this directory to create a new module.
 # 1. Copy the template
 cp -r modules/_template modules/YOUR_MODULE_KEY
 
-# 2. Replace placeholders (case-sensitive):
-#    MODULE_KEY          → your-module-key
-#    MODULE_DISPLAY_NAME → Your Module Display Name
+# 2. Replace placeholders, case-sensitive:
+#    MODULE_KEY          -> your-module-key
+#    MODULE_DISPLAY_NAME -> Your Module Display Name
 #
 #    Files to update:
+#      README.md
 #      manifest.json
+#      frontend/index.vue
 #      sandbox/package.json
 #      sandbox/index.html
 #      sandbox/src/App.vue
-#
-# 3. Set sandbox port (pick a unique port, check existing sandboxes):
-#    Option A: export VITE_SANDBOX_PORT=5175 && npm run dev
-#    Option B: edit sandbox/vite.config.ts default value (currently 5173)
 
-# 4. Install and run
+# 3. Pick a unique sandbox port if needed
+#    export VITE_SANDBOX_PORT=5175 && npm run dev
+
+# 4. Install and run the isolated sandbox
 cd modules/YOUR_MODULE_KEY/sandbox
 npm install
 npm run dev
 ```
 
-## Directory Structure
+The template is frontend-only by default: `manifest.backend.enabled=false` and no `backend/` directory is present. If the module needs backend behavior, add module-local `backend/router.py`, schemas, service, models, capabilities, and sandbox tests; do not place business logic in `backend/app/`.
 
+## Responsibility
+
+Describe what the module owns in one or two paragraphs. Keep history, task notes, and delivery logs out of the module README.
+
+## Manifest Contract
+
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"MODULE_KEY"` |
+| name | `"MODULE_DISPLAY_NAME"` |
+| category | `"tools"` |
+| component_key | `"index.vue"` |
+| route_prefix | `null` |
+| permissions | `["viewer", "editor", "admin"]` |
+| backend.enabled | `false` |
+| singleton | `false` |
+| show_in_launcher | `true` |
+| supported_formats | `[]` |
+<!-- /DOCS-SYNC -->
+
+## Current Capabilities
+
+List current user-visible capabilities. Do not describe planned or historical capabilities as current facts.
+
+## HTTP API / Endpoint Families
+
+- Frontend-only modules: `N/A`.
+- Backend modules: list module-local endpoint families and keep the exact route facts synchronized from code.
+
+## Public Actions / Capability Contract
+
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
+
+Total public actions: 0
+
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| N/A | N/A | N/A | No public backend capability |
+<!-- /DOCS-SYNC -->
+
+## Data Ownership
+
+- Own only tables prefixed by this module key when backend storage exists.
+- Do not read/write another module's tables directly.
+- Use `/api/modules/call` or `platform.modules.call` for cross-module interaction.
+
+## Cross-Module Dependencies
+
+List any cross-module calls here. If there are none, write `None`.
+
+## File Access / Permission Boundary
+
+- Any `file_id` read must pass framework file access checks before disk access.
+- Module-generated files must stay under framework-managed file services or module-owned paths.
+- Do not assume host desktop access from terminal or sandbox tools.
+
+## Frontend / Backend Structure
+
+```text
+modules/MODULE_KEY/
+  manifest.json
+  README.md
+  frontend/
+    index.vue
+  runtime/
+    index.ts
+  sandbox/
+    package.json
+    vite.config.ts
+    src/App.vue
 ```
-modules/{module_key}/
-  manifest.json          ← Module identity (name, icon, icon_asset, permissions, window spec, backend router)
-  frontend/              ← Your Vue components and business logic
-    index.vue            ← Entry component (referenced by manifest.component_key)
-    assets/              ← Module static assets (icons, images — NOT in framework dir)
-  backend/               ← (Optional) Python FastAPI router
-    router.py            ← Export `router = APIRouter(prefix="/api/xxx")`
-  runtime/               ← Runtime middle layer (copied from _template)
-    index.ts             ← getApiUrl(), getModuleSetting(), hasPermission(), initRuntime()
-  sandbox/               ← Independent dev environment
-    package.json         ← npm dependencies
-    vite.config.ts       ← Vite config with proxy to backend
-    runtime.config.json  ← Sandbox settings (API URL, permissions, module prefs)
-    index.html           ← Entry HTML
-    src/main.ts          ← Vue app bootstrap
-    src/App.vue          ← Sandbox shell wrapping your module entry
+
+For backend-enabled modules, add:
+
+```text
+modules/MODULE_KEY/backend/
+  router.py
+  schemas.py
+  service.py
+  models.py
+  capabilities.py
+modules/MODULE_KEY/sandbox/test_module.py
 ```
 
-### Icon
+## Acceptance
 
-Module icons live in the module directory, never in framework assets.
+<!-- DOCS-SYNC: section=sandbox -->
+| Area | Status | Verification |
+|---|---|---|
+| README | PASS | `modules/MODULE_KEY/README.md` |
+| Acceptance matrix | DEBT | Run `docs_sync` and `module_sandbox_matrix` after module creation |
+| Backend sandbox | SKIP | `N/A` |
+| Frontend sandbox | PASS | `cd modules/MODULE_KEY/sandbox && npm run build` |
+| Matrix check | PASS | `python3.14 dev_toolkit/module_sandbox_matrix.py --json` |
+<!-- /DOCS-SYNC -->
 
-- `manifest.icon` — Element Plus icon key for SVG fallback (e.g. `"ChatDotRound"`, `"Collection"`)
-- `manifest.icon_asset` — Optional, path to a custom PNG relative to `frontend/` (e.g. `"assets/icon.png"`)
-
-Place your PNG at `modules/{key}/frontend/assets/icon.png` and declare it in manifest. The build pipeline auto-registers it — no framework file changes needed.
-
-See `开发文档/03_模块开发文档/README.md` → 图标（Icon） for the full spec.
-
-## Sandbox Development
-
-- `npm run dev` starts the sandbox at a unique port
-- API calls to `/api/*` are proxied to the main backend
-- The sandbox imports your module entry via `@modules/MODULE_KEY/frontend/index.vue`
-- The sandbox registers Element Plus globally to keep isolated local preview simple. The main framework still uses on-demand Element Plus imports and chunk splitting.
-- When development is complete, run `cd frontend && npm run build` to verify integration
-
-## Runtime Drift Check
-
-Most modules should keep `runtime/index.ts` byte-for-byte aligned with
-`modules/_template/runtime/index.ts`. If a module genuinely needs extra runtime APIs,
-keep the custom code local and register it as an intentional variant in
-`frontend/scripts/check-runtime-drift.js`.
-
-Run this after touching runtime code:
+## Reproducible Checks
 
 ```bash
-cd frontend && npm run check:runtime-drift
+cd modules/MODULE_KEY/sandbox && npm run build
+python3.14 dev_toolkit/capability_contract_diff.py --module MODULE_KEY --include-parameters
+python3.14 dev_toolkit/module_sandbox_matrix.py --json
 ```
 
-## If the Sandbox Template Isn't Enough
+If the module has backend behavior, also run the module sandbox test and live probes/capability calls.
 
-The sandbox is a minimal shell. If your module needs framework features that aren't available:
+## Boundaries
 
-1. Add a local adapter in `runtime/` first.
-2. Use module-local mock data, stub services, or test components inside the sandbox.
-3. Add any extra dependencies to `sandbox/package.json`.
-4. If the capability should become shared, promote it to a platform API or runtime contract before using it in the module.
-
-The goal is that your module frontend code (`modules/{name}/frontend/`) never imports from
-`@/` (framework) — it only imports from `../runtime` and `@modules/...` (other modules).
+- Module tasks may change only `modules/MODULE_KEY/` unless a separate framework task is explicitly assigned.
+- Module UI must use module runtime/platform APIs, not private framework imports.
+- Runtime `register_capability(...)` is authoritative; manifest `public_actions` must not drift.
+- Keep the three `DOCS-SYNC` marker blocks in this README. `docs_sync` updates existing blocks; it does not infer where missing blocks belong.

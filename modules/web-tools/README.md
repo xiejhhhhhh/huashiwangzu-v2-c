@@ -1,70 +1,109 @@
-# web-tools — Web search and page fetching (no API key)
+# web-tools — 联网工具
 
 ## Responsibility
-Provides web search (DuckDuckGo HTML search) and web page content fetching for agents. No API key required — uses `ddgs` for search and `httpx + lxml` for page extraction. SSRF protection blocks internal network addresses.
 
-## Public capabilities
+联网工具
 
-| Capability | Parameters | Returns | min_role |
-|---|---|---|---|
-| `web-tools:search` | `query` (str), `top_k` (int, default 8, max 20) | `{results: [{title, url, snippet}], error}` | viewer |
-| `web-tools:fetch` | `url` (str), `max_chars` (int, default 8000) | `{url, title, text, truncated, error}` | viewer |
+## Manifest Contract
 
-## HTTP endpoints
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"web-tools"` |
+| name | `"联网工具"` |
+| category | `"tools"` |
+| window_type | `"background-service"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/web-tools"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/web-tools` |
+<!-- /DOCS-SYNC -->
 
-All under `/api/web-tools`:
+## Current Capabilities
 
-| Method | Path | Purpose |
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
+
+## HTTP API / Endpoint Families
+
+Backend HTTP prefix: `/api/web-tools`
+
+| Family | Methods | Purpose |
 |---|---|---|
-| GET | `/health` | Module health check |
-| POST | `/search` | DuckDuckGo web search |
-| POST | `/fetch` | Fetch and extract web page text content |
+| `fetch` | POST | Endpoint family under `/api/web-tools` |
+| `health` | GET | Endpoint family under `/api/web-tools` |
+| `search` | POST | Endpoint family under `/api/web-tools` |
 
-## Data tables
-None. Stateless module.
+## Public Actions / Capability Contract
 
-## How to query/use
-Agent discovers `web-tools__search` and `web-tools__fetch` as function tools. Call via `call_capability("web-tools", "search", {...})` or `call_capability("web-tools", "fetch", {...})`.
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-## Boundaries/notes
-- **Search**: Uses DuckDuckGo HTML endpoint via `ddgs` library, region `cn-zh`, safesearch moderate. Uses direct network by default; set `WEB_TOOLS_PROXY` to opt into a proxy.
-- **Fetch**: SSRF-protected via `app.core.url_safety.validate_safe_url` — blocks internal/private IP ranges (localhost, 10.x, 172.16-31.x, 192.168.x, etc.), cloud metadata endpoints (169.254.169.254), non-http(s) schemes, embedded credentials, and DNS lookups to private addresses (fail-closed on DNS failure). Redirect targets are revalidated before each hop. Rejects binary content types on both HEAD and GET. Strips script/style/nav/footer before extracting text.
-- **Limits**: `top_k` must be 1-20, `max_chars` must be 1-8000, query length is capped at 500 chars, URL length is capped at 2048 chars, and response downloads are hard-capped at 5MB while streaming instead of trusting only `Content-Length`.
-- **Failure semantics**: capability failures return `success:false` internally so `/api/modules/call` converts them to unified framework errors; direct HTTP endpoints raise framework `ValidationError` instead of returning 200-style fake failures.
-- **Proxy**: No proxy is used unless `WEB_TOOLS_PROXY` is set.
-- Background-service window type, not shown in launcher.
-- Timeouts: search 10s, fetch 15s, max content 5MB.
+Total public actions: 2
 
-## Verification
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `fetch` | `viewer` | `max_chars`, `url` | 抓取指定网址正文文本(无需API key)。自动过滤 script/style/nav/footer。含SSRF防护，拒绝内网地址。 |
+| `search` | `viewer` | `query`, `top_k` | 联网搜索网页,返回标题/链接/摘要(无需API key)。基于 DuckDuckGo HTML 端点。 |
+<!-- /DOCS-SYNC -->
 
-```bash
-cd backend && .venv/bin/ruff check ../modules/web-tools/backend/router.py ../modules/web-tools/sandbox/test_module.py
-cd backend && .venv/bin/python -m pytest ../modules/web-tools/sandbox/test_module.py
-```
+## Data Ownership
 
-Live-stack checks:
+| Table / Prefix | Purpose |
+|---|---|
+| `web_tools_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-```text
-call_capability("web-tools", "fetch", {"url": "http://127.0.0.1:33000/api/health"})  # expected failure: SSRF guard
-call_capability("web-tools", "search", {"query": "华世王镞", "top_k": 1})
-```
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-## Acceptance Matrix
+## Cross-Module Dependencies
 
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | not present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `web-tools`, window `background-service`, formats: Not format-bound. |
-| Backend capability | PASS | 2 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Background service is intentionally hidden from launcher with empty component_key. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/web-tools/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `web-tools:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep component_key empty so the launcher never opens a blank background window. |
+| Manifest contract | PASS | `modules/web-tools/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="web-tools", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/web-tools/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module web-tools --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/web-tools/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module web-tools --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/web-tools/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

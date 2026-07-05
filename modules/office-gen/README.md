@@ -1,134 +1,118 @@
-# office-gen — Office document generator
+# office-gen — Office Document Generator
 
 ## Responsibility
 
-Generates and converts office documents (`docx`, `xlsx`, `pptx`, `pdf`) from structured JSON data. Generation uses `python-docx`, `openpyxl`, `python-pptx`, and `reportlab`; conversion uses LibreOffice headless. File outputs are persisted through the framework file/artifact services, while this module owns only its generation and conversion logic.
+Office generation module for docx, xlsx, pptx, pdf, Content IR aliases, and artifact generation.
 
-## Public Capabilities
+## Manifest Contract
 
-8 capabilities are registered through the framework capability registry.
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"office-gen"` |
+| name | `"Office Document Generator"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/office-gen"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/office-gen` |
+<!-- /DOCS-SYNC -->
 
-| Capability | Parameters | Returns | min_role |
+## Current Capabilities
+
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
+
+## HTTP API / Endpoint Families
+
+Backend HTTP prefix: `/api/office-gen`
+
+| Family | Methods | Purpose |
+|---|---|---|
+| `convert` | POST | Endpoint family under `/api/office-gen` |
+| `docx` | POST | Endpoint family under `/api/office-gen` |
+| `health` | GET | Endpoint family under `/api/office-gen` |
+| `pdf` | POST | Endpoint family under `/api/office-gen` |
+| `pptx` | POST | Endpoint family under `/api/office-gen` |
+| `xlsx` | POST | Endpoint family under `/api/office-gen` |
+
+## Public Actions / Capability Contract
+
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
+
+Total public actions: 8
+
+| Action | min_role | Parameters | Purpose |
 |---|---|---|---|
-| `office-gen:docx` | `filename`, non-empty `content` or Content IR `blocks`/`content_ir`, optional `folder_id` | framework file info `{file_id, name, extension, size, mime_type, deduplicated}` | editor |
-| `office-gen:xlsx` | `filename`, non-empty `sheets` or Content IR sheet `blocks`/`content_ir`, optional `folder_id` | framework file info | editor |
-| `office-gen:pptx` | `filename`, non-empty `slides` or Content IR slide `blocks`/`content_ir`, optional `folder_id` | framework file info | editor |
-| `office-gen:pdf` | `filename`, non-empty `content` or Content IR `blocks`/`content_ir`, optional `folder_id` | framework file info | editor |
-| `office-gen:convert` | `file_id`, `target_format` | new framework file info | editor |
-| `office-gen:generate_to_artifact` | `format`, `filename`, matching non-empty `content`/`sheets`/`slides`, optional `folder_id` | `{artifact_id, file_id, content_package_id, content_package_status, content_package_error, format, name, extension, size, status}` | editor |
-| `office-gen:replace_existing` | `format`, `target_file_id`, matching non-empty `content`/`sheets`/`slides` | `{file_id, content_package_id, content_package_status, content_package_error, name, size, format, status}` | editor |
-| `office-gen:export_to_artifact` | `file_id` | `{artifact_id, file_id, content_package_id, name, extension, size}` | editor |
+| `convert` | `editor` | `file_id`, `target_format` | Convert an existing office file from one format to another (e.g. pptx→pdf, docx→pdf) using LibreOffice headless |
+| `docx` | `editor` | `blocks`, `content`, `content_ir`, `filename`, `folder_id` | Generate a Word (.docx) document from structured JSON and save it to the file system |
+| `export_to_artifact` | `editor` | `file_id` | Export an existing office file as an artifact for version management |
+| `generate_to_artifact` | `editor` | `blocks`, `content`, `content_ir`, `filename`, `folder_id`, `format`, `sheets`, `slides` | Generate an office file and return as an artifact (no file-name conflict) |
+| `pdf` | `editor` | `blocks`, `content`, `content_ir`, `filename`, `folder_id` | Generate a PDF document from structured JSON (same schema as docx) and save it to the file system |
+| `pptx` | `editor` | `blocks`, `content_ir`, `filename`, `folder_id`, `slides` | Generate a PowerPoint (.pptx) presentation from structured JSON and save it to the file system |
+| `replace_existing` | `editor` | `blocks`, `content`, `content_ir`, `filename`, `format`, `sheets`, `slides`, `target_file_id` | Generate an office file and replace an existing file entry |
+| `xlsx` | `editor` | `blocks`, `content_ir`, `filename`, `folder_id`, `sheets` | Generate an Excel (.xlsx) spreadsheet from structured JSON and save it to the file system |
+<!-- /DOCS-SYNC -->
 
-Content blocks accept both legacy Chinese block names and Content IR English block names:
+## Data Ownership
 
-```text
-heading/标题, paragraph/段落, list, code, table/表格, image/图片, page_break/分页
-```
+| Table / Prefix | Purpose |
+|---|---|
+| `office_gen_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-Table aliases:
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-```text
-header/table_header/表头
-rows/table_rows/行
-data.headers/data.columns + data.rows
-```
+## Cross-Module Dependencies
 
-XLSX sheets accept string columns, Content IR-style column objects such as `{name: "amount"}`, or spreadsheet IR blocks shaped as `sheet.children[].table`. PPTX slides accept normal `{title, bullets}`, `{name, elements}`, or presentation IR `slide.children`.
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-The low-level generators and capability entrypoints reject empty `content`/`sheets`/`slides` and blocks that render no text/table/image content. Conversion also rejects zero-byte LibreOffice outputs, so successful responses should always point at a non-empty artifact or framework file.
+## File Access / Permission Boundary
 
-## HTTP Endpoints
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
-HTTP endpoints are for direct testing and sandbox use. Artifact-only capabilities are capability-registry only.
+## Frontend / Backend Structure
 
-All HTTP routes are under `/api/office-gen`:
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Health check and LibreOffice availability |
-| POST | `/docx` | Generate Word document |
-| POST | `/xlsx` | Generate Excel spreadsheet |
-| POST | `/pptx` | Generate PowerPoint presentation |
-| POST | `/pdf` | Generate PDF document |
-| POST | `/convert` | Convert between office formats |
+## Acceptance
 
-## Content IR And Artifact Boundary
-
-- `docx/xlsx/pptx/pdf` generate physical framework files through `upload_file`.
-- `convert` validates file access through `read_uploaded_file`, which wraps `check_file_access`, extension validation, storage path resolution, and path traversal protection before LibreOffice reads the source path.
-- `generate_to_artifact` creates a framework artifact through `create_artifact`, then attempts to create/parse a Content Package for the generated file.
-- `replace_existing` updates an existing framework file through `replace_file_content`, which enforces framework write access, then attempts to refresh the associated Content Package.
-- Content Package sync is explicit in returned fields: `content_package_status` is `parsed`, `degraded`, `partial`, `failed`, or another framework status. A generated file/artifact can still be created while parsing fails; in that case `content_package_status="failed"` and `content_package_error` is populated.
-- `export_to_artifact` checks file access before reading bytes or looking up an accessible Content Package.
-- Framework Content IR services remain owned by `backend/app/services/content/*`; required changes there must be raised as framework tasks, not made in this module.
-
-## Data Tables
-
-None owned by this module. Outputs are stored in framework tables:
-
-```text
-framework_file_items
-framework_artifacts
-framework_artifact_versions
-framework_artifact_operations
-framework_content_packages
-framework_content_package_versions
-```
-
-## Validation
-
-Run from the repository root:
-
-```bash
-backend/.venv/bin/python modules/office-gen/sandbox/test_module.py
-cd backend && .venv/bin/python -m pytest ../modules/office-gen/tests/test_generator.py -v
-cd backend && .venv/bin/python -m ruff check ../modules/office-gen/backend ../modules/office-gen/tests ../modules/office-gen/sandbox
-```
-
-Live-stack checks should use the project toolkit:
-
-```text
-capabilities(module="office-gen")
-probe("GET", "/api/office-gen/health", role="editor")
-call_capability("office-gen", "docx", {"filename":"...", "content":[...]}, role="editor")
-```
-
-Generated live-stack test files must be cleaned up by the creator after verification.
-
-## Product Closure Matrix
-
-| Flow | Status | Notes |
-|---|---|---|
-| Generate docx/xlsx/pptx/pdf | PASS | HTTP endpoints and capabilities validate non-empty renderable payloads before file writes. |
-| Template / parameter validation | PASS | `generation_contract.py` rejects empty content, unsupported formats, invalid ids, and zero-render generator output. |
-| Failure state | PASS | Generator/converter dependency, empty payload, bad format, and bad file id errors are raised as structured framework errors. |
-| File publish | PASS | `docx/xlsx/pptx/pdf` write framework files through `upload_file`; response includes `file_id`, extension, size, and dedupe state. |
-| Artifact publish | PASS | `generate_to_artifact` creates an artifact and reports `content_package_status` plus `content_package_error` explicitly. |
-| Existing file replacement | PASS | `replace_existing` uses framework `replace_file_content` and reports refreshed ContentPackage status. |
-| Existing file export | PASS | `export_to_artifact` checks file access before reading bytes and creates an artifact version record. |
-| Frontend state | PASS | Main UI can generate either a file or artifact and displays file, artifact, and ContentPackage status instead of silent success. |
-| Sandbox coverage | PASS | Covers all four generators, invalid parameters, empty outputs, and artifact status response shape. |
-
-## Known Follow-Up Outside This Module
-
-- Framework Content IR export currently decides fallback behavior in `backend/app/services/content/export_service.py`. If product policy requires Content Package parsing failure to fail the whole artifact operation instead of returning an explicit `content_package_status="failed"`, that should be handled as a separate framework task.
-
-## Acceptance Matrix
-
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `office-gen`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 8 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/office-gen/sandbox/test_module.py` covers generators, validation, and artifact status shape. |
-| Smoke | PASS | Use `call_capability` for `office-gen:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/office-gen/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="office-gen", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/office-gen/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module office-gen --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/office-gen/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module office-gen --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/office-gen/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

@@ -1,23 +1,21 @@
 # Frontend
 
-The frontend is the Vue desktop shell for V2.
+The frontend is the Vue desktop shell for V2. Business module UI belongs under `modules/`.
 
 ## Stack
 
 - Vue 3
 - TypeScript
 - Vite
+- Pinia
 - Element Plus
 
 ## Responsibilities
 
-- Desktop shell entry.
 - Login and app entry routing.
-- Window system, taskbar, launcher, selection, drag and drop, context menu.
-- Shared UI, API client, upload helpers, icons, and file associations.
-- Dynamic loading of business modules.
-
-Business module UI should live under `modules/`, not inside the desktop shell.
+- Desktop shell, windows, taskbar, launcher, tray, context menus, drag/drop.
+- Shared API client, upload helpers, icons, and file associations.
+- Dynamic loading of module frontend entries.
 
 ## Main Paths
 
@@ -32,7 +30,9 @@ frontend/src/styles/
 ## Commands
 
 ```bash
-npm run dev
-npm run build
+cd frontend && npm run dev
+cd frontend && npm run build
+cd frontend && npm run scan:modules
 ```
 
+Module frontend code must use runtime/platform APIs and must not import desktop shell internals.

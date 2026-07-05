@@ -1,116 +1,135 @@
-# excel-engine — spreadsheet editor
+# excel-engine — Excel 编辑器
 
-excel-engine 是桌面壳里的表格编辑器，负责打开、编辑、保存、导出 XLSX/CSV。它也是文件引擎样板：解析借内核，状态和 UI 自研，跨模块能力只暴露必要的 parse。
+## Responsibility
 
-## 功能
+Spreadsheet engine for parsing, workbook state, edits, history, versions, export, compile, and desktop publish.
 
-| 功能 | 说明 |
+## Manifest Contract
+
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
 |---|---|
-| 打开文件 | 解析 XLSX/CSV，写入 `excel_*` 状态表 |
-| 编辑 | 单元格值、样式、合并、行列、剪贴板 |
-| 历史 | 每次写操作前记录快照，支持撤销和恢复 |
-| 导出 | 状态重新生成 XLSX/CSV |
-| Agent 能力 | `excel-engine:parse` 供知识库和 Agent 读取表格结构 |
+| key | `"excel-engine"` |
+| name | `"Excel 编辑器"` |
+| category | `"file-editor"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `true` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `None` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/excel-engine` |
+<!-- /DOCS-SYNC -->
 
-## 如何调用
+## Current Capabilities
 
-HTTP 前缀：`/api/excel-engine`
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-| 端点 | 方法 | 用途 |
+## HTTP API / Endpoint Families
+
+Backend HTTP prefix: `/api/excel-engine`
+
+| Family | Methods | Purpose |
 |---|---|---|
-| `/health` | GET | 健康检查 |
-| `/parse` | POST | 解析 xlsx/csv 文件 |
-| `/open` | POST | 打开并入库 |
-| `/dispatch` | POST | 兼容旧 API 的统一调度 |
-| `/edit` | POST | 编辑单元格 |
-| `/style` | POST | 修改样式 |
-| `/clipboard` | POST | 复制/粘贴 |
-| `/table` | POST | 行列和合并操作 |
-| `/state` | POST | 读取状态、撤销、恢复、历史 |
-| `/export` | POST | 导出 |
-| `/download/{state_key}` | GET | 下载导出文件 |
+| `clipboard` | POST | Endpoint family under `/api/excel-engine` |
+| `dispatch` | POST | Endpoint family under `/api/excel-engine` |
+| `download` | GET | Endpoint family under `/api/excel-engine` |
+| `edit` | POST | Endpoint family under `/api/excel-engine` |
+| `export` | POST | Endpoint family under `/api/excel-engine` |
+| `health` | GET | Endpoint family under `/api/excel-engine` |
+| `open` | POST | Endpoint family under `/api/excel-engine` |
+| `parse` | POST | Endpoint family under `/api/excel-engine` |
+| `state` | POST | Endpoint family under `/api/excel-engine` |
+| `style` | POST | Endpoint family under `/api/excel-engine` |
+| `table` | POST | Endpoint family under `/api/excel-engine` |
 
-跨模块调用：
+## Public Actions / Capability Contract
 
-```python
-call_capability("excel-engine", "parse", {"file_id": 123}, caller="user:1")
-```
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-## 目录
+Total public actions: 13
 
-| 路径 | 说明 |
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `append_rows` | `editor` | `rows`, `sheet`, `state_key` | Append rows to the end of a sheet |
+| `compile_xlsx` | `viewer` | `sheet`, `state_key` | Compile workbook to temporary XLSX for download without creating a file record |
+| `create_workbook` | `editor` | `name`, `state_key` | Create a new empty workbook in the database |
+| `export_xlsx` | `editor` | `folder_id`, `sheet`, `state_key` | Export workbook to XLSX file |
+| `import_file_to_workbook` | `editor` | `file_id`, `state_key` | Import a file into a database workbook for editing |
+| `list_history` | `viewer` | `state_key` | List operation history for a workbook |
+| `list_versions` | `viewer` | `state_key` | List saved versions of a workbook |
+| `parse` | `viewer` | `file_id` | Parse XLSX/CSV files into cell data |
+| `publish_to_desktop` | `editor` | `folder_id`, `sheet`, `state_key`, `target_file_id` | Publish workbook to desktop |
+| `redo` | `editor` | `state_key` | Redo the last undone operation |
+| `restore_version` | `editor` | `state_key`, `version_id` | Restore a workbook to a saved version |
+| `undo` | `editor` | `state_key` | Undo the last operation |
+| `update_range` | `editor` | `rows`, `sheet`, `start_col`, `start_row`, `state_key` | Update a range of cells |
+<!-- /DOCS-SYNC -->
+
+## Data Ownership
+
+| Table / Prefix | Purpose |
 |---|---|
-| `frontend/` | Vue 网格、工具栏、右键菜单、历史面板 |
-| `backend/router.py` | HTTP API 和能力注册 |
-| `backend/models.py` | `excel_*` SQLAlchemy 模型 |
-| `backend/engine/` | XLSX/CSV 解析和生成 |
-| `backend/state/` | 状态持久化、快照、撤销恢复 |
-| `backend/table/` | 编辑、样式、剪贴板、行列业务 |
-| `backend/tool/` | A1 地址、公式、配置 |
+| `excel_cells` | Owned by `excel-engine` module |
+| `excel_col_widths` | Owned by `excel-engine` module |
+| `excel_history` | Owned by `excel-engine` module |
+| `excel_redo_stack` | Owned by `excel-engine` module |
+| `excel_row_heights` | Owned by `excel-engine` module |
+| `excel_sheets` | Owned by `excel-engine` module |
+| `excel_versions` | Owned by `excel-engine` module |
+| `excel_workbooks` | Owned by `excel-engine` module |
 
-## 数据表
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-`excel_workbooks`、`excel_sheets`、`excel_cells`、`excel_col_widths`、`excel_row_heights`、`excel_history`、`excel_redo_stack`、`excel_versions`。
+## Cross-Module Dependencies
 
-### 2026-07-03 反向审计结论
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-本轮从数据库空表反查 `create_workbook/import_file_to_workbook/update_range/append_rows/undo/redo/list_history/list_versions/restore_version/compile_xlsx` 链路，修复点如下：
+## File Access / Permission Boundary
 
-- `excel_col_widths`、`excel_row_heights`：导入和写回链路已统一经完整状态持久化，写入 cells/styles/merges 的同时写入宽高和 sheet 尺寸。
-- `excel_redo_stack`：undo 会保存当前状态到 redo，redo 后清栈；新增写操作成功后清 redo，避免旧 redo 误恢复。
-- `excel_versions`：`export.save_version` 已落库版本快照，`list_versions/restore_version` 覆盖 file_id + owner 过滤，恢复时同步 cells/styles/merges/宽高/尺寸。
-- 快照从浅引用改为深拷贝，避免“操作前快照”被后续原地修改污染，导致 undo/redo 看似成功但状态没变。
-- `append_rows` 修正列偏移，追加行从 A 列开始；`create_workbook` 现在把传入 name 写入数据库。
-- `table.delete_shift_right/delete_shift_up/insert_shift_right/insert_shift_down` 从空实现改为真实移位，避免 `code:0` 假成功。
-- `compile_xlsx` 成功返回临时文件信息；缺失 workbook 返回结构化业务失败，不产生文件记录。
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
-验证时会创建临时 workbook/file/version/compile 文件，测试结束必须删除。当前 sandbox 测试已覆盖导入带宽高 XLSX、update/append、undo/redo、history、save/list/restore version、compile_xlsx，并清理测试数据；因此生产库中这些可选表为空不再单独视为链路不可用，需要结合流程探针判断。
+## Frontend / Backend Structure
 
-## 边界
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | present |
 
-- 表名前缀固定为 `excel_*`。
-- 前端 UI 自研，不整体引入第三方表格编辑器。
-- 文件读取和导出必须经框架文件权限/文件服务。
-- 模块对外只声明 `parse` 能力；编辑 API 是模块自身 HTTP 表面。
+## Acceptance
 
-## 产品闭环矩阵
-
-| 链路 | 状态 | 说明 |
-|---|---|---|
-| parse/open/import | PASS | `parse`、`open`、`import_file_to_workbook` 都先经 `check_file_access` 或 `check_file_write_access` 校验文件权限。 |
-| edit/append/table/style | PASS | 写操作前记录快照，成功后持久化 cells/styles/merges/宽高/尺寸并清空 redo。 |
-| undo/redo/history | PASS | `undo` 写入 redo，`redo` 恢复并返回状态 payload；`list_history` 走 owner/state_key 隔离。 |
-| versions | PASS | `save_version/list_versions/restore_version` 绑定 file_id + owner，跨文件 version_id 会拒绝。 |
-| export | PASS | `export_xlsx` 生成 XLSX，上传框架文件并创建 artifact，临时文件在成功/失败后清理。 |
-| compile | PASS | `compile_xlsx` 只返回临时文件，不产生文件记录；缺 workbook/非法路径/非法文件名返回语义失败，HTTP 模块调用层会翻成外层错误。 |
-| publish | PASS | `publish_to_desktop` 可新建框架文件或替换目标文件，并创建 artifact 记录。 |
-| 前端状态 | PASS | 编辑器显示加载/错误/操作成功状态；保存、导出、发布、撤销/恢复都会给明确反馈。 |
-| 测试污染 | PASS | sandbox 对 DB/file/version/compile 产物使用带前缀测试数据并在 finally 清理。 |
-
-## 验证
-
-```bash
-cd modules/excel-engine/sandbox && ../../../backend/.venv/bin/python test_module.py
-cd frontend && npm run build
-```
-
-## Acceptance Matrix
-
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `excel-engine`, window `normal`, formats: xlsx, xls, csv. |
-| Backend capability | PASS | 13 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | `parse/open/import` use framework file permission checks before resolving storage paths. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/excel-engine/sandbox/test_module.py` covers parse/edit/undo/redo/history/version/export/publish shapes and cleanup. |
-| Smoke | PASS | Use `call_capability` for `excel-engine:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/excel-engine/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="excel-engine", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/excel-engine/sandbox/test_module.py` |
+| Frontend sandbox | PASS | `cd modules/excel-engine/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module excel-engine --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/excel-engine/sandbox/test_module.py
 cd modules/excel-engine/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module excel-engine --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/excel-engine/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

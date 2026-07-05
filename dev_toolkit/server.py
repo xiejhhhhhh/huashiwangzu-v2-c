@@ -46,6 +46,9 @@ try:
     from dev_toolkit.db_reverse_tools import handle_tool as db_reverse_handle_tool
     from dev_toolkit.db_reverse_tools import handles_tool as db_reverse_handles_tool
     from dev_toolkit.db_reverse_tools import tool_definitions as db_reverse_tool_definitions
+    from dev_toolkit.docs_sync import handle_tool as docs_sync_handle_tool
+    from dev_toolkit.docs_sync import handles_tool as docs_sync_handles_tool
+    from dev_toolkit.docs_sync import tool_definitions as docs_sync_tool_definitions
     from dev_toolkit.edit_tools import handle_tool as edit_handle_tool
     from dev_toolkit.edit_tools import handles_tool as edit_handles_tool
     from dev_toolkit.edit_tools import tool_definitions as edit_tool_definitions
@@ -110,6 +113,9 @@ except ModuleNotFoundError:
     from db_reverse_tools import handle_tool as db_reverse_handle_tool
     from db_reverse_tools import handles_tool as db_reverse_handles_tool
     from db_reverse_tools import tool_definitions as db_reverse_tool_definitions
+    from docs_sync import handle_tool as docs_sync_handle_tool
+    from docs_sync import handles_tool as docs_sync_handles_tool
+    from docs_sync import tool_definitions as docs_sync_tool_definitions
     from edit_tools import handle_tool as edit_handle_tool
     from edit_tools import handles_tool as edit_handles_tool
     from edit_tools import tool_definitions as edit_tool_definitions
@@ -1754,6 +1760,7 @@ async def list_tools() -> list[Tool]:
         *mailbox_tool_definitions(),
         *memory_tool_definitions(),
         *contract_tool_definitions(),
+        *docs_sync_tool_definitions(),
         *code_tool_definitions(),
         *edit_tool_definitions(),
         *db_reverse_tool_definitions(),
@@ -1790,6 +1797,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif contract_handles_tool(name):
             result = await contract_handle_tool(REPO_ROOT, name, arguments)
+        elif docs_sync_handles_tool(name):
+            result = await docs_sync_handle_tool(REPO_ROOT, name, arguments)
         elif code_handles_tool(name):
             result = await code_handle_tool(_run_command_json, REPO_ROOT, _CODEGRAPH_CLI, _RUFF_CLI, name, arguments)
         elif edit_handles_tool(name):

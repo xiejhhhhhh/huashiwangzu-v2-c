@@ -1,91 +1,112 @@
-# im — Internal messaging (IM) module
+# im — 消息
 
 ## Responsibility
-Provides user-to-user and system-to-user messaging within the desktop shell: conversation management, message sending/reading, unread counts, and user listing. Supports both HTTP API and cross-module capability invocation.
 
-## Public capabilities
+消息
 
-| Capability | Parameters | Returns | min_role |
-|---|---|---|---|
-| `im:notify` | `user_id` (int), `content` (str), `title` (str?) | `{success, message_id, conversation_id}` | editor |
-| `im:send` | `conversation_id` (int), `content` (str) | `{success, message_id, conversation_id}` | viewer |
+## Manifest Contract
 
-Capability success paths keep the legacy inner `success: true` field for existing callers. Failure paths raise structured framework exceptions so `/api/modules/call` returns the unified `{success,data,error}` envelope instead of wrapping an inner `success:false` fake-green payload.
-
-`notify` pushes a system notification to a user's IM (creates or reuses a conversation with system user `id=0`). `send` sends a message to an existing conversation on behalf of the caller.
-
-## HTTP endpoints
-
-All under `/api/im`:
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/conversations` | List current user's conversations with unread counts |
-| GET | `/conversations/{id}/messages` | List messages in a conversation (paginated) |
-| POST | `/conversations` | Create or reuse a single-user conversation without sending a message |
-| POST | `/messages` | Send a message (to existing conv or auto-create with target_user_id) |
-| POST | `/conversations/{id}/read` | Mark messages as read up to a given message_id |
-| GET | `/unread-count` | Total unread count across all conversations |
-| GET | `/users` | List system users available for chat (excludes self) |
-
-## Data tables
-
-All `im_*` prefix:
-
-| Table | Purpose |
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
 |---|---|
-| `im_conversations` | Conversation (type, members, last_message_summary) |
-| `im_messages` | Messages (conversation, sender, content, type) |
-| `im_read_state` | Per-user per-conversation last_read_message_id |
+| key | `"im"` |
+| name | `"消息"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `true` |
+| allow_multiple | `false` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/im"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/im` |
+<!-- /DOCS-SYNC -->
 
-## How to query/use
-Agent and other modules push notifications via framework `call_capability("im", "notify", {...})`. Scheduler module uses `im:notify` to deliver scheduled task results.
+## Current Capabilities
 
-## Boundaries/notes
-- Conversation members stored as JSON array in `member_ids` column (no join table).
-- System user `id=0` is a virtual identity for system notifications.
-- `notify` capability requires `editor` role; `send` requires `viewer`.
-- Database tables are auto-created on first use via `run_init()`.
-- Message content is trimmed, non-empty, and capped at 4000 characters.
-- Message pagination is capped at `page_size <= 100`.
-- Unread counts exclude messages sent by the current user, and sending a message advances the sender's read state.
-- `mark_read` validates that `last_read_message_id` belongs to the conversation before updating state.
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-## Validation
+## HTTP API / Endpoint Families
 
-```bash
-cd backend && .venv/bin/python -m ruff check ../modules/im/backend ../modules/im/sandbox/test_module.py
-cd backend && PYTHONPATH="$PWD:../modules" .venv/bin/python -m pytest ../modules/im/sandbox/test_module.py
-```
+Backend HTTP prefix: `/api/im`
 
-Live stack probes should use the existing backend on port 33000. Suggested checks:
+| Family | Methods | Purpose |
+|---|---|---|
+| `conversations` | GET/POST | Endpoint family under `/api/im` |
+| `messages` | POST | Endpoint family under `/api/im` |
+| `unread-count` | GET | Endpoint family under `/api/im` |
+| `users` | GET | Endpoint family under `/api/im` |
 
-```bash
-GET /api/im/conversations
-GET /api/im/unread-count
-POST /api/modules/call {"target_module":"im","action":"send","parameters":{"conversation_id":1,"content":"hello"}}
-```
+## Public Actions / Capability Contract
 
-## Known boundary debt
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-`/api/im/users` still reads framework user records because the current public `/api/users/*` endpoints require admin role and there is no viewer-level framework contact directory capability yet. This should be replaced by a framework public user-directory contract in a separate framework task; the IM module must not define that shared framework capability itself.
+Total public actions: 2
 
-## Acceptance Matrix
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `notify` | `editor` | `content`, `title`, `user_id` | 向用户发送站内通知 |
+| `send` | `viewer` | `content`, `conversation_id` | 向现有 IM 对话发送消息 |
+<!-- /DOCS-SYNC -->
 
+## Data Ownership
+
+| Table / Prefix | Purpose |
+|---|---|
+| `im_conversations` | Owned by `im` module |
+| `im_messages` | Owned by `im` module |
+| `im_read_state` | Owned by `im` module |
+
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
+
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `im`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 2 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/im/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `im:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/im/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="im", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/im/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module im --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/im/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module im --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/im/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

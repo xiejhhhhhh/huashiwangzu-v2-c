@@ -1,75 +1,107 @@
-# XLSX Parser Module
+# xlsx-parser — XLSX/CSV Parser
 
-Parse XLSX and CSV files into unified content blocks.
+## Responsibility
 
-## API
+XLSX/CSV Parser
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/xlsx-parser/health` | GET | Module health check (public, no auth) |
-| `/api/xlsx-parser/parse` | POST | Parse XLSX/CSV file by `file_id` |
+## Manifest Contract
 
-## Capability
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"xlsx-parser"` |
+| name | `"XLSX/CSV Parser"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/xlsx-parser"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/xlsx-parser` |
+<!-- /DOCS-SYNC -->
 
-| Module | Action | Input | Output |
-|--------|--------|-------|--------|
-| `xlsx-parser` | `parse` | `{"file_id": int}` | Unified content block skeleton |
+## Current Capabilities
 
-## Dependencies
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-- `openpyxl` (in backend venv)
-- Standard library `csv` for CSV parsing
+## HTTP API / Endpoint Families
 
-## Format Support
+Backend HTTP prefix: `/api/xlsx-parser`
 
-- `.xlsx` — sheet-wise table blocks. Formula cells preserve the formula text when no cached value is present.
-- `.csv` — CSV content as table blocks
+| Family | Methods | Purpose |
+|---|---|---|
+| `health` | GET | Endpoint family under `/api/xlsx-parser` |
+| `parse` | POST | Endpoint family under `/api/xlsx-parser` |
 
-Legacy `.xls` is not accepted by this module because the backend parser is based on `openpyxl`.
-Unsupported extensions fail through the framework unified error response instead of returning an empty success.
+## Public Actions / Capability Contract
 
-## Parser Contract
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-- File access is enforced through the framework uploaded-file capability path before disk reads.
-- Successful parses return `{file_id, format, blocks, resources}` plus optional `warnings` and `metadata`.
-- Empty workbooks/CSVs are valid empty parses and include explicit warnings such as `empty_workbook`.
-- Corrupt or unsupported files raise parser errors and are returned by the framework as `success:false`.
-- XLSX and CSV row output is capped at 5000 emitted non-empty rows per sheet/file with a truncation marker.
+Total public actions: 1
 
-## Verification
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `parse` | `viewer` | `file_id` | Parse XLSX/CSV files into unified content blocks |
+<!-- /DOCS-SYNC -->
 
-```bash
-# Health check
-curl http://127.0.0.1:33000/api/xlsx-parser/health
+## Data Ownership
 
-# Parse a file
-curl -X POST http://127.0.0.1:33000/api/xlsx-parser/parse \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{"file_id": <id>}'
+| Table / Prefix | Purpose |
+|---|---|
+| `xlsx_parser_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-# Sandbox parser regression test with real sample files
-cd modules/xlsx-parser/sandbox
-../../../backend/.venv/bin/python test_module.py
-```
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-## Acceptance Matrix
+## Cross-Module Dependencies
 
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `xlsx-parser`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/xlsx-parser/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `xlsx-parser:<action>` and release smoke/capability drift gates. |
-| Known debt | DEBT | Keep real sample coverage and Content IR compatibility in parser sandbox. |
+| Manifest contract | PASS | `modules/xlsx-parser/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="xlsx-parser", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/xlsx-parser/sandbox/test_module.py` |
+| Frontend sandbox | PASS | `cd modules/xlsx-parser/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module xlsx-parser --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/xlsx-parser/sandbox/test_module.py
 cd modules/xlsx-parser/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module xlsx-parser --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/xlsx-parser/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

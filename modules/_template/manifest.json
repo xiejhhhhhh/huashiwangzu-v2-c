@@ -1,6 +1,6 @@
 {
   "key": "MODULE_KEY",
-  "name": "Module Display Name",
+  "name": "MODULE_DISPLAY_NAME",
   "icon": "ModuleIcon",
   "icon_asset": "",
   "category": "tools",

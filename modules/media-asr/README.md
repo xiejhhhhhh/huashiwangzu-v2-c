@@ -1,90 +1,111 @@
-# media-asr — Media Audio/Video Speech Recognition
+# media-asr — Media ASR (Audio/Video to Text)
 
-Extract audio from video files and transcribe audio/video to timestamped text via mlx_whisper. Designed as both a standalone desktop workspace and a framework capability for Agent discovery.
+## Responsibility
 
-## UI Workspace
+Media ASR (Audio/Video to Text)
 
-A ready-to-use Vue 3 workspace (`frontend/index.vue`) with:
+## Manifest Contract
 
-| Feature | Description |
-|---------|-------------|
-| Mode selector | 视频转文字 / 仅提取音频 / 音频转文字 |
-| File selection | Enter a file_id directly or upload a file via the framework |
-| Parameters | Audio format, sample rate, Whisper model, language, save toggles |
-| Result display | Full transcript, timestamped segment table, saved file IDs |
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"media-asr"` |
+| name | `"Media ASR (Audio/Video to Text)"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `true` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/media-asr"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/media-asr` |
+<!-- /DOCS-SYNC -->
 
-No Douyin download support. No cookie/credential login.
+## Current Capabilities
 
-## Capabilities
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-| Action | Description | Input |
-|--------|-------------|-------|
-| `extract_audio` | Extract audio track from video | `file_id`, `sample_rate`, `audio_format`, `save_file`, `folder_id` |
-| `transcribe_audio` | Transcribe audio to timestamped text | `file_id`, `model`, `language`, `save_text`, `folder_id` |
-| `transcribe_video` | Extract + transcribe in one step | `file_id`, `model`, `sample_rate`, `language`, `save_audio`, `save_text`, `folder_id` |
+## HTTP API / Endpoint Families
 
-All capabilities require `editor` role (they may create framework files). Called from the frontend via `platform.modules.call('media-asr', action, params)`.
+Backend HTTP prefix: `/api/media-asr`
 
-## HTTP Endpoints
+| Family | Methods | Purpose |
+|---|---|---|
+| `extract-audio` | POST | Endpoint family under `/api/media-asr` |
+| `health` | GET | Endpoint family under `/api/media-asr` |
+| `transcribe-audio` | POST | Endpoint family under `/api/media-asr` |
+| `transcribe-video` | POST | Endpoint family under `/api/media-asr` |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/media-asr/health` | Health check |
-| POST | `/api/media-asr/extract-audio` | Extract audio from video |
-| POST | `/api/media-asr/transcribe-audio` | Transcribe audio file |
-| POST | `/api/media-asr/transcribe-video` | Transcribe video file directly |
+## Public Actions / Capability Contract
 
-## Dependencies
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-- `ffmpeg` (system) — audio extraction
-- `ffprobe` (system, bundled with ffmpeg) — local media metadata and stream validation
-- `mlx_whisper` (Python, Apple Silicon) — local transcription
-- No network API keys required
+Total public actions: 3
 
-## Supported Formats
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `extract_audio` | `editor` | `audio_format`, `file_id`, `folder_id`, `sample_rate`, `save_file` | Extract audio from an uploaded video file |
+| `transcribe_audio` | `editor` | `file_id`, `folder_id`, `language`, `model`, `save_text` | Transcribe audio file into timestamped text |
+| `transcribe_video` | `editor` | `file_id`, `folder_id`, `language`, `model`, `sample_rate`, `save_audio`, `save_text` | Extract audio from video and transcribe in one step |
+<!-- /DOCS-SYNC -->
 
-| Category | Formats |
-|----------|---------|
-| Video input | mp4, mov, m4v, webm, mkv, avi |
-| Audio input | wav, mp3, m4a, aac, flac, ogg |
-| Audio output | wav (default), mp3, m4a, flac, ogg |
-| Whisper model | tiny, small, medium, large, large-v2, large-v3, turbo |
+## Data Ownership
 
-## Architecture
+| Table / Prefix | Purpose |
+|---|---|
+| `media_asr_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-Video/audio reading uses `run_uploaded_file_capability` which internally calls `check_file_access` for security. Saved audio/text files use `upload_file_from_path` for content-addressed storage.
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-Temporary files are handled in `tempfile.TemporaryDirectory()` and cleaned up automatically.
+## Cross-Module Dependencies
 
-Before ffmpeg extraction or mlx_whisper transcription, the module performs local `ffprobe` metadata validation. It rejects unreadable files, missing audio streams, audio/video type mismatches, invalid duration, files over 4 hours, unsupported sample rates, unknown Whisper models, and invalid `file_id`/`folder_id` values with structured 4xx errors. This keeps bad inputs on the cheap local path and prevents arbitrary model downloads.
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-The UI communicates with the backend exclusively via `platform.modules.call` (for cross-module capability invocation) and `platform.files` (for file upload/detail). No direct HTTP calls bypassing the framework path.
+## File Access / Permission Boundary
 
-## Validation
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
-```bash
-cd /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2
-backend/.venv/bin/python modules/media-asr/sandbox/test_module.py
-```
+## Frontend / Backend Structure
 
-The sandbox imports production router/service code and stubs only DB/media/model boundaries. It does not create framework upload files or call real ASR.
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
 
-## Acceptance Matrix
+## Acceptance
 
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `media-asr`, window `normal`, formats: mp4, mov, m4v, webm, mkv, avi, wav, mp3, m4a, aac, flac, ogg. |
-| Backend capability | PASS | 3 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | Uses framework file APIs or capability bridge; file_id paths must preserve check_file_access. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/media-asr/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `media-asr:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/media-asr/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="media-asr", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/media-asr/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module media-asr --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/media-asr/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module media-asr --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/media-asr/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

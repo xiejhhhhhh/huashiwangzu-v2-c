@@ -1,64 +1,32 @@
 # Backend
 
-The backend is the FastAPI platform service layer for V2. It provides shared platform capabilities for the desktop shell and business modules.
+The backend is the FastAPI platform service layer. It provides shared capabilities for the desktop shell and modules; business workflows belong in `modules/`.
 
 ## Responsibilities
 
-- FastAPI application and router registration.
-- PostgreSQL connection, transactions, migrations, and ORM models.
-- Authentication, roles, and permissions.
-- Tasks, workers, and background jobs.
-- Model watchdog and LLM gateway.
-- File storage, upload, download, and preview support.
-- System logs, health checks, backup, and restore.
+- Application and router registration.
+- PostgreSQL async sessions and migrations.
+- Auth, roles, permissions, and unified API errors.
+- File storage, preview, recycle, sharing, and audit logs.
+- Task queues, workers, event bus, and scheduled tasks.
+- Model gateway, embedding, rerank, and vision description.
+- Content IR, ContentPackage, Resource, and Artifact services.
 
-Business workflows belong in `modules/`, not directly in the platform layer.
+## Runtime
 
-## Requirements
+| Item | Current contract |
+|---|---|
+| Python | 3.14+ |
+| Backend port | `127.0.0.1:33000` |
+| Database | PostgreSQL 17 + pgvector |
+| App entry | `backend/app/main.py` |
+| Start script | `scripts/start_backend.sh` |
 
-- Python 3.14+
-- PostgreSQL 17
-- pgvector
-- Optional local `llama-server` for local model profiles
-
-## Setup
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Database
+## Commands
 
 ```bash
-export V2_DATABASE_NAME="your_v2_database_name"
-psql -U postgres -c "CREATE DATABASE \"$V2_DATABASE_NAME\";"
-psql -U postgres -d "$V2_DATABASE_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;"
-psql -U postgres -d "$V2_DATABASE_NAME" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-alembic upgrade head
+cd backend && .venv/bin/python -m pytest
+cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 33000
 ```
 
-## Seed Data
-
-```bash
-V2_SEED_DEFAULT_PASSWORD='replace-with-a-strong-password' python -m app.seed
-```
-
-## Run
-
-```bash
-uvicorn app.main:app --host 127.0.0.1 --port 33000 --reload
-```
-
-Open API docs:
-
-```text
-http://127.0.0.1:33000/docs
-```
-
-## Test
-
-```bash
-pytest
-```
+Use project toolkit `probe`, `routes`, `db_schema`, and `tail_log` for live inspection.

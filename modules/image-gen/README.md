@@ -1,124 +1,111 @@
-# image-gen — Multi-provider template adapter architecture
+# image-gen — Image Generation
 
 ## Responsibility
-Generates images from text prompts using a pluggable multi-provider adapter architecture. Supports multiple image service providers (LiblibAI Star-3, GPTStore gpt-5.5, PIL placeholder fallback) via template configuration.
 
-## Architecture
+Image generation module with provider templates, prompt translation, generation records, and usage history.
 
-```
-modules/image-gen/backend/
-├── router.py                 # Thin dispatch layer
-├── providers/
-│   ├── __init__.py           # Adapter registry + credential check
-│   ├── base.py               # ImageProvider ABC + GenSpec/GenResult
-│   ├── liblib.py             # LiblibAI (HMAC-SHA1 + async poll)
-│   ├── gptstore.py           # Wraps existing gateway.generate_image
-│   └── placeholder.py        # PIL placeholder (credential-less fallback)
-└── image_templates.json      # Provider + template config (models.json pattern)
-```
+## Manifest Contract
 
-## Public capabilities
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"image-gen"` |
+| name | `"Image Generation"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/image-gen"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/image-gen` |
+<!-- /DOCS-SYNC -->
 
-| Capability | Parameters | Returns | min_role |
-|---|---|---|---|
-| `image-gen:generate` | `prompt` (str), `size` (str, default "1024x1024"), `aspect_ratio` (str?), `count` (int, 1-4, default 1), `steps` (int, 1-100, default 30), `template` (str, default from config) | `{images: [{file_id, name, size, placeholder}], template, points_cost, balance}` | editor |
-| `image-gen:list_templates` | — | `{templates: [{key, label, provider, configured, available, can_generate, fallback, prompt_language, cost_tracking}]}` | viewer |
-| `image-gen:usage_history` | `limit` (int, default 20) | `{records: [...]}` | editor |
+## Current Capabilities
 
-Generated images are saved to the framework file system via `file_upload_service`. Costs are tracked in `imagegen_records`.
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-## HTTP endpoints
+## HTTP API / Endpoint Families
 
-All under `/api/image-gen`:
+Backend HTTP prefix: `/api/image-gen`
 
-| Method | Path | Purpose |
+| Family | Methods | Purpose |
 |---|---|---|
-| GET | `/health` | Module health check |
-| POST | `/generate` | Generate image(s) from prompt |
-| GET | `/templates` | List available templates |
-| GET | `/history` | Query personal generation history |
+| `generate` | POST | Endpoint family under `/api/image-gen` |
+| `health` | GET | Endpoint family under `/api/image-gen` |
+| `history` | GET | Endpoint family under `/api/image-gen` |
+| `templates` | GET | Endpoint family under `/api/image-gen` |
 
-## Data tables
-- `imagegen_records` — Generation history with points cost tracking. Created automatically at module load time.
+## Public Actions / Capability Contract
 
-## Provider state matrix
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-| provider | configured | can_generate | fallback | cost/record | debt |
-|---|---|---|---|---|---|
-| `liblib` / `liblib-star3` | Reads `LIBLIB_ACCESS_KEY` + `LIBLIB_SECRET_KEY` from runtime settings or env | Yes when configured; otherwise safe placeholder degradation | `placeholder` when credentials are missing | Liblib cost/balance are saved when returned; request id, provider, template, file ids, status, and degraded reason are recorded | Real external calls spend provider quota; sandbox and default validation do not call it |
-| `gptstore` / `gptstore-gpt5.5` | Reads framework GPTStore gateway credentials | Yes when configured; otherwise safe placeholder degradation | `placeholder` when credentials are missing | Generated framework file ids and provider/template/status are recorded; provider cost only exists if gateway returns it | Gateway provider remains a wrapper around framework model gateway |
-| `placeholder` | Always configured; no credentials | Yes, generates local PIL PNG placeholders | None | Records are marked `status=degraded`, `placeholder=true`, `provider=placeholder`, and include file ids | Not a fake success; UI and history show it as degraded/placeholder |
+Total public actions: 3
 
-## Response and history shape
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `generate` | `editor` | `aspect_ratio`, `count`, `prompt`, `size`, `steps`, `template` | 生成图片：根据提示词生成产品图、海报、配图等（多服务商模板，支持LiblibAI星流/GPTStore/占位图降级） |
+| `list_templates` | `viewer` | none | 列出可用生图模板（服务商+模型），含凭据是否齐全标识 |
+| `usage_history` | `editor` | `limit` | 查询本人的生图历史记录，含积分消耗 |
+<!-- /DOCS-SYNC -->
 
-Successful generation returns a task envelope plus explicit provider state:
+## Data Ownership
 
-```json
-{
-  "task": {"request_id": "...", "record_id": 1},
-  "images": [{"type": "image", "file_id": 1, "name": "...", "size": 1024, "placeholder": true}],
-  "placeholder": true,
-  "degraded": true,
-  "status": "degraded",
-  "template": "placeholder",
-  "provider": "placeholder",
-  "requested_provider": "placeholder",
-  "degraded_reason": "placeholder generation path",
-  "points_cost": null,
-  "balance": null
-}
-```
+| Table / Prefix | Purpose |
+|---|---|
+| `imagegen_records` | Owned by `image-gen` module |
 
-`usage_history` returns the same trace fields for each record: `request_id`, `provider`, `template`, `file_ids`, `status`, `error_msg`, `degraded_reason`, cost, balance, and timestamp.
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-## How to add a service provider template
+## Cross-Module Dependencies
 
-Three steps:
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-1. **Write an adapter** in `providers/` — subclass `ImageProvider`, implement `async def generate(self, spec: GenSpec) -> list[GenResult]`. Handle signing, request, polling, parsing yourself. Do NOT handle URL download / DB persistence.
-2. **Add a template entry** in `image_templates.json` — under `templates`, add a key with `provider` (matching your adapter's `provider_key`), API paths, env var names for credentials, and any provider-specific config.
-3. **Add credentials** to `backend/.env` — use the env var names declared in the template config. Never hardcode keys in JSON or Python.
+## File Access / Permission Boundary
 
-Providers are registered in `providers/__init__.py:_PROVIDERS` and auto-discovered at runtime.
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
-## Chinese prompt support
-When a template has `prompt_language: "en"` and the input prompt contains Chinese characters, it is automatically translated to English via the framework gateway before submission.
+## Frontend / Backend Structure
 
-## Request validation and persistence
-- `aspect_ratio` takes precedence over the default `size` value, so frontend mode switches such as `landscape` and `portrait` affect the generated file dimensions.
-- Supported named ratios are `square`, `portrait`, and `landscape`; numeric ratios use `W:H`.
-- Image dimensions are bounded to 256-2048 pixels per side. `count` is bounded to 1-4 and `steps` to 1-100.
-- Each generated file name includes a request suffix to avoid same-millisecond conflicts.
-- Generation, partial persistence, and provider/download failures are recorded in `imagegen_records`; failed validation requests are rejected before generation and are not recorded.
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | not present |
 
-## Verification
+## Acceptance
 
-```bash
-PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py
-python3.14 scripts/check-capability-drift.py
-```
-
-## Boundaries/notes
-- Adapters handle auth/signing/request/polling/parsing. They do NOT download URLs or persist to DB.
-- When a template's required credentials are missing, the system auto-downgrades to placeholder (no hard error).
-- Validation: `prompt` must be non-empty; either `size` (WxH) or `aspect_ratio` must be provided.
-
-## Acceptance Matrix
-
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `image-gen`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 3 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | SKIP | Module does not directly consume framework file_id content. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `image-gen:<action>` and release smoke/capability drift gates. |
-| Known debt | PASS | None tracked in this matrix. |
+| Manifest contract | PASS | `modules/image-gen/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="image-gen", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py` |
+| Frontend sandbox | SKIP | `N/A` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-gen --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py
+# No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-gen --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/image-gen/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

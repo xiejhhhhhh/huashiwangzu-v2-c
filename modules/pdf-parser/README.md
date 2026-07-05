@@ -1,75 +1,107 @@
-# PDF Parser Module
+# pdf-parser — PDF Parser
 
-Parse PDF files into unified content blocks via pdfplumber.
+## Responsibility
 
-## API
+PDF Parser
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/pdf-parser/health` | GET | Module health check (public, no auth) |
-| `/api/pdf-parser/parse` | POST | Parse PDF file by `file_id` |
+## Manifest Contract
 
-## Capability
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"pdf-parser"` |
+| name | `"PDF Parser"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/pdf-parser"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/pdf-parser` |
+<!-- /DOCS-SYNC -->
 
-| Module | Action | Input | Output |
-|--------|--------|-------|--------|
-| `pdf-parser` | `parse` | `{"file_id": int}` | Content IR-compatible document blocks |
+## Current Capabilities
 
-## Dependencies
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-- `pdfplumber` (in backend venv)
+## HTTP API / Endpoint Families
 
-## Format Support
+Backend HTTP prefix: `/api/pdf-parser`
 
-- `.pdf` — Text extraction, table extraction, embedded image detection
+| Family | Methods | Purpose |
+|---|---|---|
+| `health` | GET | Endpoint family under `/api/pdf-parser` |
+| `parse` | POST | Endpoint family under `/api/pdf-parser` |
 
-## Content IR Contract
+## Public Actions / Capability Contract
 
-- `schema_version`: `content-ir/v1`
-- `content_type`: `document`
-- Top-level source fields: `source`, `source_file_id`, `source_module`, `parser`
-- Block types: `heading`, `paragraph`, `table`, `image`
-- Resources: detected images with `resource_type`, `mime_type`, optional `data_b64`, and `source_ref`
-- Source trace: page number on every block/resource `source_ref`; image resources also include xref/name when available
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-## Verification
+Total public actions: 1
 
-```bash
-# Sandbox parser test with the backend runtime dependencies
-cd modules/pdf-parser/sandbox
-../../../backend/.venv/bin/python test_module.py
-../../../backend/.venv/bin/python -m pytest test_module.py
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `parse` | `viewer` | `file_id` | Parse PDF file into unified content blocks |
+<!-- /DOCS-SYNC -->
 
-# Sandbox frontend build
-npm run build
+## Data Ownership
 
-# Health check
-curl http://127.0.0.1:33000/api/pdf-parser/health
+| Table / Prefix | Purpose |
+|---|---|
+| `pdf_parser_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-# Parse a file
-curl -X POST http://127.0.0.1:33000/api/pdf-parser/parse \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{"file_id": <id>}'
-```
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-## Acceptance Matrix
+## Cross-Module Dependencies
 
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `pdf-parser`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/pdf-parser/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `pdf-parser:<action>` and release smoke/capability drift gates. |
-| Content IR | PASS | Parser returns `schema_version`, source metadata, non-empty sample blocks, and page-level `source_ref`; sandbox normalizes through existing Content IR normalizer. |
+| Manifest contract | PASS | `modules/pdf-parser/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="pdf-parser", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/pdf-parser/sandbox/test_module.py` |
+| Frontend sandbox | PASS | `cd modules/pdf-parser/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module pdf-parser --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/pdf-parser/sandbox/test_module.py
 cd modules/pdf-parser/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module pdf-parser --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/pdf-parser/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

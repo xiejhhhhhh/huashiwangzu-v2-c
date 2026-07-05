@@ -1,82 +1,107 @@
-# DOCX Parser Module
+# docx-parser — DOCX Parser
 
-Parse DOCX files into unified content blocks (paragraphs, tables, inline images).
+## Responsibility
 
-## API
+DOCX Parser
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/docx-parser/health` | GET | Module health check (public, no auth) |
-| `/api/docx-parser/parse` | POST | Parse DOCX file by `file_id` |
+## Manifest Contract
 
-## Capability
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"docx-parser"` |
+| name | `"DOCX Parser"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/docx-parser"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/docx-parser` |
+<!-- /DOCS-SYNC -->
 
-| Module | Action | Input | Output |
-|--------|--------|-------|--------|
-| `docx-parser` | `parse` | `{"file_id": int}` | Content IR-compatible document blocks |
+## Current Capabilities
 
-The backend capability uses the framework uploaded-file runner, so `file_id`
-access is validated through the platform file permission path before the module
-reads the physical file. Parser exceptions propagate as failures; corrupt DOCX
-files are not wrapped as successful parse results.
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-## Dependencies
+## HTTP API / Endpoint Families
 
-- `python-docx` (in backend venv)
+Backend HTTP prefix: `/api/docx-parser`
 
-## Format Support
+| Family | Methods | Purpose |
+|---|---|---|
+| `health` | GET | Endpoint family under `/api/docx-parser` |
+| `parse` | POST | Endpoint family under `/api/docx-parser` |
 
-- `.docx` — Paragraphs, tables, inline images
+## Public Actions / Capability Contract
 
-## Content IR Contract
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-- `schema_version`: `content-ir/v1`
-- `content_type`: `document`
-- Top-level source fields: `source`, `source_file_id`, `source_module`, `parser`
-- Block types: `heading`, `paragraph`, `table`, `image`
-- Resources: inline images with `resource_type`, `mime_type`, `data_b64`, and `source_ref`
-- Source trace: paragraph/table/resource positions in `source_ref`; DOCX pages are not available from `python-docx`, so legacy `page` remains `null`
+Total public actions: 1
 
-## Verification
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `parse` | `viewer` | `file_id` | Parse DOCX file into unified content blocks |
+<!-- /DOCS-SYNC -->
 
-```bash
-# Module lint
-cd /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2
-backend/.venv/bin/ruff check modules/docx-parser/backend/router.py modules/docx-parser/backend/parser.py modules/docx-parser/sandbox/test_module.py
+## Data Ownership
 
-# Sandbox parser contract test with real sample + generated boundary fixtures
-PYTHONPATH=backend backend/.venv/bin/python modules/docx-parser/sandbox/test_module.py
+| Table / Prefix | Purpose |
+|---|---|
+| `docx_parser_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
-# Sandbox frontend build
-cd modules/docx-parser/sandbox && npm run build
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
 
-# Health check
-curl http://127.0.0.1:33000/api/docx-parser/health
+## Cross-Module Dependencies
 
-# Parse a file
-curl -X POST http://127.0.0.1:33000/api/docx-parser/parse \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{"file_id": <id>}'
-```
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
 
-## Acceptance Matrix
+## File Access / Permission Boundary
 
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `docx-parser`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/docx-parser/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `docx-parser:<action>` and release smoke/capability drift gates. |
-| Content IR | PASS | Parser returns `schema_version`, source metadata, non-empty sample blocks, and block/resource `source_ref`; sandbox normalizes through existing Content IR normalizer. |
+| Manifest contract | PASS | `modules/docx-parser/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="docx-parser", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/docx-parser/sandbox/test_module.py` |
+| Frontend sandbox | PASS | `cd modules/docx-parser/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module docx-parser --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/docx-parser/sandbox/test_module.py
 cd modules/docx-parser/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module docx-parser --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/docx-parser/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

@@ -8,7 +8,7 @@
     "editor": { "username": "", "password": "", "role": "editor" },
     "viewer": { "username": "", "password": "", "role": "viewer" }
   },
-  "memory_dir": "开发文档/项目记忆",
+  "memory_dir": "backend/logs/project_memory",
   "embedding_cache": "dev_toolkit/memory_embeddings.json",
   "log_dir": "backend/logs",
   "release_gate": {

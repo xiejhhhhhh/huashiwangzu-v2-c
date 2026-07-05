@@ -6,6 +6,7 @@ import json
 import time
 
 try:
+    from dev_toolkit.docs_sync import docs_audit
     from dev_toolkit.process_tools import create_subprocess_exec_group, terminate_process_tree
     from dev_toolkit.release_gate_support import (
         audit_content_package_lifecycle_debt,
@@ -20,6 +21,7 @@ try:
         find_semantic_failed_completed_tasks,
     )
 except ModuleNotFoundError:
+    from docs_sync import docs_audit
     from process_tools import create_subprocess_exec_group, terminate_process_tree
     from release_gate_support import (
         audit_content_package_lifecycle_debt,
@@ -261,6 +263,21 @@ def check_component_key_contracts() -> None:
         add_result("Component key contracts", level, detail, data)
     except Exception as exc:
         add_result("Component key contracts", "BLOCKER", str(exc))
+
+
+def check_docs_currentness() -> None:
+    try:
+        data = docs_audit(REPO_ROOT)
+        summary = data.get("summary", {})
+        level = str(data.get("level") or "BLOCKER")
+        detail = (
+            f"blockers={summary.get('blockers', 0)}, "
+            f"debts={summary.get('debts', 0)}, issues={summary.get('issues', 0)}"
+        )
+        runtime_context["docs_currentness"] = data
+        add_result("Docs currentness", level, detail, data)
+    except Exception as exc:
+        add_result("Docs currentness", "BLOCKER", str(exc))
 
 async def check_sandbox_matrix(sandbox_jobs: int = 1, frontend_jobs: int = 1) -> None:
     """Run module_sandbox_matrix.py and report summary."""

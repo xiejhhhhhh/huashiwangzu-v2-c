@@ -1,65 +1,107 @@
-# PPTX Parser Module
+# pptx-parser — PPTX Parser
 
-Parse PPTX files into unified content blocks (slide text, picture detection).
+## Responsibility
 
-## API
+PPTX Parser
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/pptx-parser/health` | GET | Module health check (public, no auth) |
-| `/api/pptx-parser/parse` | POST | Parse PPTX file by `file_id` |
+## Manifest Contract
 
-## Capability
+<!-- DOCS-SYNC: section=manifest -->
+| Field | Value |
+|---|---|
+| key | `"pptx-parser"` |
+| name | `"PPTX Parser"` |
+| category | `"tools"` |
+| window_type | `"normal"` |
+| singleton | `false` |
+| allow_multiple | `false` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `"/api/pptx-parser"` |
+| backend.enabled | `true` |
+| backend.router | `"backend/router.py"` |
+| actual backend prefix | `/api/pptx-parser` |
+<!-- /DOCS-SYNC -->
 
-| Module | Action | Input | Output |
-|--------|--------|-------|--------|
-| `pptx-parser` | `parse` | `{"file_id": int}` | Content IR-compatible presentation slide blocks |
+## Current Capabilities
 
-## Dependencies
+- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
+- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
+- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
 
-- `python-pptx` (in backend venv)
+## HTTP API / Endpoint Families
 
-## Format Support
+Backend HTTP prefix: `/api/pptx-parser`
 
-- `.pptx` — Slide text, picture detection
+| Family | Methods | Purpose |
+|---|---|---|
+| `health` | GET | Endpoint family under `/api/pptx-parser` |
+| `parse` | POST | Endpoint family under `/api/pptx-parser` |
 
-## Content IR Contract
+## Public Actions / Capability Contract
 
-- `schema_version`: `content-ir/v1`
-- `content_type`: `presentation`
-- Top-level source fields: `source`, `source_file_id`, `source_module`, `parser`
-- Top-level block type: `slide`
-- Nested block types: `heading`, `paragraph`, `image`
-- Resources: slide images with `resource_type`, `mime_type`, `data_b64`, and `source_ref`
-- Source trace: slide number on every slide block, nested block, and resource `source_ref`; nested blocks also include shape name when available
+<!-- DOCS-SYNC: section=public_actions -->
+Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-## Verification
+Total public actions: 1
 
-```bash
-PYTHONPATH=backend backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py
-(cd modules/pptx-parser/sandbox && npm run build)
+| Action | min_role | Parameters | Purpose |
+|---|---|---|---|
+| `parse` | `viewer` | `file_id` | Parse PPTX files into unified content blocks |
+<!-- /DOCS-SYNC -->
 
-curl http://127.0.0.1:33000/api/pptx-parser/health
-python3.14 scripts/check-capability-drift.py
-```
+## Data Ownership
 
-## Acceptance Matrix
+| Table / Prefix | Purpose |
+|---|---|
+| `pptx_parser_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
 
+Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
+
+## Cross-Module Dependencies
+
+- Manifest dependencies are declared in `manifest.json` when needed.
+- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
+
+## File Access / Permission Boundary
+
+If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
+
+## Frontend / Backend Structure
+
+| Path | Status |
+|---|---|
+| `frontend/index.vue` | present |
+| `runtime/index.ts` | present |
+| `backend/router.py` | present |
+| `sandbox/test_module.py` | present |
+| `sandbox/package.json` | present |
+
+## Acceptance
+
+<!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `manifest.json` key `pptx-parser`, window `normal`, formats: Not format-bound. |
-| Backend capability | PASS | 1 public action(s) declared in manifest and checked by capability drift gate. |
-| Frontend entry | PASS | Desktop entry component `index.vue` exists. |
-| File access | PASS | Parses by file_id through framework/parser access checks; verify with sandbox sample. |
-| Sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py` |
-| Smoke | PASS | Use `call_capability` for `pptx-parser:<action>` and release smoke/capability drift gates. |
-| Content IR | PASS | Parser returns `schema_version`, presentation slide blocks, non-empty sample blocks, and slide-level `source_ref`; sandbox normalizes through existing Content IR normalizer. |
+| Manifest contract | PASS | `modules/pptx-parser/manifest.json` |
+| Capability drift | PASS | `capability_contract_diff(module="pptx-parser", include_parameters=true)` |
+| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py` |
+| Frontend sandbox | PASS | `cd modules/pptx-parser/sandbox && npm run build` |
+| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module pptx-parser --check` |
+| Known debt | PASS | None |
+<!-- /DOCS-SYNC -->
 
-### Reproducible Checks
+## Reproducible Checks
 
 ```bash
+backend/.venv/bin/python scripts/check-capability-drift.py
 PYTHONPATH=backend backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py
 cd modules/pptx-parser/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module pptx-parser --check
-backend/.venv/bin/python dev_toolkit/release_gate.py --skip-ui --preflight
 ```
+
+## Boundaries
+
+- Keep module business code and data inside `modules/pptx-parser/`.
+- Do not import other modules' internal code.
+- Do not directly read or write other modules' tables.
+- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.
