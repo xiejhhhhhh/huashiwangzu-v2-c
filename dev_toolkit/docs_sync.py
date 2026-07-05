@@ -204,6 +204,8 @@ def docs_audit(repo_root: Path, *, module: str = "") -> dict[str, Any]:
         for pattern in HISTORICAL_PATTERNS:
             if pattern in text:
                 issues.append({"level": "DEBT", "kind": "historical_keyword", "path": rel_path, "keyword": pattern})
+        if raw_user_profile_record(text):
+            issues.append({"level": "BLOCKER", "kind": "raw_user_profile_record", "path": rel_path})
         if rel_path != "开发文档/agent_handoff/CURRENT_STATE.md" and re.search(r"2026-\d{2}-\d{2}", text):
             issues.append({"level": "DEBT", "kind": "date_in_long_lived_doc", "path": rel_path})
 
@@ -461,6 +463,13 @@ def existing_keep_docs(repo_root: Path) -> list[str]:
         if not path.parent.name.startswith("_")
     )
     return rels
+
+
+def raw_user_profile_record(text: str) -> bool:
+    """Detect raw profile JSON/records in long-lived docs without blocking policy prose."""
+    if "schema_version" not in text or '"profiles"' not in text:
+        return False
+    return any(marker in text for marker in ('"candidates"', '"preferences"', '"habits"', '"taboos"'))
 
 
 def read_text(path: Path) -> str:

@@ -66,6 +66,8 @@ backend/logs/project_memory
 
 These files are local runtime/tooling records, not canonical user-facing documentation. Do not copy them into `开发文档/`. If a memory or feedback item contains a durable rule, distill that rule into `AGENTS.md`, `README.md`, `开发文档/agent_handoff/`, or the owning module README, then leave the raw record in runtime storage.
 
+`user_profile_get`, `user_profile_suggest`, `user_profile_update`, and `user_profile_audit` use the configured `user_profile_path`, default `backend/logs/user_profile/profile.json`. User profile records are runtime personalization state; candidates require explicit confirmation before becoming active preferences, and profile entries never override current user instructions or project rules.
+
 ## Component Rule
 
 New tools must live in a component file:

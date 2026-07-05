@@ -84,6 +84,9 @@ try:
     from dev_toolkit.tool_usage_tools import handles_tool as tool_usage_handles_tool
     from dev_toolkit.tool_usage_tools import record_tool_usage
     from dev_toolkit.tool_usage_tools import tool_definitions as tool_usage_tool_definitions
+    from dev_toolkit.user_profile_tools import handle_tool as user_profile_handle_tool
+    from dev_toolkit.user_profile_tools import handles_tool as user_profile_handles_tool
+    from dev_toolkit.user_profile_tools import tool_definitions as user_profile_tool_definitions
     from dev_toolkit.worktree_tools import git_status_summary, worktree_guard
     from dev_toolkit.worktree_tools import handle_tool as worktree_handle_tool
     from dev_toolkit.worktree_tools import handles_tool as worktree_handles_tool
@@ -151,6 +154,9 @@ except ModuleNotFoundError:
     from tool_usage_tools import handles_tool as tool_usage_handles_tool
     from tool_usage_tools import record_tool_usage
     from tool_usage_tools import tool_definitions as tool_usage_tool_definitions
+    from user_profile_tools import handle_tool as user_profile_handle_tool
+    from user_profile_tools import handles_tool as user_profile_handles_tool
+    from user_profile_tools import tool_definitions as user_profile_tool_definitions
     from worktree_tools import git_status_summary, worktree_guard
     from worktree_tools import handle_tool as worktree_handle_tool
     from worktree_tools import handles_tool as worktree_handles_tool
@@ -165,6 +171,7 @@ BACKEND_BASE = CONFIG["backend_base_url"]
 BGE_M3_URL = CONFIG["bge_m3_url"]
 ACCOUNTS = CONFIG["accounts"]
 MEMORY_DIR = REPO_ROOT / CONFIG["memory_dir"]
+USER_PROFILE_PATH = REPO_ROOT / CONFIG["user_profile_path"]
 EMBEDDING_CACHE_PATH = REPO_ROOT / CONFIG["embedding_cache"]
 LOG_DIR = REPO_ROOT / CONFIG["log_dir"]
 DB_DSN = CONFIG["db_dsn"]
@@ -1767,6 +1774,7 @@ async def list_tools() -> list[Tool]:
         *insight_tool_definitions(),
         *worktree_tool_definitions(),
         *tool_usage_tool_definitions(),
+        *user_profile_tool_definitions(),
         *tool_job_tool_definitions(),
         *agent_board_tool_definitions(),
         *asset_lifecycle_tool_definitions(),
@@ -1811,6 +1819,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await worktree_handle_tool(_run_command_json, REPO_ROOT, name, arguments)
         elif tool_usage_handles_tool(name):
             result = await tool_usage_handle_tool(REPO_ROOT, TOOL_USAGE_PATH, name, arguments)
+        elif user_profile_handles_tool(name):
+            result = await user_profile_handle_tool(REPO_ROOT, USER_PROFILE_PATH, name, arguments)
         elif tool_job_handles_tool(name):
             result = await tool_job_handle_tool(REPO_ROOT, name, arguments)
         elif agent_board_handles_tool(name):

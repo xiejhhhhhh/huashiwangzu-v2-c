@@ -64,7 +64,8 @@ Rules:
 - Use `routes`, `capabilities`, and `db_schema` instead of guessing contracts.
 - Use `probe` and `call_capability` against the live system for behavior verification.
 - Run `docs_audit` after changing manifest, register_capability, routers, models, sandbox, release gate, or toolkit tools. Fix drift with `docs_sync` or manual docs updates.
-- `memory_write` and `mcp_feedback` are optional runtime/tooling records, not user-facing documentation.
+- `memory_write`, `mcp_feedback`, and `user_profile` are optional runtime/tooling records, not user-facing documentation.
+- `user_profile` may personalize Agent behavior, but it never overrides current user instructions, system rules, or project hard rules.
 
 ## Testing Rules
 
