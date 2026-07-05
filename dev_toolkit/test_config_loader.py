@@ -31,6 +31,7 @@ def test_load_config_merges_example_local_and_env(
         encoding="utf-8",
     )
     monkeypatch.setenv("DEV_TOOLKIT_BACKEND_BASE_URL", "http://env")
+    monkeypatch.setenv("DEV_TOOLKIT_USER_PROFILE_PATH", "backend/logs/custom_profile.json")
     monkeypatch.setenv("DEV_TOOLKIT_ADMIN_USERNAME", "env-admin")
     monkeypatch.setenv("DEV_TOOLKIT_SANDBOX_JOBS", "3")
 
@@ -38,6 +39,7 @@ def test_load_config_merges_example_local_and_env(
 
     assert config["backend_base_url"] == "http://env"
     assert config["db_dsn"] == "postgresql://local/test"
+    assert config["user_profile_path"] == "backend/logs/custom_profile.json"
     assert config["accounts"]["admin"]["username"] == "env-admin"
     assert config["accounts"]["admin"]["password"] == "local-secret"
     assert config["release_gate"]["sandbox_jobs"] == 3

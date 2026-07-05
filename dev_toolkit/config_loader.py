@@ -23,6 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "viewer": {"username": "", "password": "", "role": "viewer"},
     },
     "memory_dir": "backend/logs/project_memory",
+    "user_profile_path": "backend/logs/user_profile/profile.json",
     "embedding_cache": "dev_toolkit/memory_embeddings.json",
     "log_dir": "backend/logs",
     "release_gate": {
@@ -61,6 +62,7 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
         "DEV_TOOLKIT_DB_DSN": "db_dsn",
         "DEV_TOOLKIT_BGE_M3_URL": "bge_m3_url",
         "DEV_TOOLKIT_MEMORY_DIR": "memory_dir",
+        "DEV_TOOLKIT_USER_PROFILE_PATH": "user_profile_path",
         "DEV_TOOLKIT_EMBEDDING_CACHE": "embedding_cache",
         "DEV_TOOLKIT_LOG_DIR": "log_dir",
     }

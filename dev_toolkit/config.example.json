@@ -9,6 +9,7 @@
     "viewer": { "username": "", "password": "", "role": "viewer" }
   },
   "memory_dir": "backend/logs/project_memory",
+  "user_profile_path": "backend/logs/user_profile/profile.json",
   "embedding_cache": "dev_toolkit/memory_embeddings.json",
   "log_dir": "backend/logs",
   "release_gate": {
