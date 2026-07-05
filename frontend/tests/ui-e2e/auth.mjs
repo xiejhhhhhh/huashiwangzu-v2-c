@@ -2,8 +2,8 @@ import fs from 'fs'
 
 import { ADMIN_STORAGE_FILE, BASE_URL } from './state.mjs'
 
-const ADMIN_USER = '何焜华'
-const ADMIN_PASS = '123rgE123'
+export const ADMIN_USER = '何焜华'
+export const ADMIN_PASS = '123rgE123'
 
 let adminTokenOverride = null
 let adminRefreshPromise = null

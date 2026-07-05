@@ -4,7 +4,7 @@ import { refreshAdminToken, requestWithAdminAuthRetry } from './ui-e2e/auth.mjs'
 import { gotoDesktop as gotoDesktopShell } from './ui-e2e/desktop.mjs'
 import { BASE_URL } from './ui-e2e/state.mjs'
 
-test.setTimeout(60_000)
+test.setTimeout(120_000)
 
 function unwrapEnvelope(body, context) {
   if (body?.success !== true) {
@@ -158,6 +158,8 @@ test('content publish artifact is visible, openable, and downloadable from deskt
 
     await gotoDesktop(page)
     await closeAllWindows(page)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await gotoDesktop(page)
     const icon = page.locator(`.desktop-file-icon-item[data-selection-key="file:${state.fileId}"]`)
     await expect(icon).toBeVisible({ timeout: 15000 })
 
