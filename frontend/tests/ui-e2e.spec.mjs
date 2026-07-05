@@ -21,6 +21,7 @@ const ADMIN_STORAGE_FILE = path.join(TEST_DIR, '.auth/admin.json')
 const results = []
 const consoleCollector = []
 const uploadedFilesById = new Map()
+let adminTokenOverride = null, adminRefreshPromise = null
 
 async function screenshot(page, name) {
   if (!MANUAL_SCREENSHOTS_ENABLED) return ''
@@ -41,6 +42,7 @@ async function refreshAdminStorageState() {
   if (!resp.ok || !token) {
     throw new Error(`Admin API login failed: ${JSON.stringify(body).slice(0, 300)}`)
   }
+  adminTokenOverride = token
   const storageState = {
     cookies: [],
     origins: [{
@@ -50,6 +52,11 @@ async function refreshAdminStorageState() {
   }
   fs.writeFileSync(ADMIN_STORAGE_FILE, JSON.stringify(storageState, null, 2), 'utf-8')
   return token
+}
+
+async function refreshAdminToken() {
+  if (!adminRefreshPromise) adminRefreshPromise = refreshAdminStorageState().finally(() => { adminRefreshPromise = null })
+  return adminRefreshPromise
 }
 
 async function gotoDesktop(page) {
@@ -131,6 +138,7 @@ async function openFileForViewer(page, fileRecord, fileType) {
 }
 
 async function getAuthToken(request) {
+  if (adminTokenOverride) return adminTokenOverride
   const storage = JSON.parse(fs.readFileSync(ADMIN_STORAGE_FILE, 'utf-8'))
   const origin = new URL(BASE_URL).origin
   const state = storage.origins?.find(item => item.origin === origin) || storage.origins?.[0]
@@ -140,13 +148,13 @@ async function getAuthToken(request) {
 }
 
 async function uploadSample(request, token, name, mimeType, content, folderId = 0) {
-  const uploadResp = await request.post(`${BASE_URL}/api/files/upload`, {
-    headers: { Authorization: `Bearer ${token}` },
+  const uploadResp = await requestWithAdminAuthRetry(token, (activeToken) => request.post(`${BASE_URL}/api/files/upload`, {
+    headers: { Authorization: `Bearer ${activeToken}` },
     multipart: {
       file: { name, mimeType, buffer: Buffer.from(content) },
       folder_id: String(folderId),
     },
-  })
+  }))
   const body = await uploadResp.json().catch(() => ({}))
   if (!uploadResp.ok() || body.success !== true) {
     throw new Error(`Upload failed: status=${uploadResp.status()}, error=${body.error || JSON.stringify(body).slice(0, 200)}`)
@@ -158,13 +166,15 @@ async function uploadSample(request, token, name, mimeType, content, folderId = 
   return body.data
 }
 
-function fileIdFromUpload(data) {
-  return data?.id ?? data?.file_id
+async function requestWithAdminAuthRetry(token, makeRequest) {
+  const firstToken = adminTokenOverride || token
+  let response = await makeRequest(firstToken)
+  if (response.status() === 401) response = await makeRequest(await refreshAdminToken())
+  return response
 }
 
-function responseItems(body) {
-  const items = body?.data?.items || body?.data || []
-  return Array.isArray(items) ? items : []
+function fileIdFromUpload(data) {
+  return data?.id ?? data?.file_id
 }
 
 function responseItemsOrThrow(body, context) {
@@ -199,9 +209,9 @@ function recycleItemMatches(item, fileId, fileName) {
 }
 
 async function readActiveFileItems(request, token, fileName) {
-  const searchResp = await request.get(`${BASE_URL}/api/files/search?keyword=${encodeURIComponent(fileName)}&page=1&page_size=50`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  const searchResp = await requestWithAdminAuthRetry(token, (activeToken) => request.get(`${BASE_URL}/api/files/search?keyword=${encodeURIComponent(fileName)}&page=1&page_size=50`, {
+    headers: { Authorization: `Bearer ${activeToken}` },
+  }))
   const searchBody = await searchResp.json().catch(() => ({}))
   if (!searchResp.ok()) {
     throw new Error(`Active file search failed: status=${searchResp.status()}, body=${JSON.stringify(searchBody).slice(0, 200)}`)
@@ -209,9 +219,9 @@ async function readActiveFileItems(request, token, fileName) {
   const searchItems = responseItemsOrThrow(searchBody, 'Active file search')
   if (searchItems.length > 0) return searchItems
 
-  const listResp = await request.get(`${BASE_URL}/api/files/list?folder_id=0&page=1&page_size=200`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  const listResp = await requestWithAdminAuthRetry(token, (activeToken) => request.get(`${BASE_URL}/api/files/list?folder_id=0&page=1&page_size=200`, {
+    headers: { Authorization: `Bearer ${activeToken}` },
+  }))
   const listBody = await listResp.json().catch(() => ({}))
   if (!listResp.ok()) {
     throw new Error(`Active file list failed: status=${listResp.status()}, body=${JSON.stringify(listBody).slice(0, 200)}`)
@@ -220,9 +230,9 @@ async function readActiveFileItems(request, token, fileName) {
 }
 
 async function readRecycleItems(request, token) {
-  const recycleResp = await request.get(`${BASE_URL}/api/recycle/list?page=1&page_size=200`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  const recycleResp = await requestWithAdminAuthRetry(token, (activeToken) => request.get(`${BASE_URL}/api/recycle/list?page=1&page_size=200`, {
+    headers: { Authorization: `Bearer ${activeToken}` },
+  }))
   const recycleBody = await recycleResp.json().catch(() => ({}))
   if (!recycleResp.ok()) {
     throw new Error(`Recycle list failed: status=${recycleResp.status()}, body=${JSON.stringify(recycleBody).slice(0, 200)}`)
@@ -542,8 +552,8 @@ test.describe('Scene 4: Excel-Engine Parse', () => {
 
     // Upload a real xlsx file with actual cell data
     const xlsxBuffer = fs.readFileSync(SAMPLE_FILES.xlsx)
-    const uploadResp = await request.post(`${BASE_URL}/api/files/upload`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const uploadResp = await requestWithAdminAuthRetry(token, (activeToken) => request.post(`${BASE_URL}/api/files/upload`, {
+      headers: { Authorization: `Bearer ${activeToken}` },
       multipart: {
         file: {
           name: `e2e-${TS}-sample.xlsx`,
@@ -552,18 +562,18 @@ test.describe('Scene 4: Excel-Engine Parse', () => {
         },
         folder_id: '0',
       },
-    })
+    }))
     const body = await uploadResp.json()
 
     // Verify excel-engine parse capability via modules call
-    const callResp = await request.post(`${BASE_URL}/api/modules/call`, {
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    const callResp = await requestWithAdminAuthRetry(token, (activeToken) => request.post(`${BASE_URL}/api/modules/call`, {
+      headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json' },
       data: {
         target_module: 'excel-engine',
         action: 'parse',
         parameters: { file_id: body.data?.id || 1 },
       },
-    })
+    }))
     const callBody = await callResp.json()
 
     // Check that parse returned actual sheet/cell data (not empty)
@@ -578,9 +588,9 @@ test.describe('Scene 4: Excel-Engine Parse', () => {
 
   test('4.1 Verify excel-engine in capabilities list', async ({ request }) => {
     const token = await getAuthToken(request)
-    const capsResp = await request.get(`${BASE_URL}/api/modules/capabilities`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    const capsResp = await requestWithAdminAuthRetry(token, (activeToken) => request.get(`${BASE_URL}/api/modules/capabilities`, {
+      headers: { Authorization: `Bearer ${activeToken}` },
+    }))
     const capsBody = await capsResp.json()
     const caps = capsBody.data || []
     const cap = caps.find(c => c.module === 'excel-engine' && c.action === 'parse')
@@ -620,7 +630,6 @@ test.describe('Scene 5: Key Interaction Flows', () => {
   test('5.2 File management - delete and recycle', async ({ page, request }) => {
     await gotoDesktop(page)
 
-    // Get fresh token AFTER browser login (login increments session_version)
     const pageToken = await page.evaluate(() => localStorage.getItem('v2_auth_token'))
     if (!pageToken) {
       results.push({ scenario: '5.2 File delete+recycle', passed: false, consoleErrors: [...consoleCollector], notes: 'No auth token after login' })
@@ -644,10 +653,10 @@ test.describe('Scene 5: Key Interaction Flows', () => {
     }
 
     // Delete via API
-    const delResp = await request.post(`${BASE_URL}/api/files/delete`, {
-      headers: { Authorization: `Bearer ${pageToken}`, 'Content-Type': 'application/json' },
+    const delResp = await requestWithAdminAuthRetry(pageToken, (activeToken) => request.post(`${BASE_URL}/api/files/delete`, {
+      headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json' },
       data: { id: fileId, type: 'file' },
-    })
+    }))
     const delBody = await delResp.json().catch(() => ({}))
     const deletedByApi = delResp.ok() && delBody.success === true
     let deleteState = { deleted: false, inRecycle: false, recycleItem: null }
@@ -673,10 +682,10 @@ test.describe('Scene 5: Key Interaction Flows', () => {
       if (recycleItemId === undefined || recycleItemId === null) {
         restoreError = `Recycle item has no id: ${JSON.stringify(deleteState.recycleItem).slice(0, 200)}`
       } else {
-        const restoreResp = await request.post(`${BASE_URL}/api/recycle/restore`, {
-          headers: { Authorization: `Bearer ${pageToken}`, 'Content-Type': 'application/json' },
+        const restoreResp = await requestWithAdminAuthRetry(pageToken, (activeToken) => request.post(`${BASE_URL}/api/recycle/restore`, {
+          headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json' },
           data: { id: recycleItemId, item_type: itemType },
-        })
+        }))
         const restoreBody = await restoreResp.json().catch(() => ({}))
         restored = restoreResp.ok() && restoreBody.success === true
         restoreError = restored ? '' : (restoreBody.error || `restore status ${restoreResp.status()}`)
@@ -743,10 +752,10 @@ test.describe('Scene 5: Key Interaction Flows', () => {
     await page.waitForSelector('.desktop-window', { timeout: 5000 }).catch(() => {})
 
     // Register file in knowledge base
-    const regResp = await request.post(`${BASE_URL}/api/knowledge/documents`, {
-      headers: { Authorization: `Bearer ${pageToken}`, 'Content-Type': 'application/json' },
+    const regResp = await requestWithAdminAuthRetry(pageToken, (activeToken) => request.post(`${BASE_URL}/api/knowledge/documents`, {
+      headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json' },
       data: { file_id: data.id },
-    })
+    }))
     const regBody = await regResp.json()
     const regOk = regBody.success === true
     const regError = regBody.error || ''
@@ -800,10 +809,10 @@ test.describe('Scene 5: Key Interaction Flows', () => {
     )
 
     // Issue a docs token (proves module is live)
-    const tokenResp = await request.post(`${BASE_URL}/api/docs/token`, {
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    const tokenResp = await requestWithAdminAuthRetry(token, (activeToken) => request.post(`${BASE_URL}/api/docs/token`, {
+      headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json' },
       data: { client_id: 'e2e-test', scope: { doc_ids: [data.id] } },
-    })
+    }))
     const tokenBody = await tokenResp.json()
 
     results.push({
@@ -845,10 +854,10 @@ test.describe('Cleanup', () => {
       }
 
       const activeFileId = activeItem.id ?? fileId
-      const deleteResp = await request.post(`${BASE_URL}/api/files/delete`, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      const deleteResp = await requestWithAdminAuthRetry(token, (activeToken) => request.post(`${BASE_URL}/api/files/delete`, {
+        headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json' },
         data: { id: activeFileId, type: 'file' },
-      })
+      }))
       const deleteBody = await deleteResp.json().catch(() => ({}))
       if (deleteResp.ok() && deleteBody.success === true) {
         softDeletedFileIds.add(String(fileId))
@@ -896,10 +905,10 @@ test.describe('Cleanup', () => {
       if (seenRecycleItemIds.has(String(recycleItemId))) continue
       seenRecycleItemIds.add(String(recycleItemId))
 
-      const permanentResp = await request.post(`${BASE_URL}/api/recycle/delete-permanently`, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      const permanentResp = await requestWithAdminAuthRetry(token, (activeToken) => request.post(`${BASE_URL}/api/recycle/delete-permanently`, {
+        headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json' },
         data: { id: recycleItemId, item_type: itemType },
-      })
+      }))
       const permanentBody = await permanentResp.json().catch(() => ({}))
       if (permanentResp.ok() && permanentBody.success === true) {
         permanentlyDeleted++
