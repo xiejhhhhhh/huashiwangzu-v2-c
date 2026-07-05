@@ -196,6 +196,7 @@ def scan_sandbox_matrix(module_keys: list[str] | None = None) -> list[dict]:
 
 def _prepare_command(command_text: str) -> tuple[list[str], Path, dict[str, str]]:
     env = os.environ.copy()
+    env.setdefault("JWT_SECRET", "module-sandbox-matrix-validation-secret")
     cwd = REPO_ROOT
     if command_text.startswith("cd ") and " && " in command_text:
         cd_part, command_text = command_text.split(" && ", 1)
