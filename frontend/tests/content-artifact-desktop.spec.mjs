@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 import { refreshAdminToken, requestWithAdminAuthRetry } from './ui-e2e/auth.mjs'
+import { gotoDesktop as gotoDesktopShell } from './ui-e2e/desktop.mjs'
 import { BASE_URL } from './ui-e2e/state.mjs'
 
 function unwrapEnvelope(body, context) {
@@ -91,8 +92,7 @@ async function cleanupPublishedArtifact(request, token, state) {
 }
 
 async function gotoDesktop(page) {
-  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
-  await expect(page.locator('.desktop-shell-container')).toBeVisible()
+  await gotoDesktopShell(page)
   await expect(page.locator('.desktop-file-icon-item').first()).toBeVisible({ timeout: 15000 }).catch(() => {})
 }
 

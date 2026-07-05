@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field
 
 BlockType = Literal[
     "heading", "paragraph", "table", "list", "code", "image",
-    "figure", "formula", "quote", "separator",
+    "figure", "formula", "quote", "separator", "divider",
+    "sheet", "range", "cell_patch", "slide", "chart",
 ]
 
 BlockLevel = Literal["block", "inline"]

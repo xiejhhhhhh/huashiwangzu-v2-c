@@ -27,7 +27,7 @@ export async function gotoDesktop(page) {
 }
 
 export async function openLauncher(page) {
-  await page.waitForSelector('.taskbar-start', { timeout: 5000 })
+  await gotoDesktop(page)
   const startBtn = page.locator('.taskbar-start')
   for (let attempt = 0; attempt < 3; attempt++) {
     const panelVisible = await page.locator('.desktop-launcher-panel').isVisible().catch(() => false)
