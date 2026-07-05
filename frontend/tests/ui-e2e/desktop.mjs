@@ -1,26 +1,27 @@
 import { expect } from '@playwright/test'
 
 import { BASE_URL } from './state.mjs'
-import { ADMIN_PASS, ADMIN_USER, refreshAdminStorageState } from './auth.mjs'
+import { ADMIN_PASS, ADMIN_USER } from './auth.mjs'
 
 export async function gotoDesktop(page) {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     await page.goto(`${BASE_URL}/desktop`, { waitUntil: 'domcontentloaded' })
     const loginVisible = await page.locator('.login-page').isVisible().catch(() => false)
     if (loginVisible) {
-      const token = await refreshAdminStorageState()
-      await page.locator('input[placeholder="用户名"]').fill(ADMIN_USER).catch(() => {})
-      await page.locator('input[placeholder="密码"]').fill(ADMIN_PASS).catch(() => {})
-      await page.locator('button').filter({ hasText: '登录' }).click({ force: true }).catch(() => {})
-      await page.evaluate((freshToken) => {
-        localStorage.setItem('v2_auth_token', freshToken)
-      }, token).catch(() => {})
+      const loginResponse = page.waitForResponse(
+        response => response.url().includes('/api/login') && response.status() === 200,
+        { timeout: 5000 },
+      ).catch(() => null)
+      await page.locator('input[placeholder="用户名"]').fill(ADMIN_USER)
+      await page.locator('input[placeholder="密码"]').fill(ADMIN_PASS)
+      await page.locator('button').filter({ hasText: '登录' }).click({ force: true })
+      await loginResponse
       await page.goto(`${BASE_URL}/desktop`, { waitUntil: 'domcontentloaded' })
     }
     const returnedToLogin = await page.locator('.login-page').isVisible().catch(() => false)
     if (returnedToLogin) continue
     try {
-      await page.waitForSelector('.desktop-shell-container', { timeout: 10000 })
+      await page.waitForSelector('.desktop-shell-container', { timeout: 5000 })
       await page.waitForSelector('.taskbar-start', { timeout: 3000 })
       return
     } catch {
