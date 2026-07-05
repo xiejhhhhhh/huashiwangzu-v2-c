@@ -48,6 +48,18 @@ elif domain_handles_tool(name):
 | `insight_tools.py` | `mcp_self_check`、`dev_toolkit_architecture_audit`、`agent_activity_report` |
 | `core_tools.py` | `brief`、`probe`、`call_capability`、`tail_log`、`routes`、`capabilities`、`db_schema`、`plan_task`、`finish_task`、`smoke_all`、`release_gate` 等核心工具 schema 与路由 |
 
+Release gate 保留历史 CLI 路径 `dev_toolkit/release_gate.py`，具体实现拆到 `dev_toolkit/release_gate/`：
+
+```text
+dev_toolkit/release_gate.py          # 薄 CLI 入口，保持旧命令和 MCP/job 调用路径不变
+dev_toolkit/release_gate/__init__.py # import 兼容 facade，继续导出旧测试/脚本常用符号
+dev_toolkit/release_gate/context.py  # 配置、共享状态、git/HTTP/token/runtime context helper
+dev_toolkit/release_gate/checks.py   # health/system/queue/lifecycle/capability/readme/component/sandbox checks
+dev_toolkit/release_gate/smoke_gate.py # smoke.py 调用、UI 覆盖、model fallback summary 检查
+dev_toolkit/release_gate/printers.py # add_result、verdict 和 RELEASE_GATE_JSON summary
+dev_toolkit/release_gate/runner.py   # argparse 和顶层 gate 编排
+```
+
 入口声明：
 
 | 文件 | 作用 |
