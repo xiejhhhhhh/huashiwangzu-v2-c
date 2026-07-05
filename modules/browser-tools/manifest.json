@@ -4,9 +4,16 @@
   "icon": "Globe",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "provider",
+  "module_family": "web",
+  "product_status": "background",
   "component_key": "",
   "route_prefix": "/api/browser-tools",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 700,
   "default_width": 900,
   "default_height": 700,

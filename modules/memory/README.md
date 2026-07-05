@@ -12,12 +12,17 @@ Long-term memory module for facts, semantic recall, memory links, experience rec
 | key | `"memory"` |
 | name | `"记忆"` |
 | category | `"tools"` |
+| module_type | `"service"` |
+| module_family | `"agent"` |
+| product_status | `"background"` |
 | window_type | `"normal"` |
 | singleton | `true` |
 | allow_multiple | `false` |
-| show_in_launcher | `true` |
+| show_in_launcher | `false` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/memory"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/memory` |
@@ -111,12 +116,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/memory/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="memory", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.py` |
+| README | PASS | `modules/memory/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/memory/sandbox/test_module.py` |
 | Frontend sandbox | SKIP | `N/A` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module memory --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

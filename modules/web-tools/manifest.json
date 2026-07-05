@@ -4,6 +4,9 @@
   "icon": "Search",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "provider",
+  "module_family": "web",
+  "product_status": "background",
   "component_key": "",
   "route_prefix": "/api/web-tools",
   "permissions": [

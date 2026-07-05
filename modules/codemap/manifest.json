@@ -4,6 +4,9 @@
   "icon": "DataBoard",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "provider",
+  "module_family": "devtool",
+  "product_status": "background",
   "component_key": "",
   "route_prefix": "/api/codemap",
   "permissions": [

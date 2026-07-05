@@ -12,12 +12,17 @@ Image Vision
 | key | `"image-vision"` |
 | name | `"Image Vision"` |
 | category | `"tools"` |
+| module_type | `"provider"` |
+| module_family | `"media"` |
+| product_status | `"background"` |
 | window_type | `"normal"` |
 | singleton | `false` |
 | allow_multiple | `false` |
 | show_in_launcher | `false` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/image-vision"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/image-vision` |
@@ -82,12 +87,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/image-vision/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="image-vision", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/image-vision/sandbox/test_module.py` |
+| README | PASS | `modules/image-vision/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/image-vision/sandbox/test_module.py` |
 | Frontend sandbox | PASS | `cd modules/image-vision/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-vision --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

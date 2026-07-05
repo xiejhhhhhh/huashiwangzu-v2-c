@@ -12,12 +12,17 @@ PPTX Parser
 | key | `"pptx-parser"` |
 | name | `"PPTX Parser"` |
 | category | `"tools"` |
+| module_type | `"parser"` |
+| module_family | `"office"` |
+| product_status | `"background"` |
 | window_type | `"normal"` |
 | singleton | `false` |
 | allow_multiple | `false` |
 | show_in_launcher | `false` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/pptx-parser"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/pptx-parser` |
@@ -82,12 +87,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/pptx-parser/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="pptx-parser", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py` |
+| README | PASS | `modules/pptx-parser/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/pptx-parser/sandbox/test_module.py` |
 | Frontend sandbox | PASS | `cd modules/pptx-parser/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module pptx-parser --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

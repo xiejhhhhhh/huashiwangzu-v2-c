@@ -63,6 +63,24 @@ KEEP_DOCS = (
     "开发文档/agent_handoff/MODULE_MAP.md",
 )
 
+ALLOWED_MODULE_TYPES = {"app", "orchestrator", "provider", "parser", "viewer", "editor", "service", "demo"}
+ALLOWED_MODULE_FAMILIES = {"desktop", "office", "knowledge", "agent", "media", "web", "business", "devtool", "demo"}
+ALLOWED_PRODUCT_STATUSES = {"core", "active", "background", "hidden", "demo", "debt", "deprecated"}
+BACKGROUND_ENTRY_TYPES = {"parser", "provider", "service", "demo"}
+BACKGROUND_STATUSES = {"background", "hidden", "demo", "deprecated"}
+FAMILY_ORDER = ("agent", "knowledge", "desktop", "office", "media", "web", "business", "devtool", "demo")
+FAMILY_LABELS = {
+    "agent": "Agent / Workflow",
+    "knowledge": "Knowledge / Content Intelligence",
+    "desktop": "Desktop / Viewer / Editor",
+    "office": "Office / Parser / Document",
+    "media": "AI Media Providers",
+    "web": "Web / Browser / External Info",
+    "business": "Business Apps",
+    "devtool": "Agent Dev Tools",
+    "demo": "Demo",
+}
+
 
 @dataclass(frozen=True)
 class ModuleDocFacts:
@@ -186,6 +204,7 @@ def docs_audit(repo_root: Path, *, module: str = "") -> dict[str, Any]:
                 "expected": expected,
                 "documented": int(count_match.group(1)),
             })
+        issues.extend(taxonomy_issues(item))
         if item.actions and "Runtime authority" not in text:
             issues.append({"level": "DEBT", "kind": "missing_capability_source", "path": rel(readme, repo_root)})
         if "Acceptance" not in text and "验收" not in text:
@@ -321,6 +340,9 @@ def manifest_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "key",
         "name",
         "category",
+        "module_type",
+        "module_family",
+        "product_status",
         "window_type",
         "singleton",
         "allow_multiple",
@@ -331,6 +353,28 @@ def manifest_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "module_version",
     )
     return {key: manifest.get(key) for key in keys if key in manifest}
+
+
+def taxonomy_issues(item: ModuleDocFacts) -> list[dict[str, Any]]:
+    manifest = item.manifest
+    issues: list[dict[str, Any]] = []
+    module_type = str(manifest.get("module_type") or "")
+    module_family = str(manifest.get("module_family") or "")
+    product_status = str(manifest.get("product_status") or "")
+    path = f"modules/{item.key}/manifest.json"
+    if module_type not in ALLOWED_MODULE_TYPES:
+        issues.append({"level": "BLOCKER", "kind": "invalid_module_type", "path": path, "value": module_type})
+    if module_family not in ALLOWED_MODULE_FAMILIES:
+        issues.append({"level": "BLOCKER", "kind": "invalid_module_family", "path": path, "value": module_family})
+    if product_status not in ALLOWED_PRODUCT_STATUSES:
+        issues.append({"level": "BLOCKER", "kind": "invalid_product_status", "path": path, "value": product_status})
+    if module_type in BACKGROUND_ENTRY_TYPES and manifest.get("show_in_launcher"):
+        issues.append({"level": "DEBT", "kind": "background_module_in_launcher", "path": path, "module_type": module_type})
+    if product_status in BACKGROUND_STATUSES and manifest.get("show_on_desktop"):
+        issues.append({"level": "DEBT", "kind": "background_module_on_desktop", "path": path, "product_status": product_status})
+    if module_type == "demo" and module_family != "demo":
+        issues.append({"level": "DEBT", "kind": "demo_family_mismatch", "path": path, "module_family": module_family})
+    return issues
 
 
 def render_current_state(repo_root: Path, facts: list[ModuleDocFacts]) -> str:
@@ -369,17 +413,51 @@ def render_module_map(facts: list[ModuleDocFacts]) -> str:
     lines = [
         "# Module Map\n\n",
         "Generated from `modules/*/manifest.json`. Refresh with `docs_sync(scope=\"module_map\")`.\n\n",
-        "| Module | Name | Category | Backend | Public actions | README |\n",
-        "|---|---|---|---|---:|---|\n",
+        "Modules are physically flat under `modules/{key}`. `module_family` is a logical grouping only; "
+        "same-family modules still call each other through the capability bus and must not import or read each other's tables directly.\n\n",
+        "## Summary\n\n",
+        f"- Total modules: {len(facts)}\n",
+        f"- Public capabilities: {sum(len(item.actions) for item in facts)}\n",
+        "- Entry cleanup rule: parser/provider/service/demo modules stay out of the launcher unless explicitly justified.\n\n",
     ]
-    for item in facts:
-        manifest = item.manifest
-        backend = "yes" if manifest.get("backend", {}).get("enabled") else "no"
-        lines.append(
-            f"| `{item.key}` | {manifest.get('name', item.key)} | {manifest.get('category', '')} | "
-            f"{backend} | {len(item.actions)} | `modules/{item.key}/README.md` |\n"
-        )
+    for family in FAMILY_ORDER:
+        group = [item for item in facts if item.manifest.get("module_family") == family]
+        if not group:
+            continue
+        lines.append(f"## {FAMILY_LABELS.get(family, family)}\n\n")
+        lines.append("| Module | Name | Type | Status | Entry | Backend | Public actions | README |\n")
+        lines.append("|---|---|---|---|---|---|---:|---|\n")
+        for item in sorted(group, key=lambda value: (str(value.manifest.get("module_type") or ""), value.key)):
+            manifest = item.manifest
+            backend = "yes" if manifest.get("backend", {}).get("enabled") else "no"
+            entry = entry_summary(manifest)
+            lines.append(
+                f"| `{item.key}` | {manifest.get('name', item.key)} | `{manifest.get('module_type', '')}` | "
+                f"`{manifest.get('product_status', '')}` | {entry} | {backend} | {len(item.actions)} | "
+                f"`modules/{item.key}/README.md` |\n"
+            )
+        lines.append("\n")
+    uncategorized = [item for item in facts if item.manifest.get("module_family") not in FAMILY_ORDER]
+    if uncategorized:
+        lines.append("## Uncategorized\n\n")
+        lines.append("| Module | Name | Type | Family | Status | README |\n")
+        lines.append("|---|---|---|---|---|---|\n")
+        for item in uncategorized:
+            manifest = item.manifest
+            lines.append(
+                f"| `{item.key}` | {manifest.get('name', item.key)} | `{manifest.get('module_type', '')}` | "
+                f"`{manifest.get('module_family', '')}` | `{manifest.get('product_status', '')}` | `modules/{item.key}/README.md` |\n"
+            )
     return "".join(lines)
+
+
+def entry_summary(manifest: dict[str, Any]) -> str:
+    entries = []
+    if manifest.get("show_in_launcher"):
+        entries.append("launcher")
+    if manifest.get("show_on_desktop"):
+        entries.append("desktop")
+    return ", ".join(entries) if entries else "background/file/capability"
 
 
 def render_manifest_block(item: ModuleDocFacts) -> str:

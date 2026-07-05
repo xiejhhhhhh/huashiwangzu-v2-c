@@ -12,12 +12,17 @@ Office generation module for docx, xlsx, pptx, pdf, Content IR aliases, and arti
 | key | `"office-gen"` |
 | name | `"Office Document Generator"` |
 | category | `"tools"` |
+| module_type | `"provider"` |
+| module_family | `"office"` |
+| product_status | `"background"` |
 | window_type | `"normal"` |
 | singleton | `true` |
 | allow_multiple | `false` |
-| show_in_launcher | `true` |
+| show_in_launcher | `false` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/office-gen"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/office-gen` |
@@ -93,12 +98,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/office-gen/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="office-gen", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/office-gen/sandbox/test_module.py` |
+| README | PASS | `modules/office-gen/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/office-gen/sandbox/test_module.py` |
 | Frontend sandbox | SKIP | `N/A` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module office-gen --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

@@ -4,6 +4,9 @@
   "icon": "List",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "service",
+  "module_family": "desktop",
+  "product_status": "core",
   "component_key": "",
   "route_prefix": "/api/desktop-tools",
   "permissions": [
@@ -107,9 +110,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "file_id": {"type": "integer", "description": "File ID"}
+          "file_id": {
+            "type": "integer",
+            "description": "File ID"
+          }
         },
-        "required": ["file_id"]
+        "required": [
+          "file_id"
+        ]
       },
       "min_role": "viewer"
     },
@@ -119,12 +127,27 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "name": {"type": "string", "description": "File name"},
-          "extension": {"type": "string", "description": "File extension"},
-          "content": {"type": "string", "description": "File content"},
-          "folder_id": {"type": "integer", "description": "Target folder ID"}
+          "name": {
+            "type": "string",
+            "description": "File name"
+          },
+          "extension": {
+            "type": "string",
+            "description": "File extension"
+          },
+          "content": {
+            "type": "string",
+            "description": "File content"
+          },
+          "folder_id": {
+            "type": "integer",
+            "description": "Target folder ID"
+          }
         },
-        "required": ["name", "extension"]
+        "required": [
+          "name",
+          "extension"
+        ]
       },
       "min_role": "editor"
     },
@@ -134,12 +157,26 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "old_file_id": {"type": "integer", "description": "Existing file ID to replace"},
-          "new_content": {"type": "string", "description": "New content as text"},
-          "source_artifact_id": {"type": "integer", "description": "Source artifact ID"},
-          "source_file_id": {"type": "integer", "description": "Source file ID"}
+          "old_file_id": {
+            "type": "integer",
+            "description": "Existing file ID to replace"
+          },
+          "new_content": {
+            "type": "string",
+            "description": "New content as text"
+          },
+          "source_artifact_id": {
+            "type": "integer",
+            "description": "Source artifact ID"
+          },
+          "source_file_id": {
+            "type": "integer",
+            "description": "Source file ID"
+          }
         },
-        "required": ["old_file_id"]
+        "required": [
+          "old_file_id"
+        ]
       },
       "min_role": "editor"
     },
@@ -149,9 +186,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "file_id": {"type": "integer", "description": "File ID"}
+          "file_id": {
+            "type": "integer",
+            "description": "File ID"
+          }
         },
-        "required": ["file_id"]
+        "required": [
+          "file_id"
+        ]
       },
       "min_role": "editor"
     },
@@ -161,10 +203,19 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "file_id": {"type": "integer", "description": "File ID"},
-          "new_name": {"type": "string", "description": "New file name"}
+          "file_id": {
+            "type": "integer",
+            "description": "File ID"
+          },
+          "new_name": {
+            "type": "string",
+            "description": "New file name"
+          }
         },
-        "required": ["file_id", "new_name"]
+        "required": [
+          "file_id",
+          "new_name"
+        ]
       },
       "min_role": "editor"
     },
@@ -174,10 +225,18 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "file_id": {"type": "integer", "description": "File ID"},
-          "target_folder_id": {"type": "integer", "description": "Target folder ID"}
+          "file_id": {
+            "type": "integer",
+            "description": "File ID"
+          },
+          "target_folder_id": {
+            "type": "integer",
+            "description": "Target folder ID"
+          }
         },
-        "required": ["file_id"]
+        "required": [
+          "file_id"
+        ]
       },
       "min_role": "editor"
     },
@@ -187,9 +246,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "artifact_id": {"type": "integer", "description": "Artifact ID"}
+          "artifact_id": {
+            "type": "integer",
+            "description": "Artifact ID"
+          }
         },
-        "required": ["artifact_id"]
+        "required": [
+          "artifact_id"
+        ]
       },
       "min_role": "viewer"
     },
@@ -199,10 +263,19 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "artifact_id": {"type": "integer", "description": "Artifact ID"},
-          "version_id": {"type": "integer", "description": "Version ID"}
+          "artifact_id": {
+            "type": "integer",
+            "description": "Artifact ID"
+          },
+          "version_id": {
+            "type": "integer",
+            "description": "Version ID"
+          }
         },
-        "required": ["artifact_id", "version_id"]
+        "required": [
+          "artifact_id",
+          "version_id"
+        ]
       },
       "min_role": "editor"
     },
@@ -212,10 +285,19 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "target_file_id": {"type": "integer", "description": "Desktop file ID"},
-          "source_artifact_id": {"type": "integer", "description": "Artifact ID"}
+          "target_file_id": {
+            "type": "integer",
+            "description": "Desktop file ID"
+          },
+          "source_artifact_id": {
+            "type": "integer",
+            "description": "Artifact ID"
+          }
         },
-        "required": ["target_file_id", "source_artifact_id"]
+        "required": [
+          "target_file_id",
+          "source_artifact_id"
+        ]
       },
       "min_role": "editor"
     },
@@ -225,10 +307,18 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "artifact_id": {"type": "integer", "description": "Artifact ID"},
-          "target_file_id": {"type": "integer", "description": "Target file ID (optional)"}
+          "artifact_id": {
+            "type": "integer",
+            "description": "Artifact ID"
+          },
+          "target_file_id": {
+            "type": "integer",
+            "description": "Target file ID (optional)"
+          }
         },
-        "required": ["artifact_id"]
+        "required": [
+          "artifact_id"
+        ]
       },
       "min_role": "editor"
     },

@@ -14,12 +14,25 @@
 | Sandbox | `modules/{key}/sandbox/` |
 | Long-lived docs | `modules/{key}/README.md` only |
 
+## Module Taxonomy
+
+Modules stay physically flat under `modules/{key}/`. Classification is logical only and does not create parent/child import rights.
+
+| Field | Purpose |
+|---|---|
+| `module_type` | Shape of the module: `app`, `orchestrator`, `provider`, `parser`, `viewer`, `editor`, `service`, or `demo` |
+| `module_family` | Product family: `desktop`, `office`, `knowledge`, `agent`, `media`, `web`, `business`, `devtool`, or `demo` |
+| `product_status` | Entry/priority status: `core`, `active`, `background`, `hidden`, `demo`, `debt`, or `deprecated` |
+
+Entry rule: parser/provider/service/demo modules should normally stay out of launcher/desktop entries; app/orchestrator/viewer/editor modules may be visible when they are user-facing.
+
 ## Data And Interaction Rules
 
 - Module business tables use the module prefix, for example `kb_*`, `agent_*`, `memory_*`.
 - Modules do not directly read/write `framework_*` or other module tables.
 - Modules do not add database foreign keys to framework or other module tables.
 - Cross-module calls must use framework capability routes.
+- Same-family modules still use capability routes; `module_family` is not permission to import or share tables.
 - Framework data access goes through public framework APIs or approved service helpers.
 
 ## Backend Capability Contract

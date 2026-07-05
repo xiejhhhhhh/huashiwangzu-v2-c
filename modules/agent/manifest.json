@@ -4,9 +4,16 @@
   "icon": "ChatDotRound",
   "icon_asset": "",
   "category": "AI",
+  "module_type": "orchestrator",
+  "module_family": "agent",
+  "product_status": "core",
   "component_key": "index.vue",
   "route_prefix": "/api/agent",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 100,
   "default_width": 900,
   "default_height": 650,
@@ -25,57 +32,757 @@
   "permission_declaration": {
     "default": "viewer",
     "actions": [
-      {"action": "agent_view", "name": "查看AI助手", "min_role": "viewer"},
-      {"action": "agent_chat", "name": "发起对话", "min_role": "viewer"},
-      {"action": "agent_manage", "name": "管理设置", "min_role": "admin"}
+      {
+        "action": "agent_view",
+        "name": "查看AI助手",
+        "min_role": "viewer"
+      },
+      {
+        "action": "agent_chat",
+        "name": "发起对话",
+        "min_role": "viewer"
+      },
+      {
+        "action": "agent_manage",
+        "name": "管理设置",
+        "min_role": "admin"
+      }
     ]
   },
   "public_actions": [
-    {"action": "get_system_prompt", "description": "获取系统提示词", "parameters": {}, "min_role": "admin"},
-    {"action": "update_system_prompt", "description": "更新系统提示词", "parameters": {"content": {"type": "string", "description": "提示词内容"}}, "min_role": "admin"},
-    {"action": "get_enterprise_prompt", "description": "获取企业提示词", "parameters": {}, "min_role": "admin"},
-    {"action": "update_enterprise_prompt", "description": "更新企业提示词", "parameters": {"content": {"type": "string", "description": "提示词内容"}}, "min_role": "admin"},
-    {"action": "get_my_profile", "description": "获取个人用户画像", "parameters": {}, "min_role": "viewer"},
-    {"action": "update_my_profile", "description": "更新个人用户画像", "parameters": {"profile_data": {"type": "object", "description": "画像数据", "properties": {"tone": {"type": "string"}, "taboos": {"type": "array", "items": {"type": "string"}}, "focus": {"type": "array", "items": {"type": "string"}}, "habits": {"type": "array", "items": {"type": "string"}}}}}, "min_role": "viewer"},
-    {"action": "spawn_subagent", "description": "生成子 Agent 执行独立任务（支持批量/白名单/执行轨迹/Gate 校验）", "parameters": {"task": {"type": "string"}, "tasks": {"type": "array", "items": {"type": "object"}}, "tools": {"type": "array", "items": {"type": "string"}}, "context": {"type": "string"}, "write_enabled": {"type": "boolean"}, "track_trajectory": {"type": "boolean"}, "conversation_id": {"type": "integer"}, "session_id": {"type": "string"}, "turn_index_offset": {"type": "integer"}, "max_rounds": {"type": "integer"}, "gates": {"type": "boolean"}, "gate_retry": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "skill_manage", "description": "管理技能（CRUD/审批/统计/追溯）", "parameters": {"action": {"type": "string"}, "name": {"type": "string"}, "description": {"type": "string"}, "body": {"type": "string"}, "allowed_tools": {"type": "array", "items": {"type": "string"}}, "scope": {"type": "string"}}, "min_role": "admin"},
-    {"action": "get_role_profiles", "description": "列出岗位画像", "parameters": {}, "min_role": "viewer"},
-    {"action": "get_role_profile", "description": "获取岗位画像详情", "parameters": {"role_key": {"type": "string"}}, "min_role": "viewer"},
-    {"action": "upsert_role_profile", "description": "创建/更新岗位画像", "parameters": {"role_key": {"type": "string"}, "role_name": {"type": "string"}, "tone": {"type": "string"}, "taboos": {"type": "array", "items": {"type": "string"}}, "focus_areas": {"type": "array", "items": {"type": "string"}}, "allowed_tools": {"type": "array", "items": {"type": "string"}}}, "min_role": "admin"},
-    {"action": "get_enterprise_profile", "description": "获取企业画像", "parameters": {}, "min_role": "viewer"},
-    {"action": "upsert_enterprise_profile", "description": "创建/更新企业画像", "parameters": {"enterprise_name": {"type": "string"}, "tone": {"type": "string"}, "business_rules": {"type": "array", "items": {"type": "string"}}, "communication_style": {"type": "string"}}, "min_role": "admin"},
-    {"action": "list_market_profiles", "description": "列出市场/品牌画像", "parameters": {"profile_type": {"type": "string"}}, "min_role": "viewer"},
-    {"action": "upsert_market_profile", "description": "创建/更新市场画像", "parameters": {"profile_type": {"type": "string"}, "key": {"type": "string"}, "name": {"type": "string"}, "attributes": {"type": "object"}, "tags": {"type": "array", "items": {"type": "string"}}}, "min_role": "admin"},
-    {"action": "record_profile_signal", "description": "记录画像信号", "parameters": {"signal_type": {"type": "string"}, "signal_data": {"type": "object"}, "confidence": {"type": "number"}, "target_profile_type": {"type": "string"}}, "min_role": "viewer"},
-    {"action": "list_profile_signals", "description": "查看画像信号", "parameters": {"signal_type": {"type": "string"}, "applied": {"type": "boolean"}}, "min_role": "viewer"},
-    {"action": "record_trajectory", "description": "记录执行轨迹", "parameters": {"session_id": {"type": "string"}, "conversation_id": {"type": "integer"}, "user_input": {"type": "string"}}, "min_role": "viewer"},
-    {"action": "list_trajectories", "description": "查看执行轨迹", "parameters": {"conversation_id": {"type": "integer"}, "session_id": {"type": "string"}}, "min_role": "admin"},
-    {"action": "list_tool_guides", "description": "列出工具指引", "parameters": {"owner_id": {"type": "integer"}, "agent_code": {"type": "string"}, "tool_name": {"type": "string"}, "scope": {"type": "string"}, "status": {"type": "string"}}, "min_role": "viewer"},
-    {"action": "get_tool_guide", "description": "获取单条工具指引详情", "parameters": {"guide_id": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "propose_tool_guide", "description": "提交候选工具指引", "parameters": {"tool_name": {"type": "string"}, "agent_code": {"type": "string"}, "scope": {"type": "string"}, "title": {"type": "string"}, "guide_text": {"type": "string"}, "failure_policy": {"type": "object"}, "acceptance_policy": {"type": "object"}}, "min_role": "editor"},
-    {"action": "activate_tool_guide", "description": "激活工具指引或晋升候选", "parameters": {"guide_id": {"type": "integer"}}, "min_role": "admin"},
-    {"action": "disable_tool_guide", "description": "禁用工具指引", "parameters": {"guide_id": {"type": "integer"}}, "min_role": "admin"},
-    {"action": "rollback_tool_guide", "description": "回滚工具指引到指定版本", "parameters": {"guide_id": {"type": "integer"}, "version": {"type": "integer"}}, "min_role": "admin"},
-    {"action": "render_tool_guidance", "description": "按合并顺序渲染当前工具指引", "parameters": {"agent_code": {"type": "string"}, "tool_names": {"type": "array", "items": {"type": "string"}}, "max_tokens": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "classify_and_degrade", "description": "分类工具错误并返回降级建议", "parameters": {"error_class": {"type": "string"}, "tool_result": {"type": "object"}, "exception": {"type": "string"}, "user_input": {"type": "string"}}, "min_role": "viewer"},
-    {"action": "create_workflow", "description": "创建 Agent 用户级工作流任务账本", "parameters": {"title": {"type": "string"}, "intent": {"type": "string"}, "source": {"type": "string"}, "owner_id": {"type": "integer"}, "extra_meta": {"type": "object"}}, "min_role": "viewer"},
-    {"action": "get_workflow_status", "description": "读取 Agent 工作流极简状态", "parameters": {"run_id": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "list_workflows", "description": "列出当前用户或管理员可见的 Agent 工作流", "parameters": {"owner_id": {"type": "integer"}, "status": {"type": "string"}, "has_failures": {"type": "boolean"}, "has_artifacts": {"type": "boolean"}, "has_references": {"type": "boolean"}, "limit": {"type": "integer"}, "offset": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "get_workflow_governance_summary", "description": "汇总 Agent workflow 治理面板统计", "parameters": {}, "min_role": "viewer"},
-    {"action": "seed_demo_workflows", "description": "创建可清理的 Agent workflow demo 数据", "parameters": {"marker": {"type": "string"}, "owner_id": {"type": "integer"}, "cleanup_existing": {"type": "boolean"}}, "min_role": "admin"},
-    {"action": "cleanup_demo_workflows", "description": "清理 Agent workflow demo 数据", "parameters": {"marker": {"type": "string"}}, "min_role": "admin"},
-    {"action": "list_workflow_steps", "description": "列出 Agent 工作流步骤账本", "parameters": {"run_id": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "list_workflow_artifacts", "description": "列出 Agent 工作流产物元数据", "parameters": {"run_id": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "get_multi_agent_summary", "description": "汇总 Agent 工作流子代理/步骤执行结果", "parameters": {"run_id": {"type": "integer"}}, "min_role": "viewer"},
-    {"action": "record_workflow_step", "description": "记录或更新 Agent 工作流步骤状态", "parameters": {"run_id": {"type": "integer"}, "step_key": {"type": "string"}, "title": {"type": "string"}, "type": {"type": "string"}, "status": {"type": "string"}, "summary": {"type": "string"}, "extra_meta": {"type": "object"}}, "min_role": "viewer"},
-    {"action": "record_tool_call", "description": "记录 Agent 工作流工具或 capability 调用", "parameters": {"run_id": {"type": "integer"}, "step_id": {"type": "integer"}, "tool_name": {"type": "string"}, "target_module": {"type": "string"}, "action": {"type": "string"}, "arguments": {"type": "object"}, "side_effect_level": {"type": "string"}, "approval_policy": {"type": "string"}, "idempotency_key": {"type": "string"}}, "min_role": "viewer"},
-    {"action": "record_verification", "description": "记录 Agent 工作流验证结果并参与终态裁判", "parameters": {"run_id": {"type": "integer"}, "step_id": {"type": "integer"}, "verification_type": {"type": "string"}, "status": {"type": "string"}, "summary": {"type": "string"}, "is_required_for_completion": {"type": "boolean"}}, "min_role": "viewer"},
-    {"action": "request_workflow_approval", "description": "为 Agent 工作流创建可恢复的审批请求", "parameters": {"run_id": {"type": "integer"}, "tool_call_id": {"type": "integer"}, "request_type": {"type": "string"}, "risk_level": {"type": "string"}, "decision_scope": {"type": "string"}, "resume_target": {"type": "object"}}, "min_role": "viewer"},
-    {"action": "resolve_workflow_approval", "description": "处理 Agent 工作流审批并恢复或终止对应 tool call", "parameters": {"approval_id": {"type": "integer"}, "decision": {"type": "string"}, "payload_hash": {"type": "string"}, "reason": {"type": "string"}}, "min_role": "admin"},
-    {"action": "finalize_workflow", "description": "根据验证结果裁判 Agent 工作流终态", "parameters": {"run_id": {"type": "integer"}, "developer_summary": {"type": "string"}}, "min_role": "viewer"}
+    {
+      "action": "get_system_prompt",
+      "description": "获取系统提示词",
+      "parameters": {},
+      "min_role": "admin"
+    },
+    {
+      "action": "update_system_prompt",
+      "description": "更新系统提示词",
+      "parameters": {
+        "content": {
+          "type": "string",
+          "description": "提示词内容"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "get_enterprise_prompt",
+      "description": "获取企业提示词",
+      "parameters": {},
+      "min_role": "admin"
+    },
+    {
+      "action": "update_enterprise_prompt",
+      "description": "更新企业提示词",
+      "parameters": {
+        "content": {
+          "type": "string",
+          "description": "提示词内容"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "get_my_profile",
+      "description": "获取个人用户画像",
+      "parameters": {},
+      "min_role": "viewer"
+    },
+    {
+      "action": "update_my_profile",
+      "description": "更新个人用户画像",
+      "parameters": {
+        "profile_data": {
+          "type": "object",
+          "description": "画像数据",
+          "properties": {
+            "tone": {
+              "type": "string"
+            },
+            "taboos": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "focus": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "habits": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "spawn_subagent",
+      "description": "生成子 Agent 执行独立任务（支持批量/白名单/执行轨迹/Gate 校验）",
+      "parameters": {
+        "task": {
+          "type": "string"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context": {
+          "type": "string"
+        },
+        "write_enabled": {
+          "type": "boolean"
+        },
+        "track_trajectory": {
+          "type": "boolean"
+        },
+        "conversation_id": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "turn_index_offset": {
+          "type": "integer"
+        },
+        "max_rounds": {
+          "type": "integer"
+        },
+        "gates": {
+          "type": "boolean"
+        },
+        "gate_retry": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "skill_manage",
+      "description": "管理技能（CRUD/审批/统计/追溯）",
+      "parameters": {
+        "action": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "allowed_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "get_role_profiles",
+      "description": "列出岗位画像",
+      "parameters": {},
+      "min_role": "viewer"
+    },
+    {
+      "action": "get_role_profile",
+      "description": "获取岗位画像详情",
+      "parameters": {
+        "role_key": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "upsert_role_profile",
+      "description": "创建/更新岗位画像",
+      "parameters": {
+        "role_key": {
+          "type": "string"
+        },
+        "role_name": {
+          "type": "string"
+        },
+        "tone": {
+          "type": "string"
+        },
+        "taboos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "focus_areas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowed_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "get_enterprise_profile",
+      "description": "获取企业画像",
+      "parameters": {},
+      "min_role": "viewer"
+    },
+    {
+      "action": "upsert_enterprise_profile",
+      "description": "创建/更新企业画像",
+      "parameters": {
+        "enterprise_name": {
+          "type": "string"
+        },
+        "tone": {
+          "type": "string"
+        },
+        "business_rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "communication_style": {
+          "type": "string"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "list_market_profiles",
+      "description": "列出市场/品牌画像",
+      "parameters": {
+        "profile_type": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "upsert_market_profile",
+      "description": "创建/更新市场画像",
+      "parameters": {
+        "profile_type": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "record_profile_signal",
+      "description": "记录画像信号",
+      "parameters": {
+        "signal_type": {
+          "type": "string"
+        },
+        "signal_data": {
+          "type": "object"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "target_profile_type": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "list_profile_signals",
+      "description": "查看画像信号",
+      "parameters": {
+        "signal_type": {
+          "type": "string"
+        },
+        "applied": {
+          "type": "boolean"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "record_trajectory",
+      "description": "记录执行轨迹",
+      "parameters": {
+        "session_id": {
+          "type": "string"
+        },
+        "conversation_id": {
+          "type": "integer"
+        },
+        "user_input": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "list_trajectories",
+      "description": "查看执行轨迹",
+      "parameters": {
+        "conversation_id": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "list_tool_guides",
+      "description": "列出工具指引",
+      "parameters": {
+        "owner_id": {
+          "type": "integer"
+        },
+        "agent_code": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "get_tool_guide",
+      "description": "获取单条工具指引详情",
+      "parameters": {
+        "guide_id": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "propose_tool_guide",
+      "description": "提交候选工具指引",
+      "parameters": {
+        "tool_name": {
+          "type": "string"
+        },
+        "agent_code": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "guide_text": {
+          "type": "string"
+        },
+        "failure_policy": {
+          "type": "object"
+        },
+        "acceptance_policy": {
+          "type": "object"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "activate_tool_guide",
+      "description": "激活工具指引或晋升候选",
+      "parameters": {
+        "guide_id": {
+          "type": "integer"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "disable_tool_guide",
+      "description": "禁用工具指引",
+      "parameters": {
+        "guide_id": {
+          "type": "integer"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "rollback_tool_guide",
+      "description": "回滚工具指引到指定版本",
+      "parameters": {
+        "guide_id": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "render_tool_guidance",
+      "description": "按合并顺序渲染当前工具指引",
+      "parameters": {
+        "agent_code": {
+          "type": "string"
+        },
+        "tool_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_tokens": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "classify_and_degrade",
+      "description": "分类工具错误并返回降级建议",
+      "parameters": {
+        "error_class": {
+          "type": "string"
+        },
+        "tool_result": {
+          "type": "object"
+        },
+        "exception": {
+          "type": "string"
+        },
+        "user_input": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "create_workflow",
+      "description": "创建 Agent 用户级工作流任务账本",
+      "parameters": {
+        "title": {
+          "type": "string"
+        },
+        "intent": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "integer"
+        },
+        "extra_meta": {
+          "type": "object"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "get_workflow_status",
+      "description": "读取 Agent 工作流极简状态",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "list_workflows",
+      "description": "列出当前用户或管理员可见的 Agent 工作流",
+      "parameters": {
+        "owner_id": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "has_failures": {
+          "type": "boolean"
+        },
+        "has_artifacts": {
+          "type": "boolean"
+        },
+        "has_references": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "offset": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "get_workflow_governance_summary",
+      "description": "汇总 Agent workflow 治理面板统计",
+      "parameters": {},
+      "min_role": "viewer"
+    },
+    {
+      "action": "seed_demo_workflows",
+      "description": "创建可清理的 Agent workflow demo 数据",
+      "parameters": {
+        "marker": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "integer"
+        },
+        "cleanup_existing": {
+          "type": "boolean"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "cleanup_demo_workflows",
+      "description": "清理 Agent workflow demo 数据",
+      "parameters": {
+        "marker": {
+          "type": "string"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "list_workflow_steps",
+      "description": "列出 Agent 工作流步骤账本",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "list_workflow_artifacts",
+      "description": "列出 Agent 工作流产物元数据",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "get_multi_agent_summary",
+      "description": "汇总 Agent 工作流子代理/步骤执行结果",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "record_workflow_step",
+      "description": "记录或更新 Agent 工作流步骤状态",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        },
+        "step_key": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "extra_meta": {
+          "type": "object"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "record_tool_call",
+      "description": "记录 Agent 工作流工具或 capability 调用",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        },
+        "step_id": {
+          "type": "integer"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "target_module": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "object"
+        },
+        "side_effect_level": {
+          "type": "string"
+        },
+        "approval_policy": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "record_verification",
+      "description": "记录 Agent 工作流验证结果并参与终态裁判",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        },
+        "step_id": {
+          "type": "integer"
+        },
+        "verification_type": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "is_required_for_completion": {
+          "type": "boolean"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "request_workflow_approval",
+      "description": "为 Agent 工作流创建可恢复的审批请求",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        },
+        "tool_call_id": {
+          "type": "integer"
+        },
+        "request_type": {
+          "type": "string"
+        },
+        "risk_level": {
+          "type": "string"
+        },
+        "decision_scope": {
+          "type": "string"
+        },
+        "resume_target": {
+          "type": "object"
+        }
+      },
+      "min_role": "viewer"
+    },
+    {
+      "action": "resolve_workflow_approval",
+      "description": "处理 Agent 工作流审批并恢复或终止对应 tool call",
+      "parameters": {
+        "approval_id": {
+          "type": "integer"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "payload_hash": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "finalize_workflow",
+      "description": "根据验证结果裁判 Agent 工作流终态",
+      "parameters": {
+        "run_id": {
+          "type": "integer"
+        },
+        "developer_summary": {
+          "type": "string"
+        }
+      },
+      "min_role": "viewer"
+    }
   ],
-  "dependency_declaration": [{"module": "knowledge", "optional": true}],
+  "dependency_declaration": [
+    {
+      "module": "knowledge",
+      "optional": true
+    }
+  ],
   "event_handler_declaration": [],
   "db_migration_declaration": [],
-  "backend": {"enabled": true, "router": "backend/router.py"}
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  }
 }

@@ -4,20 +4,40 @@
   "icon": "DocumentCopy",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "provider",
+  "module_family": "media",
+  "product_status": "background",
   "component_key": "index.vue",
   "route_prefix": "/api/media-asr",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 400,
   "default_width": 800,
   "default_height": 600,
   "singleton": false,
-  "show_in_launcher": true,
+  "show_in_launcher": false,
   "show_on_desktop": false,
   "show_in_tray": false,
   "show_in_sidebar": false,
   "window_type": "normal",
   "allow_multiple": false,
-  "supported_formats": ["mp4", "mov", "m4v", "webm", "mkv", "avi", "wav", "mp3", "m4a", "aac", "flac", "ogg"],
+  "supported_formats": [
+    "mp4",
+    "mov",
+    "m4v",
+    "webm",
+    "mkv",
+    "avi",
+    "wav",
+    "mp3",
+    "m4a",
+    "aac",
+    "flac",
+    "ogg"
+  ],
   "editable_formats": [],
   "creatable_formats": [],
   "module_version": "1.0.0",
@@ -27,11 +47,26 @@
       "action": "extract_audio",
       "description": "Extract audio from an uploaded video file",
       "parameters": {
-        "file_id": {"type": "int", "description": "Source video file ID"},
-        "sample_rate": {"type": "int", "description": "Output sample rate (default 16000)"},
-        "audio_format": {"type": "string", "description": "Output audio format: wav/mp3/m4a/flac/ogg (default wav)"},
-        "save_file": {"type": "bool", "description": "Save audio as a framework file (default true)"},
-        "folder_id": {"type": "int", "description": "Target folder ID for saved audio"}
+        "file_id": {
+          "type": "int",
+          "description": "Source video file ID"
+        },
+        "sample_rate": {
+          "type": "int",
+          "description": "Output sample rate (default 16000)"
+        },
+        "audio_format": {
+          "type": "string",
+          "description": "Output audio format: wav/mp3/m4a/flac/ogg (default wav)"
+        },
+        "save_file": {
+          "type": "bool",
+          "description": "Save audio as a framework file (default true)"
+        },
+        "folder_id": {
+          "type": "int",
+          "description": "Target folder ID for saved audio"
+        }
       },
       "min_role": "editor"
     },
@@ -39,11 +74,26 @@
       "action": "transcribe_audio",
       "description": "Transcribe audio file into timestamped text",
       "parameters": {
-        "file_id": {"type": "int", "description": "Audio file ID"},
-        "model": {"type": "string", "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"},
-        "language": {"type": "string", "description": "Language hint (optional)"},
-        "save_text": {"type": "bool", "description": "Save transcript as a framework file (default false)"},
-        "folder_id": {"type": "int", "description": "Target folder ID for saved transcript"}
+        "file_id": {
+          "type": "int",
+          "description": "Audio file ID"
+        },
+        "model": {
+          "type": "string",
+          "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"
+        },
+        "language": {
+          "type": "string",
+          "description": "Language hint (optional)"
+        },
+        "save_text": {
+          "type": "bool",
+          "description": "Save transcript as a framework file (default false)"
+        },
+        "folder_id": {
+          "type": "int",
+          "description": "Target folder ID for saved transcript"
+        }
       },
       "min_role": "editor"
     },
@@ -51,13 +101,34 @@
       "action": "transcribe_video",
       "description": "Extract audio from video and transcribe in one step",
       "parameters": {
-        "file_id": {"type": "int", "description": "Source video file ID"},
-        "model": {"type": "string", "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"},
-        "sample_rate": {"type": "int", "description": "Audio extraction sample rate (default 16000)"},
-        "language": {"type": "string", "description": "Language hint (optional)"},
-        "save_audio": {"type": "bool", "description": "Save extracted audio as a framework file (default false)"},
-        "save_text": {"type": "bool", "description": "Save transcript as a framework file (default false)"},
-        "folder_id": {"type": "int", "description": "Target folder ID for saved files"}
+        "file_id": {
+          "type": "int",
+          "description": "Source video file ID"
+        },
+        "model": {
+          "type": "string",
+          "description": "Whisper model: tiny/small/medium/large/large-v2/large-v3/turbo (default large-v3)"
+        },
+        "sample_rate": {
+          "type": "int",
+          "description": "Audio extraction sample rate (default 16000)"
+        },
+        "language": {
+          "type": "string",
+          "description": "Language hint (optional)"
+        },
+        "save_audio": {
+          "type": "bool",
+          "description": "Save extracted audio as a framework file (default false)"
+        },
+        "save_text": {
+          "type": "bool",
+          "description": "Save transcript as a framework file (default false)"
+        },
+        "folder_id": {
+          "type": "int",
+          "description": "Target folder ID for saved files"
+        }
       },
       "min_role": "editor"
     }

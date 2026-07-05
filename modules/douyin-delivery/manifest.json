@@ -4,9 +4,16 @@
   "icon": "VideoPlay",
   "icon_asset": "",
   "category": "AI",
+  "module_type": "app",
+  "module_family": "business",
+  "product_status": "active",
   "component_key": "index.vue",
   "route_prefix": "/api/douyin-delivery",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 150,
   "default_width": 1100,
   "default_height": 750,
@@ -25,31 +32,175 @@
   "permission_declaration": {
     "default": "viewer",
     "actions": [
-      {"action": "douyin_delivery_view", "name": "查看内容与计划助手", "min_role": "viewer"},
-      {"action": "douyin_delivery_generate", "name": "内容/文案生成", "min_role": "editor"},
-      {"action": "douyin_delivery_manage", "name": "计划与交接管理", "min_role": "editor"},
-      {"action": "douyin_delivery_admin", "name": "管理设置", "min_role": "admin"}
+      {
+        "action": "douyin_delivery_view",
+        "name": "查看内容与计划助手",
+        "min_role": "viewer"
+      },
+      {
+        "action": "douyin_delivery_generate",
+        "name": "内容/文案生成",
+        "min_role": "editor"
+      },
+      {
+        "action": "douyin_delivery_manage",
+        "name": "计划与交接管理",
+        "min_role": "editor"
+      },
+      {
+        "action": "douyin_delivery_admin",
+        "name": "管理设置",
+        "min_role": "admin"
+      }
     ]
   },
   "public_actions": [
-    {"action": "generate_script", "description": "生成抖音口播脚本", "parameters": {"product": {"type": "string", "description": "产品名称或卖点方向"}, "channel": {"type": "string", "description": "投放渠道: local_push/ocean_engine/qianchuan"}}, "min_role": "editor"},
-    {"action": "generate_ad_copy", "description": "生成广告文案", "parameters": {"product": {"type": "string", "description": "产品名称或卖点"}, "channel": {"type": "string", "description": "投放渠道: local_push/ocean_engine/qianchuan"}, "ad_type": {"type": "string", "description": "广告类型: feed/search/brand"}}, "min_role": "editor"},
-    {"action": "validate_content", "description": "知识库校验成分/功效内容", "parameters": {"content": {"type": "string", "description": "需要校验的文本"}}, "min_role": "editor"},
-    {"action": "create_delivery_task", "description": "创建内容交接任务并同步推进可审计状态；不调用外部广告平台", "parameters": {"task_type": {"type": "string", "description": "publish_script/publish_ad_copy/sync_metrics/review_content"}, "target_type": {"type": "string", "description": "script/ad_copy/campaign/material"}, "target_id": {"type": "integer", "description": "目标逻辑 ID"}, "payload": {"type": "object", "description": "交接参数；execution_mode 支持 handoff/dry_run"}, "auto_execute": {"type": "boolean", "description": "是否创建后立即推进状态，默认 true"}}, "min_role": "editor"},
-    {"action": "mark_task_failed", "description": "把交接任务标记为 failed 并写入失败原因", "parameters": {"task_id": {"type": "integer", "description": "任务 ID"}, "error_message": {"type": "string", "description": "失败原因"}, "result_payload": {"type": "object", "description": "可选失败上下文"}}, "min_role": "editor"},
-    {"action": "cleanup_marked_data", "description": "按 marker 清理当前用户测试数据（含投递任务 payload/result_payload）", "parameters": {"marker": {"type": "string", "description": "测试数据标记，至少 6 字符"}}, "min_role": "editor"}
+    {
+      "action": "generate_script",
+      "description": "生成抖音口播脚本",
+      "parameters": {
+        "product": {
+          "type": "string",
+          "description": "产品名称或卖点方向"
+        },
+        "channel": {
+          "type": "string",
+          "description": "投放渠道: local_push/ocean_engine/qianchuan"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "generate_ad_copy",
+      "description": "生成广告文案",
+      "parameters": {
+        "product": {
+          "type": "string",
+          "description": "产品名称或卖点"
+        },
+        "channel": {
+          "type": "string",
+          "description": "投放渠道: local_push/ocean_engine/qianchuan"
+        },
+        "ad_type": {
+          "type": "string",
+          "description": "广告类型: feed/search/brand"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "validate_content",
+      "description": "知识库校验成分/功效内容",
+      "parameters": {
+        "content": {
+          "type": "string",
+          "description": "需要校验的文本"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "create_delivery_task",
+      "description": "创建内容交接任务并同步推进可审计状态；不调用外部广告平台",
+      "parameters": {
+        "task_type": {
+          "type": "string",
+          "description": "publish_script/publish_ad_copy/sync_metrics/review_content"
+        },
+        "target_type": {
+          "type": "string",
+          "description": "script/ad_copy/campaign/material"
+        },
+        "target_id": {
+          "type": "integer",
+          "description": "目标逻辑 ID"
+        },
+        "payload": {
+          "type": "object",
+          "description": "交接参数；execution_mode 支持 handoff/dry_run"
+        },
+        "auto_execute": {
+          "type": "boolean",
+          "description": "是否创建后立即推进状态，默认 true"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "mark_task_failed",
+      "description": "把交接任务标记为 failed 并写入失败原因",
+      "parameters": {
+        "task_id": {
+          "type": "integer",
+          "description": "任务 ID"
+        },
+        "error_message": {
+          "type": "string",
+          "description": "失败原因"
+        },
+        "result_payload": {
+          "type": "object",
+          "description": "可选失败上下文"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "cleanup_marked_data",
+      "description": "按 marker 清理当前用户测试数据（含投递任务 payload/result_payload）",
+      "parameters": {
+        "marker": {
+          "type": "string",
+          "description": "测试数据标记，至少 6 字符"
+        }
+      },
+      "min_role": "editor"
+    }
   ],
-  "dependency_declaration": [{"module": "knowledge", "optional": true}],
+  "dependency_declaration": [
+    {
+      "module": "knowledge",
+      "optional": true
+    }
+  ],
   "event_handler_declaration": [],
   "db_migration_declaration": [
-    {"table": "douyin_products", "owner_key": "owner_id"},
-    {"table": "douyin_scripts", "owner_key": "owner_id"},
-    {"table": "douyin_ad_copies", "owner_key": "owner_id"},
-    {"table": "douyin_campaigns", "owner_key": "owner_id"},
-    {"table": "douyin_accounts", "owner_key": "owner_id"},
-    {"table": "douyin_materials", "owner_key": "owner_id"},
-    {"table": "douyin_delivery_tasks", "owner_key": "owner_id"},
-    {"table": "douyin_prompts", "owner_key": "owner_id"}
+    {
+      "table": "douyin_products",
+      "owner_key": "owner_id"
+    },
+    {
+      "table": "douyin_scripts",
+      "owner_key": "owner_id"
+    },
+    {
+      "table": "douyin_ad_copies",
+      "owner_key": "owner_id"
+    },
+    {
+      "table": "douyin_campaigns",
+      "owner_key": "owner_id"
+    },
+    {
+      "table": "douyin_accounts",
+      "owner_key": "owner_id"
+    },
+    {
+      "table": "douyin_materials",
+      "owner_key": "owner_id"
+    },
+    {
+      "table": "douyin_delivery_tasks",
+      "owner_key": "owner_id"
+    },
+    {
+      "table": "douyin_prompts",
+      "owner_key": "owner_id"
+    }
   ],
-  "backend": {"enabled": true, "router": "backend/router.py"}
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  }
 }

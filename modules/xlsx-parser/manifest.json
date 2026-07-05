@@ -4,6 +4,9 @@
   "icon": "Grid",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "parser",
+  "module_family": "office",
+  "product_status": "background",
   "component_key": "index.vue",
   "route_prefix": "/api/xlsx-parser",
   "permissions": [

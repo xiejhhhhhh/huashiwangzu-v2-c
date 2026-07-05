@@ -4,9 +4,16 @@
   "icon": "EditPen",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "app",
+  "module_family": "business",
+  "product_status": "active",
   "component_key": "index.vue",
   "route_prefix": "/api/wechat-writer",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 300,
   "default_width": 1100,
   "default_height": 750,
@@ -25,21 +32,91 @@
   "permission_declaration": {
     "default": "viewer",
     "actions": [
-      {"action": "ww_view", "name": "查看写作助手", "min_role": "viewer"},
-      {"action": "ww_write", "name": "创作文章", "min_role": "editor"},
-      {"action": "ww_manage", "name": "管理设置", "min_role": "admin"}
+      {
+        "action": "ww_view",
+        "name": "查看写作助手",
+        "min_role": "viewer"
+      },
+      {
+        "action": "ww_write",
+        "name": "创作文章",
+        "min_role": "editor"
+      },
+      {
+        "action": "ww_manage",
+        "name": "管理设置",
+        "min_role": "admin"
+      }
     ]
   },
   "public_actions": [
-    {"action": "generate_topics", "description": "根据产品/季节/问题肌主题生成选题建议", "parameters": {"direction": {"type": "string", "description": "创作方向描述"}}, "min_role": "editor"},
-    {"action": "generate_outline", "description": "根据选题生成文章大纲", "parameters": {"topic": {"type": "string", "description": "选题标题"}, "direction": {"type": "string", "description": "创作方向"}}, "min_role": "editor"},
-    {"action": "generate_article", "description": "根据大纲生成完整初稿", "parameters": {"topic": {"type": "string", "description": "选题标题"}, "outline": {"type": "string", "description": "大纲JSON"}, "direction": {"type": "string", "description": "创作方向"}}, "min_role": "editor"},
-    {"action": "validate_content", "description": "校验成分/功效内容的专业性", "parameters": {"content": {"type": "string", "description": "需要校验的文本"}}, "min_role": "editor"}
+    {
+      "action": "generate_topics",
+      "description": "根据产品/季节/问题肌主题生成选题建议",
+      "parameters": {
+        "direction": {
+          "type": "string",
+          "description": "创作方向描述"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "generate_outline",
+      "description": "根据选题生成文章大纲",
+      "parameters": {
+        "topic": {
+          "type": "string",
+          "description": "选题标题"
+        },
+        "direction": {
+          "type": "string",
+          "description": "创作方向"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "generate_article",
+      "description": "根据大纲生成完整初稿",
+      "parameters": {
+        "topic": {
+          "type": "string",
+          "description": "选题标题"
+        },
+        "outline": {
+          "type": "string",
+          "description": "大纲JSON"
+        },
+        "direction": {
+          "type": "string",
+          "description": "创作方向"
+        }
+      },
+      "min_role": "editor"
+    },
+    {
+      "action": "validate_content",
+      "description": "校验成分/功效内容的专业性",
+      "parameters": {
+        "content": {
+          "type": "string",
+          "description": "需要校验的文本"
+        }
+      },
+      "min_role": "editor"
+    }
   ],
   "dependency_declaration": [
-    {"module": "knowledge", "optional": true}
+    {
+      "module": "knowledge",
+      "optional": true
+    }
   ],
   "event_handler_declaration": [],
   "db_migration_declaration": [],
-  "backend": {"enabled": true, "router": "backend/router.py"}
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  }
 }

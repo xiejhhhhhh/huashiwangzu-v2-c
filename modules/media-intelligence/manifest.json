@@ -4,9 +4,16 @@
   "icon": "View",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "orchestrator",
+  "module_family": "media",
+  "product_status": "active",
   "component_key": "index.vue",
   "route_prefix": "/api/media-intelligence",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 410,
   "default_width": 980,
   "default_height": 720,
@@ -17,7 +24,21 @@
   "show_in_sidebar": false,
   "window_type": "normal",
   "allow_multiple": false,
-  "supported_formats": ["jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "mp4", "mov", "m4v", "webm", "mkv", "avi"],
+  "supported_formats": [
+    "jpg",
+    "jpeg",
+    "png",
+    "gif",
+    "webp",
+    "bmp",
+    "ico",
+    "mp4",
+    "mov",
+    "m4v",
+    "webm",
+    "mkv",
+    "avi"
+  ],
   "editable_formats": [],
   "creatable_formats": [],
   "module_version": "0.1.0",
@@ -27,9 +48,18 @@
       "action": "analyze_image",
       "description": "Analyze an uploaded image through local facts, rule-based summary, and optional VLM refine layers",
       "parameters": {
-        "file_id": {"type": "int", "description": "Image file ID"},
-        "include_embedding": {"type": "bool", "description": "Return local image fingerprint"},
-        "refine": {"type": "bool", "description": "Run VLM refine when configured"}
+        "file_id": {
+          "type": "int",
+          "description": "Image file ID"
+        },
+        "include_embedding": {
+          "type": "bool",
+          "description": "Return local image fingerprint"
+        },
+        "refine": {
+          "type": "bool",
+          "description": "Run VLM refine when configured"
+        }
       },
       "min_role": "viewer"
     },
@@ -37,9 +67,18 @@
       "action": "analyze_video",
       "description": "Analyze an uploaded video with ffprobe metadata, timeline markers, summary, and optional VLM refine",
       "parameters": {
-        "file_id": {"type": "int", "description": "Video file ID"},
-        "max_keyframes": {"type": "int", "description": "Maximum timeline keyframe markers"},
-        "refine": {"type": "bool", "description": "Run VLM refine when configured"}
+        "file_id": {
+          "type": "int",
+          "description": "Video file ID"
+        },
+        "max_keyframes": {
+          "type": "int",
+          "description": "Maximum timeline keyframe markers"
+        },
+        "refine": {
+          "type": "bool",
+          "description": "Run VLM refine when configured"
+        }
       },
       "min_role": "viewer"
     },
@@ -47,8 +86,14 @@
       "action": "extract_keyframes",
       "description": "Extract ffprobe-derived timeline keyframe markers from a video file",
       "parameters": {
-        "file_id": {"type": "int", "description": "Video file ID"},
-        "max_keyframes": {"type": "int", "description": "Maximum keyframes"}
+        "file_id": {
+          "type": "int",
+          "description": "Video file ID"
+        },
+        "max_keyframes": {
+          "type": "int",
+          "description": "Maximum keyframes"
+        }
       },
       "min_role": "viewer"
     },
@@ -56,7 +101,10 @@
       "action": "ocr",
       "description": "Run OCR layer contract for image/video files; returns structured degraded status when OCR is not configured",
       "parameters": {
-        "file_id": {"type": "int", "description": "Image or video file ID"}
+        "file_id": {
+          "type": "int",
+          "description": "Image or video file ID"
+        }
       },
       "min_role": "viewer"
     },
@@ -64,8 +112,14 @@
       "action": "embed_image",
       "description": "Return a local image fingerprint vector for dedupe-oriented contract testing",
       "parameters": {
-        "file_id": {"type": "int", "description": "Image file ID"},
-        "dimensions": {"type": "int", "description": "Embedding vector dimensions, default 32"}
+        "file_id": {
+          "type": "int",
+          "description": "Image file ID"
+        },
+        "dimensions": {
+          "type": "int",
+          "description": "Embedding vector dimensions, default 32"
+        }
       },
       "min_role": "viewer"
     },
@@ -73,7 +127,10 @@
       "action": "detect_objects",
       "description": "Return object detections or structured degraded status when no detector is configured",
       "parameters": {
-        "file_id": {"type": "int", "description": "Image or video file ID"}
+        "file_id": {
+          "type": "int",
+          "description": "Image or video file ID"
+        }
       },
       "min_role": "viewer"
     },
@@ -81,8 +138,14 @@
       "action": "summarize_media",
       "description": "Summarize a media file or existing media-intelligence analysis result",
       "parameters": {
-        "file_id": {"type": "int", "description": "Image or video file ID"},
-        "analysis": {"type": "object", "description": "Existing analysis result for summary-only mode"}
+        "file_id": {
+          "type": "int",
+          "description": "Image or video file ID"
+        },
+        "analysis": {
+          "type": "object",
+          "description": "Existing analysis result for summary-only mode"
+        }
       },
       "min_role": "viewer"
     },
@@ -90,8 +153,14 @@
       "action": "vlm_refine",
       "description": "Refine an existing media-intelligence analysis result through the VLM layer contract",
       "parameters": {
-        "analysis": {"type": "object", "description": "Existing media-intelligence analysis result"},
-        "prompt": {"type": "string", "description": "Optional refinement instruction"}
+        "analysis": {
+          "type": "object",
+          "description": "Existing media-intelligence analysis result"
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Optional refinement instruction"
+        }
       },
       "min_role": "viewer"
     }

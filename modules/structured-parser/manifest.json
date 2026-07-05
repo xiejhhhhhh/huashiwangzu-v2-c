@@ -4,9 +4,16 @@
   "icon": "List",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "parser",
+  "module_family": "knowledge",
+  "product_status": "background",
   "component_key": "",
   "route_prefix": "/api/structured-parser",
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 320,
   "default_width": 800,
   "default_height": 600,

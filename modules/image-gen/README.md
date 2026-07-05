@@ -12,12 +12,17 @@ Image generation module with provider templates, prompt translation, generation 
 | key | `"image-gen"` |
 | name | `"Image Generation"` |
 | category | `"tools"` |
+| module_type | `"provider"` |
+| module_family | `"media"` |
+| product_status | `"background"` |
 | window_type | `"normal"` |
 | singleton | `false` |
 | allow_multiple | `false` |
 | show_in_launcher | `false` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/image-gen"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/image-gen` |
@@ -86,12 +91,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/image-gen/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="image-gen", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/image-gen/sandbox/test_module.py` |
+| README | PASS | `modules/image-gen/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/image-gen/sandbox/test_module.py` |
 | Frontend sandbox | SKIP | `N/A` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-gen --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

@@ -12,12 +12,17 @@ Media Intelligence
 | key | `"media-intelligence"` |
 | name | `"Media Intelligence"` |
 | category | `"tools"` |
+| module_type | `"orchestrator"` |
+| module_family | `"media"` |
+| product_status | `"active"` |
 | window_type | `"normal"` |
 | singleton | `false` |
 | allow_multiple | `false` |
 | show_in_launcher | `true` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/media-intelligence"` |
+| contract_version | `"2.0"` |
+| module_version | `"0.1.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/media-intelligence` |
@@ -96,12 +101,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/media-intelligence/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="media-intelligence", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/media-intelligence/sandbox/test_module.py` |
+| README | PASS | `modules/media-intelligence/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/media-intelligence/sandbox/test_module.py` |
 | Frontend sandbox | SKIP | `N/A` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module media-intelligence --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

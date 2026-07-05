@@ -31,6 +31,8 @@ npm run dev
 
 The template is frontend-only by default: `manifest.backend.enabled=false` and no `backend/` directory is present. If the module needs backend behavior, add module-local `backend/router.py`, schemas, service, models, capabilities, and sandbox tests; do not place business logic in `backend/app/`.
 
+Set `module_type`, `module_family`, and `product_status` in `manifest.json` before handoff. These fields are logical taxonomy only: modules remain flat under `modules/{key}` and same-family modules still communicate through the capability bus.
+
 ## Responsibility
 
 Describe what the module owns in one or two paragraphs. Keep history, task notes, and delivery logs out of the module README.
@@ -43,6 +45,9 @@ Describe what the module owns in one or two paragraphs. Keep history, task notes
 | key | `"MODULE_KEY"` |
 | name | `"MODULE_DISPLAY_NAME"` |
 | category | `"tools"` |
+| module_type | `"app"` |
+| module_family | `"desktop"` |
+| product_status | `"active"` |
 | component_key | `"index.vue"` |
 | route_prefix | `null` |
 | permissions | `["viewer", "editor", "admin"]` |

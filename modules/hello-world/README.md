@@ -12,14 +12,19 @@ Hello World
 | key | `"hello-world"` |
 | name | `"Hello World"` |
 | category | `"tools"` |
+| module_type | `"demo"` |
+| module_family | `"demo"` |
+| product_status | `"demo"` |
 | window_type | `"normal"` |
 | singleton | `true` |
 | allow_multiple | `false` |
-| show_in_launcher | `true` |
-| show_on_desktop | `true` |
-| route_prefix | `None` |
+| show_in_launcher | `false` |
+| show_on_desktop | `false` |
+| route_prefix | `null` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `false` |
-| backend.router | `None` |
+| backend.router | `null` |
 | actual backend prefix | `N/A` |
 <!-- /DOCS-SYNC -->
 
@@ -46,7 +51,7 @@ Total public actions: 0
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
-| N/A | N/A | none | No public backend capability |
+| N/A | N/A | N/A | No public backend capability |
 <!-- /DOCS-SYNC -->
 
 ## Data Ownership
@@ -81,12 +86,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/hello-world/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="hello-world", include_parameters=true)` |
+| README | PASS | `modules/hello-world/README.md` |
+| Acceptance matrix | PASS | present |
 | Backend sandbox | SKIP | `N/A` |
 | Frontend sandbox | PASS | `cd modules/hello-world/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module hello-world --check` |
-| Known debt | DEBT | UI-only module; backend sandbox test not applicable. |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

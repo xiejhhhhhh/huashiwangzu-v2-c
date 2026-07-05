@@ -4,9 +4,16 @@
   "icon": "View",
   "icon_asset": "",
   "category": "file-viewer",
+  "module_type": "viewer",
+  "module_family": "desktop",
+  "product_status": "active",
   "component_key": "index.vue",
   "route_prefix": null,
-  "permissions": ["viewer", "editor", "admin"],
+  "permissions": [
+    "viewer",
+    "editor",
+    "admin"
+  ],
   "sort_order": 30,
   "default_width": 950,
   "default_height": 700,
@@ -17,7 +24,9 @@
   "show_in_sidebar": false,
   "window_type": "normal",
   "allow_multiple": true,
-  "supported_formats": ["pdf"],
+  "supported_formats": [
+    "pdf"
+  ],
   "editable_formats": [],
   "creatable_formats": [],
   "module_version": "1.0.0",

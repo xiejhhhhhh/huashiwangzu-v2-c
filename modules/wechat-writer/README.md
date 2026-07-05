@@ -12,12 +12,17 @@ WeChat writing module for prompt-managed article/draft generation and content va
 | key | `"wechat-writer"` |
 | name | `"公众号写作助手"` |
 | category | `"tools"` |
+| module_type | `"app"` |
+| module_family | `"business"` |
+| product_status | `"active"` |
 | window_type | `"normal"` |
 | singleton | `false` |
 | allow_multiple | `true` |
 | show_in_launcher | `true` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/wechat-writer"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/wechat-writer` |
@@ -90,12 +95,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/wechat-writer/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="wechat-writer", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/wechat-writer/sandbox/test_module.py` |
+| README | PASS | `modules/wechat-writer/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/wechat-writer/sandbox/test_module.py` |
 | Frontend sandbox | PASS | `cd modules/wechat-writer/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module wechat-writer --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

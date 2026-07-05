@@ -4,6 +4,9 @@
   "icon": "View",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "provider",
+  "module_family": "media",
+  "product_status": "background",
   "component_key": "index.vue",
   "route_prefix": "/api/image-vision",
   "permissions": [

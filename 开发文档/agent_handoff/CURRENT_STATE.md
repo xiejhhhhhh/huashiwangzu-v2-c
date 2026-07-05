@@ -1,6 +1,6 @@
 # Current State
 
-Last generated: 2026-07-05T09:45:39.556905+00:00
+Last generated: 2026-07-05T13:36:28.965637+00:00
 
 This file is generated from current repository facts. Refresh it with `docs_sync(scope="current_state")`.
 
@@ -19,8 +19,8 @@ This file is generated from current repository facts. Refresh it with `docs_sync
 |---|---|
 | Modules with manifests | 35 |
 | Public capabilities in manifests | 189 |
-| Module README files | one `README.md` per module |
+| Capability drift | {'checked_modules': 36, 'ok_modules': 29, 'modules_with_drift': 0, 'uncheckable_sites': 0} |
 
 ## Current known release risk
 
-Run `release_gate(skip_ui=true, mode="preflight")` for live status. The live gate is the authority.
+Run `release_gate(skip_ui=true, mode="preflight")` for live status. As of the last manual audit, test data pollution may still block a clean release; treat the live gate result as the authority.

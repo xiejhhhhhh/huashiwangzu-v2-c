@@ -12,12 +12,17 @@
 | key | `"web-tools"` |
 | name | `"联网工具"` |
 | category | `"tools"` |
+| module_type | `"provider"` |
+| module_family | `"web"` |
+| product_status | `"background"` |
 | window_type | `"background-service"` |
 | singleton | `true` |
 | allow_multiple | `false` |
 | show_in_launcher | `false` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/web-tools"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/web-tools` |
@@ -84,12 +89,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/web-tools/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="web-tools", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/web-tools/sandbox/test_module.py` |
+| README | PASS | `modules/web-tools/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/web-tools/sandbox/test_module.py` |
 | Frontend sandbox | SKIP | `N/A` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module web-tools --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

@@ -12,12 +12,17 @@ Douyin delivery module for scripts, ad copy, content validation, delivery task h
 | key | `"douyin-delivery"` |
 | name | `"抖音内容与计划助手"` |
 | category | `"AI"` |
+| module_type | `"app"` |
+| module_family | `"business"` |
+| product_status | `"active"` |
 | window_type | `"normal"` |
 | singleton | `true` |
 | allow_multiple | `false` |
 | show_in_launcher | `true` |
 | show_on_desktop | `true` |
 | route_prefix | `"/api/douyin-delivery"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/douyin-delivery` |
@@ -102,12 +107,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/douyin-delivery/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="douyin-delivery", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/douyin-delivery/sandbox/test_module.py` |
+| README | PASS | `modules/douyin-delivery/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/douyin-delivery/sandbox/test_module.py` |
 | Frontend sandbox | PASS | `cd modules/douyin-delivery/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module douyin-delivery --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

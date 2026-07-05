@@ -4,6 +4,9 @@
   "icon": "DocumentCopy",
   "icon_asset": "",
   "category": "tools",
+  "module_type": "app",
+  "module_family": "office",
+  "product_status": "active",
   "component_key": "index.vue",
   "route_prefix": "/api/docs",
   "permissions": [
@@ -40,7 +43,10 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["view", "edit"]
+          "enum": [
+            "view",
+            "edit"
+          ]
         }
       },
       "min_role": "viewer"
@@ -64,7 +70,22 @@
         },
         "type": {
           "type": "string",
-          "enum": ["txt", "md", "json", "yaml", "yml", "xml", "ini", "cfg", "log", "csv", "docx", "xlsx", "pptx", "pdf"]
+          "enum": [
+            "txt",
+            "md",
+            "json",
+            "yaml",
+            "yml",
+            "xml",
+            "ini",
+            "cfg",
+            "log",
+            "csv",
+            "docx",
+            "xlsx",
+            "pptx",
+            "pdf"
+          ]
         }
       },
       "min_role": "editor"

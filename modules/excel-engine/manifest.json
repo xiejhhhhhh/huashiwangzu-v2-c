@@ -4,6 +4,9 @@
   "icon": "Grid",
   "icon_asset": "",
   "category": "file-editor",
+  "module_type": "editor",
+  "module_family": "office",
+  "product_status": "active",
   "component_key": "index.vue",
   "route_prefix": null,
   "permissions": [
@@ -54,7 +57,11 @@
     {
       "action": "parse",
       "description": "Parse XLSX/CSV files into cell data",
-      "parameters": {"file_id": {"type": "int"}},
+      "parameters": {
+        "file_id": {
+          "type": "int"
+        }
+      },
       "min_role": "viewer"
     },
     {

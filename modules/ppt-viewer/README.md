@@ -12,14 +12,19 @@
 | key | `"ppt-viewer"` |
 | name | `"演示文稿查看器"` |
 | category | `"file-viewer"` |
+| module_type | `"viewer"` |
+| module_family | `"desktop"` |
+| product_status | `"active"` |
 | window_type | `"normal"` |
 | singleton | `false` |
 | allow_multiple | `true` |
 | show_in_launcher | `true` |
 | show_on_desktop | `false` |
-| route_prefix | `None` |
+| route_prefix | `null` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `false` |
-| backend.router | `None` |
+| backend.router | `null` |
 | actual backend prefix | `N/A` |
 <!-- /DOCS-SYNC -->
 
@@ -46,7 +51,7 @@ Total public actions: 0
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
-| N/A | N/A | none | No public backend capability |
+| N/A | N/A | N/A | No public backend capability |
 <!-- /DOCS-SYNC -->
 
 ## Data Ownership
@@ -81,12 +86,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/ppt-viewer/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="ppt-viewer", include_parameters=true)` |
+| README | PASS | `modules/ppt-viewer/README.md` |
+| Acceptance matrix | PASS | present |
 | Backend sandbox | SKIP | `N/A` |
 | Frontend sandbox | PASS | `cd modules/ppt-viewer/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module ppt-viewer --check` |
-| Known debt | DEBT | UI-only module; backend sandbox test not applicable. |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

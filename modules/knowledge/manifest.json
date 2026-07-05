@@ -4,6 +4,9 @@
   "icon": "Collection",
   "icon_asset": "",
   "category": "AI",
+  "module_type": "orchestrator",
+  "module_family": "knowledge",
+  "product_status": "core",
   "component_key": "index.vue",
   "route_prefix": "/api/knowledge",
   "permissions": [

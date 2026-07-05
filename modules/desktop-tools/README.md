@@ -12,12 +12,17 @@ Desktop Tools
 | key | `"desktop-tools"` |
 | name | `"Desktop Tools"` |
 | category | `"tools"` |
+| module_type | `"service"` |
+| module_family | `"desktop"` |
+| product_status | `"core"` |
 | window_type | `"background-service"` |
 | singleton | `true` |
 | allow_multiple | `false` |
 | show_in_launcher | `false` |
 | show_on_desktop | `false` |
 | route_prefix | `"/api/desktop-tools"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/desktop-tools` |
@@ -99,12 +104,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/desktop-tools/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="desktop-tools", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py` |
+| README | PASS | `modules/desktop-tools/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/desktop-tools/sandbox/test_module.py` |
 | Frontend sandbox | PASS | `cd modules/desktop-tools/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module desktop-tools --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks

@@ -12,12 +12,17 @@ Knowledge base module for file registration, parsing pipelines, retrieval, page 
 | key | `"knowledge"` |
 | name | `"知识库"` |
 | category | `"AI"` |
+| module_type | `"orchestrator"` |
+| module_family | `"knowledge"` |
+| product_status | `"core"` |
 | window_type | `"normal"` |
 | singleton | `true` |
 | allow_multiple | `false` |
 | show_in_launcher | `true` |
 | show_on_desktop | `true` |
 | route_prefix | `"/api/knowledge"` |
+| contract_version | `"2.0"` |
+| module_version | `"1.0.0"` |
 | backend.enabled | `true` |
 | backend.router | `"backend/router.py"` |
 | actual backend prefix | `/api/knowledge` |
@@ -123,12 +128,11 @@ If this module consumes `file_id`, it must validate file access through framewor
 <!-- DOCS-SYNC: section=sandbox -->
 | Area | Status | Verification |
 |---|---|---|
-| Manifest contract | PASS | `modules/knowledge/manifest.json` |
-| Capability drift | PASS | `capability_contract_diff(module="knowledge", include_parameters=true)` |
-| Backend sandbox | PASS | `PYTHONPATH=backend backend/.venv/bin/python modules/knowledge/sandbox/test_module.py` |
+| README | PASS | `modules/knowledge/README.md` |
+| Acceptance matrix | PASS | present |
+| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/knowledge/sandbox/test_module.py` |
 | Frontend sandbox | PASS | `cd modules/knowledge/sandbox && npm run build` |
 | Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module knowledge --check` |
-| Known debt | PASS | None |
 <!-- /DOCS-SYNC -->
 
 ## Reproducible Checks
