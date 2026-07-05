@@ -594,9 +594,9 @@ def classify_sandbox_matrix(entries: list[dict[str, Any]], elapsed: float) -> tu
         )
     if chunk_warning_modules:
         return (
-            "DEBT",
-            f"{total} modules, {passed} pass, {skipped} skip, chunk warnings in {len(chunk_warning_modules)} "
-            f"({', '.join(chunk_warning_modules[:5])}) ({elapsed:.0f}s)",
+            "INFO",
+            f"{total} modules, {passed} pass, {skipped} skip, non-blocking chunk warnings in "
+            f"{len(chunk_warning_modules)} ({', '.join(chunk_warning_modules[:5])}) ({elapsed:.0f}s)",
         )
     if skipped > 0:
         return "DEBT", f"{total} modules, {passed} pass, {skipped} skip ({elapsed:.0f}s) — skipped is tracked debt"

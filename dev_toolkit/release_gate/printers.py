@@ -11,7 +11,7 @@ def add_result(check: str, level: str, detail: str, data: dict[str, Any] | None 
     if data is not None:
         item["data"] = data
     results.append(item)
-    icon = {"PASS": "✅", "BLOCKER": "🔴", "DEBT": "🟡", "SKIPPED_WITH_REASON": "⏭️"}.get(level, "❓")
+    icon = {"PASS": "✅", "BLOCKER": "🔴", "DEBT": "🟡", "SKIPPED_WITH_REASON": "⏭️", "INFO": "ℹ️"}.get(level, "❓")
     print(f"  {icon} [{level:>20}] {check}: {detail[:200]}")
 
 def get_final_verdict() -> str:

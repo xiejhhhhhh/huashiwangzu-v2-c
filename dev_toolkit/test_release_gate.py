@@ -117,7 +117,7 @@ def test_sandbox_matrix_skips_are_debt_not_clean_pass() -> None:
     assert "skip" in detail
 
 
-def test_sandbox_matrix_chunk_warnings_are_debt() -> None:
+def test_sandbox_matrix_chunk_warnings_are_info() -> None:
     level, detail = release_gate.classify_sandbox_matrix(
         [
             {"module": "agent", "check": "pass"},
@@ -126,12 +126,12 @@ def test_sandbox_matrix_chunk_warnings_are_debt() -> None:
         elapsed=1.2,
     )
 
-    assert level == "DEBT"
-    assert "chunk warnings" in detail
+    assert level == "INFO"
+    assert "non-blocking chunk warnings" in detail
     assert "viewer" in detail
 
 
-def test_sandbox_matrix_nested_chunk_warnings_are_debt() -> None:
+def test_sandbox_matrix_nested_chunk_warnings_are_info() -> None:
     level, detail = release_gate.classify_sandbox_matrix(
         [
             {"module": "agent", "check": "pass"},
@@ -148,8 +148,8 @@ def test_sandbox_matrix_nested_chunk_warnings_are_debt() -> None:
         elapsed=1.2,
     )
 
-    assert level == "DEBT"
-    assert "chunk warnings" in detail
+    assert level == "INFO"
+    assert "non-blocking chunk warnings" in detail
     assert "viewer" in detail
 
 

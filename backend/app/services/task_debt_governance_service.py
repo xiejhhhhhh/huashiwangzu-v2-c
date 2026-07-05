@@ -463,6 +463,7 @@ async def govern_task_queue_debt(
     limit: int = DEFAULT_DEBT_GOVERNANCE_LIMIT,
     sample_limit: int = 5,
     task_ids: list[int] | None = None,
+    confirm_all_failed: bool = False,
 ) -> dict:
     """Classify and optionally govern historical failed task debt.
 
@@ -470,6 +471,9 @@ async def govern_task_queue_debt(
     it either requeues a strictly allowlisted retry or converts obsolete/test debt
     into a truthful completed result with provenance.
     """
+    if not dry_run and not task_ids and not confirm_all_failed:
+        raise ValueError("Non-dry-run governance requires task_ids or confirm_all_failed=true")
+
     bounded_limit = max(1, min(int(limit), DEBT_GOVERNANCE_MAX_LIMIT))
     bounded_sample_limit = max(0, min(int(sample_limit), 20))
     filters = [SystemTaskQueue.status == "failed"]
@@ -490,6 +494,7 @@ async def govern_task_queue_debt(
         "dry_run": dry_run,
         "limit": bounded_limit,
         "task_ids": task_ids or None,
+        "confirm_all_failed": confirm_all_failed,
         "scanned": len(failed_tasks),
         "processed": 0,
         "summary_by_action": _empty_action_summary(),

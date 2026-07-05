@@ -663,6 +663,13 @@ async def test_debt_governance_profile_json_parse_failure_requires_manual_review
 
 
 @pytest.mark.asyncio
+async def test_debt_governance_non_dry_run_requires_explicit_target() -> None:
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(ValueError, match="requires task_ids"):
+            await govern_task_queue_debt(db, dry_run=False, limit=1)
+
+
+@pytest.mark.asyncio
 async def test_completed_semantic_failure_is_audit_and_governance_readonly_debt() -> None:
     marker = uuid4().hex
     await _cleanup(marker)

@@ -36,6 +36,7 @@ class TaskDebtGovernanceRequest(BaseModel):
     limit: int = DEFAULT_DEBT_GOVERNANCE_LIMIT
     sample_limit: int = 5
     task_ids: list[int] | None = None
+    confirm_all_failed: bool = False
 
 
 def _ensure_task_owner_or_admin(task: SystemTaskQueue, user: User) -> None:
@@ -120,12 +121,15 @@ async def worker_debt_governance(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("admin")),
 ):
+    if not payload.dry_run and not payload.task_ids and not payload.confirm_all_failed:
+        raise ValidationError("Non-dry-run governance requires task_ids or confirm_all_failed=true")
     result = await govern_task_queue_debt(
         db,
         dry_run=payload.dry_run,
         limit=payload.limit,
         sample_limit=payload.sample_limit,
         task_ids=payload.task_ids,
+        confirm_all_failed=payload.confirm_all_failed,
     )
     return ApiResponse(data=result)
 
