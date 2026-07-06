@@ -55,7 +55,7 @@ Backend HTTP prefix: `/api/knowledge`
 <!-- DOCS-SYNC: section=public_actions -->
 Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-Total public actions: 16
+Total public actions: 17
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
@@ -73,6 +73,7 @@ Total public actions: 16
 | `get_page_fusion` | `viewer` | `document_id`, `page` | 获取页级融合内容 |
 | `get_pending_count` | `viewer` | none | 获取待确认数量（治理用） |
 | `ingest` | `editor` | `file_id` | 将文件注册到知识库并触发分析 |
+| `plan_pipeline_rerun` | `admin` | `document_id`, `reason`, `stage` | dry-run 规划知识库管道重跑，不修改队列或产物 |
 | `reconcile_orphan_pipeline_runs` | `admin` | `dry_run`, `limit`, `run_ids` | dry-run 或 guarded apply 收口无 task_id 的 orphan running 诊断运行 |
 | `search` | `viewer` | `query`, `top_k` | 按关键词搜索知识库，返回相关块 |
 <!-- /DOCS-SYNC -->

@@ -64,6 +64,7 @@ from .services.profile_service import get_document_profile
 from .services.progress_service import get_document_progress, list_documents_progress
 from .services.raw_collection_service import get_ocr_words, get_raw_data
 from .services.relation_service import get_file_relations, get_relation_graph
+from .services.rerun_planner_service import plan_pipeline_rerun
 from .services.search_service import get_document_chunks, hybrid_search
 from .services.source_file_state import get_live_document_or_raise
 
@@ -249,6 +250,17 @@ class LifecycleArchiveRequest(BaseModel):
     reason: Literal["source_file_deleted", "source_file_missing", "source_unavailable"] = "source_unavailable"
     confirm: str = ""
     audit_reason: str = ""
+class RerunPlanRequest(BaseModel):
+    document_id: int
+    reason: Literal[
+        "prompt_changed",
+        "schema_changed",
+        "model_changed",
+        "source_changed",
+        "vlm_preprocess_changed",
+        "manual_failed_retry",
+    ]
+    stage: str | None = None
 
 @router.get("/health")
 async def health():
@@ -833,6 +845,21 @@ async def api_archive_lifecycle_debt(
     )
     return ApiResponse(data=result)
 
+@router.post("/governance/rerun-plan/dry-run")
+async def api_rerun_plan_dry_run(
+    payload: RerunPlanRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    result = await plan_pipeline_rerun(
+        db,
+        document_id=payload.document_id,
+        owner_id=user.id,
+        reason=payload.reason,
+        stage=payload.stage,
+    )
+    return ApiResponse(data=result)
+
 # ── Cross-module capabilities ───────────────────────────────
 
 async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> ApiResponse:
@@ -977,6 +1004,22 @@ async def _cap_get_evidence_detail(params: dict, caller: str) -> dict:
         result = await get_evidence_detail(db, owner_id, entity_id)
         return {"evidence": result}
 
+async def _cap_plan_pipeline_rerun(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    document_id = int(params.get("document_id", 0) or 0)
+    if document_id <= 0:
+        raise ValueError("document_id must be positive")
+    reason = str(params.get("reason", "") or "").strip()
+    stage = params.get("stage")
+    async with AsyncSessionLocal() as db:
+        return await plan_pipeline_rerun(
+            db,
+            document_id=document_id,
+            owner_id=owner_id,
+            reason=reason,
+            stage=str(stage) if stage else None,
+        )
+
 # 注册对外能力：Agent 会通过 list_capabilities 自动发现 knowledge__search 等工具。
 register_capability(
     "knowledge", "search", _cap_search,
@@ -1098,6 +1141,17 @@ register_capability(
     brief="查看治理证据",
     parameters={"entity_id": {"type": "integer", "description": "Entity ID"}},
     min_role="viewer",
+)
+register_capability(
+    "knowledge", "plan_pipeline_rerun", _cap_plan_pipeline_rerun,
+    description="Dry-run a knowledge pipeline rerun plan without mutating artifacts or queue tasks",
+    brief="规划知识库重跑",
+    parameters={
+        "document_id": {"type": "integer", "description": "Document ID"},
+        "reason": {"type": "string", "description": "prompt_changed/schema_changed/model_changed/source_changed/vlm_preprocess_changed/manual_failed_retry"},
+        "stage": {"type": "string", "description": "Optional starting stage: raw/fusion/profile/graph/relations"},
+    },
+    min_role="admin",
 )
 
 async def _cap_get_ocr_words(params: dict, caller: str) -> dict:

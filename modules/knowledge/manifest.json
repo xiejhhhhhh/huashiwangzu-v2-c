@@ -275,6 +275,25 @@
       "min_role": "viewer"
     },
     {
+      "action": "plan_pipeline_rerun",
+      "description": "dry-run 规划知识库管道重跑，不修改队列或产物",
+      "parameters": {
+        "document_id": {
+          "type": "integer",
+          "description": "文档ID"
+        },
+        "reason": {
+          "type": "string",
+          "description": "prompt_changed/schema_changed/model_changed/source_changed/vlm_preprocess_changed/manual_failed_retry"
+        },
+        "stage": {
+          "type": "string",
+          "description": "可选起始阶段：raw/fusion/profile/graph/relations"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
       "action": "get_ocr_words",
       "description": "获取 PDF OCR 词坐标",
       "parameters": {
