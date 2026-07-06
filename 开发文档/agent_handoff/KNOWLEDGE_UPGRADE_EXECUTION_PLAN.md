@@ -459,83 +459,312 @@ raw_vision/image_preprocess
 4. 验证相似图片是否能生成 pair/group，但不跳过 VLM。
 5. 再提升批次和并发。
 
-## 8. 实施阶段
+## 8. 分阶段执行路线
 
-### Phase 0：提交当前已完成改动
+本方案按“薄底座 → 真实小批验证 → 放量导入 → 后置治理”的节奏推进。每阶段都必须能独立提交、验证、回滚；目标模式执行时也必须按阶段推进，不能把后置阶段提前混进第一阶段。
 
-先把当前未提交的 GPT-5.5、断点、worker 热配置、前端修复等改动完成验证、commit、push，避免继续叠加导致回滚困难。
+优先级定义：
 
-### Phase 1：分析账本最小闭环
+- P0：必须先做，否则后续大量导入会制造不可控债务。
+- P1：应尽快做，能显著提升断点、证据和精度。
+- P2：有价值，但等真实样本和前序能力稳定后再做。
+- P3：长期增强，当前只保留扩展口，不实现。
+
+### Phase 0：基线收口与保护点（P0，已完成）
+
+目标：
+
+- 当前 GPT-5.5 路由、fallback pause、worker 热配置、断点恢复、前端修复已提交并合并主线。
+- 保证后续架构升级从干净主线出发。
+
+进入条件：
+
+- 当前分支无未提交代码。
+- `main` 已包含当前知识库断点与 worker 配置改动。
+
+退出验收：
+
+- GitHub PR 已合并。
+- 本地可从 `main` 新建下一阶段分支。
+
+### Phase 1：分析账本最小闭环（P0）
 
 目标：
 
 - 新增 `kb_analysis_artifacts`。
-- 在 raw/fusion/profile/entity/relations stage 写入 artifact。
-- 生成稳定 input_hash/output_hash/prompt_hash。
-- `pipeline_orchestrator` 跳过逻辑优先参考 artifact。
+- 建立稳定 hash 工具：`input_hash`、`output_hash`、`prompt_hash`、`schema_version`。
+- raw/fusion/profile/entity/relations 每个 stage 运行后写 artifact。
+- 当前阶段只做 append-only 账本，不把 artifact 账本作为调度权威。
 
-验收：
+必须做：
 
-- 同一文档重跑时，已 done 且 hash 未变的 stage 跳过。
-- 手动标记 profile stale 后，只重跑 profile 和 relations。
-- failed stage 可从失败节点继续。
+- 表结构和幂等迁移。
+- artifact service：创建账本记录、稳定 hash、prompt hash、模型诊断提取。
+- hash 规范：JSON 排序、排除时间/耗时/token 等非业务字段。
+- prompt hash 尽量从实际 prompt 文本生成；无 prompt 的确定性 stage 允许为空。
+- 所有 stage 写入 artifact，不影响原业务表。
+- 旧数据兼容：没有 artifact 的历史数据不报错；是否生成 `legacy_imported` 占位留到重跑规划阶段。
 
-### Phase 2：证据链增强
+暂不做：
+
+- block/entity/relation 级完整 DAG。
+- artifact 驱动的跳过、latest 查询、stale 标记和自动重跑。
+- token 成本精细核算 UI。
+- 自动批量重跑全库。
+
+退出验收：
+
+- 每个核心 stage 运行或跳过后能写入 `kb_analysis_artifacts`。
+- artifact 写入失败不影响 pipeline 主流程。
+- 同一文档重复跑时，现有 stage status/stale 逻辑继续可用，并额外记录 skipped artifact。
+- artifact 中包含稳定 `input_hash`、`output_hash`、`prompt_hash`、`schema_version`、模型诊断和耗时。
+- 已有知识库测试通过，并新增 artifact hash 测试。
+
+真实验证：
+
+- 选 3 个文件：1 个 PDF、1 张图片、1 个 Office 文档。
+- 每个文件至少产生 raw/fusion/profile/entity/relations artifact。
+- 人工制造一次失败，确认失败 artifact 和 stage_run 都可追踪。
+
+回滚策略：
+
+- 新表不影响旧业务表；如有问题，关闭 artifact 跳过逻辑，保留只写账本。
+
+### Phase 2：证据链最小增强（P0/P1）
 
 目标：
 
-- 增强 `kb_evidence`。
-- page_fusion、profile、entity、relation 输出重要判断时绑定 evidence。
-- 标签、doc_type、实体、关系都能找到证据来源。
+- 重要判断必须能回溯到来源页、raw 轮次、fusion 页和 artifact。
+- 先增强现有 `kb_evidence`，不急着拆出复杂 claim 系统。
 
-验收：
+必须做：
 
-- 查询任意文档 profile 的标签，能回溯到页码和 excerpt。
-- 查询任意实体，能回溯到 page_fusion/raw_data。
-- 图片视觉结构能回溯到 raw_vision 记录。
+- 给 evidence 增加或通过 metadata 保存：`raw_data_id`、`page_fusion_id`、`artifact_id`、`source_round`、`claim_type`。
+- page fusion 记录来自哪些 raw ids。
+- profile 的 `doc_type`、labels evidence 尽量写回 evidence 或 profile `labels_json.evidence`。
+- entity evidence 绑定 page_fusion/raw_data，而不是只有 chunk_id。
+- 图片/海报视觉结构证据能指向 raw_vision 记录。
 
-### Phase 3：图片相似分组
+暂不做：
+
+- 完整 claim 表。
+- 人工审核工作流。
+- 标签标准化映射。
+
+退出验收：
+
+- 任意文档的 doc_type/标签能找到页码和 excerpt。
+- 任意实体能找到 evidence，并能回到 page_fusion/raw_data。
+- 图片视觉描述能回到 raw_vision 的模型诊断。
+
+真实验证：
+
+- 抽 5 个企业文件，人工检查模型结论和证据是否对应。
+
+回滚策略：
+
+- evidence 增强字段只附加，不改变检索主流程；如证据写入异常，pipeline 不应整体失败，应标记 diagnostics。
+
+### Phase 3：重跑规划器 dry-run（P0/P1）
 
 目标：
+
+- 在真正批量重跑前，先能回答“为什么要跑、跑哪些、跳过哪些”。
+- 初期只做 dry-run，不自动执行大范围重跑。
+
+必须做：
+
+- `plan_rerun(document_id, reason, stage?)` 返回重跑计划。
+- 支持原因：`prompt_changed`、`schema_changed`、`model_changed`、`source_changed`、`vlm_preprocess_changed`、`manual_failed_retry`。
+- 输出预计 stage、页数、artifact 数、是否需要模型调用。
+- 和 `pipeline_orchestrator` 的 stage registry 保持同一依赖图。
+
+暂不做：
+
+- 全库自动重跑。
+- UI 批量治理面板。
+- token 成本预测精算。
+
+退出验收：
+
+- `prompt_changed(entity)` 规划 entity + relations。
+- `prompt_changed(profile)` 规划 profile + relations。
+- `vlm_preprocess_changed` 规划 raw_vision + fusion + downstream。
+- `manual_failed_retry` 从 failed artifact 开始，不动上游 done artifact。
+
+真实验证：
+
+- 对 3 个已完成文档跑 dry-run，计划和人工预期一致。
+
+回滚策略：
+
+- dry-run 不修改业务数据；如计划器有误，不接入执行入口。
+
+### Phase 4：图片相似分组最小版（P1）
+
+目标：
+
+- 记录 MD5 不同但视觉近似的图片关系。
+- 当前阶段不因为相似跳过 VLM，不自动继承代表图分析结果。
+
+必须做：
 
 - 新增 `kb_image_assets`、`kb_image_similar_pairs`、`kb_image_similarity_groups`。
-- 对图片、PDF 渲染页、PPT 页面图生成 pHash/dHash。
-- 记录相似 pair/group。
-- 初期不跳过 VLM。
+- 对图片文件、PDF 渲染页、PPT 页面图生成 pHash/dHash。
+- 保存 Hamming distance、判定等级、decision reason。
+- 记录 group，但不覆盖图片自身 OCR/VLM 证据。
 
-验收：
+暂不做：
 
-- MD5 不同但视觉近似图片能进入同一 suspected/high group。
-- pair 表有 hamming 距离和判定原因。
-- 相似分组不会覆盖图片自身 OCR/VLM 证据。
+- CLIP 必选。
+- SSIM 批量复核。
+- 自动复用代表图 VLM。
+- 自动跳过相似图片分析。
 
-### Phase 4：重跑规划器
+退出验收：
+
+- MD5 不同但视觉近似图片能进入 suspected/high pair。
+- pair 表有可审计距离和版本。
+- 相似分组不会改变主 pipeline 分析结果。
+
+真实验证：
+
+- 从企业微盘选 20 张图片/海报/截图，确认相似分组结果。
+- 人工抽查 false positive，调整阈值。
+
+回滚策略：
+
+- 图片相似是旁路 stage；关闭后不影响知识库主入库。
+
+### Phase 5：企业微盘小批放量（P1）
 
 目标：
 
-- 提供 dry-run 能力，输入 document/stage/reason，输出将重跑哪些 artifact。
-- 支持 prompt/schema/model/preprocess 变化触发 stale。
-- 支持按 document/page/block 粒度规划。
+- 使用 Phase 1-4 的断点、证据、相似关系能力跑真实企业数据。
+- 继续保留混沌标签，不做标签治理。
 
-验收：
+执行节奏：
 
-- `prompt_changed(entity)` 只规划 entity + relations。
-- `vlm_preprocess_changed` 规划 raw_vision + fusion + downstream。
-- `image_hash_model_changed` 只规划 image_fingerprint + similarity_group。
+1. 20 个文件：覆盖 PDF、图片、Word/PPT。
+2. 100 个文件：观察失败率、fallback、耗时、证据质量。
+3. 300+ 文件：观察混沌标签分布、图片相似分组、重复跳过。
+4. 再决定是否继续全量导入。
 
-### Phase 5：继续企业微盘导入
+必须监控：
+
+- done/degraded/failed/paused 数量。
+- 每 stage 平均耗时。
+- GPT/VLM fallback 率。
+- 失败恢复是否从断点继续。
+- evidence 覆盖率。
+- 图片相似 false positive 样本。
+
+退出验收：
+
+- 重复文件不重复分析。
+- 单点失败不导致整文件从头重跑。
+- 真实文件可查到证据链。
+- 混沌标签样本开始形成可治理分布。
+
+回滚策略：
+
+- 失败文件保留 artifact 和 stage run，不清空源数据。
+- 可按 document/stage 重跑，不做全库清空。
+
+### Phase 6：混沌标签样本审计与治理准备（P2）
 
 目标：
 
-- 使用升级后的账本和断点能力继续导入企业微盘。
-- 先小批次，再逐步放量。
-- 不做标签标准化，只累积混沌标签和原始证据。
+- 样本足够后，不急着改模型，先导出分布和候选治理集。
 
-验收：
+必须做：
 
-- 导入过程中失败不会导致整文件从头重跑。
-- 已完成文件不会重复分析。
-- 混沌标签、实体、关系样本足够后，另开标签治理任务。
+- 高频 raw tag 导出。
+- raw doc_type 分布导出。
+- 实体类型分布导出。
+- 关系类型分布导出。
+- 低置信/冲突/高频无意义标签导出。
+- 同义标签候选聚类。
+
+暂不做：
+
+- 直接硬编码标签树。
+- 一次性替换历史标签。
+
+退出验收：
+
+- 能给出第一版企业标签治理报告。
+- 能决定哪些标签进入标准词典，哪些保留 raw，哪些黑名单。
+
+### Phase 7：标准标签/实体/关系治理（P2/P3）
+
+目标：
+
+- 在真实样本基础上，逐步把混沌输出收敛成企业本体。
+
+候选能力：
+
+- `kb_tag_dictionary`
+- `kb_tag_aliases`
+- `kb_entity_type_mapping`
+- `kb_relation_type_mapping`
+- raw tag -> standard tag 批处理
+- 人工确认/合并/禁用
+
+启动条件：
+
+- 企业微盘已导入足够样本。
+- raw 标签和实体关系分布已审计。
+- 已明确业务常用标签和需要禁用的噪声标签。
+
+暂不作为当前阶段目标。
+
+### Phase 8：高级图片复用与多模型校验（P3）
+
+候选能力：
+
+- CLIP 图片 embedding。
+- SSIM 抽样复核。
+- high similarity 图片继承代表图 VLM 作为辅助。
+- 多模型交叉校验实体/关系。
+- 冲突样本人工审核。
+
+启动条件：
+
+- 图片相似最小版 false positive 可控。
+- 证据链已经足够区分 `self_vision` 和 `group_rep`。
+- 大量重复图片造成真实 token 压力。
+
+暂不作为当前阶段目标。
+
+## 8.1 目标模式执行规则
+
+如果后续开启目标模式，执行者必须遵守：
+
+1. 每个 Phase 单独建分支或至少单独 commit。
+2. 每个 Phase 完成后跑对应测试和真实数据验证。
+3. 未通过退出验收，不进入下一 Phase。
+4. P2/P3 能力不得混入 P0/P1 阶段。
+5. 任何自动重跑能力必须先支持 dry-run。
+6. 所有新增测试数据必须有标记和清理路径。
+7. 不清空企业微盘已入库数据，除非用户明确要求。
+8. 不用标签标准化阻塞当前导入。
+
+## 8.2 阶段性提交建议
+
+- Commit 1：`feat: add knowledge analysis artifacts`
+- Commit 2：`feat: persist knowledge evidence lineage`
+- Commit 3：`feat: add knowledge rerun planner dry run`
+- Commit 4：`feat: track visual similarity for knowledge images`
+- Commit 5：`chore: validate enterprise wedrive ingestion batch`
+
+每个 commit body 必须包含：
+
+- 数据库变更摘要。
+- 行为变化。
+- 回滚方式。
+- 测试结果。
+- 真实数据验证样本。
 
 ## 9. 测试计划
 

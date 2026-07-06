@@ -24,6 +24,7 @@ def _load_service(service_name: str):
 
 
 pipeline_orchestrator = _load_service("pipeline_orchestrator")
+analysis_artifact_service = _load_service("analysis_artifact_service")
 document_service = _load_service("document_service")
 fusion_service = _load_service("fusion_service")
 raw_collection_service = _load_service("raw_collection_service")
@@ -397,6 +398,53 @@ def test_fusion_classifies_all_empty_and_index_failure():
     assert classify_fusion_status(total_pages=2, valid_pages=2, index_error="embed down") == "degraded"
 
 
+def test_analysis_artifact_stable_hash_ignores_dict_order():
+    left = {"stage": "fusion", "payload": {"b": [2, 1], "a": "文本"}}
+    right = {"payload": {"a": "文本", "b": [2, 1]}, "stage": "fusion"}
+
+    assert analysis_artifact_service.stable_hash(left) == analysis_artifact_service.stable_hash(right)
+    assert analysis_artifact_service.stable_hash(left) != analysis_artifact_service.stable_hash({
+        "stage": "fusion",
+        "payload": {"b": [1, 2], "a": "文本"},
+    })
+
+
+@pytest.mark.asyncio
+async def test_record_analysis_artifact_uses_session_factory():
+    diagnostics_db = _DiagnosticDb()
+
+    artifact_id = await analysis_artifact_service.record_analysis_artifact(
+        owner_id=1,
+        document_id=123,
+        file_id=456,
+        task_id=777,
+        pipeline_run_id=1000,
+        stage="fusion",
+        status="done",
+        input_hash="input-hash",
+        output_hash="output-hash",
+        prompt_hash_value="prompt-hash",
+        model_profile="gpt-5.5-knowledge",
+        model_used="gpt-5.5",
+        reason="done",
+        diagnostics={"model_diagnostics": {"selected_profile": "gpt-5.5"}},
+        metrics={"valid_pages": 1},
+        session_factory=_SessionFactory(diagnostics_db),
+    )
+
+    artifact_rows = [
+        item for item in diagnostics_db.added
+        if getattr(item, "__tablename__", "") == "kb_analysis_artifacts"
+    ]
+    assert artifact_id == artifact_rows[0].id
+    assert artifact_rows[0].stage == "fusion"
+    assert artifact_rows[0].status == "done"
+    assert artifact_rows[0].prompt_hash == "prompt-hash"
+    assert artifact_rows[0].model_profile == "gpt-5.5-knowledge"
+    assert artifact_rows[0].model_used == "gpt-5.5"
+    assert artifact_rows[0].metrics_json["valid_pages"] == 1
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_failed_stage_returns_failed(monkeypatch):
     async def fail_stage(**_kwargs):
@@ -623,6 +671,58 @@ async def test_orchestrator_persists_stage_diagnostics(monkeypatch):
     assert stage_rows[1].status == "degraded"
     assert stage_rows[1].reason == "raw_content_partial"
     assert stage_rows[1].metrics_json["valid_rounds"] == 2
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_persists_analysis_artifacts(monkeypatch):
+    async def done_raw(**_kwargs):
+        return {
+            "status": "done",
+            "total_rounds": 1,
+            "valid_rounds": 1,
+            "empty_rounds": 0,
+            "model_diagnostics": [
+                {
+                    "requested_profile": "gpt-5.5-knowledge",
+                    "selected_profile": "gpt-5.5",
+                }
+            ],
+        }
+
+    async def prompt_hash_stub(_db, stage):
+        return f"prompt:{stage}"
+
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "STAGE_REGISTRY",
+        [StageDef("raw", ["source_file"], False, done_raw)],
+    )
+    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
+    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
+    monkeypatch.setattr(pipeline_orchestrator, "resolve_stage_prompt_hash", prompt_hash_stub)
+
+    diagnostics_db = _DiagnosticDb()
+    monkeypatch.setattr(pipeline_orchestrator, "AsyncSessionLocal", _SessionFactory(diagnostics_db))
+
+    result = await pipeline_orchestrator.run_pipeline(_FakeDb(), 123, 1, 456, 1, task_id=777)
+
+    artifact_rows = [
+        item for item in diagnostics_db.added
+        if getattr(item, "__tablename__", "") == "kb_analysis_artifacts"
+    ]
+    assert result["status"] == "done"
+    assert [row.stage for row in artifact_rows] == ["source_file", "raw"]
+    raw_artifact = artifact_rows[1]
+    assert raw_artifact.task_id == 777
+    assert raw_artifact.pipeline_run_id == 1000
+    assert raw_artifact.status == "done"
+    assert raw_artifact.prompt_hash == "prompt:raw"
+    assert raw_artifact.model_profile == "gpt-5.5-knowledge"
+    assert raw_artifact.model_used == "gpt-5.5"
+    assert raw_artifact.input_hash
+    assert raw_artifact.output_hash
+    assert raw_artifact.diagnostics_json["model_diagnostics"][0]["selected_profile"] == "gpt-5.5"
+    assert raw_artifact.metrics_json["valid_rounds"] == 1
 
 
 @pytest.mark.asyncio

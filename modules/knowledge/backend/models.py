@@ -359,6 +359,38 @@ class KbPipelineStageRun(Base, TimestampMixin):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class KbAnalysisArtifact(Base, TimestampMixin):
+    """Stable analysis artifact ledger for resumable knowledge stages."""
+    __tablename__ = "kb_analysis_artifacts"
+    __table_args__ = KB_TABLE_ARGS_EXTEND
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    file_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pipeline_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    unit_type: Mapped[str] = mapped_column(String(32), default="document")
+    unit_key: Mapped[str] = mapped_column(String(128), default="document")
+    source_artifact_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    input_hash: Mapped[str] = mapped_column(String(64), default="")
+    output_hash: Mapped[str] = mapped_column(String(64), default="")
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_profile: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_used: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(32), default="v1")
+    preprocess_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="done")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnostics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metrics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    token_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    token_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class KbPipelineStale(Base, TimestampMixin):
     """Pipeline stage 产物 hash 记录表。
 

@@ -18,6 +18,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import KbDocument, KbPipelineRun, KbPipelineStageRun
+from .analysis_artifact_service import (
+    build_input_hash,
+    build_output_hash,
+    model_profile_from_result,
+    model_used_from_result,
+    record_analysis_artifact,
+    resolve_stage_prompt_hash,
+    stage_schema_version,
+)
 from .document_service import mark_document_source_unavailable
 from .entity_service import process_document_entities_from_fusions
 from .fusion_service import fuse_all_pages
@@ -186,6 +195,76 @@ async def _record_stage_run(
         logger.warning("Pipeline stage diagnostics skipped doc_id=%d stage=%s: %s", document_id, stage, exc)
 
 
+async def _record_stage_artifact(
+    db: AsyncSession,
+    *,
+    document_id: int,
+    owner_id: int,
+    file_id: int | None,
+    stage: str,
+    status: str,
+    run_id: int | None = None,
+    task_id: int | None = None,
+    result: dict | None = None,
+    reason: str = "",
+    duration_ms: int | None = None,
+    started_at: datetime | None = None,
+    input_extra: dict | None = None,
+    output_payload: Any | None = None,
+    prompt_hash_value: str | None = None,
+    output_hash_value: str | None = None,
+) -> int | None:
+    """Best-effort stable artifact ledger write for one pipeline stage."""
+    result_payload = result or {}
+    try:
+        resolved_prompt_hash = prompt_hash_value
+        if resolved_prompt_hash is None:
+            resolved_prompt_hash = await resolve_stage_prompt_hash(db, stage)
+    except Exception as exc:
+        logger.warning("Prompt hash skipped doc_id=%d stage=%s: %s", document_id, stage, exc)
+        resolved_prompt_hash = None
+
+    input_hash = build_input_hash(
+        stage=stage,
+        document_id=document_id,
+        file_id=file_id,
+        extra=input_extra or {},
+    )
+    output_hash = output_hash_value or build_output_hash(
+        stage=stage,
+        status=status,
+        payload=output_payload if output_payload is not None else result_payload,
+    )
+    diagnostics = {}
+    if isinstance(result_payload.get("model_diagnostics"), dict):
+        diagnostics["model_diagnostics"] = result_payload.get("model_diagnostics")
+    elif isinstance(result_payload.get("model_diagnostics"), list):
+        diagnostics["model_diagnostics"] = result_payload.get("model_diagnostics")
+    if result_payload.get("timing"):
+        diagnostics["timing"] = result_payload.get("timing")
+    return await record_analysis_artifact(
+        owner_id=owner_id,
+        document_id=document_id,
+        file_id=file_id,
+        task_id=task_id,
+        pipeline_run_id=run_id,
+        stage=stage,
+        status=status,
+        input_hash=input_hash,
+        output_hash=output_hash,
+        prompt_hash_value=resolved_prompt_hash,
+        model_profile=model_profile_from_result(result_payload),
+        model_used=model_used_from_result(result_payload),
+        schema_version=stage_schema_version(stage),
+        reason=reason,
+        diagnostics=_json_safe(diagnostics),
+        metrics=_json_safe(result_payload),
+        duration_ms=duration_ms,
+        started_at=started_at,
+        session_factory=AsyncSessionLocal,
+    )
+
+
 async def _abort_if_source_unavailable(
     db: AsyncSession,
     run_id: int | None,
@@ -224,6 +303,20 @@ async def _abort_if_source_unavailable(
         reason=state.reason,
         metrics=step_payload,
         duration_ms=0,
+    )
+    await _record_stage_artifact(
+        db,
+        document_id=document_id,
+        owner_id=owner_id,
+        file_id=file_id,
+        run_id=run_id,
+        stage=stage,
+        status="skipped",
+        result=step_payload,
+        reason=state.reason,
+        duration_ms=0,
+        started_at=_now(),
+        input_extra={"source_availability": state.reason},
     )
     await _finish_pipeline_run(
         db,
@@ -426,6 +519,22 @@ async def run_pipeline(
         artifact_hash=source_hash,
         duration_ms=round((perf_counter() - source_timer) * 1000),
     )
+    await _record_stage_artifact(
+        db,
+        document_id=document_id,
+        owner_id=owner_id,
+        file_id=file_id,
+        task_id=task_id,
+        run_id=run,
+        stage="source_file",
+        status="done",
+        result={"status": "done", "reason": "available"},
+        reason="available",
+        duration_ms=round((perf_counter() - source_timer) * 1000),
+        started_at=source_started,
+        input_extra={"source_hash": source_hash},
+        output_hash_value=source_hash,
+    )
 
     # ── 2. 按注册表顺序执行 ────────────────────────────
     completed_stages: set[str] = set()
@@ -472,6 +581,21 @@ async def run_pipeline(
                     metrics=steps[step_name],
                     duration_ms=0,
                 )
+                await _record_stage_artifact(
+                    db,
+                    document_id=document_id,
+                    owner_id=owner_id,
+                    file_id=file_id,
+                    task_id=task_id,
+                    run_id=run,
+                    stage=step_name,
+                    status="skipped",
+                    result=steps[step_name],
+                    reason="already done",
+                    duration_ms=0,
+                    started_at=_now(),
+                    input_extra={"skip_reason": "already done"},
+                )
                 skip = True
 
         if skip:
@@ -495,6 +619,21 @@ async def run_pipeline(
                         metrics=steps[step_name],
                         error_message=reason,
                         duration_ms=0,
+                    )
+                    await _record_stage_artifact(
+                        db,
+                        document_id=document_id,
+                        owner_id=owner_id,
+                        file_id=file_id,
+                        task_id=task_id,
+                        run_id=run,
+                        stage=step_name,
+                        status="failed",
+                        result=steps[step_name],
+                        reason=reason,
+                        duration_ms=0,
+                        started_at=_now(),
+                        input_extra={"dependency": req},
                     )
                     await _finish_pipeline_run(
                         db,
@@ -525,6 +664,21 @@ async def run_pipeline(
                     reason=steps[step_name]["reason"],
                     metrics=steps[step_name],
                     duration_ms=0,
+                )
+                await _record_stage_artifact(
+                    db,
+                    document_id=document_id,
+                    owner_id=owner_id,
+                    file_id=file_id,
+                    task_id=task_id,
+                    run_id=run,
+                    stage=step_name,
+                    status="degraded",
+                    result=steps[step_name],
+                    reason=steps[step_name]["reason"],
+                    duration_ms=0,
+                    started_at=_now(),
+                    input_extra={"dependency": req},
                 )
                 logger.warning("Pipeline skipped %s: dependency '%s' unavailable for doc_id=%d",
                                step_name, req, document_id)
@@ -587,6 +741,20 @@ async def run_pipeline(
                     error_message=assessment.reason,
                     duration_ms=round((perf_counter() - stage_timer) * 1000),
                 )
+                await _record_stage_artifact(
+                    db,
+                    document_id=document_id,
+                    owner_id=owner_id,
+                    file_id=file_id,
+                    task_id=task_id,
+                    run_id=run,
+                    stage=step_name,
+                    status="failed",
+                    result=steps[step_name],
+                    reason=assessment.reason,
+                    duration_ms=round((perf_counter() - stage_timer) * 1000),
+                    started_at=stage_started,
+                )
                 await _finish_pipeline_run(db, run, "failed", reason=assessment.reason, diagnostics={"steps": steps})
                 await db.commit()
                 logger.error("Pipeline step %s failed for doc_id=%d: %s",
@@ -620,6 +788,20 @@ async def run_pipeline(
                 artifact_hash=artifact_hash,
                 duration_ms=round((perf_counter() - stage_timer) * 1000),
             )
+            await _record_stage_artifact(
+                db,
+                document_id=document_id,
+                owner_id=owner_id,
+                file_id=file_id,
+                task_id=task_id,
+                run_id=run,
+                stage=step_name,
+                status=assessment.status,
+                result=steps[step_name],
+                reason=assessment.reason,
+                duration_ms=round((perf_counter() - stage_timer) * 1000),
+                started_at=stage_started,
+            )
             if pause_after_stage:
                 pause_reason = "model_fallback_pause"
                 steps["_pause"] = {
@@ -639,6 +821,20 @@ async def run_pipeline(
                     reason=pause_reason,
                     metrics=steps["_pause"],
                     duration_ms=0,
+                )
+                await _record_stage_artifact(
+                    db,
+                    document_id=document_id,
+                    owner_id=owner_id,
+                    file_id=file_id,
+                    task_id=task_id,
+                    run_id=run,
+                    stage="pause",
+                    status="paused",
+                    result=steps["_pause"],
+                    reason=pause_reason,
+                    duration_ms=0,
+                    started_at=_now(),
                 )
                 await _finish_pipeline_run(db, run, "paused", reason=pause_reason, diagnostics={"steps": steps})
                 await db.commit()
@@ -664,6 +860,20 @@ async def run_pipeline(
                 metrics=steps[step_name],
                 error_message=str(e),
                 duration_ms=round((perf_counter() - stage_timer) * 1000),
+            )
+            await _record_stage_artifact(
+                db,
+                document_id=document_id,
+                owner_id=owner_id,
+                file_id=file_id,
+                task_id=task_id,
+                run_id=run,
+                stage=step_name,
+                status="failed",
+                result=steps[step_name],
+                reason=str(e),
+                duration_ms=round((perf_counter() - stage_timer) * 1000),
+                started_at=stage_started,
             )
             await _finish_pipeline_run(db, run, "failed", reason=str(e), diagnostics={"steps": steps})
             await db.commit()

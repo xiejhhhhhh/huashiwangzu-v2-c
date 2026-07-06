@@ -81,6 +81,7 @@ Total public actions: 16
 
 | Table / Prefix | Purpose |
 |---|---|
+| `kb_analysis_artifacts` | Owned by `knowledge` module |
 | `kb_catalogs` | Owned by `knowledge` module |
 | `kb_chunk_entities` | Owned by `knowledge` module |
 | `kb_chunks` | Owned by `knowledge` module |

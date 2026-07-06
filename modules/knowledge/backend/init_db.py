@@ -15,7 +15,7 @@ KB_TABLES = [
     "kb_graph_nodes", "kb_graph_edges", "kb_chunk_entities",
     "kb_evidence", "kb_conclusion_evidence", "kb_entity_merge_log",
     "kb_governance_candidates", "kb_pipeline_runs",
-    "kb_pipeline_stage_runs", "kb_pipeline_stale",
+    "kb_pipeline_stage_runs", "kb_analysis_artifacts", "kb_pipeline_stale",
 ]
 
 # 关键索引语句（幂等，CREATE INDEX IF NOT EXISTS）
@@ -48,6 +48,10 @@ _INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_runs_status ON kb_pipeline_runs(status)",
     "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_stage_runs_doc_stage ON kb_pipeline_stage_runs(document_id, stage)",
     "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_stage_runs_run ON kb_pipeline_stage_runs(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_analysis_artifacts_doc_stage ON kb_analysis_artifacts(document_id, stage)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_analysis_artifacts_run ON kb_analysis_artifacts(pipeline_run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_analysis_artifacts_status ON kb_analysis_artifacts(status)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_analysis_artifacts_input_hash ON kb_analysis_artifacts(input_hash)",
     "CREATE INDEX IF NOT EXISTS idx_kb_pipeline_stale_doc ON kb_pipeline_stale(document_id)",
 ]
 
@@ -214,6 +218,7 @@ _KNOWLEDGE_PROMPTS = [
 async def ensure_kb_tables(db: AsyncSession) -> None:
     """确保所有 kb_* 表已创建。"""
     from .models import (  # noqa: F401 注册到 Base.metadata
+        KbAnalysisArtifact,
         KbCatalog,
         KbChunk,
         KbChunkEntity,
