@@ -9,6 +9,7 @@ import json
 import mimetypes
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unicodedata
@@ -21,9 +22,31 @@ SUPPORTED_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
 }
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".m4v", ".webm"}
+DEFAULT_EXCLUDED_DIR_NAMES = {
+    "$RECYCLE.BIN",
+    ".DocumentRevisions-V100",
+    ".Spotlight-V100",
+    ".TemporaryItems",
+    ".Trashes",
+    ".fseventsd",
+    "__MACOSX",
+}
+DEFAULT_EXCLUDED_FILE_PREFIXES = ("._", "~$")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_DIR = PROJECT_ROOT / "backend"
 DEFAULT_ENV_FILE = PROJECT_ROOT / "backend" / ".env"
 EXPECTED_DB_NAME = "华世王镞_v2"
+
+# The live backend is started with cwd=backend, so relative storage settings such
+# as "data/uploads" resolve under backend/. Keep this script aligned when it is
+# executed from the project root.
+os.environ.setdefault("UPLOAD_DIR", str(BACKEND_DIR / "data" / "uploads"))
+os.environ.setdefault("STORAGE_ROOT", str(BACKEND_DIR / "data" / "uploads"))
+
+for import_root in (PROJECT_ROOT, BACKEND_DIR):
+    import_path = str(import_root)
+    if import_path not in sys.path:
+        sys.path.insert(0, import_path)
 
 
 def _json_request(base_url: str, path: str, payload: dict, token: str | None = None, timeout: int = 120) -> dict:
@@ -45,14 +68,59 @@ def _get_json(base_url: str, path: str, token: str | None = None, timeout: int =
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _multipart_upload(base_url: str, path: Path, root: Path, token: str, timeout: int = 300) -> dict:
-    boundary = f"----kb-bulk-{time.time_ns()}"
+def _parse_extensions(value: str | None) -> set[str]:
+    if not value:
+        return set(SUPPORTED_EXTENSIONS)
+    items: set[str] = set()
+    for raw in value.split(","):
+        ext = raw.strip().lower()
+        if not ext:
+            continue
+        items.add(ext if ext.startswith(".") else f".{ext}")
+    return items
+
+
+def _parse_excluded_dir_names(values: list[str]) -> set[str]:
+    names = set(DEFAULT_EXCLUDED_DIR_NAMES)
+    for value in values:
+        for raw in value.split(","):
+            name = raw.strip()
+            if name:
+                names.add(name)
+    return names
+
+
+def _contains_excluded_dir(path: Path, root: Path, excluded_dir_names: set[str]) -> bool:
+    try:
+        relative_parts = path.relative_to(root).parts[:-1]
+    except ValueError:
+        relative_parts = path.parts[:-1]
+    return any(part in excluded_dir_names for part in relative_parts)
+
+
+def _is_excluded_file_name(path: Path) -> bool:
+    return path.name == ".DS_Store" or path.name.startswith(DEFAULT_EXCLUDED_FILE_PREFIXES)
+
+
+def _relative_folder(root_name: str, path: Path, root: Path) -> str:
     rel_parent = path.parent.relative_to(root).as_posix()
+    return root_name if rel_parent == "." else f"{root_name}/{rel_parent}"
+
+
+def _multipart_upload(
+    base_url: str,
+    path: Path,
+    root: Path,
+    token: str,
+    target_root_name: str,
+    timeout: int = 300,
+) -> dict:
+    boundary = f"----kb-bulk-{time.time_ns()}"
     mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     head = (
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="relative_path"\r\n\r\n'
-        f"企业微盘导入/{rel_parent}\r\n"
+        f"{_relative_folder(target_root_name, path, root)}\r\n"
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'
         f"Content-Type: {mime_type}\r\n\r\n"
@@ -231,10 +299,13 @@ def _existing_logical_paths(owner_id: int, prefix: str = "企业微盘导入") -
             return values
 
 
-def _logical_path(path: Path, root: Path) -> str:
-    rel_parent = path.parent.relative_to(root).as_posix()
-    prefix = "企业微盘导入" if rel_parent == "." else f"企业微盘导入/{rel_parent}"
-    return _normalize_logical_path(f"{prefix}/{path.name}")
+def _logical_path(path: Path, root: Path, target_root_name: str) -> str:
+    prefix = _relative_folder(target_root_name, path, root)
+    # The framework stores file extensions normalized to lowercase while
+    # preserving the stem. Mirror that path shape so existing-path prefiltering
+    # does not retry files such as ``3.JPG`` after they were stored as ``3.jpg``.
+    filename = f"{path.stem}{path.suffix.lower()}" if path.suffix else path.name
+    return _normalize_logical_path(f"{prefix}/{filename}")
 
 
 def _current_db_identity() -> dict[str, str]:
@@ -258,13 +329,22 @@ def _current_db_identity() -> dict[str, str]:
     }
 
 
-def _iter_files(root: Path, max_size: int) -> list[Path]:
+def _iter_files(
+    root: Path,
+    max_size: int,
+    extensions: set[str],
+    excluded_dir_names: set[str],
+) -> list[Path]:
     items: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file():
             continue
+        if _contains_excluded_dir(path, root, excluded_dir_names):
+            continue
+        if _is_excluded_file_name(path):
+            continue
         ext = path.suffix.lower()
-        if ext in VIDEO_EXTENSIONS or ext not in SUPPORTED_EXTENSIONS:
+        if ext in VIDEO_EXTENSIONS or ext not in extensions:
             continue
         try:
             size = path.stat().st_size
@@ -276,7 +356,7 @@ def _iter_files(root: Path, max_size: int) -> list[Path]:
     return sorted(items, key=lambda p: (p.suffix.lower() not in {".pdf", ".docx", ".xlsx", ".pptx"}, p.stat().st_size))
 
 
-async def _direct_upload_and_register(path: Path, root: Path, owner_id: int) -> dict:
+async def _direct_upload_and_register(path: Path, root: Path, owner_id: int, target_root_name: str) -> dict:
     from app.database import AsyncSessionLocal
     from app.services.file_upload_service import _detect_mime_by_header, upload_file_from_path
 
@@ -285,8 +365,7 @@ async def _direct_upload_and_register(path: Path, root: Path, owner_id: int) -> 
     tmp_path = Path(tempfile.mkstemp(prefix="kb-bulk-", suffix=path.suffix)[1])
     try:
         shutil.copyfile(path, tmp_path)
-        rel_parent = path.parent.relative_to(root).as_posix()
-        relative_path = "企业微盘导入" if rel_parent == "." else f"企业微盘导入/{rel_parent}"
+        relative_path = _relative_folder(target_root_name, path, root)
         async with AsyncSessionLocal() as db:
             file_info = await upload_file_from_path(
                 db,
@@ -318,6 +397,14 @@ def main() -> int:
     parser.add_argument("--direct-owner-id", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
+    parser.add_argument("--target-root-name", default="企业微盘导入")
+    parser.add_argument("--extensions", default=None, help="Comma-separated extension allowlist, e.g. .pdf,.docx")
+    parser.add_argument(
+        "--exclude-dir",
+        action="append",
+        default=[],
+        help="Directory name to skip while scanning. Can be repeated or comma-separated.",
+    )
     args = parser.parse_args()
 
     env_file = Path(args.env_file).expanduser().resolve()
@@ -333,9 +420,15 @@ def main() -> int:
         login = _json_request(args.base_url, "/api/login", {"username": args.username, "password": args.password})
         token = login["data"]["access_token"]
     max_size = args.max_size_mb * 1024 * 1024
+    extensions = _parse_extensions(args.extensions)
+    excluded_dir_names = _parse_excluded_dir_names(args.exclude_dir)
     existing_md5s = _existing_md5s() if args.skip_existing_md5 else set()
-    existing_paths = _existing_logical_paths(args.direct_owner_id) if args.skip_existing_path and args.direct_owner_id > 0 else set()
-    candidates = _iter_files(root, max_size)
+    existing_paths = (
+        _existing_logical_paths(args.direct_owner_id, args.target_root_name)
+        if args.skip_existing_path and args.direct_owner_id > 0
+        else set()
+    )
+    candidates = _iter_files(root, max_size, extensions, excluded_dir_names)
     files: list[Path] = []
     skipped_existing = 0
     skipped_existing_path = 0
@@ -343,7 +436,7 @@ def main() -> int:
         if args.skip_existing_md5 and _file_md5(path) in existing_md5s:
             skipped_existing += 1
             continue
-        if args.skip_existing_path and _logical_path(path, root) in existing_paths:
+        if args.skip_existing_path and _logical_path(path, root, args.target_root_name) in existing_paths:
             skipped_existing_path += 1
             continue
         files.append(path)
@@ -357,6 +450,9 @@ def main() -> int:
         "limit": args.limit,
         "max_size_mb": args.max_size_mb,
         "candidates": len(candidates),
+        "target_root_name": args.target_root_name,
+        "extensions": sorted(extensions),
+        "excluded_dir_names": sorted(excluded_dir_names),
         "skipped_existing_md5": skipped_existing,
         "skipped_existing_path": skipped_existing_path,
         "dry_run": args.dry_run,
@@ -394,9 +490,14 @@ def main() -> int:
         try:
             if args.direct_owner_id > 0:
                 import asyncio
-                result = {"success": True, "data": asyncio.run(_direct_upload_and_register(path, root, args.direct_owner_id))}
+                result = {
+                    "success": True,
+                    "data": asyncio.run(
+                        _direct_upload_and_register(path, root, args.direct_owner_id, args.target_root_name)
+                    ),
+                }
             else:
-                result = _multipart_upload(args.base_url, path, root, token)
+                result = _multipart_upload(args.base_url, path, root, token, args.target_root_name)
             if result.get("success"):
                 uploaded += 1
                 data = result.get("data") or {}

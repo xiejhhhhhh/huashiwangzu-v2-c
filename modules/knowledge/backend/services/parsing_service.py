@@ -16,8 +16,11 @@ logger = logging.getLogger("v2.knowledge").getChild("parsing")
 FORMAT_PARSER_MAP: dict[str, tuple[str, str]] = {
     "pdf": ("pdf-parser", "parse"),
     "docx": ("docx-parser", "parse"),
+    "doc": ("docx-parser", "parse"),
     "pptx": ("pptx-parser", "parse"),
+    "ppt": ("pptx-parser", "parse"),
     "xlsx": ("xlsx-parser", "parse"),
+    "xls": ("xlsx-parser", "parse"),
     "csv": ("csv-parser", "parse"),
     "tsv": ("csv-parser", "parse"),
     "txt": ("text-parser", "parse"),

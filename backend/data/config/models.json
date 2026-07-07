@@ -19,7 +19,7 @@
     },
     "gptstore-text": {
       "type": "openai_compat",
-      "api_url": "http://127.0.0.1:61462/v1/chat/completions",
+      "api_url": "http://127.0.0.1:50936/v1/chat/completions",
       "api_key_env": "GPTSTORE_API_KEY",
       "provider_name": "gptstore-text",
       "session_affinity": {
@@ -38,6 +38,11 @@
     "llama": {
       "type": "openai_compat",
       "api_url": "http://127.0.0.1:30003/v1/chat/completions",
+      "provider_name": "llama"
+    },
+    "qwen3-vl-local": {
+      "type": "openai_compat",
+      "api_url": "http://127.0.0.1:30002/v1/chat/completions",
       "provider_name": "llama"
     },
     "local": {
@@ -61,6 +66,17 @@
     }
   },
 
+  "fallback_policies": {
+    "knowledge_text_primary": {
+      "description": "Knowledge text analysis: GPTStore first, direct cloud fallback for high-throughput batch ingestion.",
+      "chain": ["deepseek-v4-flash"]
+    },
+    "knowledge_vision_primary": {
+      "description": "Knowledge vision analysis: GPTStore VLM first, cloud VLM fallback before any local fallback.",
+      "chain": ["mimo"]
+    }
+  },
+
   "model_types": {
     "llm": {
       "primary": "deepseek-v4-flash",
@@ -78,6 +94,7 @@
           "retry_max_attempts": 3,
           "retry_delay_seconds": 30,
           "retry_strategy": "fixed",
+          "fallback_policy": "knowledge_text_primary",
           "price_input": 0,
           "price_output": 0
         },
@@ -194,6 +211,7 @@
           "model": "gpt-5.5",
           "temperature": 0.2,
           "max_tokens": 8192,
+          "fallback_policy": "knowledge_vision_primary",
           "response_adapter": "openai_compat"
         },
         "mimo": {
@@ -202,7 +220,7 @@
           "response_adapter": "openai_compat"
         },
         "qwen3-vl": {
-          "provider": "llama",
+          "provider": "qwen3-vl-local",
           "model": "qwen3-vl",
           "server_url": "http://127.0.0.1:30002",
           "watchdog": "qwen3-vl",
@@ -218,13 +236,19 @@
       "fallback_profile": "deepseek-v4-flash",
       "pause_after_fallback": true,
       "pipeline_concurrency": {
-        "raw_collect": 12,
-        "raw_text": 32,
-        "raw_ocr": 16,
+        "raw_collect": 8,
+        "raw_text": 64,
+        "page_render": 20,
+        "page_render_pages": 2,
+        "raw_ocr": 20,
         "raw_vision": 12,
-        "page_fusion": 6,
-        "entity_extract": 6,
-        "model_call_global": 20
+        "page_fusion": 64,
+        "fusion": 64,
+        "profile": 16,
+        "graph": 16,
+        "relations": 16,
+        "entity_extract": 16,
+        "model_call_global": 80
       },
       "image_preprocess": {
         "raw_ocr_max_side": 1600,
@@ -233,15 +257,16 @@
         "raw_ocr_jpeg_quality_floor": 72
       },
       "pipeline_priorities": {
-        "source_validate": 12,
-        "parse_index": 11,
-        "raw_text": 11,
-        "raw_ocr": 11,
-        "raw_vision": 8,
-        "fusion": 7,
-        "profile": 6,
-        "graph": 6,
-        "relations": 5
+        "source_validate": 14,
+        "parse_index": 14,
+        "raw_text": 14,
+        "page_render": 30,
+        "raw_ocr": 14,
+        "raw_vision": 12,
+        "fusion": 11,
+        "profile": 10,
+        "graph": 10,
+        "relations": 8
       },
       "stages": {
         "raw_ocr": "gpt-5.5-vision",

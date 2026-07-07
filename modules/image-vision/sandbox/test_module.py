@@ -115,6 +115,13 @@ def test_oversized_image_uses_metadata_only(monkeypatch=None) -> None:
     assert decision["use_vlm"] is False
 
 
+def test_router_does_not_define_duplicate_vlm_preprocessor() -> None:
+    router_path = MODULE_ROOT / "backend" / "router.py"
+    source = router_path.read_text(encoding="utf-8")
+    assert "def _prepare_vlm_image" not in source
+    assert "describe_image_detailed" in source
+
+
 def main() -> None:
     if not SAMPLE.exists():
         print("ERROR: sample.png not found")
@@ -129,6 +136,8 @@ def main() -> None:
     print("  VLM auto-skip decision PASS")
     test_oversized_image_uses_metadata_only()
     print("  Oversized metadata-only guard PASS")
+    test_router_does_not_define_duplicate_vlm_preprocessor()
+    print("  VLM preprocessor consolidation PASS")
     print("PASS: image-vision sandbox test")
 
 

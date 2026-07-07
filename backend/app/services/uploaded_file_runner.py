@@ -1,4 +1,5 @@
 """Helpers for module capabilities that operate on uploaded files."""
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -24,7 +25,7 @@ async def run_uploaded_file_capability(
     async with AsyncSessionLocal() as db:
         file, full_path, ext = await read_uploaded_file(db, file_id, user_id, allowed_exts)
 
-    result = handler(file_id, file, full_path, ext)
-    if inspect.isawaitable(result):
+    if inspect.iscoroutinefunction(handler):
+        result = handler(file_id, file, full_path, ext)
         return await result
-    return result
+    return await asyncio.to_thread(handler, file_id, file, full_path, ext)

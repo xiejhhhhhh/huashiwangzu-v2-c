@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .analysis_artifact_service import model_used_from_result, resolve_stage_prompt_hash, stable_hash
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_concurrency, resolve_knowledge_profile
-from .prompt_utils import TENTITY, TFUSION_LEGACY, load_prompt
+from .prompt_utils import TENTITY, TFUSION_LEGACY, load_prompt_detached
 
 logger = logging.getLogger("v2.knowledge").getChild("entity")
 
@@ -32,7 +32,7 @@ async def extract_entities_from_text(
         return {"entities": [], "relationships": []}
 
     resolved_profile_key = resolve_knowledge_profile("entity", profile_key)
-    system_prompt = await load_prompt(db, TENTITY, release_transaction=True)
+    system_prompt = await load_prompt_detached(TENTITY)
     try:
         messages = [
             {"role": "system", "content": system_prompt},
@@ -86,7 +86,7 @@ async def fuse_page_text(
         return text
 
     resolved_profile_key = resolve_knowledge_profile("legacy_page_fusion", profile_key)
-    system_prompt = await load_prompt(db, TFUSION_LEGACY, release_transaction=True)
+    system_prompt = await load_prompt_detached(TFUSION_LEGACY)
     try:
         messages = [
             {"role": "system", "content": system_prompt},
@@ -562,6 +562,7 @@ async def process_document_entities_from_fusions(
             )
     cleanup_duration_ms = round((perf_counter() - cleanup_started) * 1000)
     logger.info("Cleared old entity/graph data for document_id=%d before graph write", document_id)
+    await db.commit()
 
     # 去重 + 写入（复用同逻辑）
     write_started = perf_counter()
@@ -640,6 +641,7 @@ async def process_document_entities_from_fusions(
             db.add(candidate)
 
     stats["entities_found"] = len(seen_entities)
+    await db.commit()
 
     # ── 第2步：构建页→chunk映射 ──────────────────────────
     # Fusion 层 chunk 由 index_fusions_to_chunks() 写入 kb_chunks，
@@ -713,37 +715,65 @@ async def process_document_entities_from_fusions(
                 )
                 db.add(ce)
 
+    await db.commit()
+
     # 关系写入
     seen_relations: set = set()
+    relation_names: set[str] = set()
     for rel in all_relationships:
-        source_name = rel.get("source", "")
-        target_name = rel.get("target", "")
+        source_name = (rel.get("source") or "").strip()
+        target_name = (rel.get("target") or "").strip()
+        if source_name and target_name:
+            relation_names.add(source_name)
+            relation_names.add(target_name)
+
+    nodes_by_label: dict[str, KbGraphNode] = {}
+    existing_edge_keys: set[tuple[int, int, str]] = set()
+    if relation_names:
+        nodes_r = await db.execute(
+            select(KbGraphNode).where(
+                KbGraphNode.owner_id == owner_id,
+                KbGraphNode.label.in_(list(relation_names)),
+            )
+        )
+        for node in nodes_r.scalars().all():
+            nodes_by_label.setdefault(str(node.label), node)
+
+        node_ids = [int(node.id) for node in nodes_by_label.values()]
+        if node_ids:
+            edge_r = await db.execute(
+                select(
+                    KbGraphEdge.source_node_id,
+                    KbGraphEdge.target_node_id,
+                    KbGraphEdge.relation,
+                ).where(
+                    KbGraphEdge.owner_id == owner_id,
+                    KbGraphEdge.source_node_id.in_(node_ids),
+                    KbGraphEdge.target_node_id.in_(node_ids),
+                )
+            )
+            existing_edge_keys = {
+                (int(source_id), int(target_id), str(relation))
+                for source_id, target_id, relation in edge_r.all()
+            }
+    await db.commit()
+
+    pending_edges = 0
+    for rel in all_relationships:
+        source_name = (rel.get("source") or "").strip()
+        target_name = (rel.get("target") or "").strip()
         rel_type = rel.get("relation", "相关")
         rel_key = f"{source_name}|{target_name}|{rel_type}"
         if rel_key in seen_relations:
             continue
         seen_relations.add(rel_key)
 
-        # 查找源/目标 node
-        src_node_r = await db.execute(
-            select(KbGraphNode).where(KbGraphNode.label == source_name, KbGraphNode.owner_id == owner_id).limit(1)
-        )
-        src_node = src_node_r.scalars().first()
-        tgt_node_r = await db.execute(
-            select(KbGraphNode).where(KbGraphNode.label == target_name, KbGraphNode.owner_id == owner_id).limit(1)
-        )
-        tgt_node = tgt_node_r.scalars().first()
+        src_node = nodes_by_label.get(source_name)
+        tgt_node = nodes_by_label.get(target_name)
 
         if src_node and tgt_node:
-            # 查重（node 维度的唯一性检查）
-            dup_r = await db.execute(
-                select(KbGraphEdge).where(
-                    KbGraphEdge.source_node_id == src_node.id,
-                    KbGraphEdge.target_node_id == tgt_node.id,
-                    KbGraphEdge.relation == rel_type,
-                ).limit(1)
-            )
-            if dup_r.scalars().first():
+            edge_key = (int(src_node.id), int(tgt_node.id), str(rel_type))
+            if edge_key in existing_edge_keys:
                 continue
             edge = KbGraphEdge(
                 owner_id=owner_id, source_node_id=src_node.id,
@@ -751,6 +781,11 @@ async def process_document_entities_from_fusions(
                 weight=1.0, description=rel.get("description", ""),
             )
             db.add(edge)
+            existing_edge_keys.add(edge_key)
+            pending_edges += 1
+            if pending_edges >= 100:
+                await db.commit()
+                pending_edges = 0
 
     stats["relationships_found"] = len(seen_relations)
     if processed_pages > 0 and not seen_entities and stats["errors"]:

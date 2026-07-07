@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import KbDocument, KbPageFusion, KbRawData
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_concurrency, resolve_knowledge_profile
-from .prompt_utils import TFUSION, load_prompt
+from .prompt_utils import TFUSION, load_prompt_detached
 
 logger = logging.getLogger("v2.knowledge").getChild("fusion")
 
@@ -110,7 +110,7 @@ def classify_fusion_status(
 async def _llm_fuse(db: AsyncSession | None, round_texts: dict[int, str]) -> dict:
     """调用 LLM 进行交叉印证融合。"""
     profile_key = resolve_knowledge_profile("fusion")
-    system_prompt = await load_prompt(db, TFUSION, release_transaction=True)
+    system_prompt = await load_prompt_detached(TFUSION)
     user_message = f"""请交叉印证以下三轮采集结果，输出融合后的权威描述。
 
 === 第1轮：文本提取 ===
@@ -180,11 +180,14 @@ async def fuse_page(
     raw_records = r.scalars().all()
 
     round_texts: dict[int, str] = {}
+    evidence_ids: list[int] = []
     for rec in raw_records:
-        round_texts[rec.round] = rec.content or ""
+        round_texts[int(rec.round)] = rec.content or ""
+        evidence_ids.append(int(rec.id))
 
     if not round_texts:
         logger.warning("No raw data for document_id=%d page=%d", document_id, page)
+        await db.commit()
         return {
             "fused_text": "",
             "confidence": 0.0,
@@ -193,6 +196,7 @@ async def fuse_page(
             "status": "degraded",
             "diagnostics": {"reason": "no_raw_data", "raw_rounds": 0},
         }
+    await db.commit()
 
     # 2. 启发式冲突检测
     simple_conflicts = _detect_simple_conflicts(round_texts)
@@ -239,7 +243,7 @@ async def fuse_page(
         attributes_json=fusion_result.get("attributes"),
         tags_json=fusion_result.get("tags"),
         conflicts_json=all_conflicts,
-        evidence_json=[rec.id for rec in raw_records],
+        evidence_json=evidence_ids,
         source_version=1,
         fusion_version=1,
         fusion_status=page_status,
@@ -422,18 +426,37 @@ async def index_fusions_to_chunks(db: AsyncSession, document_id: int, owner_id: 
     )
     fusions = r.scalars().all()
     blocks = [
-        {"type": "融合", "text": pf.fused_text, "page": pf.page, "resource_ref": None}
+        {
+            "type": "融合",
+            "text": pf.fused_text,
+            "page": pf.page,
+            "resource_ref": None,
+            "source_ref_id": pf.id,
+        }
         for pf in fusions
         if pf.fused_text and pf.fused_text.strip()
     ]
     if not blocks:
         return 0
 
-    # 清旧 chunk + 重灌融合层
-    await db.execute(sa_delete(KbChunk).where(KbChunk.document_id == document_id))
+    # 只重建融合层 chunk。早期 parser/base chunk 保留为回退索引和断点证据。
+    await db.execute(
+        sa_delete(KbChunk).where(
+            KbChunk.document_id == document_id,
+            KbChunk.index_layer == "fusion_verified",
+        )
+    )
     await db.commit()
 
-    chunks = await chunk_and_embed(document_id, owner_id, blocks, caller=f"fusion:{document_id}")
+    chunks = await chunk_and_embed(
+        document_id,
+        owner_id,
+        blocks,
+        caller=f"fusion:{document_id}",
+        index_layer="fusion_verified",
+        source_stage="fusion",
+        index_version=1,
+    )
     count = await store_chunks(db, chunks)
 
     # 回写文档向量状态

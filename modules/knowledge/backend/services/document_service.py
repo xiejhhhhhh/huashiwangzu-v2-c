@@ -7,26 +7,27 @@ from app.core.exceptions import AppException, NotFound, ValidationError
 from app.models.file import File
 from app.services.file_reader import resolve_caller_user_id as resolve_user_id  # noqa: F401
 from app.services.file_service import check_file_access
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ir_models import to_legacy_dict
 from .cognitive_v3_service import link_payload, upsert_file_knowledge_link
 from .embedding_service import chunk_and_embed, store_chunks
-from .entity_service import fuse_page_text, process_document_entities
+from .entity_service import process_document_entities
 from .model_routing import resolve_knowledge_pipeline_priority
 from .parsing_service import parse_document
 
 logger = logging.getLogger("v2.knowledge").getChild("document")
 
 SUPPORTED_EXTENSIONS = {
-    "pdf", "docx", "pptx", "xlsx", "csv", "tsv", "txt", "md", "markdown",
+    "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "csv", "tsv", "txt", "md", "markdown",
     "json", "yaml", "yml", "eml", "msg",
     "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg",
 }
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg"}
+VISUAL_ASSET_EXTENSIONS = {"pdf", *IMAGE_EXTENSIONS}
 
 _ACTIVE_OR_SOURCE_ERROR_STATUSES = {
     "parsing", "indexing", "collecting", "running", "error", "failed",
@@ -278,6 +279,11 @@ async def enqueue_pipeline_task(
         priority=resolve_knowledge_pipeline_priority("source_validate", priority),
         status="pending",
         creator_id=user_id,
+        document_id=int(doc.id),
+        stage_key="source_validate",
+        lane_key="local_preprocess",
+        ready_status="ready",
+        dependency_key=f"knowledge:{int(doc.id)}:source_validate",
     )
     db.add(task)
     await db.flush()
@@ -309,7 +315,7 @@ async def enqueue_incomplete_documents(
     include_search_incomplete: bool = True,
 ) -> dict:
     """Preview or enqueue live documents whose deep pipeline is not complete."""
-    from ..models import KbDocument
+    from ..models import KbDocument, KbImageAsset
     from .source_file_state import get_source_file_availability
 
     normalized_extensions = {
@@ -318,6 +324,21 @@ async def enqueue_incomplete_documents(
         if str(ext or "").strip()
     }
     bounded_limit = max(1, min(int(limit or 20), 500))
+    expected_page_count = func.greatest(func.coalesce(KbDocument.total_pages, 1), 1)
+    active_page_asset_count = (
+        select(func.count(KbImageAsset.id))
+        .where(
+            KbImageAsset.document_id == KbDocument.id,
+            KbImageAsset.status == "active",
+            KbImageAsset.storage_path.is_not(None),
+        )
+        .correlate(KbDocument)
+        .scalar_subquery()
+    )
+    missing_visual_assets = and_(
+        KbDocument.extension.in_(VISUAL_ASSET_EXTENSIONS),
+        active_page_asset_count < expected_page_count,
+    )
     stmt = (
         select(KbDocument)
         .join(File, File.id == KbDocument.file_id)
@@ -333,6 +354,7 @@ async def enqueue_incomplete_documents(
                 func.coalesce(KbDocument.profile_status, "pending") != "done",
                 func.coalesce(KbDocument.graph_status, "pending") != "done",
                 func.coalesce(KbDocument.relation_status, "pending") != "done",
+                missing_visual_assets,
             ),
         )
         .order_by(KbDocument.updated_at.desc(), KbDocument.id.desc())
@@ -357,7 +379,17 @@ async def enqueue_incomplete_documents(
                 "reason": source_state.reason,
             })
             continue
-        if document_deep_pipeline_complete(doc, source_available=True):
+        asset_count_result = await db.execute(
+            select(func.count(KbImageAsset.id)).where(
+                KbImageAsset.document_id == int(doc.id),
+                KbImageAsset.status == "active",
+                KbImageAsset.storage_path.is_not(None),
+            )
+        )
+        page_asset_count = int(asset_count_result.scalar_one() or 0)
+        expected_assets = max(int(doc.total_pages or 1), 1) if (doc.extension or "").lower() in VISUAL_ASSET_EXTENSIONS else 0
+        page_assets_complete = expected_assets == 0 or page_asset_count >= expected_assets
+        if document_deep_pipeline_complete(doc, source_available=True) and page_assets_complete:
             continue
         search_complete = document_pipeline_complete(doc, source_available=True)
         if not include_search_incomplete and not search_complete:
@@ -381,6 +413,9 @@ async def enqueue_incomplete_documents(
             "graph_status": getattr(doc, "graph_status", "pending"),
             "relation_status": getattr(doc, "relation_status", "pending"),
             "search_complete": search_complete,
+            "page_assets_complete": page_assets_complete,
+            "page_asset_count": page_asset_count,
+            "expected_page_assets": expected_assets,
         }
         candidates.append(item)
         if not dry_run:
@@ -572,6 +607,11 @@ async def register_document(
                     pkg_data = pipeline_result.get("data", {})
                     if pkg_data and pkg_data.get("package_id"):
                         content_package_id = pkg_data["package_id"]
+            except NotFound as e:
+                if "Module 'content' does not expose action 'pipeline'" in str(e):
+                    logger.debug("Content pipeline capability is not registered for file_id=%d", file_id)
+                else:
+                    logger.warning("Content pipeline auto-trigger failed for file_id=%d: %s", file_id, e)
             except Exception as e:
                 logger.warning("Content pipeline auto-trigger failed for file_id=%d: %s", file_id, e)
     except Exception:
@@ -831,13 +871,11 @@ async def create_page_fusions(db: AsyncSession, document_id: int, owner_id: int,
     count = 0
     for page, texts in page_texts.items():
         combined = "\n\n".join(texts)
-        # 小页直接拼接，大页用 LLM 融合（失败自动回退）
-        fused = await fuse_page_text(combined) if len(combined) > 1000 else combined
         pf = KbPageFusion(
             document_id=document_id,
             owner_id=owner_id,
             page=page,
-            fused_text=fused,
+            fused_text=combined,
         )
         db.add(pf)
         count += 1

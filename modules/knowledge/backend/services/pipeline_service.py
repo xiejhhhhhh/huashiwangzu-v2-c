@@ -15,7 +15,7 @@ from typing import Any
 from app.database import AsyncSessionLocal
 from app.models.system import SystemTaskQueue
 from app.services.task_worker import register_task_handler
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import KbDocument, KbPipelineRun, KbPipelineStageRun, KbRawData
@@ -39,6 +39,7 @@ from .document_service import (
 from .entity_service import process_document_entities_from_fusions
 from .fusion_service import fuse_all_pages
 from .model_routing import resolve_knowledge_pipeline_priority, should_pause_after_result
+from .page_asset_service import materialize_page_assets_stage, page_assets_complete
 from .profile_service import generate_document_profile
 from .raw_collection_service import collect_raw_stage
 from .relation_service import compute_file_relations
@@ -53,6 +54,7 @@ PIPELINE_STAGES = {
     "source_validate",
     "parse_index",
     "raw_text",
+    "page_render",
     "raw_ocr",
     "raw_vision",
     "fusion",
@@ -65,6 +67,18 @@ RAW_STAGE_TO_ROUND = {
     "raw_text": 1,
     "raw_ocr": 2,
     "raw_vision": 3,
+}
+STAGE_LANE_KEYS = {
+    ROOT_STAGE: "local_preprocess",
+    "parse_index": "local_preprocess",
+    "raw_text": "local_preprocess",
+    "page_render": "local_preprocess",
+    "raw_ocr": "local_preprocess",
+    "raw_vision": "model_analysis",
+    "fusion": "model_analysis",
+    "profile": "model_analysis",
+    "graph": "model_analysis",
+    "relations": "relation_build",
 }
 
 
@@ -98,11 +112,7 @@ def _json_safe(value: Any) -> Any:
 
 
 def _task_matches(task: SystemTaskQueue, document_id: int, stage: str) -> bool:
-    params = _load_params(task.parameters)
-    try:
-        return int(params.get("document_id", 0) or 0) == int(document_id) and str(params.get("stage") or "") == stage
-    except (TypeError, ValueError):
-        return False
+    return task.document_id == int(document_id) and str(task.stage_key or "") == stage
 
 
 async def _find_active_stage_task(db: AsyncSession, document_id: int, stage: str) -> SystemTaskQueue | None:
@@ -113,10 +123,8 @@ async def _find_active_stage_task(db: AsyncSession, document_id: int, stage: str
             SystemTaskQueue.module == "knowledge",
             SystemTaskQueue.task_type == PIPELINE_TASK_TYPE,
             SystemTaskQueue.status.in_(("pending", "running")),
-            or_(
-                SystemTaskQueue.parameters.contains(f'"document_id": {document_id_value}'),
-                SystemTaskQueue.parameters.contains(f'"document_id":{document_id_value}'),
-            ),
+            SystemTaskQueue.document_id == document_id_value,
+            SystemTaskQueue.stage_key == stage,
         )
         .order_by(SystemTaskQueue.id.desc())
     )
@@ -171,6 +179,11 @@ async def enqueue_pipeline_stage_task(
         priority=resolved_priority,
         status="pending",
         creator_id=user_id,
+        document_id=int(doc.id),
+        stage_key=stage,
+        lane_key=STAGE_LANE_KEYS.get(stage, "knowledge"),
+        ready_status="ready",
+        dependency_key=f"knowledge:{int(doc.id)}:{stage}",
     )
     db.add(task)
     await db.flush()
@@ -397,12 +410,21 @@ async def _enqueue_successors(
     await db.refresh(doc)
 
     if completed_stage == ROOT_STAGE:
-        if not document_deep_pipeline_complete(doc, source_available=True):
+        visual_assets_missing = (
+            _is_visual_document(doc)
+            and not await page_assets_complete(db, document_id=int(doc.id), total_pages=int(doc.total_pages or 1))
+        )
+        needs_deep_work = force_raw or not document_deep_pipeline_complete(doc, source_available=True)
+        if needs_deep_work:
             enqueued.append(await enqueue_pipeline_stage_task(db, doc, user_id, "parse_index", priority=8, pipeline_run_id=pipeline_run_id))
             enqueued.append(await enqueue_pipeline_stage_task(db, doc, user_id, "raw_text", priority=8, pipeline_run_id=pipeline_run_id))
-            if _is_visual_document(doc):
-                enqueued.append(await enqueue_pipeline_stage_task(db, doc, user_id, "raw_ocr", priority=8, pipeline_run_id=pipeline_run_id))
-                enqueued.append(await enqueue_pipeline_stage_task(db, doc, user_id, "raw_vision", priority=8, pipeline_run_id=pipeline_run_id))
+        if _is_visual_document(doc) and (needs_deep_work or visual_assets_missing):
+            enqueued.append(await enqueue_pipeline_stage_task(db, doc, user_id, "page_render", priority=8, pipeline_run_id=pipeline_run_id))
+        return enqueued
+
+    if completed_stage == "page_render":
+        enqueued.append(await enqueue_pipeline_stage_task(db, doc, user_id, "raw_ocr", priority=8, pipeline_run_id=pipeline_run_id))
+        enqueued.append(await enqueue_pipeline_stage_task(db, doc, user_id, "raw_vision", priority=8, pipeline_run_id=pipeline_run_id))
         return enqueued
 
     if completed_stage in {"parse_index", "raw_text", "raw_ocr", "raw_vision"}:
@@ -479,6 +501,9 @@ async def _run_stage(
             doc.raw_status = "done"
         return result
 
+    if stage == "page_render":
+        return await materialize_page_assets_stage(db, int(doc.id), int(doc.owner_id), int(doc.file_id), int(user_id))
+
     if stage == "fusion":
         if str(getattr(doc, "fusion_status", "pending") or "pending") == "done" and not force_fusion:
             return {"document_id": int(doc.id), "status": "skipped", "reason": "already done"}
@@ -531,6 +556,28 @@ def _is_terminal_skip(reason: str) -> bool:
     return reason in SOURCE_UNAVAILABLE_REASONS or reason in {"doc_missing", "doc_deleted"}
 
 
+async def _release_stage_transaction(db: AsyncSession, *, document_id: int, stage: str) -> None:
+    """Best-effort release before long stage work; final writes still enforce errors."""
+    try:
+        await db.commit()
+    except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            logger.warning(
+                "Knowledge pipeline pre-stage rollback failed doc_id=%d stage=%s",
+                document_id,
+                stage,
+                exc_info=True,
+            )
+        logger.warning(
+            "Knowledge pipeline pre-stage transaction release failed doc_id=%d stage=%s: %s",
+            document_id,
+            stage,
+            exc,
+        )
+
+
 async def _pipeline_stage_handler(params: dict) -> dict:
     document_id = int(params.get("document_id", 0) or 0)
     user_id = int(params.get("user_id", 0) or 0) or 1
@@ -554,8 +601,10 @@ async def _pipeline_stage_handler(params: dict) -> dict:
         started_at = _now()
         timer = perf_counter()
         pipeline_run_id = await _ensure_pipeline_run(db, doc=doc, task_id=task_id, pipeline_run_id=pipeline_run_id)
+        await _release_stage_transaction(db, document_id=document_id, stage=stage)
+        file_id = int(doc.file_id)
         try:
-            await raise_if_source_unavailable(db, int(doc.file_id))
+            await raise_if_source_unavailable(db, file_id)
             result = await _run_stage(
                 db,
                 doc=doc,
@@ -566,7 +615,20 @@ async def _pipeline_stage_handler(params: dict) -> dict:
                 force_fusion=force_fusion,
             )
         except Exception as exc:
-            source_state = await get_source_file_availability(db, int(doc.file_id))
+            try:
+                await db.rollback()
+            except Exception as rollback_exc:
+                logger.warning(
+                    "Knowledge pipeline rollback failed doc_id=%d stage=%s: %s",
+                    document_id,
+                    stage,
+                    rollback_exc,
+                )
+            fresh_doc = await db.scalar(select(KbDocument).where(KbDocument.id == document_id))
+            if fresh_doc is not None:
+                doc = fresh_doc
+                file_id = int(doc.file_id)
+            source_state = await get_source_file_availability(db, file_id)
             if not source_state.available:
                 mark_document_source_unavailable(doc, source_state.reason)
                 result = {"document_id": document_id, "status": "skipped", "reason": source_state.reason}

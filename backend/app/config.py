@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     DB_USER: str = "postgres"
     DB_PASSWORD: str = ""
     DB_NAME: str = "华世王镞_v2"
+    DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 60000
+    DB_USE_NULL_POOL: bool = False
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 1
+    DB_POOL_TIMEOUT: int = 120
+    DB_POOL_RECYCLE_SECONDS: int = 1800
 
     @property
     def DATABASE_URL(self) -> str:

@@ -21,6 +21,7 @@ STAGE_SCHEMA_VERSIONS: dict[str, str] = {
     "source_file": "source_file_v1",
     "source_validate": "source_file_v1",
     "parse_index": "parse_index_v1",
+    "page_render": "page_render_v1",
     "raw": "raw_v1",
     "raw_text": "raw_text_v1",
     "raw_ocr": "raw_ocr_v1",

@@ -19,8 +19,9 @@ from app.services.parser_resource_diagnostics import (
 async def test_store_extracted_resources_records_success_and_removes_private_bytes():
     async def fake_store(module: str, action: str, params: dict, caller: str) -> dict:
         assert module == "content"
-        assert action == "store_resource"
+        assert action == "store_analysis_resource"
         assert caller == "user:7"
+        assert params["file_id"] == 1
         assert params["filename"] == "image.png"
         assert params["data_b64"] == "AAAA"
         return {"id": 123}
@@ -84,6 +85,7 @@ async def test_store_extracted_image_resource_preprocesses_large_png_before_stor
         return {"id": 456}
 
     result = {
+        "file_id": 12,
         "resources": [{
             "id": 7,
             "type": "image",
@@ -102,6 +104,7 @@ async def test_store_extracted_image_resource_preprocesses_large_png_before_stor
     )
 
     assert captured["mime_type"] == "image/jpeg"
+    assert captured["file_id"] == 12
     assert captured["filename"] == "slide1.jpg"
     prepared_bytes = base64.b64decode(captured["data_b64"])
     with Image.open(io.BytesIO(prepared_bytes)) as prepared:

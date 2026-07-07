@@ -113,6 +113,25 @@ is_project_uvicorn_worker() {
   [[ "$command" == *"--multiprocessing-fork"* && "$cwd" == "$BACKEND_DIR" ]]
 }
 
+is_project_task_worker() {
+  local pid="$1" command cwd
+  if [ -z "$pid" ]; then
+    return 1
+  fi
+  command=$(ps -p "$pid" -o command= 2>/dev/null)
+  cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  [[ "$command" == *"app.task_worker_main"* && "$cwd" == "$BACKEND_DIR" ]]
+}
+
+task_worker_pids() {
+  local candidate
+  for candidate in $(pgrep -f "app.task_worker_main" 2>/dev/null); do
+    if is_project_task_worker "$candidate"; then
+      echo "$candidate"
+    fi
+  done | sort -n | uniq
+}
+
 project_backend_root_pid() {
   local pid="$1" current parent
   current="$pid"
@@ -161,6 +180,14 @@ if [ "$1" = "--restart" ]; then
       echo "$BACKEND_PIDS" | xargs kill -9 2>/dev/null && echo "[start_backend] Force killed old project uvicorn"
       wait_for_pids_exit "$BACKEND_PIDS" 10 >/dev/null 2>&1 || true
       wait_for_port_release "$PORT" 10 >/dev/null 2>&1 || true
+    fi
+  fi
+  TASK_WORKER_PIDS=$(task_worker_pids)
+  if [ -n "$TASK_WORKER_PIDS" ]; then
+    echo "$TASK_WORKER_PIDS" | xargs kill 2>/dev/null && echo "[start_backend] Killed old project task workers"
+    if ! wait_for_pids_exit "$TASK_WORKER_PIDS" 20; then
+      echo "$TASK_WORKER_PIDS" | xargs kill -9 2>/dev/null && echo "[start_backend] Force killed old project task workers"
+      wait_for_pids_exit "$TASK_WORKER_PIDS" 10 >/dev/null 2>&1 || true
     fi
   fi
   rm -rf "$BACKEND_DIR/logs/.watchdog.lock" "$BACKEND_DIR/logs/.watchdog.pid" "$PORT_FILE" 2>/dev/null

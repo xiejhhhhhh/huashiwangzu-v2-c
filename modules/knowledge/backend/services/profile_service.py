@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import KbDocument, KbDocumentProfile, KbPageFusion
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_profile
-from .prompt_utils import TPROFILE, load_prompt
+from .prompt_utils import TPROFILE, load_prompt_detached
 
 logger = logging.getLogger("v2.knowledge").getChild("profile")
 
@@ -51,6 +51,14 @@ async def generate_document_profile(
 
     df = await db.execute(select(KbDocument).where(KbDocument.id == document_id))
     doc = df.scalar_one_or_none()
+    try:
+        await db.commit()
+    except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            logger.warning("Profile pre-model rollback failed for document_id=%d", document_id, exc_info=True)
+        logger.warning("Profile pre-model transaction release failed for document_id=%d: %s", document_id, exc)
 
     # 聚合各页融合正文
     pages_text = []
@@ -66,7 +74,7 @@ async def generate_document_profile(
     llm_duration_ms = 0
     embedding_duration_ms = 0
     db_write_duration_ms = 0
-    system_prompt = await load_prompt(db, TPROFILE, release_transaction=True)
+    system_prompt = await load_prompt_detached(TPROFILE)
     try:
         llm_started = perf_counter()
         result = await timed_llm_chat(

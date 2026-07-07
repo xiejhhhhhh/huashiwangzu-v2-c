@@ -12,19 +12,9 @@ from app.gateway.config import get_model_type_config, get_models_config, get_mod
 
 logger = logging.getLogger("v2.knowledge").getChild("model_routing")
 
-DEFAULT_KNOWLEDGE_PROFILE = "gpt-5.5-knowledge"
-DEFAULT_KNOWLEDGE_VISION_PROFILE = "gpt-5.5-vision"
 KNOWLEDGE_ROUTING_KEY = "knowledge"
 DEFAULT_MODEL_CALL_GLOBAL_CONCURRENCY = 10
 
-_STAGE_DEFAULTS: dict[str, str] = {
-    "raw_ocr": DEFAULT_KNOWLEDGE_VISION_PROFILE,
-    "raw_vision": DEFAULT_KNOWLEDGE_VISION_PROFILE,
-    "fusion": DEFAULT_KNOWLEDGE_PROFILE,
-    "profile": DEFAULT_KNOWLEDGE_PROFILE,
-    "entity": DEFAULT_KNOWLEDGE_PROFILE,
-    "legacy_page_fusion": DEFAULT_KNOWLEDGE_PROFILE,
-}
 _model_call_active = 0
 _model_call_condition: asyncio.Condition | None = None
 _model_call_condition_loop: asyncio.AbstractEventLoop | None = None
@@ -49,20 +39,56 @@ def _fresh_models_config() -> dict[str, Any]:
 
 
 def _known_llm_profiles() -> dict[str, Any]:
-    profiles = get_model_type_config("llm").get("profiles", {})
+    profiles = _fresh_models_config().get("model_types", {}).get("llm", {}).get("profiles", {})
     return profiles if isinstance(profiles, dict) else {}
 
 
 def _known_vision_profiles() -> dict[str, Any]:
-    profiles = get_model_type_config("vision").get("profiles", {})
+    profiles = _fresh_models_config().get("model_types", {}).get("vision", {}).get("profiles", {})
     return profiles if isinstance(profiles, dict) else {}
 
 
-def _configured_stage_profile(stage: str) -> str | None:
+def _primary_profile(model_type: str) -> str | None:
+    model_cfg = _fresh_models_config().get("model_types", {}).get(model_type, {})
+    if not isinstance(model_cfg, dict):
+        return None
+    primary = model_cfg.get("primary")
+    return str(primary) if primary else None
+
+
+def _configured_stage_profile(stage: str, *, model_type: str) -> str | None:
     routing = _knowledge_routing_config()
     stages = routing.get("stages", {}) if isinstance(routing.get("stages"), dict) else {}
-    configured = stages.get(stage) or routing.get("default_profile") or _STAGE_DEFAULTS.get(stage)
+    default_key = "default_vision_profile" if model_type == "vision" else "default_profile"
+    configured = stages.get(stage) or routing.get(default_key) or _primary_profile(model_type)
     return str(configured) if configured else None
+
+
+def _resolve_configured_profile(
+    *,
+    stage: str,
+    model_type: str,
+    profiles: dict[str, Any],
+) -> str:
+    profile = _configured_stage_profile(stage, model_type=model_type)
+    if profile and profile in profiles:
+        return profile
+
+    primary = _primary_profile(model_type)
+    if primary and primary in profiles:
+        if profile and profile != primary:
+            logger.warning(
+                "Knowledge %s profile '%s' for stage=%s is not configured; using configured primary %s",
+                model_type,
+                profile,
+                stage,
+                primary,
+            )
+        return primary
+
+    raise RuntimeError(
+        f"Knowledge {model_type} routing for stage={stage} is missing a valid profile in models.json"
+    )
 
 
 def resolve_knowledge_profile(stage: str, override: str | None = None) -> str:
@@ -70,17 +96,11 @@ def resolve_knowledge_profile(stage: str, override: str | None = None) -> str:
     if override:
         return override
 
-    profile = _configured_stage_profile(stage) or DEFAULT_KNOWLEDGE_PROFILE
-
-    if profile not in _known_llm_profiles():
-        logger.warning(
-            "Knowledge model profile '%s' for stage=%s is not configured; using %s",
-            profile,
-            stage,
-            DEFAULT_KNOWLEDGE_PROFILE,
-        )
-        return DEFAULT_KNOWLEDGE_PROFILE
-    return profile
+    return _resolve_configured_profile(
+        stage=stage,
+        model_type="llm",
+        profiles=_known_llm_profiles(),
+    )
 
 
 def resolve_knowledge_vision_profile(stage: str, override: str | None = None) -> str:
@@ -88,17 +108,11 @@ def resolve_knowledge_vision_profile(stage: str, override: str | None = None) ->
     if override:
         return override
 
-    profile = _configured_stage_profile(stage) or DEFAULT_KNOWLEDGE_VISION_PROFILE
-
-    if profile not in _known_vision_profiles():
-        logger.warning(
-            "Knowledge vision profile '%s' for stage=%s is not configured; using %s",
-            profile,
-            stage,
-            DEFAULT_KNOWLEDGE_VISION_PROFILE,
-        )
-        return DEFAULT_KNOWLEDGE_VISION_PROFILE
-    return profile
+    return _resolve_configured_profile(
+        stage=stage,
+        model_type="vision",
+        profiles=_known_vision_profiles(),
+    )
 
 
 def pause_after_model_fallback() -> bool:

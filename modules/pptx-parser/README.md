@@ -1,8 +1,8 @@
-# pptx-parser — PPTX Parser
+# pptx-parser — PPT/PPTX Parser
 
 ## Responsibility
 
-PPTX Parser
+PPT/PPTX Parser
 
 ## Manifest Contract
 
@@ -52,7 +52,7 @@ Total public actions: 1
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
-| `parse` | `viewer` | `file_id` | Parse PPTX files into unified content blocks |
+| `parse` | `viewer` | `file_id` | Parse PPT/PPTX files into unified content blocks |
 <!-- /DOCS-SYNC -->
 
 ## Data Ownership

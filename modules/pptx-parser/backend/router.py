@@ -1,8 +1,14 @@
+import asyncio
+import shutil
+import tempfile
+from pathlib import Path
+
 from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.module_registry import register_capability
+from app.services.office_conversion import convert_file
 from app.services.parser_resource_diagnostics import (
     build_resource_diagnostic,
     store_extracted_resources_with_diagnostics,
@@ -25,16 +31,16 @@ async def _parse(params: dict, caller: str) -> dict:
     from pptx import Presentation
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-    allowed = {"pptx"}
+    allowed = {"ppt", "pptx"}
     file_id = params.get("file_id")
     if not isinstance(file_id, int) or file_id <= 0:
         raise ValidationError("file_id must be a positive integer")
 
-    def parse_file(file_id, _file, full_path, _ext):
+    def parse_presentation_path(file_id, full_path: Path, result_format: str, warnings: list[str]):
         try:
             prs = Presentation(str(full_path))
         except Exception as exc:
-            raise ValidationError(f"Failed to parse PPTX file: {exc}") from exc
+            raise ValidationError(f"Failed to parse {result_format.upper()} file: {exc}") from exc
 
         blocks = []
         resources = []
@@ -136,7 +142,7 @@ async def _parse(params: dict, caller: str) -> dict:
             "content_type": "presentation",
             "title": full_path.name,
             "file_id": file_id,
-            "format": "pptx",
+            "format": result_format,
             "source_file_id": file_id,
             "source_module": "pptx-parser",
             "parser": "pptx-parser",
@@ -150,14 +156,33 @@ async def _parse(params: dict, caller: str) -> dict:
             "resources": resources,
             "metadata": {
                 "parser": "pptx-parser",
-                "format": "pptx",
+                "format": result_format,
                 "filename": full_path.name,
                 "slide_count": len(prs.slides),
                 "resource_count": len(resources),
             },
-            "warnings": [],
+            "warnings": warnings,
             "resource_diagnostics": resource_diagnostics,
         }
+
+    async def parse_file(file_id, _file, full_path, ext):
+        try:
+            if ext == "ppt":
+                tmpdir = tempfile.mkdtemp(prefix="ppt_parser_")
+                try:
+                    converted_path = await convert_file(full_path, "pptx", tmpdir)
+                    return await asyncio.to_thread(
+                        parse_presentation_path,
+                        file_id,
+                        Path(converted_path),
+                        "ppt",
+                        ["converted_from_ppt"],
+                    )
+                finally:
+                    await asyncio.to_thread(shutil.rmtree, tmpdir, True)
+            return await asyncio.to_thread(parse_presentation_path, file_id, full_path, "pptx", [])
+        except (RuntimeError, ValueError, FileNotFoundError, TimeoutError) as exc:
+            raise ValidationError(str(exc)) from exc
 
     result = await run_uploaded_file_capability(params, caller, allowed, parse_file)
     return await store_extracted_resources_with_diagnostics(result, caller=caller, parser="pptx-parser")
@@ -176,8 +201,8 @@ async def call_parse(payload: ParseRequest, user: User = Depends(require_permiss
 
 register_capability(
     "pptx-parser", "parse", _parse,
-    description="Parse PPTX files into unified content blocks",
-    brief="解析 PPTX 文档",
+    description="Parse PPT/PPTX files into unified content blocks",
+    brief="解析 PPT/PPTX 文档",
     parameters={"file_id": {"type": "int"}},
     min_role="viewer",
 )

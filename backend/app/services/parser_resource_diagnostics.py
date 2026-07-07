@@ -106,12 +106,17 @@ async def store_extracted_resources_with_diagnostics(
                 ))
             continue
 
-        store_payload = _prepare_resource_store_payload(res, data_b64)
+        store_payload = _prepare_resource_store_payload(
+            res,
+            data_b64,
+            file_id=result.get("file_id") or result.get("source_file_id"),
+        )
+        store_action = "store_analysis_resource" if store_payload.get("file_id") else "store_resource"
 
         try:
             stored = await store_callable(
                 "content",
-                "store_resource",
+                store_action,
                 store_payload,
                 caller,
             )
@@ -172,7 +177,12 @@ async def store_extracted_resources_with_diagnostics(
     return result
 
 
-def _prepare_resource_store_payload(res: dict[str, Any], data_b64: str) -> dict[str, Any]:
+def _prepare_resource_store_payload(
+    res: dict[str, Any],
+    data_b64: str,
+    *,
+    file_id: Any = None,
+) -> dict[str, Any]:
     payload = {
         "data_b64": data_b64,
         "resource_type": res.get("resource_type") or res.get("type") or "image",
@@ -180,6 +190,14 @@ def _prepare_resource_store_payload(res: dict[str, Any], data_b64: str) -> dict[
         "filename": res.get("filename", "resource.png"),
         "description": res.get("description") or res.get("text_desc") or "",
     }
+    try:
+        normalized_file_id = int(file_id or 0)
+    except (TypeError, ValueError):
+        normalized_file_id = 0
+    if normalized_file_id > 0:
+        payload["file_id"] = normalized_file_id
+    if res.get("block_id"):
+        payload["block_id"] = res.get("block_id")
     if str(payload["resource_type"]).lower() != "image":
         return payload
 

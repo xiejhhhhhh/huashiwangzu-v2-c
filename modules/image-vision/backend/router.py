@@ -1,6 +1,5 @@
 import base64
 import logging
-from io import BytesIO
 
 from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
@@ -16,7 +15,6 @@ from .image_analysis import (
     build_local_summary,
     build_vlm_prompt,
     should_use_vlm,
-    strip_png_text_chunks,
 )
 
 router = APIRouter(prefix="/api/image-vision", tags=["image-vision"])
@@ -24,8 +22,6 @@ router = APIRouter(prefix="/api/image-vision", tags=["image-vision"])
 LOGGER = logging.getLogger("v2.image-vision")
 ALLOWED_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "ico"}
 ANALYSIS_MODES = {"auto", "local", "semantic"}
-MAX_VLM_IMAGE_BYTES = 700_000
-MAX_VLM_IMAGE_SIDE = 1024
 MIME_TYPE_MAP = {
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
@@ -71,54 +67,6 @@ def _classify_vlm_failure(exc: Exception) -> dict[str, object]:
         "message": "Vision model failed; local image analysis fallback was used.",
         "detail": text[:500],
     }
-
-
-def _prepare_vlm_image(raw: bytes, ext: str) -> tuple[bytes, str, dict[str, object]]:
-    original_mime = MIME_TYPE_MAP.get(ext, "image/jpeg")
-    cleanup_info: dict[str, object] | None = None
-    if ext.lower().lstrip(".") == "png":
-        raw, cleanup_info = strip_png_text_chunks(raw)
-    try:
-        from PIL import Image
-
-        with Image.open(BytesIO(raw)) as image:
-            width, height = image.size
-            if len(raw) <= MAX_VLM_IMAGE_BYTES and max(width, height) <= MAX_VLM_IMAGE_SIDE:
-                return raw, original_mime, {
-                    "compressed": False,
-                    "original_bytes": len(raw),
-                    "sent_bytes": len(raw),
-                    "original_width": width,
-                    "original_height": height,
-                    "mime_type": original_mime,
-                    "png_text_chunk_cleanup": cleanup_info,
-                }
-            image.thumbnail((MAX_VLM_IMAGE_SIDE, MAX_VLM_IMAGE_SIDE))
-            rgb = image.convert("RGB")
-            out = BytesIO()
-            rgb.save(out, format="JPEG", quality=84, optimize=True)
-            prepared = out.getvalue()
-            return prepared, "image/jpeg", {
-                "compressed": True,
-                "original_bytes": len(raw),
-                "sent_bytes": len(prepared),
-                "original_width": width,
-                "original_height": height,
-                "sent_width": rgb.width,
-                "sent_height": rgb.height,
-                "mime_type": "image/jpeg",
-                "reason": "vlm_context_budget",
-                "png_text_chunk_cleanup": cleanup_info,
-            }
-    except Exception as exc:
-        return raw, original_mime, {
-            "compressed": False,
-            "original_bytes": len(raw),
-            "sent_bytes": len(raw),
-            "mime_type": original_mime,
-            "compression_error": str(exc)[:300],
-        }
-
 
 def _normalize_params(params: dict[str, object]) -> dict[str, object]:
     try:
@@ -174,14 +122,19 @@ async def _describe(params: dict, caller: str) -> dict:
         if vlm_decision["use_vlm"]:
             vlm_attempted = True
             try:
-                from app.services.model_services import describe_image
+                from app.services.model_services import describe_image_detailed
 
-                vlm_bytes, vlm_mime, vlm_payload_info = _prepare_vlm_image(raw, ext)
-                candidate = await describe_image(
-                    vlm_bytes,
+                vlm_result = await describe_image_detailed(
+                    raw,
                     prompt=build_vlm_prompt(local_summary, prompt if isinstance(prompt, str) else None),
-                    mime_type=vlm_mime,
+                    mime_type=MIME_TYPE_MAP.get(ext, "image/jpeg"),
                 )
+                diagnostics = vlm_result.get("diagnostics") if isinstance(vlm_result, dict) else None
+                if isinstance(diagnostics, dict):
+                    preprocess = diagnostics.get("image_preprocess")
+                    if isinstance(preprocess, dict):
+                        vlm_payload_info = preprocess
+                candidate = vlm_result.get("content") if isinstance(vlm_result, dict) else None
                 semantic_description = candidate.strip() if isinstance(candidate, str) else None
                 vlm_used = bool(semantic_description)
                 if not semantic_description:

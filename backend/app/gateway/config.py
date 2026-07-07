@@ -14,8 +14,6 @@ from pathlib import Path
 
 logger = logging.getLogger("v2.gateway.config")
 
-DEFAULT_MODEL = "deepseek-v4-flash"
-
 _MODELS_CONFIG_PATH = (
     Path(__file__).resolve().parents[2]
     / "data" / "config" / "models.json"
@@ -39,6 +37,10 @@ def _load_models_config() -> dict:
 
 _config = _load_models_config()
 MODEL_PROFILES: dict[str, dict] = _config.get("model_types", {}).get("llm", {}).get("profiles", {})
+DEFAULT_MODEL = str(
+    _config.get("model_types", {}).get("llm", {}).get("primary")
+    or next(iter(MODEL_PROFILES), "")
+)
 
 
 def get_models_config() -> dict:

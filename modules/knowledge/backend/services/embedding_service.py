@@ -115,6 +115,9 @@ async def chunk_and_embed(
     blocks: list[dict] | None = None,
     caller: str = "",
     doc_ir: object | None = None,
+    index_layer: str = "base_parse",
+    source_stage: str = "parse_index",
+    index_version: int = 1,
 ) -> list[dict]:
     """将解析块分块 + 向量化，返回待入库的 chunk 记录列表。
 
@@ -142,6 +145,7 @@ async def chunk_and_embed(
         block_type = block.get("type", "段落")
         page = block.get("page")
         block_id_val = block.get("block_id")
+        source_ref_id = block.get("source_ref_id")
 
         sub_chunks = split_text_into_chunks(text)
         for sub_text in sub_chunks:
@@ -157,6 +161,10 @@ async def chunk_and_embed(
                 "embedding": None,
                 "keywords": extract_keywords(sub_text),
                 "block_id": block_id_val,
+                "index_layer": index_layer,
+                "index_version": index_version,
+                "source_stage": source_stage,
+                "source_ref_id": source_ref_id,
             }
             chunks_to_store.append(ch)
             chunk_index += 1
@@ -203,6 +211,10 @@ async def store_chunks(db: AsyncSession, chunks: list[dict]) -> int:
             embedding=ch.get("embedding"),
             keywords=ch.get("keywords"),
             block_id=ch.get("block_id"),
+            index_layer=ch.get("index_layer") or "base_parse",
+            index_version=int(ch.get("index_version") or 1),
+            source_stage=ch.get("source_stage") or "parse_index",
+            source_ref_id=ch.get("source_ref_id"),
         )
         db.add(record)
         stored += 1

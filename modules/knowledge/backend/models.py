@@ -76,6 +76,10 @@ class KbChunk(Base, TimestampMixin):
     resource_ref: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Content Package block_id for cross-reference
     block_id: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="Content Package block id")
+    index_layer: Mapped[str] = mapped_column(String(32), default="base_parse")
+    index_version: Mapped[int] = mapped_column(Integer, default=1)
+    source_stage: Mapped[str] = mapped_column(String(64), default="parse_index")
+    source_ref_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # 关键词（用于全文检索）
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -674,6 +678,9 @@ class KbImageAsset(Base, TimestampMixin):
     visual_box_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    storage_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     file_md5: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ahash: Mapped[str | None] = mapped_column(String(32), nullable=True)
     dhash: Mapped[str | None] = mapped_column(String(32), nullable=True)

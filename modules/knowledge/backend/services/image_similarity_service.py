@@ -197,6 +197,7 @@ async def _upsert_asset(
     page: int,
     image_bytes: bytes,
     asset_type: str,
+    preprocess: dict | None = None,
 ) -> KbImageAsset:
     fingerprints = compute_image_fingerprints(image_bytes)
     raw_data_id, ocr_text = await _latest_raw_for_page(db, document_id, page)
@@ -232,6 +233,9 @@ async def _upsert_asset(
     asset.diagnostics_json = {
         "hash_schema_version": IMAGE_HASH_SCHEMA_VERSION,
         "image_bytes_md5": fingerprints.file_md5,
+        "source_original_md5": (preprocess or {}).get("source_original_md5"),
+        "source_prepared_md5": (preprocess or {}).get("source_prepared_md5") or fingerprints.file_md5,
+        "vlm_image_preprocess": preprocess or {},
         "ocr_text_normalized": normalize_ocr_text(ocr_text)[:2000],
         "ocr_text_length": len(normalize_ocr_text(ocr_text)),
         "phase": "image_similarity_minimal",
@@ -399,6 +403,7 @@ async def record_document_image_assets(
     document_id: int,
     file_id: int,
     page_images: dict[int, bytes],
+    page_preprocess: dict[int, dict] | None = None,
     asset_type: str = "page_render",
 ) -> dict:
     """Persist image fingerprints and near-duplicate evidence as a side stage."""
@@ -417,6 +422,7 @@ async def record_document_image_assets(
             page=int(page),
             image_bytes=image_bytes,
             asset_type=asset_type,
+            preprocess=(page_preprocess or {}).get(int(page)),
         ))
 
     for asset in assets:

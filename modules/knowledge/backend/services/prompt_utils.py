@@ -110,3 +110,11 @@ async def load_prompt(
             template_name, exc,
         )
         raise RuntimeError(f"Prompt template '{template_name}' not available") from exc
+
+
+async def load_prompt_detached(template_name: str) -> str:
+    """Read a prompt in a short-lived session before a long model call."""
+    from app.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        return await load_prompt(db, template_name, release_transaction=True)

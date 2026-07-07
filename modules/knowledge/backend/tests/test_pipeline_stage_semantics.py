@@ -5,6 +5,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -39,6 +40,7 @@ document_service = _load_service("document_service")
 fusion_service = _load_service("fusion_service")
 llm_diagnostics_stream = _load_service("llm_diagnostics_stream")
 model_routing = _load_service("model_routing")
+page_asset_service = _load_service("page_asset_service")
 pipeline_service = _load_service("pipeline_service")
 raw_collection_service = _load_service("raw_collection_service")
 stage_result_cache_service = _load_service("stage_result_cache_service")
@@ -288,6 +290,7 @@ class _PipelineHandlerDb:
         self.fail_commit = fail_commit
         self.commits = 0
         self.flushes = 0
+        self.rollbacks = 0
 
     async def scalar(self, _stmt):
         return self.doc
@@ -307,6 +310,9 @@ class _PipelineHandlerDb:
         self.commits += 1
         if self.fail_commit:
             raise RuntimeError("commit failed")
+
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 class _PipelineHandlerSession:
@@ -447,6 +453,36 @@ def test_raw_collection_classifies_partial_and_page_coverage():
     )
 
 
+def test_raw_stage_result_compaction_keeps_queue_payload_small():
+    results = [
+        {
+            "round": 3,
+            "page": page,
+            "chars": 100,
+            "status": "done",
+            "duration_ms": 10,
+            "processor": "vlm",
+            "page_asset": {"storage_path": "x", "diagnostics": "large"},
+        }
+        for page in range(1, 101)
+    ]
+
+    compact = raw_collection_service._compact_raw_stage_results(results)
+
+    assert len(compact) == 80
+    assert compact[0] == {
+        "round": 3,
+        "page": 1,
+        "chars": 100,
+        "status": "done",
+        "duration_ms": 10,
+        "processor": "vlm",
+        "error": None,
+        "model_degraded": False,
+    }
+    assert "page_asset" not in compact[0]
+
+
 def test_local_ocr_image_preprocess_resizes_oversized_images(monkeypatch):
     from io import BytesIO
 
@@ -474,6 +510,109 @@ def test_local_ocr_image_preprocess_resizes_oversized_images(monkeypatch):
     assert metadata["prepared_size"] == [1000, 250]
     assert metadata["prepared_bytes"] == len(prepared)
     assert len(prepared) < len(source.getvalue())
+
+
+def test_vlm_ready_image_materialization_uses_gateway_preprocess():
+    from io import BytesIO
+
+    from PIL import Image
+
+    source = BytesIO()
+    Image.new("RGB", (3600, 1200), color="white").save(source, format="PNG")
+
+    prepared, prepared_mime, metadata = page_asset_service._prepare_page_asset_bytes(
+        source.getvalue(),
+        "image/png",
+    )
+
+    assert metadata["vlm_ready"] is True
+    assert prepared_mime.startswith("image/")
+    assert metadata["stage"] == "knowledge_page_render"
+    assert metadata["preprocess_version"].startswith("vision_image_preprocess")
+    assert metadata["resized"] is True
+    assert metadata["reencoded"] is True
+    assert metadata["source_original_md5"] != metadata["source_prepared_md5"]
+    assert len(prepared) == metadata["prepared_bytes"]
+
+
+@pytest.mark.asyncio
+async def test_page_render_materializes_pages_with_independent_commits(monkeypatch):
+    doc = _FakeDocument()
+    doc.total_pages = 3
+
+    class MainDb:
+        def __init__(self):
+            self.commits = 0
+
+        async def scalar(self, _stmt):
+            return doc
+
+        async def commit(self):
+            self.commits += 1
+
+    class PageDb:
+        def __init__(self):
+            self.commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    class PageSession:
+        def __init__(self, sessions: list[PageDb]):
+            self.db = PageDb()
+            sessions.append(self.db)
+
+        async def __aenter__(self):
+            return self.db
+
+        async def __aexit__(self, *_exc_info):
+            return None
+
+    class Asset:
+        id = 99
+        width = 1600
+        height = 900
+
+    sessions: list[PageDb] = []
+    active = 0
+    max_active = 0
+
+    async def fake_render(_file_id, page, _user_id):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return f"page-{page}".encode()
+
+    async def fake_existing(*_args, **_kwargs):
+        return None
+
+    async def fake_upsert(*_args, **_kwargs):
+        return Asset()
+
+    monkeypatch.setattr(page_asset_service, "AsyncSessionLocal", lambda: PageSession(sessions))
+    monkeypatch.setattr(page_asset_service, "get_pdf_page_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(page_asset_service, "render_page_to_image", fake_render)
+    monkeypatch.setattr(page_asset_service, "_existing_page_asset", fake_existing)
+    monkeypatch.setattr(page_asset_service, "_prepare_page_asset_bytes", lambda data, mime: (data, mime, {}))
+    monkeypatch.setattr(page_asset_service, "_upsert_page_asset", fake_upsert)
+    monkeypatch.setattr(
+        page_asset_service,
+        "resolve_knowledge_concurrency",
+        lambda stage, default, **_kwargs: 3 if stage == "page_render_pages" else default,
+    )
+
+    db = MainDb()
+    result = await page_asset_service.materialize_page_assets_stage(db, doc.id, doc.owner_id, doc.file_id, 1)
+
+    assert result["status"] == "done"
+    assert result["assets"] == 3
+    assert result["materialized"] == 3
+    assert result["page_concurrency"] == 3
+    assert max_active == 3
+    assert sum(session.commits for session in sessions) == 3
+    assert db.commits == 2
 
 
 def test_raw_quality_treats_empty_visual_ocr_as_optional():
@@ -560,6 +699,7 @@ async def test_pipeline_root_fans_out_parallelizable_stages(monkeypatch):
         return {"stage": stage, "enqueued": True}
 
     monkeypatch.setattr(pipeline_service, "enqueue_pipeline_stage_task", fake_enqueue)
+    monkeypatch.setattr(pipeline_service, "page_assets_complete", AsyncMock(return_value=False))
 
     class Db:
         async def refresh(self, _doc):
@@ -573,8 +713,68 @@ async def test_pipeline_root_fans_out_parallelizable_stages(monkeypatch):
         pipeline_run_id=10,
     )
 
-    assert [item["stage"] for item in successors] == ["parse_index", "raw_text", "raw_ocr", "raw_vision"]
-    assert enqueued == ["parse_index", "raw_text", "raw_ocr", "raw_vision"]
+    assert [item["stage"] for item in successors] == ["parse_index", "raw_text", "page_render"]
+    assert enqueued == ["parse_index", "raw_text", "page_render"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_root_backfills_missing_page_assets_without_deep_rerun(monkeypatch):
+    doc = _FakeDocument()
+    doc.raw_status = "done"
+    doc.fusion_status = "done"
+    doc.profile_status = "done"
+    doc.graph_status = "done"
+    doc.relation_status = "done"
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_db, _doc, _user_id, stage, **_kwargs):
+        enqueued.append(stage)
+        return {"stage": stage, "enqueued": True}
+
+    monkeypatch.setattr(pipeline_service, "enqueue_pipeline_stage_task", fake_enqueue)
+    monkeypatch.setattr(pipeline_service, "page_assets_complete", AsyncMock(return_value=False))
+
+    class Db:
+        async def refresh(self, _doc):
+            return None
+
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage=pipeline_service.ROOT_STAGE,
+        pipeline_run_id=10,
+    )
+
+    assert [item["stage"] for item in successors] == ["page_render"]
+    assert enqueued == ["page_render"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_page_render_fans_out_visual_consumers(monkeypatch):
+    doc = _FakeDocument()
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_db, _doc, _user_id, stage, **_kwargs):
+        enqueued.append(stage)
+        return {"stage": stage, "enqueued": True}
+
+    monkeypatch.setattr(pipeline_service, "enqueue_pipeline_stage_task", fake_enqueue)
+
+    class Db:
+        async def refresh(self, _doc):
+            return None
+
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage="page_render",
+        pipeline_run_id=10,
+    )
+
+    assert [item["stage"] for item in successors] == ["raw_ocr", "raw_vision"]
+    assert enqueued == ["raw_ocr", "raw_vision"]
 
 
 @pytest.mark.asyncio
@@ -729,6 +929,53 @@ async def test_pipeline_stage_cache_survives_main_commit_failure(tmp_path, monke
     assert payload["result"]["text"] == "LLM result that must not be lost"
     assert payload["pipeline_run_id"] == db.run.id
     assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stage_rolls_back_before_source_check_after_stage_error(monkeypatch):
+    db = _PipelineHandlerDb()
+    observed = {}
+
+    class SourceState:
+        available = True
+        reason = ""
+
+    async def fake_raise_if_source_unavailable(*_args, **_kwargs):
+        return None
+
+    async def fake_run_stage(*_args, **_kwargs):
+        raise RuntimeError("stage exploded")
+
+    async def fake_get_source_state(_db, file_id):
+        observed["rollbacks_before_source_check"] = db.rollbacks
+        observed["file_id"] = file_id
+        return SourceState()
+
+    async def fake_record_stage_artifact(*_args, **_kwargs):
+        return "artifact-hash"
+
+    async def fake_record_stage_run(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(pipeline_service, "AsyncSessionLocal", lambda: _PipelineHandlerSession(db))
+    monkeypatch.setattr(pipeline_service, "raise_if_source_unavailable", fake_raise_if_source_unavailable)
+    monkeypatch.setattr(pipeline_service, "_run_stage", fake_run_stage)
+    monkeypatch.setattr(pipeline_service, "get_source_file_availability", fake_get_source_state)
+    monkeypatch.setattr(pipeline_service, "_record_stage_artifact", fake_record_stage_artifact)
+    monkeypatch.setattr(pipeline_service, "_record_stage_run", fake_record_stage_run)
+
+    result = await pipeline_service._pipeline_stage_handler({
+        "document_id": db.doc.id,
+        "user_id": 1,
+        "stage": "page_render",
+        "task_id": 777,
+        "pipeline_run_id": db.run.id,
+    })
+
+    assert observed["rollbacks_before_source_check"] == 1
+    assert observed["file_id"] == db.doc.file_id
+    assert result["task_status"] == "failed"
+    assert result["reason"] == "stage exploded"
 
 
 @pytest.mark.asyncio

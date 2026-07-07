@@ -8,6 +8,7 @@ from app.models.file import File
 from app.services.model_services import get_embedding, rerank
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 logger = logging.getLogger("v2.knowledge").getChild("search")
 
@@ -30,6 +31,33 @@ def _live_chunk_select():
             KbDocument.deleted.is_(False),
             File.deleted.is_(False),
         )
+    )
+
+
+def _preferred_index_clause():
+    """Prefer verified fusion chunks while keeping parser chunks as fallback.
+
+    If a document has any fusion_verified chunk, base_parse chunks for the same
+    document are hidden from default search. Documents without fusion output
+    remain searchable through their early parser index.
+    """
+    from ..models import KbChunk
+
+    fusion_chunk = aliased(KbChunk)
+    fusion_exists = (
+        select(fusion_chunk.id)
+        .where(
+            fusion_chunk.document_id == KbChunk.document_id,
+            fusion_chunk.owner_id == KbChunk.owner_id,
+            fusion_chunk.index_layer == "fusion_verified",
+        )
+        .limit(1)
+        .exists()
+    )
+    return or_(
+        KbChunk.index_layer.is_(None),
+        KbChunk.index_layer != "base_parse",
+        ~fusion_exists,
     )
 
 
@@ -115,6 +143,7 @@ async def keyword_search(db: AsyncSession, query: str, owner_id: int, top_k: int
             clause,
             KbChunk.owner_id == owner_id,
             KbDocument.owner_id == owner_id,
+            _preferred_index_clause(),
         )
         .order_by(KbChunk.id.desc())
         .limit(top_k * 2)
@@ -147,6 +176,8 @@ async def keyword_search(db: AsyncSession, query: str, owner_id: int, top_k: int
             "document_id": ch.document_id,
             "page": ch.page,
             "block_type": ch.block_type,
+            "index_layer": ch.index_layer or "base_parse",
+            "source_stage": ch.source_stage or "",
             "text": ch.text[:500],
             "keywords": ch.keywords,
             "score": round(score, 4),
@@ -181,6 +212,7 @@ async def vector_search(db: AsyncSession, query: str, owner_id: int, top_k: int 
             KbChunk.owner_id == owner_id,
             KbDocument.owner_id == owner_id,
             KbChunk.embedding.isnot(None),
+            _preferred_index_clause(),
         )
     )
     r = await db.execute(stmt)
@@ -198,6 +230,8 @@ async def vector_search(db: AsyncSession, query: str, owner_id: int, top_k: int 
                 "document_id": ch.document_id,
                 "page": ch.page,
                 "block_type": ch.block_type,
+                "index_layer": ch.index_layer or "base_parse",
+                "source_stage": ch.source_stage or "",
                 "text": ch.text[:500],
                 "keywords": ch.keywords,
                 "score": round(sim, 4),
@@ -323,6 +357,9 @@ async def get_document_chunks(db: AsyncSession, document_id: int, owner_id: int 
             "page": ch.page,
             "chunk_index": ch.chunk_index,
             "block_type": ch.block_type,
+            "index_layer": ch.index_layer or "base_parse",
+            "source_stage": ch.source_stage or "",
+            "source_ref_id": ch.source_ref_id,
             "text": ch.text,
             "keywords": ch.keywords,
             **_live_source_fields(),

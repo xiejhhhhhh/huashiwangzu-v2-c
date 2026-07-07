@@ -3,17 +3,18 @@
 对文档每页执行三轮独立采集（文本提取 / 截图OCR / 视觉构成），
 每轮结果各自落盘到 kb_raw_data，落盘后只读不可变。
 
-并发策略：5 门池摊平任务。将所有 (page, round) 摊平成独立任务，
-固定 5 并发门池跑，每任务独立 DB 会话 + 独立 commit，
-进度三行各自按真实速度前进。
+raw 节点只采集文本/OCR/VLM 结果。PDF/图片页面渲染和压缩由 page_render
+节点提前沉淀为页面资产；raw_ocr/raw_vision 只读取这些资产。
 
 Round-2 OCR 增强：在 VLM OCR 之外，若 tesseract 可用则额外提取词级
 坐标落盘到 metadata_json.words，供 pdf-viewer 叠扫描件文字层。
 """
 import asyncio
+import gc
 import hashlib
 import io
 import logging
+from contextlib import contextmanager
 from time import perf_counter
 
 from app.database import AsyncSessionLocal
@@ -29,8 +30,9 @@ from .model_routing import (
     resolve_knowledge_image_preprocess_int,
     resolve_knowledge_vision_profile,
 )
+from .page_asset_service import load_page_asset_bytes
 from .parsing_service import IMAGE_FORMATS, parse_document
-from .pdf_render_service import get_pdf_page_count, render_page_to_image
+from .pdf_render_service import get_pdf_page_count
 from .prompt_utils import TRAW_OCR, TRAW_VISION, load_prompt
 
 logger = logging.getLogger("v2.knowledge").getChild("raw_collection")
@@ -56,9 +58,9 @@ def _ocr_words_tesseract(img_bytes: bytes) -> dict | None:
         logger.info("tesseract binary not found; skip word coordinates")
         return None
     try:
-        img = Image.open(io.BytesIO(img_bytes))
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang="chi_sim+eng")
-        img_w, img_h = img.size
+        with Image.open(io.BytesIO(img_bytes)) as img:
+            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang="chi_sim+eng")
+            img_w, img_h = img.size
         words = []
         for i in range(len(data["text"])):
             t = (data["text"][i] or "").strip()
@@ -94,6 +96,18 @@ DEFAULT_LOCAL_OCR_JPEG_QUALITY_START = 84
 DEFAULT_LOCAL_OCR_JPEG_QUALITY_FLOOR = 72
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_TEXT_CHUNKS = {b"tEXt", b"zTXt", b"iTXt"}
+@contextmanager
+def _allow_large_local_image_decode():
+    """Allow trusted local enterprise images to open before we downscale them."""
+    if not TESSERACT_AVAILABLE:
+        yield
+        return
+    previous_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        yield
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous_limit
 
 def _hash_content(content: str) -> str:
     return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
@@ -183,10 +197,11 @@ def _prepare_image_bytes_for_local_ocr(img_bytes: bytes) -> tuple[bytes, dict]:
         metadata["png_text_chunk_cleanup"] = cleanup_info
 
     try:
-        with Image.open(io.BytesIO(img_bytes)) as image:
-            original_format = (image.format or "").lower()
-            metadata["original_size"] = [int(image.width), int(image.height)]
-            working = image.copy()
+        with _allow_large_local_image_decode():
+            with Image.open(io.BytesIO(img_bytes)) as image:
+                original_format = (image.format or "").lower()
+                metadata["original_size"] = [int(image.width), int(image.height)]
+                working = image.copy()
     except Exception as exc:
         metadata["skipped_reason"] = f"unreadable_image:{exc}"
         return img_bytes, metadata
@@ -205,6 +220,7 @@ def _prepare_image_bytes_for_local_ocr(img_bytes: bytes) -> tuple[bytes, dict]:
         metadata["prepared_size"] = [int(working.width), int(working.height)]
 
     if not metadata["resized"] and len(img_bytes) <= max_bytes and original_format in {"jpeg", "jpg"}:
+        working.close()
         return img_bytes, metadata
 
     if working.mode in {"RGBA", "LA"} or (working.mode == "P" and "transparency" in working.info):
@@ -233,6 +249,7 @@ def _prepare_image_bytes_for_local_ocr(img_bytes: bytes) -> tuple[bytes, dict]:
     metadata["prepared_size"] = [int(working.width), int(working.height)]
     metadata["jpeg_quality"] = selected_quality
     metadata["reencoded"] = True
+    working.close()
     return prepared, metadata
 
 
@@ -350,6 +367,38 @@ def summarize_raw_content_quality(
     }
 
 
+def _compact_raw_stage_results(results: list[dict], limit: int = 80) -> list[dict]:
+    """Keep queue payloads small; durable per-page details live in kb_raw_data."""
+    compacted: list[dict] = []
+    for item in results[:limit]:
+        compacted.append({
+            "round": item.get("round"),
+            "page": item.get("page"),
+            "chars": item.get("chars"),
+            "status": item.get("status"),
+            "duration_ms": item.get("duration_ms"),
+            "processor": item.get("processor"),
+            "error": item.get("error"),
+            "model_degraded": bool(item.get("model_degraded")),
+        })
+    return compacted
+
+
+def _compact_page_asset_metadata(metadata: dict | None) -> dict:
+    if not isinstance(metadata, dict):
+        return {}
+    preprocess = metadata.get("vlm_image_preprocess") or {}
+    return {
+        "storage_path": metadata.get("storage_path"),
+        "mime_type": metadata.get("mime_type"),
+        "byte_size": metadata.get("byte_size"),
+        "image_bytes_md5": metadata.get("image_bytes_md5"),
+        "preprocess_version": preprocess.get("preprocess_version"),
+        "prepared_bytes": preprocess.get("prepared_bytes"),
+        "prepared_size": preprocess.get("prepared_size"),
+    }
+
+
 async def _exec_round_1_text(
     doc_id: int, file_id: int, owner_id: int,
     page: int, caller: str, ext: str = "pdf",
@@ -357,57 +406,57 @@ async def _exec_round_1_text(
     preparse_error: str = "",
 ) -> dict:
     """第1轮：文本提取。独立 DB 会话，单独 commit。"""
-    async with AsyncSessionLocal() as task_db:
-        started = perf_counter()
-        error_message = ""
-        try:
-            if preparse_error:
-                raise RuntimeError(preparse_error)
-            if page_text_map is not None:
-                content = page_text_map.get(page, "")
-            else:
-                parsed = to_legacy_dict(await parse_document(file_id, ext, caller))
-                blocks = parsed.get("blocks", [])
-                page_texts = [
-                    (b.get("text") or "").strip()
-                    for b in blocks
-                    if (b.get("page") == page or (page == 1 and b.get("page") is None))
-                    and (b.get("text") or "").strip()
-                ]
-                content = "\n\n".join(page_texts)
-        except Exception as e:
-            logger.warning("Round 1 text extraction failed for doc_id=%d page=%d: %s", doc_id, page, e)
-            content = ""
-            error_message = str(e)
+    started = perf_counter()
+    error_message = ""
+    try:
+        if preparse_error:
+            raise RuntimeError(preparse_error)
+        if page_text_map is not None:
+            content = page_text_map.get(page, "")
+        else:
+            parsed = to_legacy_dict(await parse_document(file_id, ext, caller))
+            blocks = parsed.get("blocks", [])
+            page_texts = [
+                (b.get("text") or "").strip()
+                for b in blocks
+                if (b.get("page") == page or (page == 1 and b.get("page") is None))
+                and (b.get("text") or "").strip()
+            ]
+            content = "\n\n".join(page_texts)
+    except Exception as e:
+        logger.warning("Round 1 text extraction failed for doc_id=%d page=%d: %s", doc_id, page, e)
+        content = ""
+        error_message = str(e)
 
-        duration_ms = round((perf_counter() - started) * 1000)
-        status = "done" if content else ("failed" if error_message else "degraded")
-        record = KbRawData(
-            document_id=doc_id,
-            file_id=file_id,
-            owner_id=owner_id,
-            page=page,
-            round=1,
-            source_type="text",
-            content=content,
-            model_used="parser",
-            confidence=0.95 if content else 0.0,
-            content_hash=_hash_content(content),
-            status=status,
-            error_message=error_message or None,
-            duration_ms=duration_ms,
-        )
+    duration_ms = round((perf_counter() - started) * 1000)
+    status = "done" if content else ("failed" if error_message else "degraded")
+    record = KbRawData(
+        document_id=doc_id,
+        file_id=file_id,
+        owner_id=owner_id,
+        page=page,
+        round=1,
+        source_type="text",
+        content=content,
+        model_used="parser",
+        confidence=0.95 if content else 0.0,
+        content_hash=_hash_content(content),
+        status=status,
+        error_message=error_message or None,
+        duration_ms=duration_ms,
+    )
+    async with AsyncSessionLocal() as task_db:
         task_db.add(record)
         await task_db.commit()
-        logger.info("Raw collection round=1 page=%d done (%d chars)", page, len(content))
-        return {
-            "round": 1,
-            "page": page,
-            "chars": len(content),
-            "status": status,
-            "duration_ms": duration_ms,
-            "processor": "local_parser",
-        }
+    logger.info("Raw collection round=1 page=%d done (%d chars)", page, len(content))
+    return {
+        "round": 1,
+        "page": page,
+        "chars": len(content),
+        "status": status,
+        "duration_ms": duration_ms,
+        "processor": "local_parser",
+    }
 
 
 async def _build_page_text_map(file_id: int, ext: str, caller: str) -> tuple[dict[int, str], str]:
@@ -433,6 +482,7 @@ async def _exec_round_2_ocr(
     doc_id: int, file_id: int, owner_id: int,
     page: int, user_id: int,
     img_bytes: bytes | None = None,
+    mime_type: str = "image/png",
 ) -> dict:
     """第2轮：截图 OCR。独立 DB 会话，单独 commit。
 
@@ -441,489 +491,151 @@ async def _exec_round_2_ocr(
     """
     from app.services.model_services import describe_image_detailed
 
-    async with AsyncSessionLocal() as task_db:
-        started = perf_counter()
-        error_message = ""
-        profile_key = resolve_knowledge_vision_profile("raw_ocr")
-        try:
-            if img_bytes is None:
-                img_bytes = await render_page_to_image(file_id, page, user_id)
-            content = ""
-            metadata: dict = _vision_model_metadata("vlm_ocr", profile_key)
+    started = perf_counter()
+    error_message = ""
+    profile_key = resolve_knowledge_vision_profile("raw_ocr")
+    content = ""
+    metadata: dict = _vision_model_metadata("vlm_ocr", profile_key)
+    try:
+        if img_bytes is None:
+            raise RuntimeError("page_asset_required_for_raw_ocr")
 
-            # 方案①：优先 tesseract——一趟出文本+词坐标
-            tesseract_result = await _ocr_words_tesseract_async(img_bytes)
-            if tesseract_result is not None:
-                # 从词坐标组装纯文本
-                words = tesseract_result.get("words", [])
-                content = " ".join(w["t"] for w in words)
-                metadata = {
-                    "method": "tesseract_boxes",
-                    "provider": "tesseract",
-                    "img_w": tesseract_result["img_w"],
-                    "img_h": tesseract_result["img_h"],
-                    "words": words,
-                    "image_preprocess": tesseract_result.get("preprocess") or {},
-                }
-            else:
-                # 回退：纯 VLM OCR（不产生词坐标）
+        # 方案①：优先 tesseract——一趟出文本+词坐标
+        tesseract_result = await _ocr_words_tesseract_async(img_bytes)
+        if tesseract_result is not None:
+            # 从词坐标组装纯文本
+            words = tesseract_result.get("words", [])
+            content = " ".join(w["t"] for w in words)
+            metadata = {
+                "method": "tesseract_boxes",
+                "provider": "tesseract",
+                "img_w": tesseract_result["img_w"],
+                "img_h": tesseract_result["img_h"],
+                "words": words,
+                "image_preprocess": tesseract_result.get("preprocess") or {},
+            }
+        else:
+            # 回退：纯 VLM OCR（不产生词坐标）
+            async with AsyncSessionLocal() as task_db:
                 prompt = await load_prompt(task_db, TRAW_OCR, release_transaction=True)
-                async with knowledge_model_call_slot("raw_ocr"):
-                    result = await describe_image_detailed(
-                        img_bytes,
-                        prompt=prompt,
-                        mime_type="image/png",
-                        profile_key=profile_key,
-                    )
-                content = str(result.get("content") or "")
-                metadata = _vision_model_metadata("vlm_ocr", profile_key, result)
-        except Exception as e:
-            logger.warning("Round 2 OCR failed for doc_id=%d page=%d: %s", doc_id, page, e)
-            content = ""
-            metadata = _vision_model_metadata("vlm_ocr", profile_key)
-            error_message = str(e)
+            async with knowledge_model_call_slot("raw_ocr"):
+                result = await describe_image_detailed(
+                    img_bytes,
+                    prompt=prompt,
+                    mime_type=mime_type,
+                    profile_key=profile_key,
+                )
+            content = str(result.get("content") or "")
+            metadata = _vision_model_metadata("vlm_ocr", profile_key, result)
+    except Exception as e:
+        logger.warning("Round 2 OCR failed for doc_id=%d page=%d: %s", doc_id, page, e)
+        content = ""
+        metadata = _vision_model_metadata("vlm_ocr", profile_key)
+        error_message = str(e)
 
-        duration_ms = round((perf_counter() - started) * 1000)
-        status = "done" if content else ("failed" if error_message else "degraded")
-        record = KbRawData(
-            document_id=doc_id,
-            file_id=file_id,
-            owner_id=owner_id,
-            page=page,
-            round=2,
-            source_type="ocr",
-            content=content,
-            model_used="tesseract" if metadata.get("provider") == "tesseract" else str(metadata.get("model_used") or profile_key),
-            confidence=0.85 if content else 0.0,
-            content_hash=_hash_content(content),
-            metadata_json=metadata,
-            status=status,
-            error_message=error_message or None,
-            duration_ms=duration_ms,
-        )
+    duration_ms = round((perf_counter() - started) * 1000)
+    status = "done" if content else ("failed" if error_message else "degraded")
+    record = KbRawData(
+        document_id=doc_id,
+        file_id=file_id,
+        owner_id=owner_id,
+        page=page,
+        round=2,
+        source_type="ocr",
+        content=content,
+        model_used="tesseract" if metadata.get("provider") == "tesseract" else str(metadata.get("model_used") or profile_key),
+        confidence=0.85 if content else 0.0,
+        content_hash=_hash_content(content),
+        metadata_json=metadata,
+        status=status,
+        error_message=error_message or None,
+        duration_ms=duration_ms,
+    )
+    async with AsyncSessionLocal() as task_db:
         task_db.add(record)
         await task_db.commit()
-        logger.info("Raw collection round=2 page=%d done (%d chars, %d words)",
-                     page, len(content),
-                     len(metadata.get("words", [])))
-        return {
-            "round": 2,
-            "page": page,
-            "chars": len(content),
-            "status": status,
-            "duration_ms": duration_ms,
-            "processor": metadata.get("provider") or "vlm",
-            "model_degraded": bool(metadata.get("model_degraded")),
-            "model_diagnostics": metadata.get("model_diagnostics") or {},
-        }
+    img_bytes = None
+    gc.collect()
+    logger.info("Raw collection round=2 page=%d done (%d chars, %d words)",
+                 page, len(content),
+                 len(metadata.get("words", [])))
+    return {
+        "round": 2,
+        "page": page,
+        "chars": len(content),
+        "status": status,
+        "duration_ms": duration_ms,
+        "processor": metadata.get("provider") or "vlm",
+        "model_degraded": bool(metadata.get("model_degraded")),
+        "model_diagnostics": metadata.get("model_diagnostics") or {},
+    }
 
 
 async def _exec_round_3_vision(
     doc_id: int, file_id: int, owner_id: int,
     page: int, user_id: int,
     img_bytes: bytes | None = None,
+    mime_type: str = "image/png",
 ) -> dict:
     """第3轮：视觉构成。独立 DB 会话，单独 commit。"""
     from app.services.model_services import describe_image_detailed
 
-    async with AsyncSessionLocal() as task_db:
-        started = perf_counter()
-        error_message = ""
-        profile_key = resolve_knowledge_vision_profile("raw_vision")
-        metadata = _vision_model_metadata("vlm_vision", profile_key)
-        try:
-            if img_bytes is None:
-                img_bytes = await render_page_to_image(file_id, page, user_id)
+    started = perf_counter()
+    error_message = ""
+    profile_key = resolve_knowledge_vision_profile("raw_vision")
+    metadata = _vision_model_metadata("vlm_vision", profile_key)
+    try:
+        if img_bytes is None:
+            raise RuntimeError("page_asset_required_for_raw_vision")
+        async with AsyncSessionLocal() as task_db:
             prompt = await load_prompt(task_db, TRAW_VISION, release_transaction=True)
-            async with knowledge_model_call_slot("raw_vision"):
-                result = await describe_image_detailed(
-                    img_bytes,
-                    prompt=prompt,
-                    mime_type="image/png",
-                    profile_key=profile_key,
-                )
-            content = str(result.get("content") or "")
-            metadata = _vision_model_metadata("vlm_vision", profile_key, result)
-        except Exception as e:
-            logger.warning("Round 3 vision failed for doc_id=%d page=%d: %s", doc_id, page, e)
-            content = ""
-            error_message = str(e)
+        async with knowledge_model_call_slot("raw_vision"):
+            result = await describe_image_detailed(
+                img_bytes,
+                prompt=prompt,
+                mime_type=mime_type,
+                profile_key=profile_key,
+            )
+        content = str(result.get("content") or "")
+        metadata = _vision_model_metadata("vlm_vision", profile_key, result)
+    except Exception as e:
+        logger.warning("Round 3 vision failed for doc_id=%d page=%d: %s", doc_id, page, e)
+        content = ""
+        error_message = str(e)
 
-        duration_ms = round((perf_counter() - started) * 1000)
-        status = "done" if content else ("failed" if error_message else "degraded")
-        record = KbRawData(
-            document_id=doc_id,
-            file_id=file_id,
-            owner_id=owner_id,
-            page=page,
-            round=3,
-            source_type="vision",
-            content=content,
-            model_used=str(metadata.get("model_used") or profile_key),
-            confidence=0.80 if content else 0.0,
-            content_hash=_hash_content(content),
-            metadata_json=metadata,
-            status=status,
-            error_message=error_message or None,
-            duration_ms=duration_ms,
-        )
+    duration_ms = round((perf_counter() - started) * 1000)
+    status = "done" if content else ("failed" if error_message else "degraded")
+    record = KbRawData(
+        document_id=doc_id,
+        file_id=file_id,
+        owner_id=owner_id,
+        page=page,
+        round=3,
+        source_type="vision",
+        content=content,
+        model_used=str(metadata.get("model_used") or profile_key),
+        confidence=0.80 if content else 0.0,
+        content_hash=_hash_content(content),
+        metadata_json=metadata,
+        status=status,
+        error_message=error_message or None,
+        duration_ms=duration_ms,
+    )
+    async with AsyncSessionLocal() as task_db:
         task_db.add(record)
         await task_db.commit()
-        logger.info("Raw collection round=3 page=%d done (%d chars)", page, len(content))
-        return {
-            "round": 3,
-            "page": page,
-            "chars": len(content),
-            "status": status,
-            "duration_ms": duration_ms,
-            "processor": metadata.get("provider") or "vlm",
-            "model_degraded": bool(metadata.get("model_degraded")),
-            "model_diagnostics": metadata.get("model_diagnostics") or {},
-        }
-
-
-async def _pre_render_pages(file_id: int, user_id: int, total_pages: int) -> dict[int, bytes]:
-    """预渲染所有 PDF 页面为图片字节（仅一次，round2/round3 共享）。"""
-    images: dict[int, bytes] = {}
-    for page in range(1, total_pages + 1):
-        try:
-            images[page] = await render_page_to_image(file_id, page, user_id)
-        except Exception as e:
-            logger.warning("Pre-render page=%d failed: %s", page, e)
-    return images
-
-
-async def collect_raw_data(db: AsyncSession, doc_id: int, owner_id: int, file_id: int, user_id: int) -> dict:
-    """对文档所有页执行三轮并行采集，落盘 kb_raw_data。
-
-    使用 5 并发门池摊平所有 (page, round) 任务，
-    每任务独立 DB 会话 + 独立 commit，
-    进度三行各自按真实速度前进。
-
-    返回: {"document_id": int, "total_pages": int, "rounds": [...每个任务的结果...], "status": "done"}
-    """
-    caller = f"user:{user_id}"
-    stage_started = perf_counter()
-
-    # 确定页数
-    df = await db.execute(select(KbDocument).where(KbDocument.id == doc_id))
-    doc = df.scalar_one_or_none()
-    if not doc:
-        raise ValueError(f"Document {doc_id} not found")
-
-    ext = (doc.extension or "").lower()
-    is_pdf = ext == "pdf"
-    is_image = ext in IMAGE_FORMATS
-
-    if is_pdf:
-        try:
-            total_pages = await get_pdf_page_count(file_id, user_id)
-        except Exception:
-            total_pages = doc.total_pages or 1
-    else:
-        total_pages = doc.total_pages or 1
-
-    # 更新文档状态
-    doc.raw_status = "collecting"
-    doc.total_pages = total_pages
-    await db.commit()
-
-    # 按文件类型决定采集轮次
-    if is_pdf:
-        rounds_for_type = [1, 2, 3]
-    elif is_image:
-        rounds_for_type = [1, 2, 3]
-    else:
-        rounds_for_type = [1]
-    expected_rounds = len(rounds_for_type)
-
-    # 已完成 round 跳过 → 幂等可重入。局部预处理产物必须保留。
-    dr = await db.execute(
-        select(KbRawData.page, KbRawData.round, KbRawData.status).where(KbRawData.document_id == doc_id)
-    )
-    done_rounds = completed_raw_rounds(dr.all())
-    done_pages = {
-        page
-        for page in range(1, total_pages + 1)
-        if all((page, round_num) in done_rounds for round_num in rounds_for_type)
-    }
-    await db.commit()
-
-    # 清除未完成 round 的残缺旧记录，但保留其他已完成 round 断点。
-    for page in range(1, total_pages + 1):
-        for round_num in rounds_for_type:
-            if (page, round_num) in done_rounds:
-                continue
-            async with AsyncSessionLocal() as clean_db:
-                await clean_db.execute(
-                    sa_delete(KbRawData).where(
-                        KbRawData.document_id == doc_id,
-                        KbRawData.page == page,
-                        KbRawData.round == round_num,
-                    )
-                )
-                await clean_db.commit()
-
-    # 预渲染页面图片（只一次，OCR 与视觉共用）
-    page_images: dict[int, bytes] = {}
-    page_text_map: dict[int, str] | None = None
-    preparse_error = ""
-    text_parse_duration_ms = 0
-    needs_round_1 = any((page, 1) not in done_rounds for page in range(1, total_pages + 1))
-    if 1 in rounds_for_type and needs_round_1:
-        text_parse_started = perf_counter()
-        page_text_map, preparse_error = await _build_page_text_map(file_id, ext, caller)
-        text_parse_duration_ms = round((perf_counter() - text_parse_started) * 1000)
-        if preparse_error:
-            logger.warning("Pre-parse text map failed for doc_id=%d: %s", doc_id, preparse_error)
-
-    pre_render_started = perf_counter()
-    needs_render = any(
-        (page, round_num) not in done_rounds
-        for page in range(1, total_pages + 1)
-        for round_num in (2, 3)
-        if round_num in rounds_for_type
-    )
-    if is_pdf and needs_render:
-        page_images = await _pre_render_pages(file_id, user_id, total_pages)
-    elif is_image and needs_render:
-        # 图片文件：读原始字节一次
-        from pathlib import Path
-
-        from app.config import get_settings
-        from app.services.file_service import check_file_access as _check_fa
-        try:
-            async with AsyncSessionLocal() as fdb:
-                f_rec = await _check_fa(fdb, file_id, user_id)
-            img_path = Path(get_settings().UPLOAD_DIR).resolve() / f_rec.storage_path
-            img_bytes = img_path.read_bytes()
-            for page in range(1, total_pages + 1):
-                page_images[page] = img_bytes
-        except Exception as e:
-            logger.warning("Cannot read image bytes for file_id=%d: %s", file_id, e)
-    pre_render_duration_ms = round((perf_counter() - pre_render_started) * 1000)
-
-    # 并发门池 + 摊平任务列表；配置在下一批 stage 启动时生效。
-    raw_collect_concurrency = resolve_knowledge_concurrency("raw_collect", RAW_COLLECT_CONCURRENCY)
-    sem = asyncio.Semaphore(raw_collect_concurrency)
-    all_results: list[dict] = []
-
-    async def _task_wrapper(round_num: int, page: int) -> dict:
-        async with sem:
-            if round_num == 1:
-                return await _exec_round_1_text(
-                    doc_id,
-                    file_id,
-                    owner_id,
-                    page,
-                    caller,
-                    ext=ext,
-                    page_text_map=page_text_map,
-                    preparse_error=preparse_error,
-                )
-            elif round_num == 2:
-                return await _exec_round_2_ocr(doc_id, file_id, owner_id, page, user_id, img_bytes=page_images.get(page))
-            elif round_num == 3:
-                return await _exec_round_3_vision(doc_id, file_id, owner_id, page, user_id, img_bytes=page_images.get(page))
-            return {"round": round_num, "page": page, "error": "unknown round"}
-
-    tasks = []
-    for page in range(1, total_pages + 1):
-        if page in done_pages:
-            logger.info("Raw collection page=%d already done, skip", page)
-            continue
-        for r in rounds_for_type:
-            if (page, r) in done_rounds:
-                logger.info("Raw collection page=%d round=%d already done, skip", page, r)
-                continue
-            tasks.append(_task_wrapper(r, page))
-
-    task_wall_started = perf_counter()
-    if tasks:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for r in results:
-            if isinstance(r, Exception):
-                logger.warning("Round task failed: %s", r)
-            else:
-                all_results.append(r)
-    task_wall_duration_ms = round((perf_counter() - task_wall_started) * 1000)
-
-    failed_count = 0
-    if tasks:
-        failed_count = sum(
-            1
-            for r in results
-            if isinstance(r, Exception) or (isinstance(r, dict) and r.get("error"))
-        )
-
-    raw_rows = await db.execute(
-        select(
-            KbRawData.page,
-            KbRawData.round,
-            KbRawData.source_type,
-            KbRawData.content,
-            KbRawData.status,
-            KbRawData.duration_ms,
-            KbRawData.metadata_json,
-        ).where(KbRawData.document_id == doc_id)
-    )
-    raw_result_rows = raw_rows.all()
-    quality = summarize_raw_content_quality(
-        raw_result_rows,
-        total_pages=total_pages,
-        expected_rounds=expected_rounds,
-        visual_document=is_pdf or is_image,
-    )
-    total_rounds = int(quality["total_rounds"])
-    valid_rounds = int(quality["valid_rounds"])
-    empty_rounds = int(quality["empty_rounds"])
-    valid_pages = int(quality["valid_pages"])
-    primary_valid_pages = int(quality["primary_valid_pages"])
-    primary_empty_pages = int(quality["primary_empty_pages"])
-    optional_empty_rounds = int(quality["optional_empty_rounds"])
-    failed_row_count = sum(1 for (_page, _round, _source, _content, status, _duration, _metadata) in raw_result_rows if status == "failed")
-    failed_pages = sorted({
-        page
-        for (page, _round, _source, _content, status, _duration, _metadata) in raw_result_rows
-        if status == "failed"
-    })
-    page_durations: dict[int, int] = {}
-    round_durations: list[dict] = []
-    model_call_duration_ms = 0
-    local_processing_duration_ms = 0
-    for page, round_num, source_type, content, status, duration, metadata in raw_result_rows:
-        duration_value = int(duration or 0)
-        page_durations[page] = page_durations.get(page, 0) + duration_value
-        metadata = metadata or {}
-        provider = str(metadata.get("provider") or "")
-        is_model_round = source_type == "vision" or (source_type == "ocr" and provider not in {"", "tesseract"})
-        if is_model_round:
-            model_call_duration_ms += duration_value
-        else:
-            local_processing_duration_ms += duration_value
-        round_durations.append({
-            "page": page,
-            "round": round_num,
-            "source_type": source_type,
-            "status": status,
-            "chars": len(content or ""),
-            "duration_ms": duration_value,
-            "processor": provider or ("local_parser" if source_type == "text" else source_type),
-        })
-
-    await db.refresh(doc)
-    doc.raw_status = classify_raw_collection_status(
-        total_rounds=total_rounds,
-        valid_rounds=valid_rounds,
-        failed_rounds=failed_count + failed_row_count,
-        task_count=len(tasks),
-        total_pages=total_pages,
-        valid_pages=valid_pages,
-        primary_valid_pages=primary_valid_pages,
-    )
-    if doc.raw_status == "failed":
-        logger.error("All raw collection tasks failed for doc_id=%d", doc_id)
-    elif doc.raw_status == "degraded":
-        logger.warning(
-            (
-                "Raw collection degraded for doc_id=%d: valid_rounds=%d "
-                "empty_rounds=%d primary_empty_pages=%d failed_rounds=%d"
-            ),
-            doc_id, valid_rounds, empty_rounds, primary_empty_pages, failed_count + failed_row_count,
-        )
-    await db.commit()
-
-    image_similarity_result = {"status": "skipped", "assets": 0, "pairs": 0, "reason": "no_page_images"}
-    if page_images:
-        try:
-            from .analysis_artifact_service import build_input_hash, build_output_hash, record_analysis_artifact
-            from .image_similarity_service import IMAGE_HASH_SCHEMA_VERSION, record_document_image_assets
-
-            image_similarity_result = await record_document_image_assets(
-                db,
-                owner_id=owner_id,
-                document_id=doc_id,
-                file_id=file_id,
-                page_images=page_images,
-                asset_type="image_file" if is_image else "page_render",
-            )
-            await record_analysis_artifact(
-                owner_id=owner_id,
-                document_id=doc_id,
-                file_id=file_id,
-                stage="image_similarity",
-                status=str(image_similarity_result.get("status") or "done"),
-                unit_type="document",
-                unit_key="document",
-                input_hash=build_input_hash(
-                    stage="image_similarity",
-                    document_id=doc_id,
-                    file_id=file_id,
-                    extra={
-                        "pages": sorted(page_images),
-                        "hash_schema_version": IMAGE_HASH_SCHEMA_VERSION,
-                    },
-                ),
-                output_hash=build_output_hash(
-                    stage="image_similarity",
-                    status=str(image_similarity_result.get("status") or "done"),
-                    payload=image_similarity_result,
-                ),
-                preprocess_version=IMAGE_HASH_SCHEMA_VERSION,
-                reason="sidecar_image_similarity",
-                diagnostics=image_similarity_result,
-                metrics={
-                    "assets": int(image_similarity_result.get("assets") or 0),
-                    "pairs": int(image_similarity_result.get("pairs") or 0),
-                    "high": int(image_similarity_result.get("high") or 0),
-                    "suspected": int(image_similarity_result.get("suspected") or 0),
-                },
-            )
-        except Exception as e:
-            logger.warning("Image similarity sidecar skipped for doc_id=%d: %s", doc_id, e)
-            image_similarity_result = {"status": "failed", "assets": 0, "pairs": 0, "error": str(e)}
-
-    model_diagnostics = [
-        item.get("model_diagnostics")
-        for item in all_results
-        if item.get("model_degraded") and item.get("model_diagnostics")
-    ]
-
+    img_bytes = None
+    gc.collect()
+    logger.info("Raw collection round=3 page=%d done (%d chars)", page, len(content))
     return {
-        "document_id": doc_id,
-        "total_pages": total_pages,
-        "total_rounds": total_rounds,
-        "valid_rounds": valid_rounds,
-        "empty_rounds": empty_rounds,
-        "optional_empty_rounds": optional_empty_rounds,
-        "valid_pages": valid_pages,
-        "empty_pages": max(total_pages - valid_pages, 0),
-        "primary_valid_pages": primary_valid_pages,
-        "primary_empty_pages": primary_empty_pages,
-        "failed_rounds": failed_count + failed_row_count,
-        "rounds": all_results,
-        "timing": {
-            "stage_wall_ms": round((perf_counter() - stage_started) * 1000),
-            "text_parse_ms": text_parse_duration_ms,
-            "pre_render_ms": pre_render_duration_ms,
-            "task_wall_ms": task_wall_duration_ms,
-            "raw_collect_concurrency": raw_collect_concurrency,
-            "local_processing_ms": local_processing_duration_ms,
-            "model_call_ms": model_call_duration_ms,
-            "page_durations_ms": dict(sorted(page_durations.items())),
-            "round_durations": round_durations,
-            "failed_pages": failed_pages,
-            "skipped_pages": sorted(done_pages),
-            "skipped_rounds": [
-                {"page": page, "round": round_num}
-                for page, round_num in sorted(done_rounds)
-                if page <= total_pages and round_num in rounds_for_type
-            ],
-        },
-        "image_similarity": image_similarity_result,
-        "status": doc.raw_status,
-        "model_degraded": bool(model_diagnostics),
-        "model_diagnostics": model_diagnostics,
+        "round": 3,
+        "page": page,
+        "chars": len(content),
+        "status": status,
+        "duration_ms": duration_ms,
+        "processor": metadata.get("provider") or "vlm",
+        "model_degraded": bool(metadata.get("model_degraded")),
+        "model_diagnostics": metadata.get("model_diagnostics") or {},
     }
 
 
@@ -982,6 +694,7 @@ async def collect_raw_stage(
         )
     )
     done_rounds = completed_raw_rounds(existing_rows.all())
+    await db.commit()
     for page in range(1, total_pages + 1):
         if (page, round_num) in done_rounds:
             continue
@@ -998,8 +711,7 @@ async def collect_raw_stage(
     page_text_map: dict[int, str] | None = None
     preparse_error = ""
     text_parse_duration_ms = 0
-    page_images: dict[int, bytes] = {}
-    render_duration_ms = 0
+    page_asset_wait_ms = 0
 
     if round_num == 1 and any((page, 1) not in done_rounds for page in range(1, total_pages + 1)):
         text_parse_started = perf_counter()
@@ -1007,25 +719,6 @@ async def collect_raw_stage(
         text_parse_duration_ms = round((perf_counter() - text_parse_started) * 1000)
         if preparse_error:
             logger.warning("Raw stage text map failed for doc_id=%d: %s", doc_id, preparse_error)
-
-    if round_num in {2, 3} and any((page, round_num) not in done_rounds for page in range(1, total_pages + 1)):
-        render_started = perf_counter()
-        if is_pdf:
-            page_images = await _pre_render_pages(file_id, user_id, total_pages)
-        elif is_image:
-            from pathlib import Path
-
-            from app.config import get_settings
-            from app.services.file_service import check_file_access as _check_fa
-            try:
-                async with AsyncSessionLocal() as fdb:
-                    f_rec = await _check_fa(fdb, file_id, user_id)
-                img_path = Path(get_settings().UPLOAD_DIR).resolve() / f_rec.storage_path
-                img_bytes = img_path.read_bytes()
-                page_images = {page: img_bytes for page in range(1, total_pages + 1)}
-            except Exception as e:
-                logger.warning("Raw stage cannot read image bytes file_id=%d: %s", file_id, e)
-        render_duration_ms = round((perf_counter() - render_started) * 1000)
 
     raw_collect_concurrency = resolve_knowledge_concurrency(
         stage,
@@ -1036,6 +729,7 @@ async def collect_raw_stage(
     tasks = []
 
     async def _task_wrapper(page: int) -> dict:
+        nonlocal page_asset_wait_ms
         async with sem:
             if round_num == 1:
                 return await _exec_round_1_text(
@@ -1049,13 +743,45 @@ async def collect_raw_stage(
                     preparse_error=preparse_error,
                 )
             if round_num == 2:
-                return await _exec_round_2_ocr(doc_id, file_id, owner_id, page, user_id, img_bytes=page_images.get(page))
-            return await _exec_round_3_vision(doc_id, file_id, owner_id, page, user_id, img_bytes=page_images.get(page))
+                asset_started = perf_counter()
+                async with AsyncSessionLocal() as asset_db:
+                    asset = await load_page_asset_bytes(asset_db, document_id=doc_id, page=page)
+                page_asset_wait_ms += round((perf_counter() - asset_started) * 1000)
+                if asset is None:
+                    return {"round": 2, "page": page, "status": "failed", "error": "page_asset_missing"}
+                img_bytes, _mime_type, asset_metadata = asset
+                result = await _exec_round_2_ocr(
+                    doc_id,
+                    file_id,
+                    owner_id,
+                    page,
+                    user_id,
+                    img_bytes=img_bytes,
+                    mime_type=_mime_type,
+                )
+                result["page_asset"] = _compact_page_asset_metadata(asset_metadata)
+                return result
+            asset_started = perf_counter()
+            async with AsyncSessionLocal() as asset_db:
+                asset = await load_page_asset_bytes(asset_db, document_id=doc_id, page=page)
+            page_asset_wait_ms += round((perf_counter() - asset_started) * 1000)
+            if asset is None:
+                return {"round": 3, "page": page, "status": "failed", "error": "page_asset_missing"}
+            img_bytes, mime_type, asset_metadata = asset
+            result = await _exec_round_3_vision(
+                doc_id,
+                file_id,
+                owner_id,
+                page,
+                user_id,
+                img_bytes=img_bytes,
+                mime_type=mime_type,
+            )
+            result["page_asset"] = _compact_page_asset_metadata(asset_metadata)
+            return result
 
     for page in range(1, total_pages + 1):
         if (page, round_num) in done_rounds:
-            continue
-        if round_num in {2, 3} and not page_images.get(page):
             continue
         tasks.append(_task_wrapper(page))
 
@@ -1126,7 +852,9 @@ async def collect_raw_stage(
         "status": "done" if not failed_count else "degraded",
         "raw_complete": raw_complete,
         "total_pages": total_pages,
-        "rounds": all_results,
+        "rounds": _compact_raw_stage_results(all_results),
+        "round_result_count": len(all_results),
+        "round_results_truncated": len(all_results) > 80,
         "total_rounds": int(quality["total_rounds"]),
         "valid_rounds": int(quality["valid_rounds"]),
         "empty_rounds": int(quality["empty_rounds"]),
@@ -1142,7 +870,7 @@ async def collect_raw_stage(
         "timing": {
             "stage_wall_ms": round((perf_counter() - stage_started) * 1000),
             "text_parse_ms": text_parse_duration_ms,
-            "render_ms": render_duration_ms,
+            "page_asset_read_ms": page_asset_wait_ms,
             "task_wall_ms": task_wall_duration_ms,
             "raw_stage_concurrency": raw_collect_concurrency,
             "skipped_rounds": [

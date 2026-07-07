@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -65,8 +66,12 @@ async def lifespan(app: FastAPI):
         if private_restore["restored"] or private_restore["failed"]:
             logger.info("Private module runtime restore completed: %s", private_restore)
 
-    start_worker()
-    logger.info("Background task worker started")
+    task_worker_autostart = os.getenv("TASK_WORKER_AUTOSTART", "1").strip().lower()
+    if task_worker_autostart in {"0", "false", "no", "off"}:
+        logger.info("Background task worker autostart disabled for this process")
+    else:
+        start_worker()
+        logger.info("Background task worker started")
 
     # After modules are loaded, set up per-module file handlers
     from app.services.module_logger import setup_v2_loggers_for_modules
@@ -95,7 +100,8 @@ async def lifespan(app: FastAPI):
     yield
     if hasattr(app.state, "_event_retry_task"):
         app.state._event_retry_task.cancel()
-    await stop_worker()
+    if task_worker_autostart not in {"0", "false", "no", "off"}:
+        await stop_worker()
     await dispose_db()
 
 
@@ -234,10 +240,11 @@ async def health_check():
         and task_queue_summary.get("semantic_failed_completed_24h", 0) > 0
     )
     status = "ok"
+    worker_external = os.getenv("TASK_WORKER_AUTOSTART", "1").strip().lower() in {"0", "false", "no", "off"}
     if (
         database_status != "ok"
         or module_errors
-        or not worker.get("running")
+        or (not worker_external and not worker.get("running"))
         or event_bus_status != "ok"
         or not task_queue_ok
     ):
@@ -247,6 +254,7 @@ async def health_check():
         "status": status,
         "version": "2.0.0",
         "database": database_status,
+        "worker_mode": "external" if worker_external else "in_process",
         "module_errors": module_errors if module_errors else None,
         "worker": worker,
         "event_bus": event_bus_status,
