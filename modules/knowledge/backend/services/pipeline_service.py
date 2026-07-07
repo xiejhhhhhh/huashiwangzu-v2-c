@@ -589,6 +589,7 @@ async def _pipeline_stage_handler(params: dict) -> dict:
             started_at=started_at,
             duration_ms=duration_ms,
         )
+        await db.flush()
         successors: list[dict] = []
         if status in {"done", "degraded", "skipped"}:
             if should_pause_after_result(result):

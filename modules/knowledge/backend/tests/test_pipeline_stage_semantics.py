@@ -287,6 +287,7 @@ class _PipelineHandlerDb:
         self.run = _FakePipelineRun()
         self.fail_commit = fail_commit
         self.commits = 0
+        self.flushes = 0
 
     async def scalar(self, _stmt):
         return self.doc
@@ -298,6 +299,9 @@ class _PipelineHandlerDb:
 
     async def refresh(self, _obj):
         return None
+
+    async def flush(self):
+        self.flushes += 1
 
     async def commit(self):
         self.commits += 1
@@ -724,6 +728,7 @@ async def test_pipeline_stage_cache_survives_main_commit_failure(tmp_path, monke
     payload = json.loads(cache_files[0].read_text(encoding="utf-8"))
     assert payload["result"]["text"] == "LLM result that must not be lost"
     assert payload["pipeline_run_id"] == db.run.id
+    assert db.flushes == 1
 
 
 @pytest.mark.asyncio
