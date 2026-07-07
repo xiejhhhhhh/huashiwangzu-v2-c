@@ -50,6 +50,7 @@ async def test_convert_file_timeout_terminates_process_with_clear_error(
 
     monkeypatch.setattr(office_conversion, "check_libreoffice", lambda: "/usr/bin/soffice")
     monkeypatch.setattr(office_conversion, "get_settings", lambda: _settings(timeout=0.01, grace=1.25))
+    monkeypatch.setattr(office_conversion, "_office_conversion_lock_dir", lambda: tmp_path / "locks")
     monkeypatch.setattr(office_conversion.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(office_conversion, "_terminate_process", fake_terminate)
 
@@ -82,6 +83,7 @@ async def test_convert_file_nonzero_exit_without_output_has_diagnostic_message(
 
     monkeypatch.setattr(office_conversion, "check_libreoffice", lambda: "/usr/bin/soffice")
     monkeypatch.setattr(office_conversion, "get_settings", lambda: _settings())
+    monkeypatch.setattr(office_conversion, "_office_conversion_lock_dir", lambda: tmp_path / "locks")
     monkeypatch.setattr(office_conversion.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     with pytest.raises(
@@ -130,3 +132,84 @@ async def test_conversion_semaphore_reuses_loop_and_rebuilds_on_limit_change() -
 
     assert first is second
     assert third is not first
+
+
+@pytest.mark.asyncio
+async def test_global_conversion_slot_limits_concurrent_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(office_conversion, "_office_conversion_lock_dir", lambda: tmp_path / "locks")
+
+    first = await office_conversion._acquire_global_conversion_slot(
+        max_concurrent=1,
+        stale_seconds=300,
+    )
+    second_task = asyncio.create_task(
+        office_conversion._acquire_global_conversion_slot(
+            max_concurrent=1,
+            stale_seconds=300,
+        )
+    )
+
+    await asyncio.sleep(0.05)
+    assert not second_task.done()
+
+    first.release()
+    second = await asyncio.wait_for(second_task, timeout=1)
+    second.release()
+
+
+@pytest.mark.asyncio
+async def test_global_conversion_slot_recovers_stale_dead_process_slot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    slot_path = lock_dir / "slot_0.lock"
+    slot_path.write_text("999999", encoding="ascii")
+
+    monkeypatch.setattr(office_conversion, "_office_conversion_lock_dir", lambda: lock_dir)
+    monkeypatch.setattr(office_conversion, "_pid_is_alive", lambda _pid: False)
+
+    slot = await office_conversion._acquire_global_conversion_slot(
+        max_concurrent=1,
+        stale_seconds=300,
+    )
+
+    assert slot.path == slot_path
+    slot.release()
+
+
+@pytest.mark.asyncio
+async def test_convert_doc_to_text_with_textutil_writes_text_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "legacy.doc"
+    source.write_bytes(b"legacy office bytes")
+
+    class SuccessProcess:
+        pid = None
+        returncode = 0
+
+        def __init__(self, output_path: Path) -> None:
+            self.output_path = output_path
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            self.output_path.write_text("备案信息表\n产品名称", encoding="utf-8")
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*args: object, **kwargs: object) -> SuccessProcess:
+        output_index = args.index("-output") + 1
+        return SuccessProcess(Path(str(args[output_index])))
+
+    monkeypatch.setattr(office_conversion.shutil, "which", lambda name: "/usr/bin/textutil")
+    monkeypatch.setattr(office_conversion, "get_settings", lambda: _settings(timeout=1, grace=1))
+    monkeypatch.setattr(office_conversion.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    output_path = Path(await office_conversion.convert_doc_to_text_with_textutil(source, tmp_path))
+
+    assert output_path.name == "legacy.txt"
+    assert output_path.read_text(encoding="utf-8") == "备案信息表\n产品名称"

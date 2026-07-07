@@ -6,10 +6,12 @@ import os
 import shutil
 import signal
 import tempfile
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from weakref import WeakKeyDictionary
 
-from app.config import get_settings
+from app.config import BACKEND_DIR, get_settings
 
 SUPPORTED_FORMATS = {
     "pdf", "docx", "pptx", "xlsx", "odt", "ods", "odp",
@@ -20,6 +22,22 @@ _SEMAPHORES: WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Sem
 
 class OfficeConversionTimeoutError(TimeoutError):
     """Raised when LibreOffice conversion exceeds the configured timeout."""
+
+
+@dataclass
+class _GlobalConversionSlot:
+    path: Path
+    fd: int
+
+    def release(self) -> None:
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def check_libreoffice() -> str | None:
@@ -79,40 +97,50 @@ async def convert_file(
     )
     max_concurrent = max(1, int(settings.OFFICE_CONVERSION_MAX_CONCURRENT))
     terminate_grace = max(0.5, float(settings.OFFICE_CONVERSION_TERMINATE_GRACE_SECONDS))
+    stale_slot_seconds = max(300.0, effective_timeout + terminate_grace + 60.0)
     semaphore = _conversion_semaphore(max_concurrent)
     profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
     proc: asyncio.subprocess.Process | None = None
     stdout = b""
     stderr = b""
+    slot: _GlobalConversionSlot | None = None
     try:
         async with semaphore:
-            cmd = [
-                soffice,
-                f"-env:UserInstallation={Path(profile_dir).resolve().as_uri()}",
-                "--headless",
-                "--convert-to",
-                target_format,
-                "--outdir",
-                str(outdir),
-                str(source),
-            ]
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **_subprocess_group_kwargs(),
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=effective_timeout,
+                slot = await _acquire_global_conversion_slot(
+                    max_concurrent=max_concurrent,
+                    stale_seconds=stale_slot_seconds,
                 )
-            except TimeoutError as exc:
-                await _terminate_process(proc, grace_seconds=terminate_grace)
-                raise OfficeConversionTimeoutError(
-                    "LibreOffice conversion timed out "
-                    f"after {effective_timeout:g}s: {source.name} -> {target_format}"
-                ) from exc
+                cmd = [
+                    soffice,
+                    f"-env:UserInstallation={Path(profile_dir).resolve().as_uri()}",
+                    "--headless",
+                    "--convert-to",
+                    target_format,
+                    "--outdir",
+                    str(outdir),
+                    str(source),
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **_subprocess_group_kwargs(),
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(),
+                        timeout=effective_timeout,
+                    )
+                except TimeoutError as exc:
+                    await _terminate_process(proc, grace_seconds=terminate_grace)
+                    raise OfficeConversionTimeoutError(
+                        "LibreOffice conversion timed out "
+                        f"after {effective_timeout:g}s: {source.name} -> {target_format}"
+                    ) from exc
+            finally:
+                if slot is not None:
+                    await asyncio.to_thread(slot.release)
     finally:
         await asyncio.to_thread(shutil.rmtree, profile_dir, True)
     if proc is None:
@@ -139,6 +167,71 @@ def _conversion_semaphore(max_concurrent: int) -> asyncio.Semaphore:
         _SEMAPHORES[loop] = (max_concurrent, semaphore)
         return semaphore
     return current[1]
+
+
+async def _acquire_global_conversion_slot(
+    *,
+    max_concurrent: int,
+    stale_seconds: float,
+) -> _GlobalConversionSlot:
+    lock_dir = _office_conversion_lock_dir()
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        for slot_index in range(max(1, max_concurrent)):
+            path = lock_dir / f"slot_{slot_index}.lock"
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            except FileExistsError:
+                _remove_stale_conversion_slot(path, stale_seconds=stale_seconds)
+                continue
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            return _GlobalConversionSlot(path=path, fd=fd)
+        await asyncio.sleep(0.25)
+
+
+def _office_conversion_lock_dir() -> Path:
+    return BACKEND_DIR / "data" / "runtime" / "office_conversion_locks"
+
+
+def _remove_stale_conversion_slot(path: Path, *, stale_seconds: float) -> None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return
+    pid = _read_slot_pid(path)
+    stale_by_age = (_now_monotonic_wall() - stat.st_mtime) > stale_seconds
+    if pid is not None and _pid_is_alive(pid) and not stale_by_age:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _read_slot_pid(path: Path) -> int | None:
+    try:
+        text = path.read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(text)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _now_monotonic_wall() -> float:
+    return time.time()
 
 
 def _subprocess_group_kwargs() -> dict[str, bool]:
@@ -206,3 +299,53 @@ async def convert_by_file_id(source_path: str | Path, target_format: str) -> tup
         if not content:
             raise RuntimeError(f"Conversion produced an empty output file: {output_path.name}")
         return output_path.name, content
+
+
+async def convert_doc_to_text_with_textutil(
+    source_path: str | Path,
+    output_dir: str | Path | None = None,
+    timeout_seconds: int | None = None,
+) -> str:
+    """Fallback DOC text extraction on macOS when LibreOffice cannot convert."""
+    textutil = shutil.which("textutil")
+    if not textutil:
+        raise RuntimeError("macOS textutil is not available for DOC text fallback")
+
+    source = Path(source_path).resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"Source file not found: {source}")
+
+    outdir = Path(output_dir).resolve() if output_dir else source.parent
+    outdir.mkdir(parents=True, exist_ok=True)
+    output_path = outdir / f"{source.stem}.txt"
+    settings = get_settings()
+    effective_timeout = float(
+        timeout_seconds if timeout_seconds is not None else settings.OFFICE_CONVERSION_TIMEOUT_SECONDS
+    )
+    proc = await asyncio.create_subprocess_exec(
+        textutil,
+        "-convert",
+        "txt",
+        "-output",
+        str(output_path),
+        str(source),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **_subprocess_group_kwargs(),
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=effective_timeout)
+    except TimeoutError as exc:
+        await _terminate_process(proc, grace_seconds=max(0.5, float(settings.OFFICE_CONVERSION_TERMINATE_GRACE_SECONDS)))
+        raise OfficeConversionTimeoutError(
+            "textutil DOC extraction timed out "
+            f"after {effective_timeout:g}s: {source.name} -> txt"
+        ) from exc
+
+    if proc.returncode != 0:
+        output = _decode_process_output(stdout, stderr)
+        raise RuntimeError(f"textutil DOC extraction failed (exit={proc.returncode}): {output}")
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        output = _decode_process_output(stdout, stderr)
+        raise RuntimeError(f"textutil DOC extraction produced no text: {output}")
+    return str(output_path)
