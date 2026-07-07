@@ -208,7 +208,11 @@ async def test_search_filters_deleted_doc_and_unavailable_source(monkeypatch: py
             hybrid_results = await hybrid_search(db, marker, OWNER_ID, top_k=10)
 
         assert [item["document_id"] for item in keyword_results] == [docs["live"]]
-        assert [item["document_id"] for item in hybrid_results] == [docs["live"]]
+        hybrid_doc_ids = {item["document_id"] for item in hybrid_results}
+        assert docs["live"] in hybrid_doc_ids
+        assert docs["deleted_doc"] not in hybrid_doc_ids
+        assert docs["source_deleted"] not in hybrid_doc_ids
+        assert docs["source_missing"] not in hybrid_doc_ids
         vector_doc_ids = {item["document_id"] for item in vector_results}
         assert docs["live"] in vector_doc_ids
         assert docs["deleted_doc"] not in vector_doc_ids

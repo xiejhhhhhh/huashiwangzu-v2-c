@@ -49,7 +49,7 @@ def parse_args() -> DeployConfig:
     parser.add_argument("--db-port", type=int, default=int(os.getenv("DB_PORT", "5432")))
     parser.add_argument("--db-user", default=os.getenv("DB_USER", "postgres"))
     parser.add_argument("--db-password", default=os.getenv("DB_PASSWORD", ""))
-    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "huashiwangzu_v2"))
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "华世王镞_v2"))
     parser.add_argument("--seed-password", default=os.getenv("V2_SEED_DEFAULT_PASSWORD", ""))
     parser.add_argument("--skip-seed", action="store_true")
     parser.add_argument("--skip-modules", action="store_true")

@@ -1,26 +1,55 @@
-"""一次性脚本：清理知识库孤儿文档数据。
+"""Guarded cleanup helper for obsolete knowledge orphan data."""
 
-现状：kb_documents=101 条，kb_chunks=0 条（有壳无肉）。
-所有文档均处于 pending 状态且无已处理的 chunks，其中 89 条的原文件已从 framework 删除。
-
-操作：
-1. 删除所有 kb_page_fusions 记录（100 条，无对应 chunks）
-2. 删除所有 kb_raw_data 记录（107 条，无对应已处理文档）
-3. 删除所有 kb_documents 记录（101 条，均为空壳）
-4. 重置序列
-
-执行：.venv/bin/python -m modules.knowledge.backend.cleanup_orphans
-"""
+import argparse
 import asyncio
 import logging
 
+from app.config import get_settings
 from app.database import AsyncSessionLocal
 from sqlalchemy import text
 
 logger = logging.getLogger("v2.knowledge.cleanup")
+EXPECTED_DB_NAME = "华世王镞_v2"
+CONFIRM_TOKEN = "CLEAN_KNOWLEDGE_ORPHANS"
 
 
-async def cleanup():
+async def _counts() -> dict[str, int]:
+    tables = (
+        "kb_page_fusions",
+        "kb_raw_data",
+        "kb_chunk_entities",
+        "kb_evidence",
+        "kb_conclusion_evidence",
+        "kb_governance_candidates",
+        "kb_document_profiles",
+        "kb_graph_edges",
+        "kb_graph_nodes",
+        "kb_file_relations",
+        "kb_documents",
+    )
+    async with AsyncSessionLocal() as db:
+        result: dict[str, int] = {}
+        for table in tables:
+            value = await db.scalar(text(f"SELECT count(*) FROM {table}"))
+            result[table] = int(value or 0)
+        return result
+
+
+def _assert_expected_db() -> None:
+    db_name = get_settings().DB_NAME
+    if db_name != EXPECTED_DB_NAME:
+        raise SystemExit(f"Refusing cleanup on DB_NAME={db_name!r}; expected {EXPECTED_DB_NAME!r}")
+
+
+async def cleanup(*, apply: bool, confirm: str) -> tuple[int, int, int]:
+    _assert_expected_db()
+    if not apply:
+        counts = await _counts()
+        print({"dry_run": True, "db": EXPECTED_DB_NAME, "counts": counts})
+        return 0, 0, 0
+    if confirm != CONFIRM_TOKEN:
+        raise SystemExit(f"Refusing cleanup without --confirm {CONFIRM_TOKEN}")
+
     async with AsyncSessionLocal() as db:
         # 1. 删除页级融合
         r1 = await db.execute(text("DELETE FROM kb_page_fusions"))
@@ -54,11 +83,17 @@ async def cleanup():
 
 
 async def main():
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    deleted_docs, deleted_raw, deleted_fusions = await cleanup()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--confirm", default="")
+    args = parser.parse_args()
 
-    print(f"OK: deleted {deleted_docs} documents, {deleted_raw} raw_data, {deleted_fusions} page_fusions")
-    print("Knowledge base is now clean.")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    deleted_docs, deleted_raw, deleted_fusions = await cleanup(apply=args.apply, confirm=args.confirm)
+
+    if args.apply:
+        print(f"OK: deleted {deleted_docs} documents, {deleted_raw} raw_data, {deleted_fusions} page_fusions")
+        print("Knowledge base is now clean.")
 
 
 if __name__ == "__main__":

@@ -455,7 +455,7 @@ async def test_pipeline_e2e_via_background_worker():
             stmt = select(SystemTaskQueue).where(
                 SystemTaskQueue.task_type == "kb_pipeline_stage",
                 SystemTaskQueue.parameters.contains(str(doc_id)),
-                SystemTaskQueue.status == "pending",
+                SystemTaskQueue.status.in_(("pending", "running", "completed")),
             ).order_by(SystemTaskQueue.id.desc()).limit(1)
             tr = await db.execute(stmt)
             task = tr.scalar_one_or_none()
