@@ -26,6 +26,7 @@ parse_spreadsheet_file = _parser_core.parse_spreadsheet_file
 SUPPORTED_EXTS = _parser_core.SUPPORTED_EXTS
 
 router = APIRouter(prefix="/api/xlsx-parser", tags=["xlsx-parser"])
+PARSER_NAME = "xlsx-parser"
 
 
 class ParseRequest(BaseModel):
@@ -54,12 +55,19 @@ async def _parse(params: dict, caller: str) -> dict:
                     await asyncio.to_thread(shutil.rmtree, tmpdir, True)
             return await asyncio.to_thread(parse_spreadsheet_file, file_id, full_path, ext)
         except (SpreadsheetParseError, RuntimeError, ValueError, FileNotFoundError, TimeoutError) as exc:
-            raise ValidationError(str(exc)) from exc
+            raise ValidationError(_parser_error_message(exc)) from exc
 
     try:
         return await run_uploaded_file_capability(params, caller, SUPPORTED_EXTS, parse_file)
     except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
+        raise ValidationError(_parser_error_message(exc)) from exc
+
+
+def _parser_error_message(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return message
+    return f"{PARSER_NAME} failed without diagnostic output ({type(exc).__name__})"
 
 
 @router.get("/health")

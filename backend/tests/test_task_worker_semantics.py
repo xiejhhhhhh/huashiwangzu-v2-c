@@ -30,6 +30,16 @@ def test_task_worker_treats_failed_status_as_failure() -> None:
     assert error == "slow tool failed"
 
 
+def test_task_worker_treats_failed_reason_as_failure_detail() -> None:
+    failed, error = task_worker._result_is_semantic_failure({
+        "status": "failed",
+        "reason": "LibreOffice conversion timed out",
+    })
+
+    assert failed is True
+    assert error == "LibreOffice conversion timed out"
+
+
 def test_task_worker_treats_success_false_as_failure() -> None:
     failed, error = task_worker._result_is_semantic_failure({
         "success": False,

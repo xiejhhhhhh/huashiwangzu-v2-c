@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/pptx-parser", tags=["pptx-parser"])
+PARSER_NAME = "pptx-parser"
 
 
 class ParseRequest(BaseModel):
@@ -182,10 +183,17 @@ async def _parse(params: dict, caller: str) -> dict:
                     await asyncio.to_thread(shutil.rmtree, tmpdir, True)
             return await asyncio.to_thread(parse_presentation_path, file_id, full_path, "pptx", [])
         except (RuntimeError, ValueError, FileNotFoundError, TimeoutError) as exc:
-            raise ValidationError(str(exc)) from exc
+            raise ValidationError(_parser_error_message(exc)) from exc
 
     result = await run_uploaded_file_capability(params, caller, allowed, parse_file)
     return await store_extracted_resources_with_diagnostics(result, caller=caller, parser="pptx-parser")
+
+
+def _parser_error_message(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return message
+    return f"{PARSER_NAME} failed without diagnostic output ({type(exc).__name__})"
 
 
 @router.get("/health")

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .parser import DocxParseError, parse_docx_file
 
 router = APIRouter(prefix="/api/docx-parser", tags=["docx-parser"])
+PARSER_NAME = "docx-parser"
 
 
 class ParseRequest(BaseModel):
@@ -58,13 +59,20 @@ async def _parse(params: dict, caller: str) -> dict:
                     await asyncio.to_thread(shutil.rmtree, tmpdir, True)
             return await _parse_docx_with_repair(file_id, full_path)
         except (DocxParseError, RuntimeError, ValueError, FileNotFoundError, TimeoutError) as exc:
-            raise ValidationError(str(exc)) from exc
+            raise ValidationError(_parser_error_message(exc)) from exc
 
     try:
         result = await run_uploaded_file_capability(params, caller, allowed, parse_file)
     except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
+        raise ValidationError(_parser_error_message(exc)) from exc
     return await store_extracted_resources_with_diagnostics(result, caller=caller, parser="docx-parser")
+
+
+def _parser_error_message(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return message
+    return f"{PARSER_NAME} failed without diagnostic output ({type(exc).__name__})"
 
 
 @router.get("/health")

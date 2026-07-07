@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     LLAMA_SERVER_BIN: str = ""    # 必填：llama-server 可执行文件路径
     AI_MODEL_ROOT: str = ""       # 必填：本地模型文件存放根目录
 
+    # Office conversion worker guardrails
+    OFFICE_CONVERSION_MAX_CONCURRENT: int = 8
+    OFFICE_CONVERSION_TIMEOUT_SECONDS: int = 180
+    OFFICE_CONVERSION_TERMINATE_GRACE_SECONDS: float = 5.0
+
     # API 密钥（必须通过 .env 或环境变量设置）
     MIMO_GATE1_KEY: str = ""
     DEEPSEEK_API_KEY: str = ""

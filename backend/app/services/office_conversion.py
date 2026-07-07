@@ -4,13 +4,22 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import tempfile
 from pathlib import Path
+from weakref import WeakKeyDictionary
+
+from app.config import get_settings
 
 SUPPORTED_FORMATS = {
     "pdf", "docx", "pptx", "xlsx", "odt", "ods", "odp",
     "html", "rtf", "txt", "csv", "png", "jpg", "tiff",
 }
+_SEMAPHORES: WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = WeakKeyDictionary()
+
+
+class OfficeConversionTimeoutError(TimeoutError):
+    """Raised when LibreOffice conversion exceeds the configured timeout."""
 
 
 def check_libreoffice() -> str | None:
@@ -46,7 +55,7 @@ async def convert_file(
     source_path: str | Path,
     target_format: str,
     output_dir: str | Path | None = None,
-    timeout_seconds: int = 180,
+    timeout_seconds: int | None = None,
 ) -> str:
     target_format = target_format.lower().lstrip(".")
     if target_format not in SUPPORTED_FORMATS:
@@ -64,32 +73,52 @@ async def convert_file(
     outdir = Path(output_dir).resolve() if output_dir else source.parent
     outdir.mkdir(parents=True, exist_ok=True)
 
+    settings = get_settings()
+    effective_timeout = float(
+        timeout_seconds if timeout_seconds is not None else settings.OFFICE_CONVERSION_TIMEOUT_SECONDS
+    )
+    max_concurrent = max(1, int(settings.OFFICE_CONVERSION_MAX_CONCURRENT))
+    terminate_grace = max(0.5, float(settings.OFFICE_CONVERSION_TERMINATE_GRACE_SECONDS))
+    semaphore = _conversion_semaphore(max_concurrent)
     profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
+    proc: asyncio.subprocess.Process | None = None
+    stdout = b""
+    stderr = b""
     try:
-        cmd = [
-            soffice,
-            f"-env:UserInstallation={Path(profile_dir).resolve().as_uri()}",
-            "--headless",
-            "--convert-to",
-            target_format,
-            "--outdir",
-            str(outdir),
-            str(source),
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+        async with semaphore:
+            cmd = [
+                soffice,
+                f"-env:UserInstallation={Path(profile_dir).resolve().as_uri()}",
+                "--headless",
+                "--convert-to",
+                target_format,
+                "--outdir",
+                str(outdir),
+                str(source),
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **_subprocess_group_kwargs(),
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=effective_timeout,
+                )
+            except TimeoutError as exc:
+                await _terminate_process(proc, grace_seconds=terminate_grace)
+                raise OfficeConversionTimeoutError(
+                    "LibreOffice conversion timed out "
+                    f"after {effective_timeout:g}s: {source.name} -> {target_format}"
+                ) from exc
     finally:
         await asyncio.to_thread(shutil.rmtree, profile_dir, True)
+    if proc is None:
+        raise RuntimeError("LibreOffice conversion process was not started")
     if proc.returncode != 0:
-        output = "\n".join(
-            part.decode("utf-8", errors="replace").strip()
-            for part in (stdout, stderr)
-            if part
-        ).strip()
+        output = _decode_process_output(stdout, stderr)
         raise RuntimeError(f"LibreOffice conversion failed (exit={proc.returncode}): {output}")
 
     output_path = outdir / f"{source.stem}.{target_format}"
@@ -100,6 +129,72 @@ async def convert_file(
                 return str(candidate)
         raise RuntimeError(f"Conversion completed but output file not found at: {output_path}")
     return str(output_path)
+
+
+def _conversion_semaphore(max_concurrent: int) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    current = _SEMAPHORES.get(loop)
+    if current is None or current[0] != max_concurrent:
+        semaphore = asyncio.Semaphore(max_concurrent)
+        _SEMAPHORES[loop] = (max_concurrent, semaphore)
+        return semaphore
+    return current[1]
+
+
+def _subprocess_group_kwargs() -> dict[str, bool]:
+    if os.name == "nt":
+        return {}
+    return {"start_new_session": True}
+
+
+async def _terminate_process(
+    proc: asyncio.subprocess.Process,
+    *,
+    grace_seconds: float,
+) -> None:
+    if proc.returncode is not None:
+        return
+    _send_signal(proc, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+        return
+    except TimeoutError:
+        pass
+    if proc.returncode is None:
+        _send_signal(proc, _kill_signal())
+        await proc.wait()
+
+
+def _send_signal(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    pid = getattr(proc, "pid", None)
+    if os.name != "nt" and isinstance(pid, int) and pid > 0:
+        try:
+            os.killpg(os.getpgid(pid), sig)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+    try:
+        if sig == _kill_signal():
+            proc.kill()
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        return
+
+
+def _kill_signal() -> signal.Signals:
+    return getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _decode_process_output(stdout: bytes, stderr: bytes) -> str:
+    output = "\n".join(
+        part.decode("utf-8", errors="replace").strip()
+        for part in (stdout, stderr)
+        if part
+    ).strip()
+    return output or "(no LibreOffice output)"
 
 
 async def convert_by_file_id(source_path: str | Path, target_format: str) -> tuple[str, bytes]:

@@ -91,7 +91,13 @@ def semantic_failure_reason(result: object, *, _path: str = "result", _depth: in
 
     status = result.get("status")
     if isinstance(status, str) and status.lower() in {"failed", "error"}:
-        return _non_empty_error(result.get("error")) or f"{_path}.status={status}"
+        return (
+            _non_empty_error(result.get("error"))
+            or _non_empty_error(result.get("error_message"))
+            or _non_empty_error(result.get("reason"))
+            or _non_empty_error(result.get("message"))
+            or f"{_path}.status={status}"
+        )
 
     if "code" in result and _legacy_code_failure(result.get("code")):
         return (
