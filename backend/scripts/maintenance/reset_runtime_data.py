@@ -131,7 +131,7 @@ def _db_config() -> DbConfig:
         port=int(env.get("DB_PORT", "5432")),
         user=env.get("DB_USER", "postgres"),
         password=env.get("DB_PASSWORD", ""),
-        name=env.get("DB_NAME", "huashiwangzu_v2"),
+        name=env.get("DB_NAME", "华世王镞_v2"),
     )
 
 

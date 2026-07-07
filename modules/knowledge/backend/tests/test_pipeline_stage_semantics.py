@@ -1,8 +1,11 @@
+import asyncio
 import importlib
+import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -16,21 +19,32 @@ for path in (REPO_ROOT, BACKEND_ROOT):
 
 
 def _load_service(service_name: str):
-    suffix = f".{service_name}"
-    for module_name, module in sys.modules.items():
-        if module_name.endswith(suffix):
+    module_names = (
+        f"modules.knowledge.backend.services.{service_name}",
+        f"huashiwangzu_modules.knowledge.services.{service_name}",
+    )
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        if module is not None:
             return module
-    return importlib.import_module(f"modules.knowledge.backend.services.{service_name}")
+    for module_name in module_names:
+        try:
+            return importlib.import_module(module_name)
+        except Exception:
+            continue
+    raise AssertionError(f"Cannot load knowledge service {service_name}")
 
 
-pipeline_orchestrator = _load_service("pipeline_orchestrator")
 analysis_artifact_service = _load_service("analysis_artifact_service")
 document_service = _load_service("document_service")
 fusion_service = _load_service("fusion_service")
-raw_collection_service = _load_service("raw_collection_service")
-model_routing = _load_service("model_routing")
 llm_diagnostics_stream = _load_service("llm_diagnostics_stream")
-StageDef = pipeline_orchestrator.StageDef
+model_routing = _load_service("model_routing")
+page_asset_service = _load_service("page_asset_service")
+pipeline_service = _load_service("pipeline_service")
+raw_collection_service = _load_service("raw_collection_service")
+stage_result_cache_service = _load_service("stage_result_cache_service")
+
 classify_fusion_status = fusion_service.classify_fusion_status
 classify_raw_collection_status = raw_collection_service.classify_raw_collection_status
 completed_raw_pages = raw_collection_service.completed_raw_pages
@@ -75,36 +89,28 @@ class _ListResult:
 
 class _FakeDocument:
     id = 123
+    owner_id = 1
+    file_id = 456
+    filename = "stage-semantics-source.txt"
+    extension = "pdf"
     storage_path = TEST_STORAGE_PATH
+    total_pages = 2
     raw_status = "pending"
     fusion_status = "pending"
+    profile_status = "pending"
+    graph_status = "pending"
+    relation_status = "pending"
     parse_error = None
     parse_status = "done"
     vector_status = "done"
     deleted = False
 
 
-class _FakeDb:
+class _DiagnosticDb:
     def __init__(self):
-        self.doc = _FakeDocument()
-        self.commits = 0
-        self.rollbacks = 0
-
-    async def execute(self, _stmt):
-        return _ScalarResult(self.doc)
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):
-        self.rollbacks += 1
-
-
-class _DiagnosticDb(_FakeDb):
-    def __init__(self):
-        super().__init__()
         self.added = []
         self.flushes = 0
+        self.commits = 0
         self.rollbacks = 0
         self._next_id = 1000
 
@@ -123,18 +129,11 @@ class _DiagnosticDb(_FakeDb):
     async def flush(self):
         self.flushes += 1
 
-    async def rollback(self):
-        self.rollbacks += 1
-
-
-class _FailingDiagnosticDb(_DiagnosticDb):
-    async def flush(self):
-        self.flushes += 1
-        raise RuntimeError("diagnostics table unavailable")
-
     async def commit(self):
         self.commits += 1
-        raise RuntimeError("diagnostics table unavailable")
+
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 class _SessionFactory:
@@ -149,12 +148,6 @@ class _SessionFactory:
 
     async def __aexit__(self, *_exc_info):
         return None
-
-
-class _Availability:
-    def __init__(self, available: bool, reason: str = ""):
-        self.available = available
-        self.reason = reason
 
 
 class _EmptyParseDocument:
@@ -231,6 +224,10 @@ class _StaleParseDocument(_EmptyParseDocument):
     parse_started_at = datetime.now(timezone.utc) - timedelta(hours=2)
 
 
+class _RecentParseDocument(_StaleParseDocument):
+    parse_started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+
 class _StaleParseDb(_EmptyParseDb):
     def __init__(self):
         super().__init__()
@@ -246,25 +243,92 @@ class _StaleParseDb(_EmptyParseDb):
         return _ScalarResult(None)
 
 
+class _FakeQueueTask:
+    def __init__(self, task_id: int, document_id: int, stage: str):
+        self.id = task_id
+        self.parameters = json.dumps({"document_id": document_id, "stage": stage})
+
+
+class _StaleParseDbWithCurrentTask(_StaleParseDb):
+    def __init__(self, task_id: int):
+        super().__init__()
+        self.task_id = task_id
+
+    async def execute(self, _stmt):
+        self.executes += 1
+        if self.executes == 1:
+            return _ScalarResult(self.doc)
+        if self.executes == 2:
+            return _ListResult([_FakeQueueTask(self.task_id, self.doc.id, "parse_index")])
+        return _ScalarResult(None)
+
+
+class _RecentParseDbWithCurrentTask(_StaleParseDbWithCurrentTask):
+    def __init__(self, task_id: int):
+        super().__init__(task_id)
+        self.doc = _RecentParseDocument()
+
+
 class _ParsedIr:
     parse_errors = ["empty_result"]
     parse_status = "ok"
     resource_diagnostics = []
 
 
+class _FakePipelineRun:
+    id = 99
+    status = "running"
+    reason = None
+    diagnostics_json = {}
+    completed_at = None
+
+
+class _PipelineHandlerDb:
+    def __init__(self, *, fail_commit: bool = False):
+        self.doc = _FakeDocument()
+        self.run = _FakePipelineRun()
+        self.fail_commit = fail_commit
+        self.commits = 0
+        self.flushes = 0
+        self.rollbacks = 0
+
+    async def scalar(self, _stmt):
+        return self.doc
+
+    async def get(self, model, _item_id):
+        if getattr(model, "__name__", "") == "KbPipelineRun":
+            return self.run
+        return None
+
+    async def refresh(self, _obj):
+        return None
+
+    async def flush(self):
+        self.flushes += 1
+
+    async def commit(self):
+        self.commits += 1
+        if self.fail_commit:
+            raise RuntimeError("commit failed")
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+
+class _PipelineHandlerSession:
+    def __init__(self, db):
+        self.db = db
+
+    async def __aenter__(self):
+        return self.db
+
+    async def __aexit__(self, *_exc_info):
+        return None
+
+
 def test_raw_collection_classifies_all_empty_as_degraded_or_failed():
-    assert classify_raw_collection_status(
-        total_rounds=3,
-        valid_rounds=0,
-        failed_rounds=0,
-        task_count=3,
-    ) == "degraded"
-    assert classify_raw_collection_status(
-        total_rounds=3,
-        valid_rounds=0,
-        failed_rounds=3,
-        task_count=3,
-    ) == "failed"
+    assert classify_raw_collection_status(total_rounds=3, valid_rounds=0, failed_rounds=0, task_count=3) == "degraded"
+    assert classify_raw_collection_status(total_rounds=3, valid_rounds=0, failed_rounds=3, task_count=3) == "failed"
 
 
 def test_knowledge_concurrency_reads_models_json_between_batches(tmp_path, monkeypatch):
@@ -277,7 +341,12 @@ def test_knowledge_concurrency_reads_models_json_between_batches(tmp_path, monke
               "pipeline_concurrency": {
                 "raw_collect": 7,
                 "entity_extract": 99,
-                "page_fusion": "bad"
+                "page_fusion": "bad",
+                "model_call_global": 12
+              },
+              "pipeline_priorities": {
+                "source_validate": 10,
+                "bad": "nope"
               }
             }
           }
@@ -291,37 +360,259 @@ def test_knowledge_concurrency_reads_models_json_between_batches(tmp_path, monke
     assert model_routing.resolve_knowledge_concurrency("raw_collect", 5) == 7
     assert model_routing.resolve_knowledge_concurrency("entity_extract", 6, maximum=16) == 16
     assert model_routing.resolve_knowledge_concurrency("page_fusion", 6) == 6
+    assert model_routing.resolve_knowledge_model_call_concurrency() == 12
+    assert model_routing.resolve_knowledge_pipeline_priority("source_validate", 5) == 10
+    assert model_routing.resolve_knowledge_pipeline_priority("bad", 5) == 5
 
 
-def test_raw_collection_classifies_partial_empty_as_degraded():
-    assert classify_raw_collection_status(
-        total_rounds=3,
-        valid_rounds=1,
-        failed_rounds=0,
-        task_count=3,
-    ) == "degraded"
+@pytest.mark.asyncio
+async def test_knowledge_model_call_slot_limits_parallel_entries(monkeypatch):
+    monkeypatch.setattr(model_routing, "resolve_knowledge_model_call_concurrency", lambda default=10: 1)
+    active_counts: list[int] = []
+
+    async def _worker() -> None:
+        async with model_routing.knowledge_model_call_slot("test"):
+            active_counts.append(model_routing.knowledge_model_call_active_count())
+            await asyncio.sleep(0.01)
+
+    await asyncio.gather(_worker(), _worker())
+
+    assert active_counts == [1, 1]
+    assert model_routing.knowledge_model_call_active_count() == 0
 
 
-def test_raw_collection_classifies_page_covered_empty_rounds_as_done():
-    assert classify_raw_collection_status(
-        total_rounds=18,
-        valid_rounds=16,
-        failed_rounds=0,
-        task_count=18,
-        total_pages=6,
-        valid_pages=6,
-    ) == "done"
+@pytest.mark.asyncio
+async def test_raw_collection_builds_page_text_map_with_single_parse(monkeypatch):
+    calls = 0
+
+    async def _fake_parse_document(file_id: int, ext: str, caller: str):
+        nonlocal calls
+        calls += 1
+        assert file_id == 42
+        assert ext == "pdf"
+        assert caller == "user:1"
+        return {
+            "blocks": [
+                {"page": 1, "text": "第一页 A"},
+                {"page": 1, "text": "第一页 B"},
+                {"page": 2, "text": "第二页"},
+                {"page": None, "text": "无页码默认第一页"},
+            ]
+        }
+
+    monkeypatch.setattr(raw_collection_service, "parse_document", _fake_parse_document)
+    monkeypatch.setattr(raw_collection_service, "to_legacy_dict", lambda value: value)
+
+    page_text_map, error = await raw_collection_service._build_page_text_map(42, "pdf", "user:1")
+
+    assert error == ""
+    assert calls == 1
+    assert page_text_map[1] == "第一页 A\n\n第一页 B\n\n无页码默认第一页"
+    assert page_text_map[2] == "第二页"
 
 
-def test_raw_collection_classifies_missing_page_as_degraded():
-    assert classify_raw_collection_status(
-        total_rounds=18,
-        valid_rounds=15,
-        failed_rounds=0,
-        task_count=18,
-        total_pages=6,
-        valid_pages=5,
-    ) == "degraded"
+@pytest.mark.asyncio
+async def test_tesseract_ocr_runs_off_event_loop(monkeypatch):
+    calls = []
+
+    async def fake_to_thread(func, *args, **kwargs):
+        calls.append((func, args, kwargs))
+        return {"words": [{"t": "清颜"}], "img_w": 100, "img_h": 50}
+
+    monkeypatch.setattr(raw_collection_service.asyncio, "to_thread", fake_to_thread)
+
+    result = await raw_collection_service._ocr_words_tesseract_async(b"image")
+
+    assert result["words"][0]["t"] == "清颜"
+    assert calls == [(raw_collection_service._ocr_words_tesseract, (b"image",), {})]
+
+
+def test_raw_collection_classifies_partial_and_page_coverage():
+    assert classify_raw_collection_status(total_rounds=3, valid_rounds=1, failed_rounds=0, task_count=3) == "degraded"
+    assert (
+        classify_raw_collection_status(
+            total_rounds=18,
+            valid_rounds=16,
+            failed_rounds=0,
+            task_count=18,
+            total_pages=6,
+            valid_pages=6,
+        )
+        == "done"
+    )
+    assert (
+        classify_raw_collection_status(
+            total_rounds=18,
+            valid_rounds=15,
+            failed_rounds=0,
+            task_count=18,
+            total_pages=6,
+            valid_pages=5,
+        )
+        == "degraded"
+    )
+
+
+def test_raw_stage_result_compaction_keeps_queue_payload_small():
+    results = [
+        {
+            "round": 3,
+            "page": page,
+            "chars": 100,
+            "status": "done",
+            "duration_ms": 10,
+            "processor": "vlm",
+            "page_asset": {"storage_path": "x", "diagnostics": "large"},
+        }
+        for page in range(1, 101)
+    ]
+
+    compact = raw_collection_service._compact_raw_stage_results(results)
+
+    assert len(compact) == 80
+    assert compact[0] == {
+        "round": 3,
+        "page": 1,
+        "chars": 100,
+        "status": "done",
+        "duration_ms": 10,
+        "processor": "vlm",
+        "error": None,
+        "model_degraded": False,
+    }
+    assert "page_asset" not in compact[0]
+
+
+def test_local_ocr_image_preprocess_resizes_oversized_images(monkeypatch):
+    from io import BytesIO
+
+    from PIL import Image
+
+    monkeypatch.setattr(raw_collection_service, "TESSERACT_AVAILABLE", True)
+
+    def fake_preprocess_int(key, default, *, minimum=1, maximum=100_000_000):
+        if key == "raw_ocr_max_side":
+            return 1000
+        if key == "raw_ocr_max_bytes":
+            return 512 * 1024
+        return default
+
+    monkeypatch.setattr(raw_collection_service, "resolve_knowledge_image_preprocess_int", fake_preprocess_int)
+
+    source = BytesIO()
+    Image.new("RGB", (4000, 1000), color="white").save(source, format="PNG")
+
+    prepared, metadata = raw_collection_service._prepare_image_bytes_for_local_ocr(source.getvalue())
+
+    assert metadata["resized"] is True
+    assert metadata["reencoded"] is True
+    assert metadata["original_size"] == [4000, 1000]
+    assert metadata["prepared_size"] == [1000, 250]
+    assert metadata["prepared_bytes"] == len(prepared)
+    assert len(prepared) < len(source.getvalue())
+
+
+def test_vlm_ready_image_materialization_uses_gateway_preprocess():
+    from io import BytesIO
+
+    from PIL import Image
+
+    source = BytesIO()
+    Image.new("RGB", (3600, 1200), color="white").save(source, format="PNG")
+
+    prepared, prepared_mime, metadata = page_asset_service._prepare_page_asset_bytes(
+        source.getvalue(),
+        "image/png",
+    )
+
+    assert metadata["vlm_ready"] is True
+    assert prepared_mime.startswith("image/")
+    assert metadata["stage"] == "knowledge_page_render"
+    assert metadata["preprocess_version"].startswith("vision_image_preprocess")
+    assert metadata["resized"] is True
+    assert metadata["reencoded"] is True
+    assert metadata["source_original_md5"] != metadata["source_prepared_md5"]
+    assert len(prepared) == metadata["prepared_bytes"]
+
+
+@pytest.mark.asyncio
+async def test_page_render_materializes_pages_with_independent_commits(monkeypatch):
+    doc = _FakeDocument()
+    doc.total_pages = 3
+
+    class MainDb:
+        def __init__(self):
+            self.commits = 0
+
+        async def scalar(self, _stmt):
+            return doc
+
+        async def commit(self):
+            self.commits += 1
+
+    class PageDb:
+        def __init__(self):
+            self.commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    class PageSession:
+        def __init__(self, sessions: list[PageDb]):
+            self.db = PageDb()
+            sessions.append(self.db)
+
+        async def __aenter__(self):
+            return self.db
+
+        async def __aexit__(self, *_exc_info):
+            return None
+
+    class Asset:
+        id = 99
+        width = 1600
+        height = 900
+
+    sessions: list[PageDb] = []
+    active = 0
+    max_active = 0
+
+    async def fake_render(_file_id, page, _user_id):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return f"page-{page}".encode()
+
+    async def fake_existing(*_args, **_kwargs):
+        return None
+
+    async def fake_upsert(*_args, **_kwargs):
+        return Asset()
+
+    monkeypatch.setattr(page_asset_service, "AsyncSessionLocal", lambda: PageSession(sessions))
+    monkeypatch.setattr(page_asset_service, "get_pdf_page_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(page_asset_service, "render_page_to_image", fake_render)
+    monkeypatch.setattr(page_asset_service, "_existing_page_asset", fake_existing)
+    monkeypatch.setattr(page_asset_service, "_prepare_page_asset_bytes", lambda data, mime: (data, mime, {}))
+    monkeypatch.setattr(page_asset_service, "_upsert_page_asset", fake_upsert)
+    monkeypatch.setattr(
+        page_asset_service,
+        "resolve_knowledge_concurrency",
+        lambda stage, default, **_kwargs: 3 if stage == "page_render_pages" else default,
+    )
+
+    db = MainDb()
+    result = await page_asset_service.materialize_page_assets_stage(db, doc.id, doc.owner_id, doc.file_id, 1)
+
+    assert result["status"] == "done"
+    assert result["assets"] == 3
+    assert result["materialized"] == 3
+    assert result["page_concurrency"] == 3
+    assert max_active == 3
+    assert sum(session.commits for session in sessions) == 3
+    assert db.commits == 2
 
 
 def test_raw_quality_treats_empty_visual_ocr_as_optional():
@@ -331,27 +622,23 @@ def test_raw_quality_treats_empty_visual_ocr_as_optional():
         (1, 3, "vision", "poster layout and text", "done", 18000, {}),
     ]
 
-    quality = summarize_raw_content_quality(
-        rows,
-        total_pages=1,
-        expected_rounds=3,
-        visual_document=True,
-    )
+    quality = summarize_raw_content_quality(rows, total_pages=1, expected_rounds=3, visual_document=True)
 
     assert quality["valid_rounds"] == 2
-    assert quality["empty_rounds"] == 1
     assert quality["optional_empty_rounds"] == 1
-    assert quality["primary_valid_pages"] == 1
     assert quality["primary_empty_pages"] == 0
-    assert classify_raw_collection_status(
-        total_rounds=quality["total_rounds"],
-        valid_rounds=quality["valid_rounds"],
-        failed_rounds=0,
-        task_count=3,
-        total_pages=1,
-        valid_pages=quality["valid_pages"],
-        primary_valid_pages=quality["primary_valid_pages"],
-    ) == "done"
+    assert (
+        classify_raw_collection_status(
+            total_rounds=quality["total_rounds"],
+            valid_rounds=quality["valid_rounds"],
+            failed_rounds=0,
+            task_count=3,
+            total_pages=1,
+            valid_pages=quality["valid_pages"],
+            primary_valid_pages=quality["primary_valid_pages"],
+        )
+        == "done"
+    )
 
 
 def test_raw_quality_degrades_when_visual_page_lacks_primary_content():
@@ -361,24 +648,22 @@ def test_raw_quality_degrades_when_visual_page_lacks_primary_content():
         (1, 3, "vision", "", "degraded", 18000, {}),
     ]
 
-    quality = summarize_raw_content_quality(
-        rows,
-        total_pages=1,
-        expected_rounds=3,
-        visual_document=True,
-    )
+    quality = summarize_raw_content_quality(rows, total_pages=1, expected_rounds=3, visual_document=True)
 
     assert quality["valid_rounds"] == 1
     assert quality["primary_empty_pages"] == 1
-    assert classify_raw_collection_status(
-        total_rounds=quality["total_rounds"],
-        valid_rounds=quality["valid_rounds"],
-        failed_rounds=0,
-        task_count=3,
-        total_pages=1,
-        valid_pages=quality["valid_pages"],
-        primary_valid_pages=quality["primary_valid_pages"],
-    ) == "degraded"
+    assert (
+        classify_raw_collection_status(
+            total_rounds=quality["total_rounds"],
+            valid_rounds=quality["valid_rounds"],
+            failed_rounds=0,
+            task_count=3,
+            total_pages=1,
+            valid_pages=quality["valid_pages"],
+            primary_valid_pages=quality["primary_valid_pages"],
+        )
+        == "degraded"
+    )
 
 
 def test_raw_collection_only_skips_pages_with_all_rounds_done():
@@ -394,42 +679,150 @@ def test_raw_collection_only_skips_pages_with_all_rounds_done():
     assert completed_raw_pages(rows, expected_rounds=3) == {2}
 
 
-def test_stage_assessment_allows_optional_raw_empty_rounds():
-    assessment = pipeline_orchestrator.assess_stage_result(
-        "raw",
-        {
-            "status": "done",
-            "total_rounds": 3,
-            "valid_rounds": 2,
-            "empty_rounds": 1,
-            "optional_empty_rounds": 1,
-            "empty_pages": 0,
-            "primary_empty_pages": 0,
-        },
-        required=True,
+def test_pipeline_stage_result_status_contract():
+    assert pipeline_service._stage_status_from_result({"status": "done"}) == ("done", "done")
+    assert pipeline_service._stage_status_from_result({"status": "skipped", "reason": "already done"}) == (
+        "skipped",
+        "already done",
+    )
+    assert pipeline_service._stage_status_from_result({"model_degraded": True}) == ("degraded", "model_fallback")
+    assert pipeline_service._stage_status_from_result({"error": "boom"}) == ("failed", "boom")
+
+
+@pytest.mark.asyncio
+async def test_pipeline_root_fans_out_parallelizable_stages(monkeypatch):
+    doc = _FakeDocument()
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_db, _doc, _user_id, stage, **_kwargs):
+        enqueued.append(stage)
+        return {"stage": stage, "enqueued": True}
+
+    monkeypatch.setattr(pipeline_service, "enqueue_pipeline_stage_task", fake_enqueue)
+    monkeypatch.setattr(pipeline_service, "page_assets_complete", AsyncMock(return_value=False))
+
+    class Db:
+        async def refresh(self, _doc):
+            return None
+
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage=pipeline_service.ROOT_STAGE,
+        pipeline_run_id=10,
     )
 
-    assert assessment.status == "done"
-    assert assessment.complete_for_dependencies is True
+    assert [item["stage"] for item in successors] == ["parse_index", "raw_text", "page_render"]
+    assert enqueued == ["parse_index", "raw_text", "page_render"]
 
 
-def test_stage_assessment_degrades_raw_missing_primary_page():
-    assessment = pipeline_orchestrator.assess_stage_result(
-        "raw",
-        {
-            "status": "done",
-            "total_rounds": 3,
-            "valid_rounds": 1,
-            "empty_rounds": 2,
-            "empty_pages": 0,
-            "primary_empty_pages": 1,
-        },
-        required=True,
+@pytest.mark.asyncio
+async def test_pipeline_root_backfills_missing_page_assets_without_deep_rerun(monkeypatch):
+    doc = _FakeDocument()
+    doc.raw_status = "done"
+    doc.fusion_status = "done"
+    doc.profile_status = "done"
+    doc.graph_status = "done"
+    doc.relation_status = "done"
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_db, _doc, _user_id, stage, **_kwargs):
+        enqueued.append(stage)
+        return {"stage": stage, "enqueued": True}
+
+    monkeypatch.setattr(pipeline_service, "enqueue_pipeline_stage_task", fake_enqueue)
+    monkeypatch.setattr(pipeline_service, "page_assets_complete", AsyncMock(return_value=False))
+
+    class Db:
+        async def refresh(self, _doc):
+            return None
+
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage=pipeline_service.ROOT_STAGE,
+        pipeline_run_id=10,
     )
 
-    assert assessment.status == "degraded"
-    assert assessment.complete_for_dependencies is True
-    assert assessment.reason == "raw_content_partial"
+    assert [item["stage"] for item in successors] == ["page_render"]
+    assert enqueued == ["page_render"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_page_render_fans_out_visual_consumers(monkeypatch):
+    doc = _FakeDocument()
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_db, _doc, _user_id, stage, **_kwargs):
+        enqueued.append(stage)
+        return {"stage": stage, "enqueued": True}
+
+    monkeypatch.setattr(pipeline_service, "enqueue_pipeline_stage_task", fake_enqueue)
+
+    class Db:
+        async def refresh(self, _doc):
+            return None
+
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage="page_render",
+        pipeline_run_id=10,
+    )
+
+    assert [item["stage"] for item in successors] == ["raw_ocr", "raw_vision"]
+    assert enqueued == ["raw_ocr", "raw_vision"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_profile_graph_backfills_missing_peer_before_relations(monkeypatch):
+    doc = _FakeDocument()
+    doc.profile_status = "done"
+    doc.graph_status = "pending"
+    enqueued: list[str] = []
+
+    async def fake_enqueue(_db, _doc, _user_id, stage, **_kwargs):
+        enqueued.append(stage)
+        return {"stage": stage, "enqueued": True}
+
+    monkeypatch.setattr(pipeline_service, "enqueue_pipeline_stage_task", fake_enqueue)
+
+    class Db:
+        async def refresh(self, _doc):
+            return None
+
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage="profile",
+        pipeline_run_id=10,
+    )
+    assert [item["stage"] for item in successors] == ["graph"]
+
+    doc.graph_status = "done"
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage="graph",
+        pipeline_run_id=10,
+    )
+    assert [item["stage"] for item in successors] == ["relations"]
+
+    doc.profile_status = "pending"
+    doc.graph_status = "done"
+    successors = await pipeline_service._enqueue_successors(
+        Db(),
+        doc=doc,
+        user_id=1,
+        completed_stage="graph",
+        pipeline_run_id=10,
+    )
+    assert [item["stage"] for item in successors] == ["profile"]
 
 
 def test_fusion_classifies_all_empty_and_index_failure():
@@ -447,6 +840,142 @@ def test_analysis_artifact_stable_hash_ignores_dict_order():
         "stage": "fusion",
         "payload": {"b": [1, 2], "a": "文本"},
     })
+
+
+def test_stage_result_cache_writes_recoverable_json_until_deleted(tmp_path):
+    started_at = datetime.now(timezone.utc)
+
+    cache_path = stage_result_cache_service.write_stage_result_cache(
+        cache_dir=tmp_path,
+        document_id=123,
+        file_id=456,
+        owner_id=1,
+        stage="raw_vision",
+        status="done",
+        result={"text": "海报标题", "layout": {"blocks": 2}},
+        task_id=777,
+        pipeline_run_id=888,
+        reason="done",
+        started_at=started_at,
+        duration_ms=321,
+    )
+
+    assert cache_path.exists()
+    assert cache_path.suffix == ".json"
+    assert not list(tmp_path.glob("*.tmp"))
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == stage_result_cache_service.CACHE_SCHEMA_VERSION
+    assert payload["document_id"] == 123
+    assert payload["stage"] == "raw_vision"
+    assert payload["result"]["text"] == "海报标题"
+    assert payload["started_at"] == started_at.isoformat()
+
+    stage_result_cache_service.delete_stage_result_cache(cache_path)
+
+    assert not cache_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stage_cache_survives_main_commit_failure(tmp_path, monkeypatch):
+    db = _PipelineHandlerDb(fail_commit=True)
+    deleted_paths: list[Path] = []
+
+    async def fake_raise_if_source_unavailable(*_args, **_kwargs):
+        return None
+
+    async def fake_run_stage(*_args, **_kwargs):
+        return {"status": "done", "text": "LLM result that must not be lost"}
+
+    async def fake_record_stage_artifact(*_args, **_kwargs):
+        return "artifact-hash"
+
+    async def fake_record_stage_run(*_args, **_kwargs):
+        return None
+
+    async def fake_enqueue_successors(*_args, **_kwargs):
+        return []
+
+    def fake_write_stage_result_cache(**kwargs):
+        kwargs["cache_dir"] = tmp_path
+        return stage_result_cache_service.write_stage_result_cache(**kwargs)
+
+    def fake_delete_stage_result_cache(path):
+        deleted_paths.append(path)
+        stage_result_cache_service.delete_stage_result_cache(path)
+
+    monkeypatch.setattr(pipeline_service, "AsyncSessionLocal", lambda: _PipelineHandlerSession(db))
+    monkeypatch.setattr(pipeline_service, "raise_if_source_unavailable", fake_raise_if_source_unavailable)
+    monkeypatch.setattr(pipeline_service, "_run_stage", fake_run_stage)
+    monkeypatch.setattr(pipeline_service, "_record_stage_artifact", fake_record_stage_artifact)
+    monkeypatch.setattr(pipeline_service, "_record_stage_run", fake_record_stage_run)
+    monkeypatch.setattr(pipeline_service, "_enqueue_successors", fake_enqueue_successors)
+    monkeypatch.setattr(pipeline_service, "document_deep_pipeline_complete", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(pipeline_service, "write_stage_result_cache", fake_write_stage_result_cache)
+    monkeypatch.setattr(pipeline_service, "delete_stage_result_cache", fake_delete_stage_result_cache)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await pipeline_service._pipeline_stage_handler({
+            "document_id": db.doc.id,
+            "user_id": 1,
+            "stage": "graph",
+            "task_id": 777,
+            "pipeline_run_id": db.run.id,
+        })
+
+    cache_files = list(tmp_path.glob("*.json"))
+    assert len(cache_files) == 1
+    assert deleted_paths == []
+    payload = json.loads(cache_files[0].read_text(encoding="utf-8"))
+    assert payload["result"]["text"] == "LLM result that must not be lost"
+    assert payload["pipeline_run_id"] == db.run.id
+    assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stage_rolls_back_before_source_check_after_stage_error(monkeypatch):
+    db = _PipelineHandlerDb()
+    observed = {}
+
+    class SourceState:
+        available = True
+        reason = ""
+
+    async def fake_raise_if_source_unavailable(*_args, **_kwargs):
+        return None
+
+    async def fake_run_stage(*_args, **_kwargs):
+        raise RuntimeError("stage exploded")
+
+    async def fake_get_source_state(_db, file_id):
+        observed["rollbacks_before_source_check"] = db.rollbacks
+        observed["file_id"] = file_id
+        return SourceState()
+
+    async def fake_record_stage_artifact(*_args, **_kwargs):
+        return "artifact-hash"
+
+    async def fake_record_stage_run(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(pipeline_service, "AsyncSessionLocal", lambda: _PipelineHandlerSession(db))
+    monkeypatch.setattr(pipeline_service, "raise_if_source_unavailable", fake_raise_if_source_unavailable)
+    monkeypatch.setattr(pipeline_service, "_run_stage", fake_run_stage)
+    monkeypatch.setattr(pipeline_service, "get_source_file_availability", fake_get_source_state)
+    monkeypatch.setattr(pipeline_service, "_record_stage_artifact", fake_record_stage_artifact)
+    monkeypatch.setattr(pipeline_service, "_record_stage_run", fake_record_stage_run)
+
+    result = await pipeline_service._pipeline_stage_handler({
+        "document_id": db.doc.id,
+        "user_id": 1,
+        "stage": "page_render",
+        "task_id": 777,
+        "pipeline_run_id": db.run.id,
+    })
+
+    assert observed["rollbacks_before_source_check"] == 1
+    assert observed["file_id"] == db.doc.file_id
+    assert result["task_status"] == "failed"
+    assert result["reason"] == "stage exploded"
 
 
 @pytest.mark.asyncio
@@ -486,389 +1015,50 @@ async def test_record_analysis_artifact_uses_session_factory():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_failed_stage_returns_failed(monkeypatch):
-    async def fail_stage(**_kwargs):
-        return {"status": "failed", "reason": "boom"}
+async def test_pipeline_stage_artifact_records_exact_dag_stage(monkeypatch):
+    captured: dict = {}
 
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [StageDef("raw", ["source_file"], False, fail_stage)],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _noop)
+    async def fake_record_analysis_artifact(**kwargs):
+        captured.update(kwargs)
+        return 88
 
-    main_db = _FakeDb()
-    diagnostics_db = _DiagnosticDb()
-    monkeypatch.setattr(pipeline_orchestrator, "AsyncSessionLocal", _SessionFactory(diagnostics_db))
+    async def fake_prompt_hash(_db, stage):
+        return f"prompt:{stage}"
 
-    result = await pipeline_orchestrator.run_pipeline(main_db, 123, 1, 456, 1)
+    monkeypatch.setattr(pipeline_service, "record_analysis_artifact", fake_record_analysis_artifact)
+    monkeypatch.setattr(pipeline_service, "resolve_stage_prompt_hash", fake_prompt_hash)
+    doc = _FakeDocument()
 
-    run_rows = [
-        item for item in diagnostics_db.added
-        if getattr(item, "__tablename__", "") == "kb_pipeline_runs"
-    ]
-    stage_rows = [
-        item for item in diagnostics_db.added
-        if getattr(item, "__tablename__", "") == "kb_pipeline_stage_runs"
-    ]
-
-    assert run_rows[0].status == "failed"
-    assert run_rows[0].reason == "boom"
-    assert result["status"] == "failed"
-    assert result["steps"]["raw"]["stage_status"] == "failed"
-    assert stage_rows[-1].stage == "raw"
-    assert stage_rows[-1].status == "failed"
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_updates_document_status_fields(monkeypatch):
-    async def profile_stage(**_kwargs):
-        return {"subject": "检验报告", "doc_summary": "检测结论"}
-
-    async def graph_stage(**_kwargs):
-        return {"status": "done", "entities": 3}
-
-    async def relations_stage(**_kwargs):
-        return {"status": "done", "relations": 1}
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [
-            StageDef("profile", ["fusion"], True, profile_stage),
-            StageDef("graph", ["fusion"], True, graph_stage),
-            StageDef("relations", ["profile", "graph"], True, relations_stage, requires=["profile", "graph"]),
-        ],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-
-    db = _FakeDb()
-    result = await pipeline_orchestrator.run_pipeline(db, 123, 1, 456, 1)
-
-    assert result["status"] == "done"
-    assert db.doc.profile_status == "done"
-    assert db.doc.graph_status == "done"
-    assert db.doc.relation_status == "done"
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_skips_done_deep_stages_when_not_stale(monkeypatch):
-    async def stale_none(*_args, **_kwargs):
-        return []
-
-    async def should_not_run(**_kwargs):
-        raise AssertionError("done stage should be resumed as skipped")
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [
-            StageDef("profile", ["fusion"], False, should_not_run),
-            StageDef("graph", ["fusion"], False, should_not_run),
-            StageDef("relations", ["profile", "graph"], False, should_not_run, requires=["profile", "graph"]),
-        ],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", stale_none)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-
-    db = _FakeDb()
-    db.doc.profile_status = "done"
-    db.doc.graph_status = "done"
-    db.doc.relation_status = "done"
-
-    result = await pipeline_orchestrator.run_pipeline(db, 123, 1, 456, 1)
-
-    assert result["status"] == "done"
-    assert result["steps"]["profile"]["reason"] == "already done"
-    assert result["steps"]["graph"]["reason"] == "already done"
-    assert result["steps"]["relations"]["reason"] == "already done"
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_force_fusion_reruns_downstream(monkeypatch):
-    calls: list[str] = []
-
-    async def stale_none(*_args, **_kwargs):
-        return []
-
-    async def stage_fn(**_kwargs):
-        calls.append(_kwargs["document_id"] and "called")
-        return {"status": "done"}
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [
-            StageDef("fusion", ["raw"], False, stage_fn, requires=[]),
-            StageDef("profile", ["fusion"], False, stage_fn, requires=["fusion"]),
-            StageDef("relations", ["profile"], False, stage_fn, requires=["profile"]),
-        ],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", stale_none)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-    monkeypatch.setattr(pipeline_orchestrator, "mark_stale", _noop)
-
-    db = _FakeDb()
-    db.doc.fusion_status = "done"
-    db.doc.profile_status = "done"
-    db.doc.relation_status = "done"
-
-    result = await pipeline_orchestrator.run_pipeline(db, 123, 1, 456, 1, force_fusion=True)
-
-    assert result["status"] == "done"
-    assert len(calls) == 3
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_degraded_empty_required_stage_skips_downstream(monkeypatch):
-    async def empty_raw(**_kwargs):
-        return {
+    output_hash = await pipeline_service._record_stage_artifact(
+        object(),
+        doc=doc,
+        pipeline_run_id=1000,
+        task_id=777,
+        stage="raw_vision",
+        status="degraded",
+        started_at=datetime.now(timezone.utc),
+        result={
             "status": "degraded",
-            "total_rounds": 1,
-            "valid_rounds": 0,
-            "empty_rounds": 1,
-        }
-
-    async def fusion_stage(**_kwargs):
-        return {"status": "done", "valid_pages": 1, "total_pages": 1}
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [
-            StageDef("raw", ["source_file"], False, empty_raw),
-            StageDef("fusion", ["raw"], False, fusion_stage, requires=["raw"]),
-        ],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _noop)
-
-    result = await pipeline_orchestrator.run_pipeline(_FakeDb(), 123, 1, 456, 1)
-
-    assert result["status"] == "degraded"
-    assert result["steps"]["raw"]["stage_status"] == "degraded"
-    assert result["steps"]["fusion"]["status"] == "skipped"
-    assert result["steps"]["fusion"]["classification"] == "degraded_dependency"
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_required_skipped_stage_degrades_pipeline(monkeypatch):
-    async def skipped_raw(**_kwargs):
-        return {"status": "skipped", "reason": "no usable raw"}
-
-    async def fusion_stage(**_kwargs):
-        return {"status": "done", "valid_pages": 1, "total_pages": 1}
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [
-            StageDef("raw", ["source_file"], False, skipped_raw),
-            StageDef("fusion", ["raw"], False, fusion_stage, requires=["raw"]),
-        ],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _noop)
-
-    result = await pipeline_orchestrator.run_pipeline(_FakeDb(), 123, 1, 456, 1)
-
-    assert result["status"] == "degraded"
-    assert result["steps"]["raw"]["stage_status"] == "degraded"
-    assert result["steps"]["fusion"]["status"] == "skipped"
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_persists_stage_diagnostics(monkeypatch):
-    async def partial_raw(**_kwargs):
-        return {
-            "status": "degraded",
-            "total_rounds": 3,
-            "valid_rounds": 2,
-            "empty_rounds": 1,
-        }
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [StageDef("raw", ["source_file"], False, partial_raw)],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-
-    main_db = _FakeDb()
-    diagnostics_db = _DiagnosticDb()
-    monkeypatch.setattr(pipeline_orchestrator, "AsyncSessionLocal", _SessionFactory(diagnostics_db))
-    result = await pipeline_orchestrator.run_pipeline(main_db, 123, 1, 456, 1)
-
-    assert result["status"] == "degraded"
-    stage_rows = [
-        item for item in diagnostics_db.added
-        if getattr(item, "__tablename__", "") == "kb_pipeline_stage_runs"
-    ]
-    assert [row.stage for row in stage_rows] == ["source_file", "raw"]
-    assert stage_rows[1].status == "degraded"
-    assert stage_rows[1].reason == "raw_content_partial"
-    assert stage_rows[1].metrics_json["valid_rounds"] == 2
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_persists_analysis_artifacts(monkeypatch):
-    async def done_raw(**_kwargs):
-        return {
-            "status": "done",
-            "total_rounds": 1,
-            "valid_rounds": 1,
-            "empty_rounds": 0,
             "model_diagnostics": [
                 {
                     "requested_profile": "gpt-5.5-knowledge",
-                    "selected_profile": "gpt-5.5",
+                    "selected_profile": "deepseek-v4-flash",
                 }
             ],
-        }
-
-    async def prompt_hash_stub(_db, stage):
-        return f"prompt:{stage}"
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [StageDef("raw", ["source_file"], False, done_raw)],
+        },
+        reason="model_fallback",
+        duration_ms=123,
     )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-    monkeypatch.setattr(pipeline_orchestrator, "resolve_stage_prompt_hash", prompt_hash_stub)
 
-    diagnostics_db = _DiagnosticDb()
-    monkeypatch.setattr(pipeline_orchestrator, "AsyncSessionLocal", _SessionFactory(diagnostics_db))
-
-    result = await pipeline_orchestrator.run_pipeline(_FakeDb(), 123, 1, 456, 1, task_id=777)
-
-    artifact_rows = [
-        item for item in diagnostics_db.added
-        if getattr(item, "__tablename__", "") == "kb_analysis_artifacts"
-    ]
-    assert result["status"] == "done"
-    assert [row.stage for row in artifact_rows] == ["source_file", "raw"]
-    raw_artifact = artifact_rows[1]
-    assert raw_artifact.task_id == 777
-    assert raw_artifact.pipeline_run_id == 1000
-    assert raw_artifact.status == "done"
-    assert raw_artifact.prompt_hash == "prompt:raw"
-    assert raw_artifact.model_profile == "gpt-5.5-knowledge"
-    assert raw_artifact.model_used == "gpt-5.5"
-    assert raw_artifact.input_hash
-    assert raw_artifact.output_hash
-    assert raw_artifact.diagnostics_json["model_diagnostics"][0]["selected_profile"] == "gpt-5.5"
-    assert raw_artifact.metrics_json["valid_rounds"] == 1
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_persists_queue_task_id_on_pipeline_run(monkeypatch):
-    async def done_raw(**_kwargs):
-        return {
-            "status": "done",
-            "total_rounds": 1,
-            "valid_rounds": 1,
-            "empty_rounds": 0,
-        }
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [StageDef("raw", ["source_file"], False, done_raw)],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-
-    diagnostics_db = _DiagnosticDb()
-    monkeypatch.setattr(pipeline_orchestrator, "AsyncSessionLocal", _SessionFactory(diagnostics_db))
-
-    result = await pipeline_orchestrator.run_pipeline(_FakeDb(), 123, 1, 456, 1, task_id=777)
-
-    run_rows = [
-        item for item in diagnostics_db.added
-        if getattr(item, "__tablename__", "") == "kb_pipeline_runs"
-    ]
-    assert result["status"] == "done"
-    assert run_rows[0].task_id == 777
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_diagnostic_failure_rolls_back_and_does_not_break_pipeline(monkeypatch):
-    async def done_raw(**_kwargs):
-        return {
-            "status": "done",
-            "total_rounds": 1,
-            "valid_rounds": 1,
-            "empty_rounds": 0,
-        }
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [StageDef("raw", ["source_file"], False, done_raw)],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-
-    main_db = _FakeDb()
-    diagnostics_db = _FailingDiagnosticDb()
-    monkeypatch.setattr(pipeline_orchestrator, "AsyncSessionLocal", _SessionFactory(diagnostics_db))
-
-    result = await pipeline_orchestrator.run_pipeline(main_db, 123, 1, 456, 1)
-
-    assert result["status"] == "done"
-    assert main_db.commits >= 1
-    assert main_db.rollbacks == 0
-    assert diagnostics_db.rollbacks >= 1
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_stops_when_source_is_deleted_after_stage(monkeypatch):
-    calls = {"source": 0, "fusion": 0}
-
-    async def source_flips_after_raw(*_args, **_kwargs):
-        calls["source"] += 1
-        if calls["source"] >= 3:
-            return _Availability(False, "source_file_deleted")
-        return _Availability(True)
-
-    async def done_raw(**_kwargs):
-        return {
-            "status": "done",
-            "total_rounds": 1,
-            "valid_rounds": 1,
-            "empty_rounds": 0,
-        }
-
-    async def fusion_stage(**_kwargs):
-        calls["fusion"] += 1
-        return {"status": "done", "valid_pages": 1, "total_pages": 1}
-
-    monkeypatch.setattr(
-        pipeline_orchestrator,
-        "STAGE_REGISTRY",
-        [
-            StageDef("raw", ["source_file"], False, done_raw),
-            StageDef("fusion", ["raw"], False, fusion_stage, requires=["raw"]),
-        ],
-    )
-    monkeypatch.setattr(pipeline_orchestrator, "detect_stale_stages", _always_stale)
-    monkeypatch.setattr(pipeline_orchestrator, "record_artifact_hash", _hash_stage)
-    monkeypatch.setattr(pipeline_orchestrator, "get_source_file_availability", source_flips_after_raw)
-
-    db = _FakeDb()
-    result = await pipeline_orchestrator.run_pipeline(db, 123, 1, 456, 1)
-
-    assert result["status"] == "skipped"
-    assert result["reason"] == "source_file_deleted"
-    assert result["steps"]["raw"]["classification"] == "source_unavailable"
-    assert result["steps"]["raw"]["metrics"]["valid_rounds"] == 1
-    assert db.doc.parse_error == "source_file_deleted"
-    assert calls["fusion"] == 0
+    assert output_hash
+    assert captured["stage"] == "raw_vision"
+    assert captured["schema_version"] == "raw_vision_v1"
+    assert captured["task_id"] == 777
+    assert captured["pipeline_run_id"] == 1000
+    assert captured["prompt_hash_value"] == "prompt:raw_vision"
+    assert captured["model_profile"] == "gpt-5.5-knowledge"
+    assert captured["model_used"] == "deepseek-v4-flash"
+    assert captured["diagnostics"]["model_diagnostics"][0]["selected_profile"] == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio
@@ -941,6 +1131,90 @@ async def test_parse_releases_stale_lock_without_inflight_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_parse_releases_stale_lock_owned_by_current_task(monkeypatch):
+    async def empty_parse_document(*_args, **_kwargs):
+        return _ParsedIr()
+
+    monkeypatch.setattr(document_service, "parse_document", empty_parse_document)
+    monkeypatch.setattr(document_service, "to_legacy_dict", lambda _ir: {"blocks": []})
+
+    db = _StaleParseDbWithCurrentTask(task_id=777)
+    result = await document_service.parse_and_index_document(
+        db,
+        document_id=db.doc.id,
+        owner_id=db.doc.owner_id,
+        caller="user:1",
+        current_task_id=777,
+    )
+
+    assert result["status"] == "degraded"
+    assert db.doc.parse_status == "degraded"
+    assert db.doc.vector_status == "pending"
+    assert db.doc.parse_worker_id == "user:1"
+
+
+@pytest.mark.asyncio
+async def test_parse_queue_task_releases_recent_lock_when_no_other_parse_task(monkeypatch):
+    async def empty_parse_document(*_args, **_kwargs):
+        return _ParsedIr()
+
+    monkeypatch.setattr(document_service, "parse_document", empty_parse_document)
+    monkeypatch.setattr(document_service, "to_legacy_dict", lambda _ir: {"blocks": []})
+
+    db = _RecentParseDbWithCurrentTask(task_id=888)
+    result = await document_service.parse_and_index_document(
+        db,
+        document_id=db.doc.id,
+        owner_id=db.doc.owner_id,
+        caller="user:1",
+        current_task_id=888,
+    )
+
+    assert result["status"] == "degraded"
+    assert db.doc.parse_status == "degraded"
+    assert db.doc.vector_status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_image_parse_index_skips_base_vectorization(monkeypatch):
+    async def image_parse_document(*_args, **_kwargs):
+        return _ParsedIr()
+
+    async def fake_create_page_fusions(*_args, **_kwargs):
+        return 1
+
+    async def fail_chunk_and_embed(*_args, **_kwargs):
+        raise AssertionError("image base blocks should not be embedded")
+
+    monkeypatch.setattr(document_service, "parse_document", image_parse_document)
+    monkeypatch.setattr(document_service, "to_legacy_dict", lambda _ir: {
+        "blocks": [{"type": "图片", "text": "本地图片分析：海报轻摘要", "page": 1}]
+    })
+    monkeypatch.setattr(document_service, "create_page_fusions", fake_create_page_fusions)
+    monkeypatch.setattr(document_service, "chunk_and_embed", fail_chunk_and_embed)
+
+    db = _EmptyParseDb()
+    db.doc.filename = "poster.jpg"
+    db.doc.extension = "jpg"
+    db.doc.mime_type = "image/jpeg"
+
+    result = await document_service.parse_and_index_document(
+        db,
+        document_id=db.doc.id,
+        owner_id=db.doc.owner_id,
+        caller="user:1",
+    )
+
+    assert result["status"] == "degraded"
+    assert result["stored_chunks"] == 0
+    assert db.doc.parse_status == "degraded"
+    assert db.doc.vector_status == "skipped"
+    assert document_service.IMAGE_VECTOR_SKIPPED_MARKER in db.doc.parse_error
+    assert document_service.document_parse_allows_search(db.doc) is True
+    assert document_service.document_vector_stage_terminal(db.doc) is True
+
+
+@pytest.mark.asyncio
 async def test_stream_llm_failure_without_fallback_raises():
     async def failing_stream(**_kwargs):
         yield {"type": "error", "content": "gateway unavailable"}
@@ -953,15 +1227,3 @@ async def test_stream_llm_failure_without_fallback_raises():
             messages=[{"role": "user", "content": "hello"}],
             chat_stream_func=failing_stream,
         )
-
-
-async def _always_stale(*_args, **_kwargs):
-    return ["raw", "fusion"]
-
-
-async def _noop(*_args, **_kwargs):
-    return None
-
-
-async def _hash_stage(*_args, **_kwargs):
-    return "hash"

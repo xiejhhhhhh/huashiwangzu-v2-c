@@ -2,21 +2,93 @@ from __future__ import annotations
 
 import hashlib
 import math
+import threading
 from io import BytesIO
 
 from PIL import Image, ImageStat, UnidentifiedImageError
 
 LOCAL_ANALYZER_VERSION = "pillow-local-v1"
 MAX_ANALYSIS_SIDE = 128
+MAX_FULL_DECODE_PIXELS = 80_000_000
 EDGE_THRESHOLD = 18
 CONTENT_IR_SCHEMA_VERSION = "content-ir/v1"
+_PIL_MAX_PIXELS_LOCK = threading.Lock()
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_TEXT_CHUNKS = {b"tEXt", b"zTXt", b"iTXt"}
+
+
+def strip_png_text_chunks(raw: bytes) -> tuple[bytes, dict[str, object]]:
+    """Remove PNG text metadata chunks while preserving image pixel chunks."""
+    diagnostics: dict[str, object] = {
+        "stripped": False,
+        "removed_chunks": 0,
+        "removed_bytes": 0,
+        "original_bytes": len(raw),
+        "prepared_bytes": len(raw),
+    }
+    if not raw.startswith(PNG_SIGNATURE):
+        return raw, diagnostics
+
+    output = bytearray(PNG_SIGNATURE)
+    offset = len(PNG_SIGNATURE)
+    try:
+        while offset + 12 <= len(raw):
+            chunk_start = offset
+            length = int.from_bytes(raw[offset:offset + 4], "big")
+            chunk_type = raw[offset + 4:offset + 8]
+            chunk_end = offset + 12 + length
+            if chunk_end > len(raw):
+                return raw, {**diagnostics, "error": "malformed_png_chunk"}
+            if chunk_type in PNG_TEXT_CHUNKS:
+                diagnostics["stripped"] = True
+                diagnostics["removed_chunks"] = int(diagnostics["removed_chunks"]) + 1
+                diagnostics["removed_bytes"] = int(diagnostics["removed_bytes"]) + (chunk_end - chunk_start)
+            else:
+                output.extend(raw[chunk_start:chunk_end])
+            offset = chunk_end
+            if chunk_type == b"IEND":
+                break
+    except Exception as exc:
+        return raw, {**diagnostics, "error": str(exc)}
+
+    prepared = bytes(output)
+    diagnostics["prepared_bytes"] = len(prepared)
+    return prepared, diagnostics
+
+
+def _is_png_text_memory_error(exc: Exception) -> bool:
+    return "too much memory used in text chunks" in str(exc).lower()
 
 
 def analyze_image_bytes(raw: bytes, filename: str, ext: str) -> dict[str, object]:
     try:
         with Image.open(BytesIO(raw)) as image:
+            width, height = image.size
+            if width * height > MAX_FULL_DECODE_PIXELS:
+                return _analyze_oversized_image_metadata(
+                    image,
+                    raw,
+                    filename,
+                    ext,
+                    reason="oversized_image_metadata_only",
+                )
             image.load()
             return _analyze_loaded_image(image, raw, filename, ext)
+    except ValueError as exc:
+        if ext.lower().lstrip(".") == "png" and _is_png_text_memory_error(exc):
+            stripped, strip_info = strip_png_text_chunks(raw)
+            if stripped is not raw:
+                result = analyze_image_bytes(stripped, filename, ext)
+                result["png_text_chunk_cleanup"] = strip_info
+                return result
+        raise ValueError(f"Failed to read image content: {exc}") from exc
+    except Image.DecompressionBombError as exc:
+        try:
+            return _analyze_oversized_image_header(raw, filename, ext, str(exc))
+        except UnidentifiedImageError as header_exc:
+            raise ValueError("Invalid or unsupported image content") from header_exc
+        except OSError as header_exc:
+            raise ValueError(f"Failed to read image content: {header_exc}") from header_exc
     except UnidentifiedImageError as exc:
         raise ValueError("Invalid or unsupported image content") from exc
     except OSError as exc:
@@ -26,6 +98,8 @@ def analyze_image_bytes(raw: bytes, filename: str, ext: str) -> dict[str, object
 def should_use_vlm(facts: dict[str, object], mode: str) -> dict[str, object]:
     if mode == "local":
         return {"use_vlm": False, "reason": "local mode requested"}
+    if bool(facts.get("metadata_only")) or str(facts.get("visual_profile") or "") == "oversized_image":
+        return {"use_vlm": False, "reason": "oversized image analyzed as metadata only"}
     if mode == "semantic":
         return {"use_vlm": True, "reason": "semantic mode requested"}
 
@@ -260,6 +334,85 @@ def _analyze_loaded_image(image: Image.Image, raw: bytes, filename: str, ext: st
         "exif": {
             "present": bool(image.getexif()),
             "orientation": image.getexif().get(274) if image.getexif() else None,
+        },
+    }
+
+
+def _analyze_oversized_image_header(raw: bytes, filename: str, ext: str, reason: str) -> dict[str, object]:
+    old_limit = Image.MAX_IMAGE_PIXELS
+    with _PIL_MAX_PIXELS_LOCK:
+        try:
+            Image.MAX_IMAGE_PIXELS = None
+            with Image.open(BytesIO(raw)) as image:
+                return _analyze_oversized_image_metadata(image, raw, filename, ext, reason=reason)
+        finally:
+            Image.MAX_IMAGE_PIXELS = old_limit
+
+
+def _analyze_oversized_image_metadata(
+    image: Image.Image,
+    raw: bytes,
+    filename: str,
+    ext: str,
+    *,
+    reason: str,
+) -> dict[str, object]:
+    width, height = image.size
+    frame_count = int(getattr(image, "n_frames", 1) or 1)
+    exif_present = False
+    exif_orientation = None
+    try:
+        exif = image.getexif()
+        exif_present = bool(exif)
+        exif_orientation = exif.get(274) if exif else None
+    except Exception:
+        exif_present = False
+
+    return {
+        "analyzer": LOCAL_ANALYZER_VERSION,
+        "metadata_only": True,
+        "metadata_reason": reason,
+        "filename": filename,
+        "extension": ext,
+        "format": image.format or ext.upper(),
+        "mode": image.mode,
+        "file_size_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "dimensions": {
+            "width": width,
+            "height": height,
+            "pixel_count": width * height,
+            "aspect_ratio": _round(width / height if height else 0),
+            "orientation": _orientation(width, height),
+        },
+        "animation": {
+            "is_animated": bool(getattr(image, "is_animated", False)),
+            "frame_count": frame_count,
+        },
+        "transparency": {
+            "has_alpha": False,
+            "transparent_ratio": 0.0,
+        },
+        "color": {
+            "brightness": 0.0,
+            "contrast": 0.0,
+            "saturation": 0.0,
+            "dominant_colors": [],
+            "unique_color_estimate": 0,
+        },
+        "quality": {
+            "edge_density": 0.0,
+            "is_blank_like": False,
+            "metadata_only": True,
+        },
+        "hashes": {
+            "average_hash": "",
+            "difference_hash": "",
+        },
+        "visual_profile": "oversized_image",
+        "exif": {
+            "present": exif_present,
+            "orientation": exif_orientation,
         },
     }
 

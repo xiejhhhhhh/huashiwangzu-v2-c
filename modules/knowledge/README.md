@@ -55,7 +55,7 @@ Backend HTTP prefix: `/api/knowledge`
 <!-- DOCS-SYNC: section=public_actions -->
 Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-Total public actions: 20
+Total public actions: 23
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
@@ -65,6 +65,7 @@ Total public actions: 20
 | `backfill_cognitive_v3` | `admin` | `build_terms`, `dry_run`, `limit`, `source_root` | 回填知识库 V3 内容复用链路、批次验收报告和可选认知派生索引 |
 | `classify_pipeline_debt` | `admin` | `categories`, `category`, `category_limits`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 分类历史知识库管道债，不修改队列 |
 | `derive_cognitive_index` | `admin` | `document_id`, `limit` | 按单文档重建 V3 词项、事实和因果候选派生索引 |
+| `enqueue_incomplete_documents` | `admin` | `dry_run`, `extensions`, `include_search_incomplete`, `limit`, `priority` | 预览或补排未完成深层知识分析的文档 |
 | `export` | `viewer` | `document_id`, `format` | 导出已解析文档（markdown/html/json） |
 | `get_block` | `viewer` | `block_id` | 按 block_id 获取内容块详情 |
 | `get_entity_dictionary` | `viewer` | `keyword` | 查询实体词典 |
@@ -74,10 +75,12 @@ Total public actions: 20
 | `get_ocr_words` | `viewer` | `file_id`, `page` | 获取 PDF OCR 词坐标 |
 | `get_page_fusion` | `viewer` | `document_id`, `page` | 获取页级融合内容 |
 | `get_pending_count` | `viewer` | none | 获取待确认数量（治理用） |
+| `import_enterprise_source_batch` | `admin` | `dry_run`, `extensions`, `limit`, `skip_existing_md5`, `source_root`, `target_root_name` | dry-run 或限量导入企业源目录文件并触发知识库分析 |
 | `ingest` | `editor` | `file_id` | 将文件注册到知识库并触发分析 |
 | `plan_pipeline_rerun` | `admin` | `document_id`, `reason`, `stage` | dry-run 规划知识库管道重跑，不修改队列或产物 |
 | `reconcile_orphan_pipeline_runs` | `admin` | `dry_run`, `limit`, `run_ids` | dry-run 或 guarded apply 收口无 task_id 的 orphan running 诊断运行 |
-| `reconcile_pending_pipeline_queue` | `admin` | `categories`, `category`, `category_limits`, `dry_run`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 或归档已不可执行的 pending kb_pipeline 队列任务，保留仍可执行的 live pending |
+| `reconcile_pending_pipeline_queue` | `admin` | `categories`, `category`, `category_limits`, `dry_run`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 或归档已不可执行的 pending 知识库管道队列任务，保留仍可执行的 live pending |
+| `reconcile_running_pipeline_queue` | `admin` | `categories`, `category`, `category_limits`, `dry_run`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 或恢复中断的 running 知识库管道队列任务，live 任务回 pending，obsolete 任务归档 skipped |
 | `search` | `viewer` | `query`, `top_k` | 按关键词搜索知识库，返回相关块 |
 <!-- /DOCS-SYNC -->
 
@@ -127,6 +130,7 @@ Use `db_schema()` for live database details. This module must not directly read 
 
 - `kb_analysis_artifacts` is an append-only stage ledger for pipeline traceability and dry-run rerun planning.
 - Evidence rows may carry lineage back to raw data, page fusion, artifacts, prompt hash, model used, and diagnostics.
+- `page_render` materializes reusable visual page assets before OCR/VLM stages. Page images are rendered, compressed, stored on disk, and recorded in `kb_image_assets`; `raw_ocr` and `raw_vision` consume those assets instead of rendering the source document again.
 - Image similarity is a sidecar stage for PDF page renders and image files. It stores perceptual hashes, suspected/high pairs, and groups, but it does not skip VLM analysis or reuse representative-image VLM output.
 - Chaotic model-returned tags, entity types, and relation types are preserved as raw business signals until a later governance phase.
 
@@ -140,8 +144,9 @@ Use `db_schema()` for live database details. This module must not directly read 
 
 ## Queue Governance
 
-- Failed `kb_pipeline` tasks are historical debt and do not block worker execution. They can be classified and selectively retried or archived through `classify_pipeline_debt` and `apply_pipeline_debt`.
-- Pending `kb_pipeline` tasks are executable queue head items. `reconcile_pending_pipeline_queue` archives only obsolete pending rows whose document is gone, file row is deleted/missing, storage path is invalid, or physical source file is missing, while leaving live pending work in place.
+- Runtime knowledge analysis uses one queue task type: `kb_pipeline_stage`. Each row runs one durable DAG stage and enqueues newly unblocked downstream stages.
+- Legacy `kb_pipeline` rows are historical debt only. Debt governance can classify/retry/archive legacy rows and current `kb_pipeline_stage` rows, but new execution never emits `kb_pipeline`.
+- Pending live pipeline rows are executable queue head items. `reconcile_pending_pipeline_queue` archives only obsolete pending rows whose document is gone, file row is deleted/missing, storage path is invalid, or physical source file is missing, while leaving live pending work in place.
 - Running task recovery is handled by the framework task worker timeout logic; knowledge-specific orphan diagnostics remain available through `reconcile_orphan_pipeline_runs`.
 
 ## Cross-Module Dependencies

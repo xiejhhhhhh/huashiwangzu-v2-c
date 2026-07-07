@@ -12,7 +12,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import KbDocument, KbPipelineRun, KbPipelineStageRun
-from .document_service import mark_document_source_unavailable
+from .document_service import document_deep_pipeline_complete, mark_document_source_unavailable
 from .source_file_state import SourceFileAvailability, classify_file_availability
 
 FILE_NOT_FOUND_MARKER = "File not found"
@@ -41,10 +41,22 @@ PENDING_OBSOLETE_CATEGORIES = {
     "pending_source_path_unsafe",
     "pending_source_file_physical_missing",
 }
+RUNNING_OBSOLETE_CATEGORIES = {
+    "running_doc_missing",
+    "running_doc_deleted",
+    "running_source_file_missing",
+    "running_source_file_deleted",
+    "running_source_storage_path_missing",
+    "running_source_path_unsafe",
+    "running_source_file_physical_missing",
+}
+RUNNING_REQUEUE_CATEGORIES = {"running_live_interrupted"}
+RUNNING_COMPLETE_CATEGORIES = {"running_live_already_complete"}
 RETRYABLE_CATEGORIES = {"file_row_live"}
 ACTIVE_DOCUMENT_STATUSES = {"parsing", "indexing", "collecting", "running", "fusing"}
 FAILED_DOCUMENT_STATUSES = {"error", "failed"}
 PIPELINE_DEBT_ORDER_VALUES = {"newest", "oldest"}
+PIPELINE_QUEUE_TASK_TYPES = ("kb_pipeline_stage", "kb_pipeline")
 
 
 def _load_task_parameters(raw: str | None) -> dict[str, Any]:
@@ -153,7 +165,7 @@ async def _load_candidate_tasks(
     error_filter = _build_error_filter(error_marker)
     filters = [
         SystemTaskQueue.module == "knowledge",
-        SystemTaskQueue.task_type == "kb_pipeline",
+        SystemTaskQueue.task_type.in_(PIPELINE_QUEUE_TASK_TYPES),
         SystemTaskQueue.status == "failed",
         error_filter,
     ]
@@ -176,8 +188,30 @@ async def _load_pending_pipeline_tasks(
 ) -> list[SystemTaskQueue]:
     filters = [
         SystemTaskQueue.module == "knowledge",
-        SystemTaskQueue.task_type == "kb_pipeline",
+        SystemTaskQueue.task_type.in_(PIPELINE_QUEUE_TASK_TYPES),
         SystemTaskQueue.status == "pending",
+    ]
+    if task_ids:
+        filters.append(SystemTaskQueue.id.in_(task_ids))
+    order_by = SystemTaskQueue.id.desc() if order == "newest" else SystemTaskQueue.id.asc()
+    query = select(SystemTaskQueue).where(*filters).order_by(order_by)
+    if not task_ids:
+        query = query.limit(limit)
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+async def _load_running_pipeline_tasks(
+    db: AsyncSession,
+    *,
+    limit: int = 500,
+    task_ids: list[int] | None = None,
+    order: str = "oldest",
+) -> list[SystemTaskQueue]:
+    filters = [
+        SystemTaskQueue.module == "knowledge",
+        SystemTaskQueue.task_type.in_(PIPELINE_QUEUE_TASK_TYPES),
+        SystemTaskQueue.status == "running",
     ]
     if task_ids:
         filters.append(SystemTaskQueue.id.in_(task_ids))
@@ -201,6 +235,22 @@ def _classify_pending_task(
     if not source_state.available:
         return f"pending_{source_state.reason}", "archive_pending_obsolete", source_state.reason, source_state
     return "pending_live", "keep_pending", None, source_state
+
+
+def _classify_running_task(
+    doc: KbDocument | None,
+    file: File | None,
+) -> tuple[str, str, str | None, SourceFileAvailability | None]:
+    if doc is None:
+        return "running_doc_missing", "archive_running_obsolete", None, None
+    if doc.deleted:
+        return "running_doc_deleted", "archive_running_obsolete", None, None
+    source_state = classify_file_availability(file)
+    if not source_state.available:
+        return f"running_{source_state.reason}", "archive_running_obsolete", source_state.reason, source_state
+    if document_deep_pipeline_complete(doc, source_available=True):
+        return "running_live_already_complete", "archive_running_already_complete", None, source_state
+    return "running_live_interrupted", "release_for_retry", None, source_state
 
 
 def _normalize_category_tokens(values: list[str] | None) -> list[str]:
@@ -376,6 +426,43 @@ async def _classify_pending_tasks(db: AsyncSession, tasks: list[SystemTaskQueue]
             "would_set_parse_error": parse_error,
             "queue_status": task.status,
             "created_at": task.created_at.isoformat() if getattr(task, "created_at", None) else None,
+            "updated_at": task.updated_at.isoformat() if getattr(task, "updated_at", None) else None,
+        })
+
+    return {
+        "dry_run": True,
+        "matched": len(items),
+        "summary": dict(summary),
+        "items": items,
+    }
+
+
+async def _classify_running_tasks(db: AsyncSession, tasks: list[SystemTaskQueue]) -> dict:
+    items: list[dict[str, Any]] = []
+    summary: Counter[str] = Counter()
+
+    for task in tasks:
+        params = _load_task_parameters(task.parameters)
+        document_id = int(params.get("document_id", 0) or 0)
+        doc = await db.get(KbDocument, document_id) if document_id > 0 else None
+        file = await db.get(File, doc.file_id) if doc is not None else None
+        category, suggested_action, parse_error, source_state = _classify_running_task(doc, file)
+        summary[category] += 1
+        items.append({
+            "task_id": task.id,
+            "document_id": document_id or None,
+            "file_id": doc.file_id if doc is not None else None,
+            "storage_path": source_state.storage_path if source_state is not None else None,
+            "physical_path": source_state.physical_path if source_state is not None else None,
+            "category": category,
+            "suggested_action": suggested_action,
+            "archiveable": category in RUNNING_OBSOLETE_CATEGORIES | RUNNING_COMPLETE_CATEGORIES,
+            "requeueable": category in RUNNING_REQUEUE_CATEGORIES,
+            "would_set_parse_error": parse_error,
+            "queue_status": task.status,
+            "retry_count": task.retry_count,
+            "max_retries": task.max_retries,
+            "started_at": task.started_at.isoformat() if getattr(task, "started_at", None) else None,
             "updated_at": task.updated_at.isoformat() if getattr(task, "updated_at", None) else None,
         })
 
@@ -583,7 +670,7 @@ async def classify_pipeline_lifecycle_debt(
     limit_each: int | None = None,
     order: str = "newest",
 ) -> dict:
-    """Classify kb_pipeline debt without mutating queue rows."""
+    """Classify knowledge pipeline queue debt without mutating queue rows."""
     tasks = await _load_candidate_tasks(
         db,
         limit=limit,
@@ -636,10 +723,10 @@ async def reconcile_pending_pipeline_queue(
     limit_each: int | None = None,
     order: str = "oldest",
 ) -> dict:
-    """Dry-run or archive obsolete pending kb_pipeline queue rows.
+    """Dry-run or archive obsolete pending knowledge pipeline queue rows.
 
-    Live pending rows are never mutated. This is for import/reload scenarios
-    where old queue rows point at documents or files that no longer exist.
+    Live pending rows are never mutated. This covers current ``kb_pipeline_stage``
+    tasks and legacy ``kb_pipeline`` rows left from earlier imports/reloads.
     """
     tasks = await _load_pending_pipeline_tasks(
         db,
@@ -745,6 +832,83 @@ def _retry_task(task: SystemTaskQueue, item: dict[str, Any]) -> None:
     }, ensure_ascii=False)
 
 
+def _release_running_task(task: SystemTaskQueue, item: dict[str, Any]) -> None:
+    previous_error = task.error_message
+    task.status = "pending"
+    task.started_at = None
+    task.completed_at = None
+    task.error_message = None
+    task.result = json.dumps({
+        "status": "requeued",
+        "requeued_by": "knowledge_running_pipeline_queue_reconcile",
+        "classification": item["category"],
+        "document_id": item["document_id"],
+        "file_id": item["file_id"],
+        "previous_error_message": previous_error,
+    }, ensure_ascii=False)
+
+
+async def _close_running_pipeline_diagnostics(
+    db: AsyncSession,
+    item: dict[str, Any],
+    now: datetime,
+    *,
+    reason: str,
+) -> int:
+    task_id = int(item.get("task_id") or 0)
+    document_id = int(item.get("document_id") or 0)
+    if task_id <= 0:
+        return 0
+
+    result = await db.execute(
+        select(KbPipelineRun)
+        .where(
+            KbPipelineRun.task_id == task_id,
+            KbPipelineRun.status == "running",
+        )
+        .order_by(KbPipelineRun.id.asc())
+    )
+    runs = list(result.scalars().all())
+    if not runs:
+        return 0
+
+    run_ids = [int(run.id) for run in runs]
+    stage_result = await db.execute(
+        select(KbPipelineStageRun)
+        .where(
+            KbPipelineStageRun.run_id.in_(run_ids),
+            KbPipelineStageRun.status == "running",
+        )
+    )
+    for stage in stage_result.scalars().all():
+        stage.status = "skipped"
+        stage.reason = reason
+        stage.error_message = "Interrupted queue task reconciled before completion"
+        stage.completed_at = now
+        if stage.started_at and not stage.duration_ms:
+            stage.duration_ms = int((now - stage.started_at).total_seconds() * 1000)
+
+    for run in runs:
+        previous = run.diagnostics_json
+        merged: dict[str, Any] = dict(previous) if isinstance(previous, dict) else {}
+        merged.update({
+            "previous_status": run.status,
+            "previous_reason": run.reason,
+            "previous_diagnostics": previous,
+            "reconciled_by": "knowledge_running_pipeline_queue_reconcile",
+            "reconciled_at": now.isoformat(),
+            "reconcile_category": item["category"],
+            "reconcile_reason": reason,
+            "task_id": task_id,
+            "document_id": document_id or run.document_id,
+        })
+        run.diagnostics_json = merged
+        run.status = "skipped"
+        run.reason = reason
+        run.completed_at = now
+    return len(runs)
+
+
 async def _mark_document_for_archived_lifecycle_debt(
     db: AsyncSession,
     item: dict[str, Any],
@@ -841,3 +1005,132 @@ async def apply_pipeline_lifecycle_debt_action(
             "limit_each": selection["limit_each"],
         },
     }
+
+
+async def reconcile_running_pipeline_queue(
+    db: AsyncSession,
+    *,
+    limit: int = 500,
+    task_ids: list[int] | None = None,
+    dry_run: bool = True,
+    categories: list[str] | None = None,
+    category_limits: dict[str, int] | None = None,
+    limit_each: int | None = None,
+    order: str = "oldest",
+) -> dict:
+    """Dry-run or recover interrupted running knowledge pipeline queue rows.
+
+    Live rows are released back to ``pending`` so the worker can retry from
+    persisted stage outputs. Obsolete rows are completed as skipped. This covers
+    current ``kb_pipeline_stage`` tasks and legacy ``kb_pipeline`` rows without
+    requiring a full document rerun by hand.
+    """
+    tasks = await _load_running_pipeline_tasks(
+        db,
+        limit=max(1, min(int(limit or 500), 5000)),
+        task_ids=task_ids,
+        order=order,
+    )
+    classification = await _classify_running_tasks(db, tasks)
+    selection = _select_items_by_category(
+        classification["items"],
+        categories=categories,
+        category_limits=category_limits,
+        limit_each=limit_each,
+        precise_task_ids=bool(task_ids),
+    )
+    selected_items = selection["selected_items"]
+    selected_requeue = [
+        item for item in selected_items
+        if str(item.get("category")) in RUNNING_REQUEUE_CATEGORIES
+    ]
+    selected_obsolete = [
+        item for item in selected_items
+        if str(item.get("category")) in RUNNING_OBSOLETE_CATEGORIES
+    ]
+    selected_complete = [
+        item for item in selected_items
+        if str(item.get("category")) in RUNNING_COMPLETE_CATEGORIES
+    ]
+    skipped_unhandled = (
+        len(selected_items)
+        - len(selected_requeue)
+        - len(selected_obsolete)
+        - len(selected_complete)
+    )
+    result = {
+        **classification,
+        "dry_run": dry_run,
+        "will_mutate": not dry_run,
+        "order": order if order in PIPELINE_DEBT_ORDER_VALUES else "oldest",
+        "selected": len(selected_items),
+        "selected_requeue": len(selected_requeue),
+        "selected_obsolete": len(selected_obsolete),
+        "selected_complete": len(selected_complete),
+        "skipped_unhandled": skipped_unhandled,
+        "not_selected": len(selection["not_selected_items"]),
+        "selected_by_category": selection["selected_by_category"],
+        "not_selected_by_category": selection["not_selected_by_category"],
+        "selected_items": selected_items,
+        "not_selected_items": selection["not_selected_items"],
+        "selection": {
+            "applied": selection["applied"],
+            "mode": selection["mode"],
+            "categories": selection["categories"],
+            "category_limits": selection["category_limits"],
+            "limit_each": selection["limit_each"],
+        },
+        "changed": 0,
+        "closed_runs": 0,
+    }
+    if dry_run:
+        return result
+
+    tasks_by_id = {int(task.id): task for task in tasks}
+    now = datetime.now(timezone.utc)
+    for item in selected_requeue:
+        task = tasks_by_id.get(int(item["task_id"]))
+        if task is None or task.status != "running":
+            continue
+        result["closed_runs"] += await _close_running_pipeline_diagnostics(
+            db,
+            item,
+            now,
+            reason="queue_released_for_retry",
+        )
+        _release_running_task(task, item)
+        result["changed"] += 1
+
+    for item in selected_obsolete:
+        task = tasks_by_id.get(int(item["task_id"]))
+        if task is None or task.status != "running":
+            continue
+        result["closed_runs"] += await _close_running_pipeline_diagnostics(
+            db,
+            item,
+            now,
+            reason=str(item.get("would_set_parse_error") or item["category"]),
+        )
+        _archive_task(task, item, now)
+        if item.get("would_set_parse_error"):
+            await _mark_document_for_archived_lifecycle_debt(db, item)
+        result["changed"] += 1
+
+    for item in selected_complete:
+        task = tasks_by_id.get(int(item["task_id"]))
+        if task is None or task.status != "running":
+            continue
+        result["closed_runs"] += await _close_running_pipeline_diagnostics(
+            db,
+            item,
+            now,
+            reason="already_complete",
+        )
+        _archive_task(task, item, now)
+        result["changed"] += 1
+
+    if result["changed"]:
+        await db.commit()
+    result["dry_run"] = False
+    result["will_mutate"] = True
+    return result

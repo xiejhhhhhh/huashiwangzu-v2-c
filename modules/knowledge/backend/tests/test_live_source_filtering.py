@@ -23,6 +23,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.database import AsyncSessionLocal, engine, init_db
 from app.core.exceptions import NotFound
 from app.models.file import File
+from modules.knowledge.backend.init_db import ensure_kb_indexes, ensure_kb_tables, ensure_migration_columns
 from modules.knowledge.backend.models import KbChunk, KbDocument, KbPageFusion, KbRawData
 from modules.knowledge.backend.services import document_service, pipeline_service
 from modules.knowledge.backend.services import search_service
@@ -56,6 +57,10 @@ async def _ensure_framework_ready() -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     await init_db()
+    async with AsyncSessionLocal() as db:
+        await ensure_kb_tables(db)
+        await ensure_migration_columns(db)
+        await ensure_kb_indexes(db)
     _FRAMEWORK_READY = True
 
 
@@ -208,7 +213,11 @@ async def test_search_filters_deleted_doc_and_unavailable_source(monkeypatch: py
             hybrid_results = await hybrid_search(db, marker, OWNER_ID, top_k=10)
 
         assert [item["document_id"] for item in keyword_results] == [docs["live"]]
-        assert [item["document_id"] for item in hybrid_results] == [docs["live"]]
+        hybrid_doc_ids = {item["document_id"] for item in hybrid_results}
+        assert docs["live"] in hybrid_doc_ids
+        assert docs["deleted_doc"] not in hybrid_doc_ids
+        assert docs["source_deleted"] not in hybrid_doc_ids
+        assert docs["source_missing"] not in hybrid_doc_ids
         vector_doc_ids = {item["document_id"] for item in vector_results}
         assert docs["live"] in vector_doc_ids
         assert docs["deleted_doc"] not in vector_doc_ids
@@ -217,6 +226,37 @@ async def test_search_filters_deleted_doc_and_unavailable_source(monkeypatch: py
         for item in keyword_results + vector_results + hybrid_results:
             assert item["source_available"] is True
             assert item["source_state"] == "available"
+    finally:
+        await _cleanup(list(docs.values()), [ids["live_file"], ids["deleted_file"]])
+
+
+@pytest.mark.asyncio
+async def test_search_prefers_fusion_index_over_base_parse() -> None:
+    marker = uuid.uuid4().hex[:8]
+    docs, ids = await _create_case(marker)
+    try:
+        async with AsyncSessionLocal() as db:
+            fusion_chunk = KbChunk(
+                document_id=docs["live"],
+                owner_id=OWNER_ID,
+                page=1,
+                chunk_index=1,
+                block_type="fusion",
+                text=f"K3 live source filtering {marker} fusion verified text",
+                embedding=[1.0] + [0.0] * (VECTOR_SIZE - 1),
+                keywords=f"K3 {marker} fusion",
+                index_layer="fusion_verified",
+                source_stage="fusion",
+                source_ref_id=12345,
+            )
+            db.add(fusion_chunk)
+            await db.commit()
+
+            keyword_results = await keyword_search(db, marker, OWNER_ID, top_k=10)
+
+        assert [item["document_id"] for item in keyword_results] == [docs["live"]]
+        assert keyword_results[0]["index_layer"] == "fusion_verified"
+        assert "fusion verified text" in keyword_results[0]["text"]
     finally:
         await _cleanup(list(docs.values()), [ids["live_file"], ids["deleted_file"]])
 
@@ -273,27 +313,23 @@ async def test_pipeline_skips_unavailable_sources_before_parse_or_index() -> Non
                 )
             }
 
-            deleted_result = await pipeline_service._run_pipeline(
+            deleted_result = await pipeline_service._run_stage(
                 db,
-                docs["source_deleted"],
-                OWNER_ID,
-                deleted_doc.file_id,
-                OWNER_ID,
+                doc=deleted_doc,
+                user_id=OWNER_ID,
+                stage=pipeline_service.ROOT_STAGE,
             )
-            missing_result = await pipeline_service._run_pipeline(
+            missing_result = await pipeline_service._run_stage(
                 db,
-                docs["source_missing"],
-                OWNER_ID,
-                missing_doc.file_id,
-                OWNER_ID,
+                doc=missing_doc,
+                user_id=OWNER_ID,
+                stage=pipeline_service.ROOT_STAGE,
             )
 
             assert deleted_result["status"] == "skipped"
             assert deleted_result["reason"] == "source_file_deleted"
-            assert deleted_result["classification"] == "source_unavailable"
             assert missing_result["status"] == "skipped"
             assert missing_result["reason"] == "source_file_missing"
-            assert missing_result["classification"] == "source_unavailable"
 
             await db.refresh(deleted_doc)
             await db.refresh(missing_doc)

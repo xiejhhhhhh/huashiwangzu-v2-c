@@ -24,7 +24,7 @@
         <div v-else-if="!fileTree.length" class="empty-tip">暂无可分析文件</div>
         <button
           v-for="node in visibleTree"
-          :key="node.id + (node.is_folder ? 'd' : 'f')"
+          :key="node._render_key || node.node_key"
           class="tree-node"
           :style="{ paddingLeft: (node._depth || 0) * 16 + 10 + 'px' }"
           :class="{ active: activeId && node.kb_doc_id === activeId }"
@@ -94,7 +94,7 @@
             </div>
             <div class="pp-top-text">
               <div class="pp-stage">{{ progressHeadline }}</div>
-              <div class="pp-hint">{{ analyzing ? '正在处理,可关闭页面,稍后回来会自动接着显示进度' : '分析完成,下方查看结果' }}</div>
+              <div class="pp-hint">{{ progressHint }}</div>
             </div>
           </div>
           <ol class="pp-steps">
@@ -274,6 +274,7 @@ const {
   showProgress,
   headStatusText,
   progressHeadline,
+  progressHint,
   ringStyle,
   overallPercent,
   sourceUnavailable,
@@ -363,6 +364,7 @@ const {
 .tree-dot.ok { background: #2bb673; }
 .tree-dot.busy { background: #f0b240; animation: pulse 1s infinite; }
 .tree-dot.failed { background: #e5534b; }
+.tree-dot.warn { background: #f0b240; }
 .tree-dot.idle { background: #c2cdda; }
 .tree-pct { font-size: 10px; font-weight: 700; color: #f0941f; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }

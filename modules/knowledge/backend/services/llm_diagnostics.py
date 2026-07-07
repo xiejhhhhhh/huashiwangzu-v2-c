@@ -6,6 +6,8 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from .model_routing import knowledge_model_call_slot
+
 ChatMessage = Mapping[str, str]
 ChatFunc = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -89,13 +91,17 @@ async def timed_llm_chat(
         extra_fields,
     )
 
+    slot_info: Mapping[str, object] = {}
     try:
-        result = await chat_func(messages=list(messages), profile_key=profile_key)
+        async with knowledge_model_call_slot(stage) as acquired_slot:
+            slot_info = acquired_slot
+            result = await chat_func(messages=list(messages), profile_key=profile_key)
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
         logger.warning(
             "LLM_CALL_ERROR stage=%s profile_key=%s document_id=%s page=%s "
-            "elapsed_ms=%.1f input_chars=%d error_type=%s error=%s retry_count=%s%s",
+            "elapsed_ms=%.1f input_chars=%d error_type=%s error=%s retry_count=%s%s "
+            "model_slot_wait_ms=%s model_slot_limit=%s",
             stage,
             profile_key,
             document_id,
@@ -106,6 +112,8 @@ async def timed_llm_chat(
             exc,
             _RETRY_COUNT_NOTE,
             extra_fields,
+            slot_info.get("wait_ms", ""),
+            slot_info.get("limit", ""),
         )
         raise
 
@@ -131,7 +139,8 @@ async def timed_llm_chat(
         )
     logger.info(
         "LLM_CALL_END stage=%s profile_key=%s document_id=%s page=%s "
-        "elapsed_ms=%.1f input_chars=%d output_chars=%d tokens=%s ok=%s retry_count=%s%s%s",
+        "elapsed_ms=%.1f input_chars=%d output_chars=%d tokens=%s ok=%s retry_count=%s%s "
+        "model_slot_wait_ms=%s model_slot_limit=%s%s",
         stage,
         profile_key,
         document_id,
@@ -143,6 +152,8 @@ async def timed_llm_chat(
         bool(content.strip()),
         _RETRY_COUNT_NOTE,
         extra_fields,
+        slot_info.get("wait_ms", ""),
+        slot_info.get("limit", ""),
         diag_fields,
     )
     if result.get("model_degraded"):

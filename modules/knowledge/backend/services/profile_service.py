@@ -2,16 +2,14 @@
 
 把 N 页融合内容上下串联 → 文件级主旨/摘要/结构/关键实体（参考 V1 文档画像生成服务）。
 
-后台任务模式（kb_profile）：LLM 提炼 → 写入 kb_document_profiles。
+统一 DAG stage 模式（profile）：LLM 提炼 → 写入 kb_document_profiles。
 """
 import json
 import logging
 from time import perf_counter
 
-from app.database import AsyncSessionLocal
 from app.gateway.router import gateway_router
 from app.services.model_services import get_embedding
-from app.services.task_worker import register_task_handler
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import KbDocument, KbDocumentProfile, KbPageFusion
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_profile
-from .prompt_utils import TPROFILE, load_prompt
+from .prompt_utils import TPROFILE, load_prompt_detached
 
 logger = logging.getLogger("v2.knowledge").getChild("profile")
 
@@ -53,6 +51,14 @@ async def generate_document_profile(
 
     df = await db.execute(select(KbDocument).where(KbDocument.id == document_id))
     doc = df.scalar_one_or_none()
+    try:
+        await db.commit()
+    except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            logger.warning("Profile pre-model rollback failed for document_id=%d", document_id, exc_info=True)
+        logger.warning("Profile pre-model transaction release failed for document_id=%d: %s", document_id, exc)
 
     # 聚合各页融合正文
     pages_text = []
@@ -68,7 +74,7 @@ async def generate_document_profile(
     llm_duration_ms = 0
     embedding_duration_ms = 0
     db_write_duration_ms = 0
-    system_prompt = await load_prompt(db, TPROFILE)
+    system_prompt = await load_prompt_detached(TPROFILE)
     try:
         llm_started = perf_counter()
         result = await timed_llm_chat(
@@ -248,30 +254,3 @@ async def get_document_profile(db: AsyncSession, document_id: int, owner_id: int
         "profile_version": profile.profile_version,
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
     }
-
-
-# ── 框架任务 handler ────────────────────────────────
-
-
-async def _profile_handler(params: dict) -> dict:
-    """框架后台任务 handler：处理 kb_profile 任务。"""
-    document_id = int(params.get("document_id", 0))
-    if document_id <= 0:
-        return {"error": "document_id required", "status": "failed"}
-
-    async with AsyncSessionLocal() as db:
-        df = await db.execute(select(KbDocument).where(KbDocument.id == document_id))
-        doc = df.scalar_one_or_none()
-        if not doc:
-            return {"error": f"Document {document_id} not found", "status": "failed"}
-
-        owner_id = doc.owner_id
-        try:
-            result = await generate_document_profile(db, document_id, owner_id)
-            return {"status": "done", **result}
-        except Exception as e:
-            logger.error("Profile handler failed for document_id=%d: %s", document_id, e)
-            return {"error": str(e), "status": "failed"}
-
-
-register_task_handler("kb_profile", _profile_handler)

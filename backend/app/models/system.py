@@ -1,7 +1,9 @@
 import logging
-from sqlalchemy import String, Integer, Text, JSON, DateTime, ForeignKey, BigInteger, Float, Date, Boolean
+from datetime import datetime
+
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
-from datetime import datetime, timezone, date
+
 from app.models.base import Base, TimestampMixin
 
 logger = logging.getLogger("v2.models.system")
@@ -90,6 +92,12 @@ class SystemTaskQueue(Base, TimestampMixin):
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    document_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    stage_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lane_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ready_status: Mapped[str] = mapped_column(String(32), default="ready")
+    dependency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Scheduling fields for timed/recurring tasks (2025-06-21)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="当这个时间到了才该跑（可空=即时任务）")
     recur: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="周期表达: daily/hourly/weekly 或 cron")
@@ -97,8 +105,58 @@ class SystemTaskQueue(Base, TimestampMixin):
 
 
 async def ensure_framework_scheduling_columns() -> None:
-    """No-op: scheduling columns are now defined directly in the model and
-    created by Base.metadata.create_all at startup.
-    """
-    pass
+    """Ensure task queue scheduling and DAG dispatch columns exist."""
+    from sqlalchemy import text
 
+    from app.database import AsyncSessionLocal
+
+    statements = [
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS recur VARCHAR(32)",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS document_id BIGINT",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS stage_key VARCHAR(64)",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS lane_key VARCHAR(64)",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS ready_status VARCHAR(32) DEFAULT 'ready'",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS dependency_key VARCHAR(128)",
+        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS blocked_reason TEXT",
+        "UPDATE framework_system_task_queues SET ready_status = 'ready' WHERE ready_status IS NULL",
+        """
+        UPDATE framework_system_task_queues
+        SET
+            document_id = COALESCE(document_id, NULLIF(parameters::jsonb->>'document_id', '')::bigint),
+            stage_key = COALESCE(stage_key, parameters::jsonb->>'stage')
+        WHERE task_type = 'kb_pipeline_stage'
+          AND parameters IS NOT NULL
+          AND parameters ~ '^\\s*\\{'
+          AND (document_id IS NULL OR stage_key IS NULL)
+        """,
+        """
+        UPDATE framework_system_task_queues
+        SET lane_key = CASE stage_key
+            WHEN 'source_validate' THEN 'local_preprocess'
+            WHEN 'parse_index' THEN 'local_preprocess'
+            WHEN 'raw_text' THEN 'local_preprocess'
+            WHEN 'raw_ocr' THEN 'local_preprocess'
+            WHEN 'raw_vision' THEN 'model_analysis'
+            WHEN 'fusion' THEN 'model_analysis'
+            WHEN 'profile' THEN 'model_analysis'
+            WHEN 'graph' THEN 'model_analysis'
+            WHEN 'relations' THEN 'relation_build'
+            ELSE lane_key
+        END
+        WHERE task_type = 'kb_pipeline_stage'
+          AND lane_key IS NULL
+          AND stage_key IS NOT NULL
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_framework_task_queue_dispatch ON framework_system_task_queues(status, ready_status, lane_key, priority DESC, id)",
+        "CREATE INDEX IF NOT EXISTS idx_framework_task_queue_stage ON framework_system_task_queues(task_type, stage_key, status)",
+        "CREATE INDEX IF NOT EXISTS idx_framework_task_queue_doc_stage ON framework_system_task_queues(task_type, document_id, stage_key, status)",
+    ]
+    try:
+        async with AsyncSessionLocal() as db:
+            for stmt in statements:
+                await db.execute(text(stmt))
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Task queue DAG column migration skipped: %s", exc)

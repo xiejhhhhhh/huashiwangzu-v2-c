@@ -1,8 +1,8 @@
-# docx-parser — DOCX Parser
+# docx-parser — DOC/DOCX Parser
 
 ## Responsibility
 
-DOCX Parser
+DOC/DOCX Parser
 
 ## Manifest Contract
 
@@ -52,7 +52,7 @@ Total public actions: 1
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
-| `parse` | `viewer` | `file_id` | Parse DOCX file into unified content blocks |
+| `parse` | `viewer` | `file_id` | Parse DOC/DOCX files into unified content blocks |
 <!-- /DOCS-SYNC -->
 
 ## Data Ownership

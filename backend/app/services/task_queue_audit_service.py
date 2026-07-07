@@ -82,7 +82,7 @@ async def _split_recent_failed_tasks(
     obsolete_recent: list[dict] = []
     for task in recent_failed_list:
         classification: dict | None = None
-        if task.task_type == "kb_pipeline":
+        if task.task_type in {"kb_pipeline_stage", "kb_pipeline"}:
             classification = await classify_failed_task_debt(db, task)
         if (
             classification
@@ -307,7 +307,7 @@ async def audit_task_queue(db: AsyncSession) -> dict:
             "category": KB_DELETED_SOURCE_OBSOLETE_CATEGORY,
             "mutates_rows": False,
             "reason": (
-                "Recent failed kb_pipeline rows whose knowledge document/source is already deleted are "
+                "Recent failed knowledge pipeline rows whose knowledge document/source is already deleted are "
                 "tracked as obsolete debt, not active parser/worker failures."
             ),
             "samples": obsolete_recent_failed_samples[:20],

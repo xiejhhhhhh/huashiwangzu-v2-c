@@ -3,7 +3,7 @@
 把同一页的三轮独立采集结果（文本 / OCR / 视觉构成）交叉印证，
 消解冲突，输出带置信度的权威描述。
 
-后台任务模式（kb_fuse）：逐页 fuse → 逐页 commit，超时只丢当前页。
+统一 DAG stage 模式（fusion）：逐页 fuse → 逐页 commit，超时只丢当前页。
 """
 import asyncio
 import json
@@ -12,14 +12,13 @@ from time import perf_counter
 
 from app.database import AsyncSessionLocal
 from app.gateway.router import gateway_router
-from app.services.task_worker import register_task_handler
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import KbDocument, KbPageFusion, KbRawData
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_concurrency, resolve_knowledge_profile
-from .prompt_utils import TFUSION, load_prompt
+from .prompt_utils import TFUSION, load_prompt_detached
 
 logger = logging.getLogger("v2.knowledge").getChild("fusion")
 
@@ -111,7 +110,7 @@ def classify_fusion_status(
 async def _llm_fuse(db: AsyncSession | None, round_texts: dict[int, str]) -> dict:
     """调用 LLM 进行交叉印证融合。"""
     profile_key = resolve_knowledge_profile("fusion")
-    system_prompt = await load_prompt(db, TFUSION)
+    system_prompt = await load_prompt_detached(TFUSION)
     user_message = f"""请交叉印证以下三轮采集结果，输出融合后的权威描述。
 
 === 第1轮：文本提取 ===
@@ -181,11 +180,14 @@ async def fuse_page(
     raw_records = r.scalars().all()
 
     round_texts: dict[int, str] = {}
+    evidence_ids: list[int] = []
     for rec in raw_records:
-        round_texts[rec.round] = rec.content or ""
+        round_texts[int(rec.round)] = rec.content or ""
+        evidence_ids.append(int(rec.id))
 
     if not round_texts:
         logger.warning("No raw data for document_id=%d page=%d", document_id, page)
+        await db.commit()
         return {
             "fused_text": "",
             "confidence": 0.0,
@@ -194,6 +196,7 @@ async def fuse_page(
             "status": "degraded",
             "diagnostics": {"reason": "no_raw_data", "raw_rounds": 0},
         }
+    await db.commit()
 
     # 2. 启发式冲突检测
     simple_conflicts = _detect_simple_conflicts(round_texts)
@@ -240,7 +243,7 @@ async def fuse_page(
         attributes_json=fusion_result.get("attributes"),
         tags_json=fusion_result.get("tags"),
         conflicts_json=all_conflicts,
-        evidence_json=[rec.id for rec in raw_records],
+        evidence_json=evidence_ids,
         source_version=1,
         fusion_version=1,
         fusion_status=page_status,
@@ -302,6 +305,7 @@ async def fuse_all_pages(
         )
     )
     done_pages = {row[0] for row in r.all()}
+    await db.commit()
 
     async def _run_page(page: int) -> dict:
         if page in done_pages:
@@ -422,18 +426,37 @@ async def index_fusions_to_chunks(db: AsyncSession, document_id: int, owner_id: 
     )
     fusions = r.scalars().all()
     blocks = [
-        {"type": "融合", "text": pf.fused_text, "page": pf.page, "resource_ref": None}
+        {
+            "type": "融合",
+            "text": pf.fused_text,
+            "page": pf.page,
+            "resource_ref": None,
+            "source_ref_id": pf.id,
+        }
         for pf in fusions
         if pf.fused_text and pf.fused_text.strip()
     ]
     if not blocks:
         return 0
 
-    # 清旧 chunk + 重灌融合层
-    await db.execute(sa_delete(KbChunk).where(KbChunk.document_id == document_id))
+    # 只重建融合层 chunk。早期 parser/base chunk 保留为回退索引和断点证据。
+    await db.execute(
+        sa_delete(KbChunk).where(
+            KbChunk.document_id == document_id,
+            KbChunk.index_layer == "fusion_verified",
+        )
+    )
     await db.commit()
 
-    chunks = await chunk_and_embed(document_id, owner_id, blocks, caller=f"fusion:{document_id}")
+    chunks = await chunk_and_embed(
+        document_id,
+        owner_id,
+        blocks,
+        caller=f"fusion:{document_id}",
+        index_layer="fusion_verified",
+        source_stage="fusion",
+        index_version=1,
+    )
     count = await store_chunks(db, chunks)
 
     # 回写文档向量状态
@@ -444,38 +467,6 @@ async def index_fusions_to_chunks(db: AsyncSession, document_id: int, owner_id: 
         doc.vector_status = "done" if count > 0 else "error"
         await db.commit()
     return count
-
-
-# ── 框架任务 handler ────────────────────────────────
-
-
-async def _fuse_handler(params: dict) -> dict:
-    """框架后台任务 handler：处理 kb_fuse 任务。"""
-    document_id = int(params.get("document_id", 0))
-    if document_id <= 0:
-        return {"error": "document_id required", "status": "failed"}
-
-    async with AsyncSessionLocal() as db:
-        df = await db.execute(select(KbDocument).where(KbDocument.id == document_id))
-        doc = df.scalar_one_or_none()
-        if not doc:
-            return {"error": f"Document {document_id} not found", "status": "failed"}
-
-        owner_id = doc.owner_id
-        try:
-            result = await fuse_all_pages(db, document_id, owner_id)
-            return result
-        except Exception as e:
-            logger.error("Fuse handler failed for document_id=%d: %s", document_id, e)
-            try:
-                doc.fusion_status = "failed"
-                await db.commit()
-            except Exception:
-                pass
-            return {"error": str(e), "status": "failed"}
-
-
-register_task_handler("kb_fuse", _fuse_handler)
 
 
 async def get_page_fusion_detail(

@@ -11,6 +11,9 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote, urlparse
+
+EXPECTED_DB_NAME = "华世王镞_v2"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "backend_base_url": "http://127.0.0.1:33000",
@@ -98,9 +101,50 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
             release_gate[key] = int(value)
 
 
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _db_name_from_dsn(dsn: str) -> str:
+    return unquote(urlparse(dsn).path.lstrip("/"))
+
+
+def _build_db_dsn_from_backend_env(repo_root: Path) -> str:
+    env = _read_env_file(repo_root / "backend" / ".env")
+    db_name = env.get("DB_NAME", EXPECTED_DB_NAME)
+    user = env.get("DB_USER", "postgres")
+    password = env.get("DB_PASSWORD", "")
+    host = env.get("DB_HOST", "127.0.0.1")
+    port = env.get("DB_PORT", "5432")
+    auth = quote(user, safe="")
+    if password:
+        auth = f"{auth}:{quote(password, safe='')}"
+    return f"postgresql://{auth}@{host}:{port}/{quote(db_name, safe='')}"
+
+
+def _validate_db_dsn(dsn: str) -> None:
+    db_name = _db_name_from_dsn(dsn)
+    if db_name != EXPECTED_DB_NAME:
+        raise RuntimeError(
+            f"dev_toolkit db_dsn points to {db_name!r}; expected {EXPECTED_DB_NAME!r}"
+        )
+
+
 def load_config(repo_root: Path) -> dict[str, Any]:
     toolkit_dir = repo_root / "dev_toolkit"
     config = _merge(DEFAULT_CONFIG, _read_json(toolkit_dir / "config.example.json"))
     config = _merge(config, _read_json(toolkit_dir / "config.local.json"))
     _apply_env_overrides(config)
+    if not config.get("db_dsn"):
+        config["db_dsn"] = _build_db_dsn_from_backend_env(repo_root)
+    _validate_db_dsn(str(config["db_dsn"]))
     return config

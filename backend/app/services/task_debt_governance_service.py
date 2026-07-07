@@ -16,6 +16,7 @@ logger = logging.getLogger("v2.task_debt_governance")
 DEBT_GOVERNANCE_MAX_LIMIT = 5000
 DEFAULT_DEBT_GOVERNANCE_LIMIT = 1000
 KB_DELETED_SOURCE_OBSOLETE_CATEGORY = "kb_deleted_source_obsolete"
+KNOWLEDGE_PIPELINE_TASK_TYPES = {"kb_pipeline_stage", "kb_pipeline"}
 
 _DOCUMENT_NOT_FOUND_RE = re.compile(r"Document\s+(\d+)\s+not found")
 
@@ -431,7 +432,7 @@ async def _classify_failed_task(
     test_classification = _classify_test_debt(task, params)
     if test_classification:
         return test_classification
-    if task.task_type == "kb_pipeline":
+    if task.task_type in KNOWLEDGE_PIPELINE_TASK_TYPES:
         return await _classify_kb_pipeline_debt(db, task, params)
     if task.task_type == "profile_evolve":
         return _classify_profile_evolve_debt(task, params, profile_init_seen)

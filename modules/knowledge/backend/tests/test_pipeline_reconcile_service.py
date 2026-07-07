@@ -96,7 +96,7 @@ async def _create_run_case(
             owner_id=OWNER_ID,
             file_id=file_id,
             task_id=task_id,
-            trigger="kb_pipeline",
+            trigger="kb_pipeline_stage",
             status="running",
             diagnostics_json=diagnostics,
             started_at=datetime.now(timezone.utc),

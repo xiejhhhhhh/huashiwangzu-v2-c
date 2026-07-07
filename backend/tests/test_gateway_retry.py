@@ -175,7 +175,32 @@ def test_prepare_vision_image_resizes_large_images_before_multimodal_send() -> N
     assert len(prepared) <= 1800 * 1024
     assert metadata["resized"] is True
     assert metadata["reencoded"] is True
-    assert max(metadata["prepared_size"]) == 1920
+    assert max(metadata["prepared_size"]) == 1600
+    assert metadata["jpeg_quality_start"] == 84
+    assert metadata["jpeg_quality_floor"] == 72
+    assert metadata["vlm_ready"] is True
+    assert metadata["prepared_md5"]
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_image_payloads_before_provider_call() -> None:
+    router = ModelGatewayRouter.__new__(ModelGatewayRouter)
+    router._providers = {}
+
+    result = await router.chat(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                    {"type": "text", "text": "describe this"},
+                ],
+            }
+        ],
+    )
+
+    assert result["error"]
+    assert result["diagnostics"]["policy"] == "vision_images_must_use_describe_image"
 
 
 def test_openai_provider_session_affinity_header_is_payload_scoped() -> None:
@@ -529,6 +554,122 @@ async def test_chat_falls_back_from_explicit_cloud_profile(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_profile_fallback_chain_overrides_global_chain(monkeypatch) -> None:
+    profiles = {
+        "gpt-5.5-knowledge": {
+            "provider": "gptstore-text",
+            "model": "gpt-5.5",
+            "temperature": 0.2,
+            "max_tokens": 128,
+            "fallback_policy": "knowledge-text",
+        },
+        "gemma-4": {
+            "provider": "llama",
+            "model": "gemma-4",
+            "temperature": 0.2,
+            "max_tokens": 64,
+        },
+        "deepseek-v4-flash": {
+            "provider": "opencode",
+            "model": "deepseek-v4-flash",
+            "temperature": 0.2,
+            "max_tokens": 64,
+        },
+    }
+    gpt55 = AlwaysFailProvider("relay timeout", status_code=504)
+    gemma = OpenAICompatSuccessProvider("should not be used")
+    deepseek = OpenAICompatSuccessProvider("direct fallback ok")
+
+    monkeypatch.setattr(gateway_router_module, "MODEL_PROFILES", profiles)
+    monkeypatch.setattr(
+        gateway_router_module,
+        "get_models_config",
+        lambda: {"fallback_policies": {"knowledge-text": {"chain": ["deepseek-v4-flash"]}}},
+    )
+    monkeypatch.setattr(
+        gateway_router_module,
+        "get_model_type_config",
+        lambda model_type: {
+            "primary": "gpt-5.5-knowledge",
+            "fallback_on_explicit_profile": True,
+            "fallback_chain": ["gemma-4"],
+            "profiles": profiles,
+        } if model_type == "llm" else {},
+    )
+
+    router = ModelGatewayRouter.__new__(ModelGatewayRouter)
+    router._providers = {"gptstore-text": gpt55, "llama": gemma, "opencode": deepseek}
+
+    result = await router.chat(
+        messages=[{"role": "user", "content": "hello"}],
+        profile_key="gpt-5.5-knowledge",
+        budget=RetryBudget(max_attempts=1),
+    )
+
+    assert result["content"] == "direct fallback ok"
+    assert gpt55.calls == 1
+    assert gemma.calls == 0
+    assert deepseek.calls == 1
+    assert result["diagnostics"]["candidates"] == ["gpt-5.5-knowledge", "deepseek-v4-flash"]
+    assert result["diagnostics"]["selected_profile"] == "deepseek-v4-flash"
+
+
+@pytest.mark.asyncio
+async def test_profile_inline_fallback_chain_remains_supported(monkeypatch) -> None:
+    profiles = {
+        "cloud-primary": {
+            "provider": "cloud",
+            "model": "cloud-primary",
+            "temperature": 0.7,
+            "max_tokens": 128,
+            "fallback_chain": ["direct-fallback"],
+        },
+        "global-fallback": {
+            "provider": "local",
+            "model": "global-fallback",
+            "temperature": 0.2,
+            "max_tokens": 64,
+        },
+        "direct-fallback": {
+            "provider": "opencode",
+            "model": "direct-fallback",
+            "temperature": 0.2,
+            "max_tokens": 64,
+        },
+    }
+    cloud = AlwaysFailProvider("quota exhausted")
+    global_fallback = LocalSuccessProvider("should not be used")
+    direct_fallback = OpenAICompatSuccessProvider("inline fallback ok")
+
+    monkeypatch.setattr(gateway_router_module, "MODEL_PROFILES", profiles)
+    monkeypatch.setattr(gateway_router_module, "get_models_config", lambda: {})
+    monkeypatch.setattr(
+        gateway_router_module,
+        "get_model_type_config",
+        lambda model_type: {
+            "primary": "cloud-primary",
+            "fallback_on_explicit_profile": True,
+            "fallback_chain": ["global-fallback"],
+            "profiles": profiles,
+        } if model_type == "llm" else {},
+    )
+
+    router = ModelGatewayRouter.__new__(ModelGatewayRouter)
+    router._providers = {"cloud": cloud, "local": global_fallback, "opencode": direct_fallback}
+
+    result = await router.chat(
+        messages=[{"role": "user", "content": "hello"}],
+        profile_key="cloud-primary",
+        budget=RetryBudget(max_attempts=1),
+    )
+
+    assert result["content"] == "inline fallback ok"
+    assert global_fallback.calls == 0
+    assert direct_fallback.calls == 1
+    assert result["diagnostics"]["candidates"] == ["cloud-primary", "direct-fallback"]
+
+
+@pytest.mark.asyncio
 async def test_chat_falls_back_on_auth_body_with_invalid_request_type(monkeypatch) -> None:
     profiles = {
         "gpt-5.5-knowledge": {
@@ -626,8 +767,12 @@ async def test_chat_stops_fallback_on_protocol_error(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_configured_llm_chain_keeps_global_default_and_exposes_gpt55_profile() -> None:
     llm_cfg = get_model_type_config("llm")
+    vision_cfg = get_model_type_config("vision")
     profiles = llm_cfg["profiles"]
-    knowledge_routing = get_models_config()["module_routing"]["knowledge"]
+    vision_profiles = vision_cfg["profiles"]
+    models_config = get_models_config()
+    knowledge_routing = models_config["module_routing"]["knowledge"]
+    fallback_policies = models_config["fallback_policies"]
 
     assert llm_cfg["primary"] == "deepseek-v4-flash"
     assert llm_cfg["fallback_chain"][:2] == ["gemma-4", "ollama-local"]
@@ -635,6 +780,10 @@ async def test_configured_llm_chain_keeps_global_default_and_exposes_gpt55_profi
     assert profiles["gpt-5.5-knowledge"]["provider"] == "gptstore-text"
     assert profiles["gpt-5.5-knowledge"]["retry_strategy"] == "fixed"
     assert profiles["gpt-5.5-knowledge"]["retry_delay_seconds"] == 30
+    assert profiles["gpt-5.5-knowledge"]["fallback_policy"] == "knowledge_text_primary"
+    assert fallback_policies["knowledge_text_primary"]["chain"] == ["deepseek-v4-flash"]
+    assert vision_profiles["gpt-5.5-vision"]["fallback_policy"] == "knowledge_vision_primary"
+    assert fallback_policies["knowledge_vision_primary"]["chain"] == ["mimo"]
     assert knowledge_routing["default_profile"] == "gpt-5.5-knowledge"
     assert knowledge_routing["fallback_profile"] == "deepseek-v4-flash"
     assert knowledge_routing["stages"]["raw_vision"] == "gpt-5.5-vision"

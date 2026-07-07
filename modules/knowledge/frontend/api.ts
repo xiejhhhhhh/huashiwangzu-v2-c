@@ -43,8 +43,16 @@ export interface FrameworkFile {
   created_at?: string | null
 }
 
+export interface PaginatedResult<T> {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface FileTreeNode {
   id: number
+  node_key: string
   name: string
   parent_id: number | null
   is_folder: boolean
@@ -58,6 +66,7 @@ export interface FileTreeNode {
   _ext?: string
   _pct?: number | null
   _created_at?: string
+  _render_key?: string
 }
 
 export interface ProgressStage {
@@ -308,8 +317,12 @@ export function getFileTree(): Promise<FrameworkFolder[]> {
   return apiGet<FrameworkFolder[]>('/files/tree')
 }
 
-export function getFileList(folderId: number): Promise<{ items: FrameworkFile[]; total: number }> {
-  return apiGet<{ items: FrameworkFile[]; total: number }>(`/files/list?folder_id=${folderId}&page_size=200`)
+export function listKnowledgeDocuments(page = 1, pageSize = 100): Promise<PaginatedResult<KnowledgeDocument>> {
+  return apiGet<PaginatedResult<KnowledgeDocument>>(`/knowledge/documents?page=${page}&page_size=${pageSize}`)
+}
+
+export function getFileList(folderId: number, page = 1, pageSize = 200): Promise<PaginatedResult<FrameworkFile>> {
+  return apiGet<PaginatedResult<FrameworkFile>>(`/files/list?folder_id=${folderId}&page=${page}&page_size=${pageSize}`)
 }
 
 /** 将框架文件夹平铺列表递归构建为树 */
@@ -317,7 +330,14 @@ export function buildFolderTree(folders: FrameworkFolder[]): FileTreeNode[] {
   const map = new Map<number, FileTreeNode>()
   const roots: FileTreeNode[] = []
   for (const f of folders) {
-    map.set(f.id, { id: f.id, name: f.name, parent_id: f.parent_id, is_folder: true, children: [] })
+    map.set(f.id, {
+      id: f.id,
+      node_key: `folder:${f.id}`,
+      name: f.name,
+      parent_id: f.parent_id,
+      is_folder: true,
+      children: [],
+    })
   }
   for (const f of folders) {
     const node = map.get(f.id)!

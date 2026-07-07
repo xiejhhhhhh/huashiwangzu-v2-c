@@ -667,3 +667,68 @@ async def test_reconcile_pending_archives_physical_missing_without_touching_live
     assert archived_payload["reason"] == "source_file_physical_missing"
     assert archived_payload["document_id"] == 1
     assert archived_payload["file_id"] == 10
+
+
+def test_running_live_task_is_requeueable():
+    category, action, parse_error, source_state = pipeline_debt_service._classify_running_task(
+        _MutableDoc(1, 10),
+        _MutableFile(10),
+    )
+
+    assert category == "running_live_interrupted"
+    assert action == "release_for_retry"
+    assert parse_error is None
+    assert source_state is not None
+
+
+def test_running_missing_file_is_obsolete():
+    category, action, parse_error, source_state = pipeline_debt_service._classify_running_task(
+        _MutableDoc(1, 10),
+        None,
+    )
+
+    assert category == "running_source_file_missing"
+    assert action == "archive_running_obsolete"
+    assert parse_error == "source_file_missing"
+    assert source_state is not None
+
+
+def test_running_deep_complete_task_is_archiveable():
+    doc = _MutableDoc(1, 10)
+    doc.parse_status = "done"
+    doc.vector_status = "done"
+    doc.raw_status = "done"
+    doc.fusion_status = "done"
+    doc.profile_status = "done"
+    doc.graph_status = "done"
+    doc.relation_status = "done"
+
+    category, action, parse_error, source_state = pipeline_debt_service._classify_running_task(
+        doc,
+        _MutableFile(10),
+    )
+
+    assert category == "running_live_already_complete"
+    assert action == "archive_running_already_complete"
+    assert parse_error is None
+    assert source_state is not None
+
+
+def test_release_running_task_returns_to_pending():
+    task = _Task(801, 1, "old error", status="running")
+    item = {
+        "category": "running_live_interrupted",
+        "document_id": 1,
+        "file_id": 10,
+    }
+
+    pipeline_debt_service._release_running_task(task, item)
+
+    assert task.status == "pending"
+    assert task.started_at is None
+    assert task.completed_at is None
+    assert task.error_message is None
+    result = json.loads(task.result or "{}")
+    assert result["status"] == "requeued"
+    assert result["classification"] == "running_live_interrupted"
+    assert result["previous_error_message"] == "old error"

@@ -2,7 +2,7 @@ param(
     [string]$DbHost = "127.0.0.1",
     [int]$DbPort = 5432,
     [string]$DbUser = "postgres",
-    [string]$DbName = "huashiwangzu_v2",
+    [string]$DbName = "华世王镞_v2",
     [switch]$SkipFrontendBuild,
     [switch]$SkipStart,
     [switch]$SkipSystemInstall,

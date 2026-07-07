@@ -1,3 +1,5 @@
+import base64
+import io
 import sys
 from pathlib import Path
 
@@ -17,8 +19,9 @@ from app.services.parser_resource_diagnostics import (
 async def test_store_extracted_resources_records_success_and_removes_private_bytes():
     async def fake_store(module: str, action: str, params: dict, caller: str) -> dict:
         assert module == "content"
-        assert action == "store_resource"
+        assert action == "store_analysis_resource"
         assert caller == "user:7"
+        assert params["file_id"] == 1
         assert params["filename"] == "image.png"
         assert params["data_b64"] == "AAAA"
         return {"id": 123}
@@ -63,6 +66,57 @@ async def test_store_extracted_resources_records_success_and_removes_private_byt
             "stored_resource_id": 123,
         },
     }]
+
+
+@pytest.mark.asyncio
+async def test_store_extracted_image_resource_preprocesses_large_png_before_storage():
+    Image = pytest.importorskip("PIL.Image")
+    PngImagePlugin = pytest.importorskip("PIL.PngImagePlugin")
+    source = Image.effect_noise((2200, 1200), 96).convert("RGB")
+    png_info = PngImagePlugin.PngInfo()
+    png_info.add_text("huge-note", "x" * 100_000)
+    source_buf = io.BytesIO()
+    source.save(source_buf, format="PNG", pnginfo=png_info)
+    source_b64 = base64.b64encode(source_buf.getvalue()).decode("ascii")
+    captured: dict = {}
+
+    async def fake_store(_module: str, _action: str, params: dict, _caller: str) -> dict:
+        captured.update(params)
+        return {"id": 456}
+
+    result = {
+        "file_id": 12,
+        "resources": [{
+            "id": 7,
+            "type": "image",
+            "mime_type": "image/png",
+            "filename": "slide1.png",
+            "description": "poster image",
+            "_bytes_b64": source_b64,
+        }],
+    }
+
+    parsed = await store_extracted_resources_with_diagnostics(
+        result,
+        caller="user:7",
+        parser="pptx-parser",
+        store_callable=fake_store,
+    )
+
+    assert captured["mime_type"] == "image/jpeg"
+    assert captured["file_id"] == 12
+    assert captured["filename"] == "slide1.jpg"
+    prepared_bytes = base64.b64decode(captured["data_b64"])
+    with Image.open(io.BytesIO(prepared_bytes)) as prepared:
+        assert max(prepared.size) == 1600
+        assert prepared.format == "JPEG"
+    assert len(prepared_bytes) < len(source_buf.getvalue())
+    resource = parsed["resources"][0]
+    assert resource["stored_resource_id"] == 456
+    assert resource["mime_type"] == "image/jpeg"
+    assert resource["filename"] == "slide1.jpg"
+    assert resource["preprocess"]["prepared_mime_type"] == "image/jpeg"
+    assert resource["preprocess"]["png_text_chunk_cleanup"]["stripped"] is True
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ import {
   getProgress,
   getProgressBatch,
   getRelations,
+  listKnowledgeDocuments,
   parseJsonField,
   type DocumentProfile,
   type DocumentProgress,
@@ -49,6 +50,10 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
   const folderFiles = ref<Record<number, FileTreeNode[]>>({})  // folder_id → 文件节点列表
   const kbDocMap = ref<Record<number, KnowledgeDocument>>({})
   const liveProgressMap = ref<Record<number, DocumentProgress>>({})
+
+  const DOCUMENT_PAGE_SIZE = 100
+  const FILE_PAGE_SIZE = 200
+  const PROGRESS_BATCH_SIZE = 100
 
   // ── 树节点状态/百分比实时派生（从 liveProgressMap 现查，不存静态快照） ──
   function getNodeLiveStatus(node: FileTreeNode): string | undefined {
@@ -86,11 +91,12 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     // 展开时加载文件夹内文件（仅一次）
     if (!wasOpen && !folderFiles.value[key]) {
       try {
-        const data = await getFileList(key)
-        const children: FileTreeNode[] = (data.items || []).filter((f) => !f.is_folder).map((f) => {
+        const items = await loadAllFilesInFolder(key)
+        const children: FileTreeNode[] = items.filter((f) => !f.is_folder).map((f) => {
           const doc = kbDocMap.value[f.id]
           const node: FileTreeNode = {
             id: f.id, name: f.name, parent_id: key, is_folder: f.is_folder,
+            node_key: `${f.is_folder ? 'folder' : 'file'}:${f.id}`,
             children: [], _depth: 0, _open: false, _ext: f.extension || '',
             _pct: null, _created_at: f.created_at || '',
           }
@@ -107,9 +113,10 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
 
   const visibleTree = computed(() => {
     const kw = keyword.value.trim().toLowerCase()
-    function flatten(nodes: FileTreeNode[], depth: number): FileTreeNode[] {
+    function flatten(nodes: FileTreeNode[], depth: number, parentPath = 'root'): FileTreeNode[] {
       const out: FileTreeNode[] = []
-      for (const n of nodes) {
+      nodes.forEach((n, index) => {
+        const renderKey = `${parentPath}/${n.node_key}:${index}`
         const nameMatch = !kw || n.name.toLowerCase().includes(kw)
         // 合并子文件夹和已加载的文件，文件夹在前
         const fileKids = folderFiles.value[n.id] || []
@@ -124,17 +131,18 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
           if (!a.is_folder) return (b._created_at || '').localeCompare(a._created_at || '')
           return a.name.localeCompare(b.name)
         })
-        const childFlat = allKids.length ? flatten(allKids, depth + 1) : []
+        const childFlat = allKids.length ? flatten(allKids, depth + 1, renderKey) : []
         const childMatch = childFlat.length > 0
         if (nameMatch || childMatch) {
           const open = kw ? true : !!folderOpenState.value[n.id]
           out.push({ ...n, _depth: depth, _open: open,
+            _render_key: renderKey,
             kb_status: getNodeLiveStatus(n),
             _pct: getNodeLivePct(n),
           })
           if (open || kw) out.push(...childFlat)
         }
-      }
+      })
       return out
     }
     return flatten(fileTree.value, 0)
@@ -209,8 +217,9 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
   const runningCount = computed(() => Object.values(liveProgressMap.value).filter(p => p.overall_status === 'running').length)
   const hasResult = computed(() => progress.value?.overall_status === 'done' || fusions.value.length > 0)
   const showProgress = computed(() => !!progress.value && progress.value.overall_status !== 'done')
-  const headStatusText = computed(() => { const p = progress.value; if (!p) return '尚未分析'; if (p.overall_status === 'done') return '分析完成'; if (p.overall_status === 'failed') return '分析出错'; if (p.overall_status === 'degraded') return '分析有缺损'; if (p.overall_status === 'paused') return '模型降级后已暂停'; if (p.overall_status === 'source_unavailable') return '源文件不可用'; if (p.overall_status === 'running') return p.current_stage + '…'; return '待分析' })
-  const progressHeadline = computed(() => { const p = progress.value; if (!p) return ''; if (p.overall_status === 'done') return '全部完成'; if (p.overall_status === 'failed') return '分析出错,可重新分析'; if (p.overall_status === 'degraded') return '分析有缺损,可重新分析'; if (p.overall_status === 'paused') return 'GPT5.5 降级后已按规则暂停，可检查后再继续'; if (p.overall_status === 'source_unavailable') return '源文件已删除或不可用'; return '正在「' + p.current_stage + '」' })
+	  const headStatusText = computed(() => { const p = progress.value; if (!p) return '尚未分析'; if (p.overall_status === 'done') return '分析完成'; if (p.overall_status === 'failed') return '分析出错'; if (p.overall_status === 'degraded') return '分析有缺损'; if (p.overall_status === 'paused') return '模型降级后已暂停'; if (p.overall_status === 'source_unavailable') return '源文件不可用'; if (p.overall_status === 'running') return p.current_stage + '…'; return '待分析' })
+	  const progressHeadline = computed(() => { const p = progress.value; if (!p) return ''; if (p.overall_status === 'done') return '全部完成'; if (p.overall_status === 'failed') return '分析出错,可重新分析'; if (p.overall_status === 'degraded') return '分析有缺损,可重新分析'; if (p.overall_status === 'paused') return 'GPT5.5 降级后已按规则暂停，可检查后再继续'; if (p.overall_status === 'source_unavailable') return '源文件已删除或不可用'; return '正在「' + p.current_stage + '」' })
+	  const progressHint = computed(() => { const p = progress.value; if (!p) return ''; if (p.overall_status === 'running') return '正在处理,可关闭页面,稍后回来会自动接着显示进度'; if (p.overall_status === 'paused') return '已保存当前阶段结果,后续可从断点继续或重跑深层分析'; if (p.overall_status === 'failed') return '已记录失败原因,可查看状态后重新分析'; if (p.overall_status === 'degraded') return '已保留可用结果,建议后续补跑缺损阶段'; if (p.overall_status === 'source_unavailable') return '源文件不可用,请恢复或重新上传后再继续'; if (p.overall_status === 'done') return '分析完成,下方查看结果'; return '等待进入分析队列' })
   const ringStyle = computed(() => { const pct = progress.value?.overall_percent ?? 0; return { background: `conic-gradient(#2395bc ${pct * 3.6}deg, #e6eef5 0deg)` } })
   const overallPercent = computed(() => Math.max(0, Math.min(100, progress.value?.overall_percent ?? 0)))
   const sourceUnavailable = computed(() => ingestStatus.value?.source_available === false || progress.value?.overall_status === 'source_unavailable')
@@ -359,18 +368,38 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     await openDocument(doc)
   }
 
+  async function loadAllKnowledgeDocuments(): Promise<KnowledgeDocument[]> {
+    const all: KnowledgeDocument[] = []
+    for (let page = 1; page <= 100; page += 1) {
+      const data = await listKnowledgeDocuments(page, DOCUMENT_PAGE_SIZE)
+      all.push(...(data.items || []))
+      if (all.length >= data.total || (data.items || []).length < DOCUMENT_PAGE_SIZE) break
+    }
+    return all
+  }
+
+  async function loadAllFilesInFolder(folderId: number): Promise<Awaited<ReturnType<typeof getFileList>>['items']> {
+    const all: Awaited<ReturnType<typeof getFileList>>['items'] = []
+    for (let page = 1; page <= 100; page += 1) {
+      const data = await getFileList(folderId, page, FILE_PAGE_SIZE)
+      all.push(...(data.items || []))
+      if (all.length >= data.total || (data.items || []).length < FILE_PAGE_SIZE) break
+    }
+    return all
+  }
+
   async function loadFileTree() {
     treeLoading.value = true
     treeError.value = ''
     try {
       const [folders, docs] = await Promise.all([
         getFileTree(),
-        apiGet<{ items: KnowledgeDocument[] }>('/knowledge/documents?page=1&page_size=100'),
+        loadAllKnowledgeDocuments(),
       ])
-      documents.value = docs.items
+      documents.value = docs
       const tree = buildFolderTree(folders)
       const docByFileId: Record<number, KnowledgeDocument> = {}
-      for (const d of docs.items) docByFileId[d.file_id] = d
+      for (const d of docs) docByFileId[d.file_id] = d
       kbDocMap.value = docByFileId
 
       function attachDocs(nodes: FileTreeNode[]) {
@@ -395,13 +424,14 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
 
       // 加载根目录文件（folder_id=0 的文件和文件夹混合）
       try {
-        const rootData = await getFileList(0)
+        const rootItems = await loadAllFilesInFolder(0)
         const rootFiles: FileTreeNode[] = []
-        for (const f of (rootData.items || [])) {
+        for (const f of rootItems) {
           if (f.is_folder) continue  // 文件夹已在 tree 中
           const doc = kbDocMap.value[f.id]
           const fn: FileTreeNode = {
             id: f.id, name: f.name, parent_id: null, is_folder: false,
+            node_key: `file:${f.id}`,
             children: [], _depth: 0, _open: false, _ext: f.extension || '', _pct: null,
             _created_at: f.created_at || '',
           }
@@ -577,9 +607,12 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     const ids = documents.value.map(d => d.id)
     if (!ids.length) return
     try {
-      const map = await getProgressBatch(ids)
       const norm: Record<number, DocumentProgress> = {}
-      for (const k of Object.keys(map)) norm[Number(k)] = map[k]
+      for (let i = 0; i < ids.length; i += PROGRESS_BATCH_SIZE) {
+        const batch = ids.slice(i, i + PROGRESS_BATCH_SIZE)
+        const map = await getProgressBatch(batch)
+        for (const k of Object.keys(map)) norm[Number(k)] = map[k]
+      }
       liveProgressMap.value = norm
       if (Object.values(norm).some(p => p.overall_status === 'running')) ensurePolling()
     } catch { /* ignore */ }
@@ -798,8 +831,8 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     loadUserRole,
     jumpToFirstRunning,
     handleGraphSelect,
-    progress,
-    ingestStatus,
+	    progress,
+	    ingestStatus,
     fusions,
     profile,
     relations,
@@ -815,8 +848,9 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     runningCount,
     hasResult,
     showProgress,
-    headStatusText,
-    progressHeadline,
+	    headStatusText,
+	    progressHeadline,
+	    progressHint,
     ringStyle,
     overallPercent,
     sourceUnavailable,

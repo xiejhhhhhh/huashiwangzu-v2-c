@@ -9,7 +9,6 @@ from time import perf_counter
 
 from app.database import AsyncSessionLocal
 from app.gateway.router import gateway_router
-from app.services.task_worker import register_task_handler
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .analysis_artifact_service import model_used_from_result, resolve_stage_prompt_hash, stable_hash
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_concurrency, resolve_knowledge_profile
-from .prompt_utils import TENTITY, TFUSION_LEGACY, load_prompt
+from .prompt_utils import TENTITY, TFUSION_LEGACY, load_prompt_detached
 
 logger = logging.getLogger("v2.knowledge").getChild("entity")
 
@@ -33,7 +32,7 @@ async def extract_entities_from_text(
         return {"entities": [], "relationships": []}
 
     resolved_profile_key = resolve_knowledge_profile("entity", profile_key)
-    system_prompt = await load_prompt(db, TENTITY)
+    system_prompt = await load_prompt_detached(TENTITY)
     try:
         messages = [
             {"role": "system", "content": system_prompt},
@@ -87,7 +86,7 @@ async def fuse_page_text(
         return text
 
     resolved_profile_key = resolve_knowledge_profile("legacy_page_fusion", profile_key)
-    system_prompt = await load_prompt(db, TFUSION_LEGACY)
+    system_prompt = await load_prompt_detached(TFUSION_LEGACY)
     try:
         messages = [
             {"role": "system", "content": system_prompt},
@@ -440,50 +439,7 @@ async def process_document_entities_from_fusions(
     stage_started = perf_counter()
     stats = {"entities_found": 0, "relationships_found": 0, "errors": []}
 
-    # ── 幂等：捕获旧实体ID后再清数据 ──
-    cleanup_started = perf_counter()
-    # 先查出本文档旧证据引用的 entity_id（在删之前捕获，用于后续删 graph node/edge）
-    old_evidence_entity_r = await db.execute(
-        select(KbEvidence.entity_id).where(KbEvidence.document_id == document_id)
-    )
-    old_entity_ids_for_nodes = {row[0] for row in old_evidence_entity_r.all()}
-
-    # 再删本文档的 evidence、chunk_entity 和 governance_candidate
-    await db.execute(
-        sa_delete(KbEvidence).where(KbEvidence.document_id == document_id)
-    )
-    await db.execute(
-        sa_delete(KbChunkEntity).where(KbChunkEntity.document_id == document_id)
-    )
-    await db.execute(
-        sa_delete(KbGovernanceCandidate).where(KbGovernanceCandidate.document_id == document_id)
-    )
-
-    # 删图谱节点和边
-    if old_entity_ids_for_nodes:
-        node_ids_r = await db.execute(
-            select(KbGraphNode.id).where(
-                KbGraphNode.entity_id.in_(old_entity_ids_for_nodes),
-                KbGraphNode.owner_id == owner_id,
-            )
-        )
-        node_ids = [row[0] for row in node_ids_r.all()]
-        if node_ids:
-            await db.execute(
-                sa_delete(KbGraphEdge).where(
-                    (KbGraphEdge.source_node_id.in_(node_ids))
-                    | (KbGraphEdge.target_node_id.in_(node_ids))
-                )
-            )
-            await db.execute(
-                sa_delete(KbGraphNode).where(
-                    KbGraphNode.entity_id.in_(old_entity_ids_for_nodes),
-                    KbGraphNode.owner_id == owner_id,
-                )
-            )
-
-    logger.info("Cleared old entity/graph data for document_id=%d (uncommitted, safe on crash)", document_id)
-    cleanup_duration_ms = round((perf_counter() - cleanup_started) * 1000)
+    cleanup_duration_ms = 0
 
     # 读取所有页融合正文
     r = await db.execute(
@@ -512,6 +468,7 @@ async def process_document_entities_from_fusions(
         page_to_raw_rows.setdefault(int(raw.page), []).append(raw)
     fusion_artifact_id = await _latest_analysis_artifact_id(db, document_id, owner_id, "fusion")
     graph_prompt_hash = await resolve_stage_prompt_hash(db, "graph")
+    await db.commit()
 
     all_entities: list[dict] = []
     all_relationships: list[dict] = []
@@ -567,6 +524,45 @@ async def process_document_entities_from_fusions(
             stats.setdefault("model_diagnostics", []).append(result.get("model_diagnostics") or {})
         processed_pages += 1
     extraction_duration_ms = round((perf_counter() - extraction_started) * 1000)
+
+    cleanup_started = perf_counter()
+    old_evidence_entity_r = await db.execute(
+        select(KbEvidence.entity_id).where(KbEvidence.document_id == document_id)
+    )
+    old_entity_ids_for_nodes = {row[0] for row in old_evidence_entity_r.all()}
+    await db.execute(
+        sa_delete(KbEvidence).where(KbEvidence.document_id == document_id)
+    )
+    await db.execute(
+        sa_delete(KbChunkEntity).where(KbChunkEntity.document_id == document_id)
+    )
+    await db.execute(
+        sa_delete(KbGovernanceCandidate).where(KbGovernanceCandidate.document_id == document_id)
+    )
+    if old_entity_ids_for_nodes:
+        node_ids_r = await db.execute(
+            select(KbGraphNode.id).where(
+                KbGraphNode.entity_id.in_(old_entity_ids_for_nodes),
+                KbGraphNode.owner_id == owner_id,
+            )
+        )
+        node_ids = [row[0] for row in node_ids_r.all()]
+        if node_ids:
+            await db.execute(
+                sa_delete(KbGraphEdge).where(
+                    (KbGraphEdge.source_node_id.in_(node_ids))
+                    | (KbGraphEdge.target_node_id.in_(node_ids))
+                )
+            )
+            await db.execute(
+                sa_delete(KbGraphNode).where(
+                    KbGraphNode.entity_id.in_(old_entity_ids_for_nodes),
+                    KbGraphNode.owner_id == owner_id,
+                )
+            )
+    cleanup_duration_ms = round((perf_counter() - cleanup_started) * 1000)
+    logger.info("Cleared old entity/graph data for document_id=%d before graph write", document_id)
+    await db.commit()
 
     # 去重 + 写入（复用同逻辑）
     write_started = perf_counter()
@@ -645,6 +641,7 @@ async def process_document_entities_from_fusions(
             db.add(candidate)
 
     stats["entities_found"] = len(seen_entities)
+    await db.commit()
 
     # ── 第2步：构建页→chunk映射 ──────────────────────────
     # Fusion 层 chunk 由 index_fusions_to_chunks() 写入 kb_chunks，
@@ -718,37 +715,65 @@ async def process_document_entities_from_fusions(
                 )
                 db.add(ce)
 
+    await db.commit()
+
     # 关系写入
     seen_relations: set = set()
+    relation_names: set[str] = set()
     for rel in all_relationships:
-        source_name = rel.get("source", "")
-        target_name = rel.get("target", "")
+        source_name = (rel.get("source") or "").strip()
+        target_name = (rel.get("target") or "").strip()
+        if source_name and target_name:
+            relation_names.add(source_name)
+            relation_names.add(target_name)
+
+    nodes_by_label: dict[str, KbGraphNode] = {}
+    existing_edge_keys: set[tuple[int, int, str]] = set()
+    if relation_names:
+        nodes_r = await db.execute(
+            select(KbGraphNode).where(
+                KbGraphNode.owner_id == owner_id,
+                KbGraphNode.label.in_(list(relation_names)),
+            )
+        )
+        for node in nodes_r.scalars().all():
+            nodes_by_label.setdefault(str(node.label), node)
+
+        node_ids = [int(node.id) for node in nodes_by_label.values()]
+        if node_ids:
+            edge_r = await db.execute(
+                select(
+                    KbGraphEdge.source_node_id,
+                    KbGraphEdge.target_node_id,
+                    KbGraphEdge.relation,
+                ).where(
+                    KbGraphEdge.owner_id == owner_id,
+                    KbGraphEdge.source_node_id.in_(node_ids),
+                    KbGraphEdge.target_node_id.in_(node_ids),
+                )
+            )
+            existing_edge_keys = {
+                (int(source_id), int(target_id), str(relation))
+                for source_id, target_id, relation in edge_r.all()
+            }
+    await db.commit()
+
+    pending_edges = 0
+    for rel in all_relationships:
+        source_name = (rel.get("source") or "").strip()
+        target_name = (rel.get("target") or "").strip()
         rel_type = rel.get("relation", "相关")
         rel_key = f"{source_name}|{target_name}|{rel_type}"
         if rel_key in seen_relations:
             continue
         seen_relations.add(rel_key)
 
-        # 查找源/目标 node
-        src_node_r = await db.execute(
-            select(KbGraphNode).where(KbGraphNode.label == source_name, KbGraphNode.owner_id == owner_id).limit(1)
-        )
-        src_node = src_node_r.scalars().first()
-        tgt_node_r = await db.execute(
-            select(KbGraphNode).where(KbGraphNode.label == target_name, KbGraphNode.owner_id == owner_id).limit(1)
-        )
-        tgt_node = tgt_node_r.scalars().first()
+        src_node = nodes_by_label.get(source_name)
+        tgt_node = nodes_by_label.get(target_name)
 
         if src_node and tgt_node:
-            # 查重（node 维度的唯一性检查）
-            dup_r = await db.execute(
-                select(KbGraphEdge).where(
-                    KbGraphEdge.source_node_id == src_node.id,
-                    KbGraphEdge.target_node_id == tgt_node.id,
-                    KbGraphEdge.relation == rel_type,
-                ).limit(1)
-            )
-            if dup_r.scalars().first():
+            edge_key = (int(src_node.id), int(tgt_node.id), str(rel_type))
+            if edge_key in existing_edge_keys:
                 continue
             edge = KbGraphEdge(
                 owner_id=owner_id, source_node_id=src_node.id,
@@ -756,6 +781,11 @@ async def process_document_entities_from_fusions(
                 weight=1.0, description=rel.get("description", ""),
             )
             db.add(edge)
+            existing_edge_keys.add(edge_key)
+            pending_edges += 1
+            if pending_edges >= 100:
+                await db.commit()
+                pending_edges = 0
 
     stats["relationships_found"] = len(seen_relations)
     if processed_pages > 0 and not seen_entities and stats["errors"]:
@@ -874,29 +904,3 @@ async def get_page_fusion(
         "fused_text": pf.fused_text,
         "enhanced_text": pf.enhanced_text,
     }
-
-
-# ── 框架任务 handler:第6层图谱重建(后台,防同步超时) ────────────────
-async def _graph_handler(params: dict) -> dict:
-    """框架后台任务 handler:处理 kb_graph 任务(从融合层重建实体/图谱)。"""
-    from ..models import KbDocument
-
-    document_id = int(params.get("document_id", 0))
-    if document_id <= 0:
-        return {"error": "document_id required", "status": "failed"}
-
-    async with AsyncSessionLocal() as db:
-        df = await db.execute(select(KbDocument).where(KbDocument.id == document_id))
-        doc = df.scalar_one_or_none()
-        if not doc:
-            return {"error": f"Document {document_id} not found", "status": "failed"}
-        try:
-            result = await process_document_entities_from_fusions(db, document_id, doc.owner_id)
-            await db.commit()
-            return {"status": "done", **result}
-        except Exception as e:
-            logger.error("Graph rebuild failed for document_id=%d: %s", document_id, e)
-            return {"error": str(e), "status": "failed"}
-
-
-register_task_handler("kb_graph", _graph_handler)

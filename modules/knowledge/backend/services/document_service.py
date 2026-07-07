@@ -7,24 +7,27 @@ from app.core.exceptions import AppException, NotFound, ValidationError
 from app.models.file import File
 from app.services.file_reader import resolve_caller_user_id as resolve_user_id  # noqa: F401
 from app.services.file_service import check_file_access
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ir_models import to_legacy_dict
 from .cognitive_v3_service import link_payload, upsert_file_knowledge_link
 from .embedding_service import chunk_and_embed, store_chunks
-from .entity_service import fuse_page_text, process_document_entities
+from .entity_service import process_document_entities
+from .model_routing import resolve_knowledge_pipeline_priority
 from .parsing_service import parse_document
 
 logger = logging.getLogger("v2.knowledge").getChild("document")
 
 SUPPORTED_EXTENSIONS = {
-    "pdf", "docx", "pptx", "xlsx", "csv", "tsv", "txt", "md", "markdown",
+    "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "csv", "tsv", "txt", "md", "markdown",
     "json", "yaml", "yml", "eml", "msg",
     "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg",
 }
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg"}
+VISUAL_ASSET_EXTENSIONS = {"pdf", *IMAGE_EXTENSIONS}
 
 _ACTIVE_OR_SOURCE_ERROR_STATUSES = {
     "parsing", "indexing", "collecting", "running", "error", "failed",
@@ -37,6 +40,8 @@ SOURCE_UNAVAILABLE_REASONS = {
     "source_file_physical_missing",
 }
 PARSER_NO_CONTENT_MARKER = "Parser returned no content blocks"
+IMAGE_VECTOR_SKIPPED_MARKER = "Image base vectorization skipped; use OCR/VLM raw outputs"
+IMAGE_PARSE_TEXT_MAX_CHARS = 2000
 PARSE_LOCK_STALE_AFTER_SECONDS = 30 * 60
 
 
@@ -52,9 +57,20 @@ def document_pipeline_complete(doc, *, source_available: bool | None = None) -> 
         return False
     return (
         document_parse_allows_search(doc)
-        and doc.vector_status == "done"
+        and document_vector_stage_terminal(doc)
         and getattr(doc, "raw_status", "pending") == "done"
         and getattr(doc, "fusion_status", "pending") == "done"
+    )
+
+
+def document_deep_pipeline_complete(doc, *, source_available: bool | None = None) -> bool:
+    """Return whether the full searchable and deep-analysis pipeline is complete."""
+    if not document_pipeline_complete(doc, source_available=source_available):
+        return False
+    return (
+        getattr(doc, "profile_status", "pending") == "done"
+        and getattr(doc, "graph_status", "pending") == "done"
+        and getattr(doc, "relation_status", "pending") == "done"
     )
 
 
@@ -64,10 +80,52 @@ def document_parse_allows_search(doc) -> bool:
         return False
     if doc.parse_status == "done":
         return True
+    parse_error = (doc.parse_error or "").lower()
     return (
         doc.parse_status == "degraded"
-        and PARSER_NO_CONTENT_MARKER.lower() in (doc.parse_error or "").lower()
+        and (
+            PARSER_NO_CONTENT_MARKER.lower() in parse_error
+            or IMAGE_VECTOR_SKIPPED_MARKER.lower() in parse_error
+        )
     )
+
+
+def document_vector_stage_terminal(doc) -> bool:
+    """Return whether vector stage is no longer blocking downstream work."""
+    if doc.vector_status == "done":
+        return True
+    return (
+        doc.vector_status == "skipped"
+        and (doc.extension or "").lower() in IMAGE_EXTENSIONS
+        and IMAGE_VECTOR_SKIPPED_MARKER.lower() in (doc.parse_error or "").lower()
+    )
+
+
+def _sanitize_image_parse_blocks(blocks: list[dict], doc) -> list[dict]:
+    """Keep image base parse text bounded; OCR/VLM raw stages carry full semantics."""
+    sanitized: list[dict] = []
+    remaining = IMAGE_PARSE_TEXT_MAX_CHARS
+    for block in blocks:
+        if remaining <= 0:
+            break
+        text = str(block.get("text") or "").strip()
+        if not text:
+            continue
+        next_text = text[:remaining]
+        sanitized.append({
+            **block,
+            "type": block.get("type") or "图片",
+            "text": next_text,
+            "page": block.get("page") or 1,
+        })
+        remaining -= len(next_text)
+    if sanitized:
+        return sanitized
+    return [{
+        "type": "图片",
+        "text": f"图片文件：{getattr(doc, 'filename', '') or 'unnamed image'}。基础解析仅保留轻量描述，完整语义由 OCR/VLM 原始采集阶段沉淀。",
+        "page": 1,
+    }]
 
 
 def mark_document_source_unavailable(doc, reason: str) -> None:
@@ -83,12 +141,12 @@ def mark_document_source_unavailable(doc, reason: str) -> None:
     doc.parse_error = reason[:2000]
 
 
-async def _find_inflight_pipeline_task(db: AsyncSession, document_id: int):
+async def _find_inflight_task(db: AsyncSession, document_id: int, task_type: str):
     from app.models.system import SystemTaskQueue
 
     result = await db.execute(
         select(SystemTaskQueue).where(
-            SystemTaskQueue.task_type == "kb_pipeline",
+            SystemTaskQueue.task_type == task_type,
             SystemTaskQueue.module == "knowledge",
             SystemTaskQueue.status.in_(("pending", "running")),
         )
@@ -103,6 +161,41 @@ async def _find_inflight_pipeline_task(db: AsyncSession, document_id: int):
     return None
 
 
+async def _find_inflight_pipeline_task(db: AsyncSession, document_id: int):
+    return await _find_inflight_task(db, document_id, "kb_pipeline_stage")
+
+
+async def _find_other_inflight_pipeline_stage(
+    db: AsyncSession,
+    document_id: int,
+    stage: str,
+    *,
+    current_task_id: int | None = None,
+):
+    from app.models.system import SystemTaskQueue
+
+    result = await db.execute(
+        select(SystemTaskQueue).where(
+            SystemTaskQueue.task_type == "kb_pipeline_stage",
+            SystemTaskQueue.module == "knowledge",
+            SystemTaskQueue.status.in_(("pending", "running")),
+        )
+    )
+    for task in result.scalars().all():
+        if current_task_id is not None and int(task.id) == int(current_task_id):
+            continue
+        try:
+            params = json.loads(task.parameters or "{}")
+        except json.JSONDecodeError:
+            continue
+        if (
+            int(params.get("document_id", 0) or 0) == int(document_id)
+            and str(params.get("stage") or "") == stage
+        ):
+            return task
+    return None
+
+
 def _seconds_since(value: datetime | None, now: datetime) -> float | None:
     if value is None:
         return None
@@ -111,18 +204,22 @@ def _seconds_since(value: datetime | None, now: datetime) -> float | None:
     return (now - value).total_seconds()
 
 
-async def _release_stale_parse_lock_if_safe(db: AsyncSession, doc) -> bool:
-    """Release a stale parser lock only when no queue task can still own it."""
+async def _release_stale_parse_lock_if_safe(db: AsyncSession, doc, *, current_task_id: int | None = None) -> bool:
+    """Release a stale parser lock unless another parse task still owns it."""
     if doc.parse_status != "parsing":
         return False
 
     now = datetime.now(timezone.utc)
     lock_age = _seconds_since(doc.parse_started_at, now)
-    if lock_age is not None and lock_age < PARSE_LOCK_STALE_AFTER_SECONDS:
-        return False
-
-    existing = await _find_inflight_pipeline_task(db, int(doc.id))
+    existing = await _find_other_inflight_pipeline_stage(
+        db,
+        int(doc.id),
+        "parse_index",
+        current_task_id=current_task_id,
+    )
     if existing:
+        return False
+    if current_task_id is None and lock_age is not None and lock_age < PARSE_LOCK_STALE_AFTER_SECONDS:
         return False
 
     logger.warning(
@@ -148,7 +245,7 @@ async def enqueue_pipeline_task(
     force_fusion: bool = False,
     priority: int = 5,
 ) -> dict:
-    """Enqueue one kb_pipeline task, deduping pending/running work for the document."""
+    """Enqueue the unified knowledge DAG root task."""
     from app.models.system import SystemTaskQueue
 
     await db.execute(
@@ -157,35 +254,191 @@ async def enqueue_pipeline_task(
     )
     existing = await _find_inflight_pipeline_task(db, int(doc.id))
     if existing:
+        try:
+            existing_params = json.loads(existing.parameters or "{}")
+        except json.JSONDecodeError:
+            existing_params = {}
         return {
             "task_id": existing.id,
             "enqueued": False,
             "reason": "already_in_flight",
+            "stage": existing_params.get("stage") or "source_validate",
+            "next_task": "kb_pipeline_stage",
         }
 
     task = SystemTaskQueue(
-        task_type="kb_pipeline",
+        task_type="kb_pipeline_stage",
         module="knowledge",
         parameters=json.dumps({
             "document_id": doc.id,
             "user_id": user_id,
+            "stage": "source_validate",
             "force_raw": force_raw,
             "force_fusion": force_fusion,
         }, ensure_ascii=False),
-        priority=priority,
+        priority=resolve_knowledge_pipeline_priority("source_validate", priority),
         status="pending",
         creator_id=user_id,
+        document_id=int(doc.id),
+        stage_key="source_validate",
+        lane_key="local_preprocess",
+        ready_status="ready",
+        dependency_key=f"knowledge:{int(doc.id)}:source_validate",
     )
     db.add(task)
     await db.flush()
     task.parameters = json.dumps({
         "document_id": doc.id,
         "user_id": user_id,
+        "stage": "source_validate",
         "force_raw": force_raw,
         "force_fusion": force_fusion,
         "task_id": task.id,
     }, ensure_ascii=False)
-    return {"task_id": task.id, "enqueued": True, "reason": "created"}
+    return {
+        "task_id": task.id,
+        "enqueued": True,
+        "reason": "stage_created",
+        "stage": "source_validate",
+        "next_task": "kb_pipeline_stage",
+    }
+
+
+async def enqueue_incomplete_documents(
+    db: AsyncSession,
+    owner_id: int,
+    *,
+    limit: int = 20,
+    dry_run: bool = True,
+    extensions: list[str] | None = None,
+    priority: int = 5,
+    include_search_incomplete: bool = True,
+) -> dict:
+    """Preview or enqueue live documents whose deep pipeline is not complete."""
+    from ..models import KbDocument, KbImageAsset
+    from .source_file_state import get_source_file_availability
+
+    normalized_extensions = {
+        ext.lower().strip().lstrip(".")
+        for ext in (extensions or [])
+        if str(ext or "").strip()
+    }
+    bounded_limit = max(1, min(int(limit or 20), 500))
+    expected_page_count = func.greatest(func.coalesce(KbDocument.total_pages, 1), 1)
+    active_page_asset_count = (
+        select(func.count(KbImageAsset.id))
+        .where(
+            KbImageAsset.document_id == KbDocument.id,
+            KbImageAsset.status == "active",
+            KbImageAsset.storage_path.is_not(None),
+        )
+        .correlate(KbDocument)
+        .scalar_subquery()
+    )
+    missing_visual_assets = and_(
+        KbDocument.extension.in_(VISUAL_ASSET_EXTENSIONS),
+        active_page_asset_count < expected_page_count,
+    )
+    stmt = (
+        select(KbDocument)
+        .join(File, File.id == KbDocument.file_id)
+        .where(
+            KbDocument.owner_id == owner_id,
+            KbDocument.deleted.is_(False),
+            File.deleted.is_(False),
+            or_(
+                KbDocument.parse_status.not_in(("done", "degraded")),
+                KbDocument.vector_status != "done",
+                KbDocument.raw_status != "done",
+                KbDocument.fusion_status != "done",
+                func.coalesce(KbDocument.profile_status, "pending") != "done",
+                func.coalesce(KbDocument.graph_status, "pending") != "done",
+                func.coalesce(KbDocument.relation_status, "pending") != "done",
+                missing_visual_assets,
+            ),
+        )
+        .order_by(KbDocument.updated_at.desc(), KbDocument.id.desc())
+        .limit(bounded_limit * 3)
+    )
+    if normalized_extensions:
+        stmt = stmt.where(KbDocument.extension.in_(normalized_extensions))
+
+    result = await db.execute(stmt)
+    candidates = []
+    skipped = []
+    enqueued = []
+    for doc in result.scalars().all():
+        if len(candidates) >= bounded_limit:
+            break
+        source_state = await get_source_file_availability(db, int(doc.file_id))
+        if not source_state.available:
+            skipped.append({
+                "document_id": int(doc.id),
+                "file_id": int(doc.file_id),
+                "filename": doc.filename,
+                "reason": source_state.reason,
+            })
+            continue
+        asset_count_result = await db.execute(
+            select(func.count(KbImageAsset.id)).where(
+                KbImageAsset.document_id == int(doc.id),
+                KbImageAsset.status == "active",
+                KbImageAsset.storage_path.is_not(None),
+            )
+        )
+        page_asset_count = int(asset_count_result.scalar_one() or 0)
+        expected_assets = max(int(doc.total_pages or 1), 1) if (doc.extension or "").lower() in VISUAL_ASSET_EXTENSIONS else 0
+        page_assets_complete = expected_assets == 0 or page_asset_count >= expected_assets
+        if document_deep_pipeline_complete(doc, source_available=True) and page_assets_complete:
+            continue
+        search_complete = document_pipeline_complete(doc, source_available=True)
+        if not include_search_incomplete and not search_complete:
+            skipped.append({
+                "document_id": int(doc.id),
+                "file_id": int(doc.file_id),
+                "filename": doc.filename,
+                "reason": "search_pipeline_incomplete",
+            })
+            continue
+        item = {
+            "document_id": int(doc.id),
+            "file_id": int(doc.file_id),
+            "filename": doc.filename,
+            "extension": doc.extension,
+            "parse_status": doc.parse_status,
+            "vector_status": doc.vector_status,
+            "raw_status": getattr(doc, "raw_status", "pending"),
+            "fusion_status": getattr(doc, "fusion_status", "pending"),
+            "profile_status": getattr(doc, "profile_status", "pending"),
+            "graph_status": getattr(doc, "graph_status", "pending"),
+            "relation_status": getattr(doc, "relation_status", "pending"),
+            "search_complete": search_complete,
+            "page_assets_complete": page_assets_complete,
+            "page_asset_count": page_asset_count,
+            "expected_page_assets": expected_assets,
+        }
+        candidates.append(item)
+        if not dry_run:
+            task_info = await enqueue_pipeline_task(
+                db,
+                doc,
+                owner_id,
+                priority=priority,
+            )
+            enqueued.append({**item, **task_info})
+
+    if not dry_run:
+        await db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "limit": bounded_limit,
+        "matched": len(candidates),
+        "enqueued": len([item for item in enqueued if item.get("enqueued")]),
+        "already_in_flight": len([item for item in enqueued if item.get("reason") == "already_in_flight"]),
+        "items": candidates if dry_run else enqueued,
+        "skipped": skipped[:50],
+    }
 
 
 async def _count_document_chunks(db: AsyncSession, document_id: int) -> int:
@@ -239,6 +492,11 @@ async def _find_content_duplicate(
     for candidate in result.scalars().all():
         chunk_count = await _count_document_chunks(db, int(candidate.id))
         if chunk_count > 0:
+            if not document_deep_pipeline_complete(candidate):
+                task_info = await enqueue_pipeline_task(db, candidate, owner_id)
+                if task_info.get("enqueued"):
+                    task_info["reason"] = "content indexed; deep pipeline enqueued"
+                return candidate, task_info
             return candidate, {
                 "task_id": None,
                 "enqueued": False,
@@ -288,7 +546,7 @@ async def register_document(
     )
     existing = existing_r.scalar_one_or_none()
     if existing:
-        if document_pipeline_complete(existing):
+        if document_deep_pipeline_complete(existing):
             task_info = {
                 "task_id": None,
                 "enqueued": False,
@@ -349,6 +607,11 @@ async def register_document(
                     pkg_data = pipeline_result.get("data", {})
                     if pkg_data and pkg_data.get("package_id"):
                         content_package_id = pkg_data["package_id"]
+            except NotFound as e:
+                if "Module 'content' does not expose action 'pipeline'" in str(e):
+                    logger.debug("Content pipeline capability is not registered for file_id=%d", file_id)
+                else:
+                    logger.warning("Content pipeline auto-trigger failed for file_id=%d: %s", file_id, e)
             except Exception as e:
                 logger.warning("Content pipeline auto-trigger failed for file_id=%d: %s", file_id, e)
     except Exception:
@@ -404,13 +667,14 @@ async def register_document(
         link_role="canonical",
         reuse_reason="new_canonical",
     )
-    # ── 自动入队 kb_pipeline 后台任务（上传即开始分析） ──
+    # ── 自动入队统一 DAG pipeline（上传即开始分析） ──
     task_info = await enqueue_pipeline_task(db, doc, owner_id)
     await db.commit()
     await db.refresh(doc)
     logger.info(
-        "Auto-enqueued kb_pipeline for document_id=%d file_id=%d task_id=%s enqueued=%s",
+        "Auto-enqueued knowledge ingest for document_id=%d file_id=%d task_id=%s enqueued=%s stage=%s",
         doc.id, file_id, task_info.get("task_id"), task_info.get("enqueued"),
+        task_info.get("stage"),
     )
 
     return document_registration_payload(doc, task_info, content_link=link_payload(link))
@@ -467,7 +731,7 @@ def document_registration_payload(
         status = "source_unavailable"
     elif enqueued:
         status = "queued"
-    elif reason == "already_in_flight":
+    elif reason in {"already_in_flight", "preprocess_already_in_flight", "pipeline_already_in_flight"}:
         status = "inflight"
     elif reason == "existing_completed":
         status = "completed"
@@ -483,15 +747,19 @@ def document_registration_payload(
         source_available
         and getattr(doc, "raw_status", "pending") == "done"
         and getattr(doc, "fusion_status", "pending") == "done"
+        and getattr(doc, "profile_status", "pending") == "done"
+        and getattr(doc, "graph_status", "pending") == "done"
+        and getattr(doc, "relation_status", "pending") == "done"
     )
     payload.update({
         "document_id": doc.id,
         "task_id": info.get("task_id"),
         "enqueued": enqueued,
         "reason": reason or None,
-        "stage": "source" if not source_available else "kb_pipeline",
+        "stage": "source" if not source_available else info.get("stage") or "source_validate",
         "status": status,
         "pipeline_status": status,
+        "next_task": info.get("next_task"),
         "search_ready": search_ready,
         "deep_ready": deep_ready,
         "stage_summary": {
@@ -499,6 +767,9 @@ def document_registration_payload(
             "vector": doc.vector_status,
             "raw": getattr(doc, "raw_status", "pending"),
             "fusion": getattr(doc, "fusion_status", "pending"),
+            "profile": getattr(doc, "profile_status", "pending"),
+            "graph": getattr(doc, "graph_status", "pending"),
+            "relation": getattr(doc, "relation_status", "pending"),
         },
         "content_link": content_link,
         "duplicate_reused": bool(content_link and content_link.get("link_role") == "duplicate"),
@@ -600,13 +871,11 @@ async def create_page_fusions(db: AsyncSession, document_id: int, owner_id: int,
     count = 0
     for page, texts in page_texts.items():
         combined = "\n\n".join(texts)
-        # 小页直接拼接，大页用 LLM 融合（失败自动回退）
-        fused = await fuse_page_text(combined) if len(combined) > 1000 else combined
         pf = KbPageFusion(
             document_id=document_id,
             owner_id=owner_id,
             page=page,
-            fused_text=fused,
+            fused_text=combined,
         )
         db.add(pf)
         count += 1
@@ -620,10 +889,11 @@ async def parse_and_index_document(
     owner_id: int,
     caller: str,
     extract_graph: bool = False,
+    current_task_id: int | None = None,
 ) -> dict:
     """解析 + 分块 + 向量化 + 页级融合 + 可选图谱抽取。
 
-    注意：实体/图谱抽取建议通过后台任务 kb_pipeline 完成（process_document_entities_from_fusions），
+    注意：实体/图谱抽取建议通过统一 DAG pipeline 完成（process_document_entities_from_fusions），
     本方法仅提供基础的解析/分块/向量化能力。extract_graph 默认为 False。
     """
     from ..models import KbChunk, KbDocument, KbPageFusion
@@ -640,11 +910,16 @@ async def parse_and_index_document(
     if not doc:
         raise NotFound("Document not found")
 
-    if doc.parse_status == "parsing" and not await _release_stale_parse_lock_if_safe(db, doc):
+    if doc.parse_status == "parsing" and not await _release_stale_parse_lock_if_safe(
+        db,
+        doc,
+        current_task_id=current_task_id,
+    ):
         raise AppException("Document is already parsing", status_code=409)
 
     source_file_id = int(doc.file_id)
     source_extension = str(doc.extension or "")
+    is_image_source = source_extension.lower() in IMAGE_EXTENSIONS
     content_package_id = doc.content_package_id
 
     # 清理旧解析产物（重新解析）
@@ -661,7 +936,7 @@ async def parse_and_index_document(
     try:
         # First try to get blocks from Content Package (framework canonical source)
         blocks = []
-        if content_package_id:
+        if content_package_id and not is_image_source:
             try:
                 from app.models.content import ContentPackageVersion
                 cpv_r = await db.execute(
@@ -716,6 +991,8 @@ async def parse_and_index_document(
             ir_resource_diagnostics = list(parsed_ir.resource_diagnostics)
             parsed = to_legacy_dict(parsed_ir)
             blocks = parsed.get("blocks", [])
+        if is_image_source:
+            blocks = _sanitize_image_parse_blocks(blocks, doc)
 
         if not blocks:
             reason = PARSER_NO_CONTENT_MARKER
@@ -752,8 +1029,19 @@ async def parse_and_index_document(
         doc.vector_started_at = datetime.now(timezone.utc)
         await db.commit()
 
-        chunks = await chunk_and_embed(document_id, owner_id, blocks, caller)
-        chunk_count = await store_chunks(db, chunks)
+        image_vector_skipped = is_image_source
+        image_vector_skip_reason = IMAGE_VECTOR_SKIPPED_MARKER
+        if image_vector_skipped:
+            chunks = []
+            chunk_count = 0
+            logger.info(
+                "Image base vectorization skipped document_id=%d file_id=%d; OCR/VLM raw outputs carry semantic text",
+                document_id,
+                source_file_id,
+            )
+        else:
+            chunks = await chunk_and_embed(document_id, owner_id, blocks, caller)
+            chunk_count = await store_chunks(db, chunks)
 
         # 可选图谱抽取
         entity_stats = {"entities_found": 0, "relationships_found": 0, "errors": []}
@@ -767,15 +1055,19 @@ async def parse_and_index_document(
         await db.refresh(doc)
         if ir_parse_status in ("degraded", "failed"):
             doc.parse_status = ir_parse_status
+        elif image_vector_skipped:
+            doc.parse_status = "degraded"
         else:
             doc.parse_status = "done"
-        doc.vector_status = "done" if chunk_count > 0 else "error"
+        doc.vector_status = "skipped" if image_vector_skipped else ("done" if chunk_count > 0 else "error")
         doc.total_chunks = chunk_count
         doc.total_pages = total_pages
+        if image_vector_skipped:
+            doc.parse_error = image_vector_skip_reason[:2000]
         await db.commit()
         await db.refresh(doc)
 
-        return {
+        result = {
             "document": document_payload(doc),
             "parsed_blocks": len(blocks),
             "stored_chunks": chunk_count,
@@ -784,6 +1076,10 @@ async def parse_and_index_document(
             "ir_parse_status": ir_parse_status,
             "ir_resource_diagnostics": ir_resource_diagnostics,
         }
+        if image_vector_skipped:
+            result["status"] = "degraded"
+            result["reason"] = IMAGE_VECTOR_SKIPPED_MARKER
+        return result
     except Exception as e:
         await db.refresh(doc)
         doc.parse_status = "error"

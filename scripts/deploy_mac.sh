@@ -9,7 +9,7 @@ FRONTEND_DIR="$PROJECT_ROOT/frontend"
 DB_HOST="127.0.0.1"
 DB_PORT="5432"
 DB_USER="postgres"
-DB_NAME="huashiwangzu_v2"
+DB_NAME="华世王镞_v2"
 SKIP_FRONTEND_BUILD=0
 SKIP_START=0
 SKIP_SYSTEM_INSTALL=0
@@ -24,7 +24,7 @@ Options:
   --db-host HOST          PostgreSQL host (default: 127.0.0.1)
   --db-port PORT          PostgreSQL port (default: 5432)
   --db-user USER          PostgreSQL user (default: postgres)
-  --db-name NAME          PostgreSQL database (default: huashiwangzu_v2)
+  --db-name NAME          PostgreSQL database (default: 华世王镞_v2)
   --skip-frontend-build   Install frontend deps but skip npm build
   --skip-start            Do not start backend after deployment
   --skip-system-install   Detect system dependencies but do not install them

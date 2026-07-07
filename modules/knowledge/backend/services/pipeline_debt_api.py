@@ -11,6 +11,7 @@ from .pipeline_debt_service import (
     apply_pipeline_lifecycle_debt_action,
     classify_pipeline_lifecycle_debt,
     reconcile_pending_pipeline_queue,
+    reconcile_running_pipeline_queue,
 )
 
 
@@ -128,6 +129,25 @@ async def cap_reconcile_pending_pipeline_queue(params: dict, caller: str) -> dic
     categories = params.get("categories") if isinstance(params.get("categories"), list) else []
     async with AsyncSessionLocal() as db:
         return await reconcile_pending_pipeline_queue(
+            db,
+            limit=max(1, min(int(params.get("limit", 500) or 500), 5000)),
+            task_ids=_coerce_int_list(params.get("task_ids")) or None,
+            dry_run=bool(params.get("dry_run", True)),
+            categories=merge_category_params(str(category) if category else None, categories),
+            category_limits=normalize_category_limits_payload(
+                params.get("category_limits") if isinstance(params.get("category_limits"), dict) else {}
+            ),
+            limit_each=_coerce_limit_each(params.get("limit_each")),
+            order=_normalize_order(params.get("order")),
+        )
+
+
+async def cap_reconcile_running_pipeline_queue(params: dict, caller: str) -> dict:
+    resolve_user_id(caller)
+    category = params.get("category")
+    categories = params.get("categories") if isinstance(params.get("categories"), list) else []
+    async with AsyncSessionLocal() as db:
+        return await reconcile_running_pipeline_queue(
             db,
             limit=max(1, min(int(params.get("limit", 500) or 500), 5000)),
             task_ids=_coerce_int_list(params.get("task_ids")) or None,

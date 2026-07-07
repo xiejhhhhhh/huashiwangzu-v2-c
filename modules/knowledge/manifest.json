@@ -223,11 +223,50 @@
     },
     {
       "action": "reconcile_pending_pipeline_queue",
-      "description": "dry-run 或归档已不可执行的 pending kb_pipeline 队列任务，保留仍可执行的 live pending",
+      "description": "dry-run 或归档已不可执行的 pending 知识库管道队列任务，保留仍可执行的 live pending",
       "parameters": {
         "limit": {
           "type": "integer",
           "description": "最多检查的 pending 任务数（默认500）"
+        },
+        "task_ids": {
+          "type": "array",
+          "description": "可选，精确 task id 列表；不受分类限制影响"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        },
+        "category": {
+          "type": "string",
+          "description": "可选，单个或逗号分隔分类过滤"
+        },
+        "categories": {
+          "type": "array",
+          "description": "可选，分类过滤列表"
+        },
+        "category_limits": {
+          "type": "object",
+          "description": "可选，按分类限制数量"
+        },
+        "limit_each": {
+          "type": "integer",
+          "description": "可选，每个分类默认选取数量"
+        },
+        "order": {
+          "type": "string",
+          "description": "候选排序：newest 或 oldest"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "reconcile_running_pipeline_queue",
+      "description": "dry-run 或恢复中断的 running 知识库管道队列任务，live 任务回 pending，obsolete 任务归档 skipped",
+      "parameters": {
+        "limit": {
+          "type": "integer",
+          "description": "最多检查的 running 任务数（默认500）"
         },
         "task_ids": {
           "type": "array",
@@ -366,6 +405,64 @@
         "limit": {
           "type": "integer",
           "description": "每段来源文本最多提取词项数（默认200）"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "enqueue_incomplete_documents",
+      "description": "预览或补排未完成深层知识分析的文档",
+      "parameters": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "最多检查/补排文档数（默认20）"
+        },
+        "extensions": {
+          "type": "array",
+          "description": "可选扩展名过滤，如 [pdf, docx, jpg]"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "新队列任务优先级，默认5"
+        },
+        "include_search_incomplete": {
+          "type": "boolean",
+          "description": "是否包含解析/向量/raw/fusion 未完成的文档，默认 true"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "import_enterprise_source_batch",
+      "description": "dry-run 或限量导入企业源目录文件并触发知识库分析",
+      "parameters": {
+        "source_root": {
+          "type": "string",
+          "description": "本地源目录"
+        },
+        "target_root_name": {
+          "type": "string",
+          "description": "目标根目录名，默认 企业微盘导入"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "最多导入文件数（默认20，最高200）"
+        },
+        "extensions": {
+          "type": "array",
+          "description": "可选扩展名过滤"
+        },
+        "skip_existing_md5": {
+          "type": "boolean",
+          "description": "是否跳过当前用户已存在 md5，默认 true"
         }
       },
       "min_role": "admin"

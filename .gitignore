@@ -45,6 +45,8 @@ backend/data/.tmp_exports/
 backend/data/.tmp_uploads/
 backend/data/.tmp_upload_sessions/
 backend/data/.upload_sessions/
+backend/data/backups/
+backend/data/runtime/
 backend/data/runtime/*.jsonl
 
 # Terminal tools workspace

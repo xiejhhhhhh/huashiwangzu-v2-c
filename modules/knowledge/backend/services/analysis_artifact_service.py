@@ -19,7 +19,13 @@ ARTIFACT_SCHEMA_VERSION = "knowledge_artifact_v1"
 
 STAGE_SCHEMA_VERSIONS: dict[str, str] = {
     "source_file": "source_file_v1",
+    "source_validate": "source_file_v1",
+    "parse_index": "parse_index_v1",
+    "page_render": "page_render_v1",
     "raw": "raw_v1",
+    "raw_text": "raw_text_v1",
+    "raw_ocr": "raw_ocr_v1",
+    "raw_vision": "raw_vision_v1",
     "fusion": "fusion_v1",
     "profile": "profile_v1",
     "graph": "entity_graph_v1",
@@ -30,6 +36,8 @@ STAGE_SCHEMA_VERSIONS: dict[str, str] = {
 
 STAGE_PROMPTS: dict[str, tuple[str, ...]] = {
     "raw": (TRAW_OCR, TRAW_VISION),
+    "raw_ocr": (TRAW_OCR,),
+    "raw_vision": (TRAW_VISION,),
     "fusion": (TFUSION,),
     "profile": (TPROFILE,),
     "graph": (TENTITY,),

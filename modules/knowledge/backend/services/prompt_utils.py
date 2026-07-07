@@ -58,12 +58,20 @@ FALLBACKS: dict[str, str] = {
 }
 
 
-async def load_prompt(db: AsyncSession | None, template_name: str) -> str:
+async def load_prompt(
+    db: AsyncSession | None,
+    template_name: str,
+    *,
+    release_transaction: bool = False,
+) -> str:
     """Load and render a prompt template from the framework DB.
 
     Args:
         db: Active database session. ``None`` means the DB is unavailable.
         template_name: The ``name`` column value in ``framework_prompt_templates``.
+        release_transaction: Commit the read-only prompt lookup before the
+            caller enters a long model call. Use only when no uncommitted writes
+            should remain in ``db``.
 
     Returns:
         The rendered prompt content string.
@@ -81,8 +89,16 @@ async def load_prompt(db: AsyncSession | None, template_name: str) -> str:
     from app.services.prompt_service import render_template
 
     try:
-        return await render_template(db, template_name)
+        prompt = await render_template(db, template_name)
+        if release_transaction:
+            await db.commit()
+        return prompt
     except Exception as exc:
+        if release_transaction:
+            try:
+                await db.rollback()
+            except Exception:
+                logger.warning("Prompt template transaction rollback failed", exc_info=True)
         if fallback:
             logger.warning(
                 "Prompt template '%s' not found in DB, using fallback: %s",
@@ -94,3 +110,11 @@ async def load_prompt(db: AsyncSession | None, template_name: str) -> str:
             template_name, exc,
         )
         raise RuntimeError(f"Prompt template '{template_name}' not available") from exc
+
+
+async def load_prompt_detached(template_name: str) -> str:
+    """Read a prompt in a short-lived session before a long model call."""
+    from app.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        return await load_prompt(db, template_name, release_transaction=True)

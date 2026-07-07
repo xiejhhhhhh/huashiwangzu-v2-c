@@ -93,6 +93,35 @@ def test_vlm_decision_skips_blank_image() -> None:
     assert "blank" in decision["reason"]
 
 
+def test_oversized_image_uses_metadata_only(monkeypatch=None) -> None:
+    analyzer = _load_analyzer()
+    original_limit = analyzer.MAX_FULL_DECODE_PIXELS
+    analyzer.MAX_FULL_DECODE_PIXELS = 1
+    image = Image.new("RGB", (2, 2), (32, 48, 64))
+    temp = MODULE_ROOT / "sandbox" / "samples" / ".image_vision_oversized_tmp.png"
+    try:
+        image.save(temp)
+        result = analyzer.analyze_image_bytes(temp.read_bytes(), temp.name, "png")
+        decision = analyzer.should_use_vlm(result, "auto")
+    finally:
+        analyzer.MAX_FULL_DECODE_PIXELS = original_limit
+        if temp.exists():
+            temp.unlink()
+
+    assert result["metadata_only"] is True
+    assert result["visual_profile"] == "oversized_image"
+    assert result["dimensions"]["width"] == 2
+    assert result["dimensions"]["height"] == 2
+    assert decision["use_vlm"] is False
+
+
+def test_router_does_not_define_duplicate_vlm_preprocessor() -> None:
+    router_path = MODULE_ROOT / "backend" / "router.py"
+    source = router_path.read_text(encoding="utf-8")
+    assert "def _prepare_vlm_image" not in source
+    assert "describe_image_detailed" in source
+
+
 def main() -> None:
     if not SAMPLE.exists():
         print("ERROR: sample.png not found")
@@ -105,6 +134,10 @@ def main() -> None:
     print("  Local analysis + Content IR contract PASS")
     test_vlm_decision_skips_blank_image()
     print("  VLM auto-skip decision PASS")
+    test_oversized_image_uses_metadata_only()
+    print("  Oversized metadata-only guard PASS")
+    test_router_does_not_define_duplicate_vlm_preprocessor()
+    print("  VLM preprocessor consolidation PASS")
     print("PASS: image-vision sandbox test")
 
 

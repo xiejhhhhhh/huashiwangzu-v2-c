@@ -26,6 +26,7 @@ from .services.cognitive_v3_service import (
 )
 from .services.dashboard_service import get_dashboard_stats
 from .services.document_service import (
+    enqueue_incomplete_documents,
     enqueue_pipeline_task,
     get_document,
     list_documents,
@@ -35,6 +36,7 @@ from .services.document_service import (
     soft_delete_document,
 )
 from .services.embedding_service import get_chunk_by_id
+from .services.enterprise_import_service import import_enterprise_source_batch
 from .services.entity_service import get_entity_dictionary, get_graph_context, get_page_fusion
 from .services.fusion_service import get_page_fusion_detail
 from .services.governance_service import (
@@ -55,6 +57,7 @@ from .services.pipeline_debt_api import (
     cap_apply_pipeline_debt,
     cap_classify_pipeline_debt,
     cap_reconcile_pending_pipeline_queue,
+    cap_reconcile_running_pipeline_queue,
     merge_category_params,
     parse_category_limits_query,
 )
@@ -357,11 +360,7 @@ async def api_collect_raw(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    """触发原始层多轮采集（后台任务）。"""
-    import json as _json
-
-    from app.models.system import SystemTaskQueue
-
+    """触发统一 DAG pipeline（后台任务）。"""
     from .models import KbDocument
 
     r = await db.execute(
@@ -376,17 +375,16 @@ async def api_collect_raw(
         from app.core.exceptions import NotFound
         raise NotFound("Document not found")
 
-    task = SystemTaskQueue(
-        task_type="kb_collect_raw",
-        module="knowledge",
-        parameters=_json.dumps({"document_id": payload.document_id}, ensure_ascii=False),
-        priority=5,
-        status="pending",
-        creator_id=user.id,
+    task_info = await enqueue_pipeline_task(
+        db,
+        doc,
+        user.id,
+        force_raw=True,
+        priority=8,
     )
-    db.add(task)
     await db.commit()
-    return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
+    status = "enqueued" if task_info.get("enqueued") else "already_in_flight"
+    return ApiResponse(data={"status": status, **task_info})
 
 @router.get("/documents/{document_id}/raw-status")
 async def api_raw_status(
@@ -415,8 +413,8 @@ async def api_fuse(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    """触发页级融合（第4层，后台任务 kb_fuse）。"""
-    return await _enqueue_task(db, "kb_fuse", payload.document_id, user.id)
+    """触发页级融合（第4层，统一 DAG stage）。"""
+    return await _enqueue_task(db, "fusion", payload.document_id, user.id)
 
 @router.get("/documents/{document_id}/fusion-status")
 async def api_fusion_status(
@@ -474,8 +472,8 @@ async def api_generate_profile(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    """生成第5层文件画像（后台任务 kb_profile）。"""
-    return await _enqueue_task(db, "kb_profile", payload.document_id, user.id)
+    """生成第5层文件画像（统一 DAG stage）。"""
+    return await _enqueue_task(db, "profile", payload.document_id, user.id)
 
 @router.get("/documents/{document_id}/profile")
 async def api_get_profile(
@@ -496,8 +494,8 @@ async def api_compute_relations(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    """为文件计算跨文件关联边（第7层，后台任务 kb_relation）。"""
-    return await _enqueue_task(db, "kb_relation", payload.document_id, user.id)
+    """为文件计算跨文件关联边（统一 DAG stage）。"""
+    return await _enqueue_task(db, "relations", payload.document_id, user.id)
 
 @router.get("/documents/{document_id}/relations")
 async def api_get_relations(
@@ -558,24 +556,9 @@ async def api_rebuild_graph(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    """从融合层重建实体/图谱（第6层，后台任务 kb_graph，防同步超时）。"""
-    import json as _json
-
-    from app.models.system import SystemTaskQueue
-
+    """从融合层重建实体/图谱（第6层，统一 DAG stage）。"""
     await get_document(db, payload.document_id, user.id)
-
-    task = SystemTaskQueue(
-        task_type="kb_graph",
-        module="knowledge",
-        parameters=_json.dumps({"document_id": payload.document_id}, ensure_ascii=False),
-        priority=5,
-        status="pending",
-        creator_id=user.id,
-    )
-    db.add(task)
-    await db.commit()
-    return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
+    return await _enqueue_task(db, "graph", payload.document_id, user.id)
 
 @router.post("/documents/full-pipeline")
 async def api_full_pipeline(
@@ -583,7 +566,7 @@ async def api_full_pipeline(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("editor")),
 ):
-    """一键全链路：采集→融合→画像→图谱→关联（后台任务 kb_pipeline）。"""
+    """一键全链路：采集→融合→画像→图谱→关联（统一 DAG pipeline）。"""
     from app.core.exceptions import NotFound
 
     from .models import KbDocument
@@ -959,12 +942,8 @@ async def api_cognitive_v3_derive_document(
 
 # ── Cross-module capabilities ───────────────────────────────
 
-async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> ApiResponse:
-    """将派生层任务入队并立即返回。"""
-    import json as _json
-
-    from app.models.system import SystemTaskQueue
-
+async def _enqueue_task(db, stage: str, document_id: int, user_id: int) -> ApiResponse:
+    """将统一 DAG stage 入队并立即返回。"""
     from .models import KbDocument
 
     r = await db.execute(
@@ -974,21 +953,20 @@ async def _enqueue_task(db, task_type: str, document_id: int, user_id: int) -> A
             KbDocument.deleted.is_(False),
         )
     )
-    if not r.scalar_one_or_none():
+    doc = r.scalar_one_or_none()
+    if not doc:
         from app.core.exceptions import NotFound
         raise NotFound("Document not found")
 
-    task = SystemTaskQueue(
-        task_type=task_type,
-        module="knowledge",
-        parameters=_json.dumps({"document_id": document_id}, ensure_ascii=False),
-        priority=5,
-        status="pending",
-        creator_id=user_id,
+    task_info = await pipeline_service.enqueue_pipeline_stage_task(
+        db,
+        doc,
+        user_id,
+        stage,
     )
-    db.add(task)
     await db.commit()
-    return ApiResponse(data={"task_id": task.id, "status": "enqueued"})
+    status = "enqueued" if task_info.get("enqueued") else "already_in_flight"
+    return ApiResponse(data={"status": status, **task_info})
 
 async def _cap_search(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
@@ -1158,6 +1136,56 @@ async def _cap_derive_cognitive_index(params: dict, caller: str) -> dict:
         await db.commit()
         return result
 
+async def _cap_enqueue_incomplete_documents(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    dry_run = bool(params.get("dry_run", True))
+    limit = int(params.get("limit", 20) or 20)
+    priority = int(params.get("priority", 5) or 5)
+    extensions_param = params.get("extensions") or []
+    if isinstance(extensions_param, str):
+        extensions = [part.strip() for part in extensions_param.split(",") if part.strip()]
+    elif isinstance(extensions_param, list):
+        extensions = [str(part).strip() for part in extensions_param if str(part).strip()]
+    else:
+        extensions = []
+    include_search_incomplete = bool(params.get("include_search_incomplete", True))
+    async with AsyncSessionLocal() as db:
+        return await enqueue_incomplete_documents(
+            db,
+            owner_id=owner_id,
+            limit=limit,
+            dry_run=dry_run,
+            extensions=extensions,
+            priority=priority,
+            include_search_incomplete=include_search_incomplete,
+        )
+
+async def _cap_import_enterprise_source_batch(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    source_root = str(params.get("source_root", "") or "")
+    target_root_name = str(params.get("target_root_name", "企业微盘导入") or "企业微盘导入")
+    dry_run = bool(params.get("dry_run", True))
+    limit = int(params.get("limit", 20) or 20)
+    skip_existing_md5 = bool(params.get("skip_existing_md5", True))
+    extensions_param = params.get("extensions") or []
+    if isinstance(extensions_param, str):
+        extensions = [part.strip() for part in extensions_param.split(",") if part.strip()]
+    elif isinstance(extensions_param, list):
+        extensions = [str(part).strip() for part in extensions_param if str(part).strip()]
+    else:
+        extensions = []
+    async with AsyncSessionLocal() as db:
+        return await import_enterprise_source_batch(
+            db,
+            owner_id=owner_id,
+            source_root=source_root,
+            target_root_name=target_root_name,
+            limit=limit,
+            dry_run=dry_run,
+            extensions=extensions,
+            skip_existing_md5=skip_existing_md5,
+        )
+
 # 注册对外能力：Agent 会通过 list_capabilities 自动发现 knowledge__search 等工具。
 register_capability(
     "knowledge", "search", _cap_search,
@@ -1252,10 +1280,26 @@ register_capability(
 )
 register_capability(
     "knowledge", "reconcile_pending_pipeline_queue", cap_reconcile_pending_pipeline_queue,
-    description="Dry-run or archive obsolete pending kb_pipeline queue rows while leaving live pending work untouched",
+    description="Dry-run or archive obsolete pending knowledge pipeline queue rows while leaving live pending work untouched",
     brief="收口过期待处理队列",
     parameters={
         "limit": {"type": "integer", "description": "Maximum pending tasks to inspect, default 500"},
+        "task_ids": {"type": "array", "description": "Optional exact task IDs; bypasses category limits"},
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+        "category": {"type": "string", "description": "Optional comma-separated category filter"},
+        "categories": {"type": "array", "description": "Optional category filters"},
+        "category_limits": {"type": "object", "description": "Optional per-category limits"},
+        "limit_each": {"type": "integer", "description": "Optional default per-category limit"},
+        "order": {"type": "string", "description": "Candidate order: newest or oldest"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "reconcile_running_pipeline_queue", cap_reconcile_running_pipeline_queue,
+    description="Dry-run or recover interrupted running knowledge pipeline queue rows by requeueing live tasks or skipping obsolete rows",
+    brief="收口中断运行队列",
+    parameters={
+        "limit": {"type": "integer", "description": "Maximum running tasks to inspect, default 500"},
         "task_ids": {"type": "array", "description": "Optional exact task IDs; bypasses category limits"},
         "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
         "category": {"type": "string", "description": "Optional comma-separated category filter"},
@@ -1341,6 +1385,36 @@ register_capability(
     },
     min_role="admin",
 )
+register_capability(
+    "knowledge", "enqueue_incomplete_documents", _cap_enqueue_incomplete_documents,
+    description="Preview or enqueue live knowledge documents whose deep pipeline is not complete",
+    brief="补排未完成知识分析",
+    parameters={
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+        "limit": {"type": "integer", "description": "Maximum documents to inspect/enqueue, default 20"},
+        "extensions": {"type": "array", "description": "Optional extension filter, e.g. [pdf, docx, jpg]"},
+        "priority": {"type": "integer", "description": "Queue priority for newly enqueued tasks, default 5"},
+        "include_search_incomplete": {
+            "type": "boolean",
+            "description": "Also include documents whose parse/vector/raw/fusion stages are incomplete, default true",
+        },
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "import_enterprise_source_batch", _cap_import_enterprise_source_batch,
+    description="Dry-run or import a bounded enterprise source-folder batch into files and knowledge pipeline",
+    brief="批量导入企业资料",
+    parameters={
+        "source_root": {"type": "string", "description": "Local source directory to scan"},
+        "target_root_name": {"type": "string", "description": "Target root folder name, default 企业微盘导入"},
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+        "limit": {"type": "integer", "description": "Maximum files to import, default 20, capped at 200"},
+        "extensions": {"type": "array", "description": "Optional extension filter"},
+        "skip_existing_md5": {"type": "boolean", "description": "Skip owner files with existing md5, default true"},
+    },
+    min_role="admin",
+)
 
 async def _cap_get_ocr_words(params: dict, caller: str) -> dict:
     """返回 PDF 某页 OCR 词坐标（供 pdf-viewer 叠文字层）。"""
@@ -1393,7 +1467,7 @@ async def _cap_ingest(params: dict, caller: str) -> dict:
             logger.info("ingest skipped: unsupported extension '%s' for file_id=%d", ext, file_id)
             return {"skipped": True, "reason": f"unsupported extension '{ext}'"}
 
-        # register_document 幂等且自动入队 kb_pipeline
+        # register_document 幂等且自动入队统一 DAG pipeline
         result = await register_document(db, file_id, owner_id, catalog_id=None)
         status = await get_ingest_status(db, int(result["id"]), owner_id)
         response = {**status, **result, "document_id": int(result["id"])}

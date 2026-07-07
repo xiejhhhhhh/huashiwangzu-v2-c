@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 
 MAX_ROWS_PER_SHEET = 5000
-SUPPORTED_EXTS = {"xlsx", "csv"}
+SUPPORTED_EXTS = {"xlsx", "xls", "csv"}
 SCHEMA_VERSION = "content-ir/v1"
 SOURCE_MODULE = "xlsx-parser"
 PARSER_NAME = "xlsx-parser:parse"

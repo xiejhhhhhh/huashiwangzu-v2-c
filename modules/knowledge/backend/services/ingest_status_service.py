@@ -1,19 +1,12 @@
-"""Unified ingest status for knowledge documents.
-
-The queue table is framework-owned, but knowledge owns the business meaning of
-its kb_pipeline tasks. This service reads queue rows by parsing task parameters
-for document_id so callers can distinguish "queued" from "searchable" and
-"deep analysis complete".
-"""
+"""Unified ingest status for knowledge documents."""
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any
 
 from app.core.exceptions import NotFound
 from app.models.system import SystemTaskQueue
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -35,27 +28,15 @@ RUNNING_STAGE_STATUSES = {"parsing", "indexing", "collecting", "running", "fusin
 PARSER_NO_CONTENT_MARKER = "Parser returned no content blocks"
 
 
-def _load_task_parameters(raw: str | None) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def _task_matches_document(task: SystemTaskQueue, document_id: int) -> bool:
-    params = _load_task_parameters(task.parameters)
-    try:
-        return int(params.get("document_id", 0) or 0) == int(document_id)
-    except (TypeError, ValueError):
-        return False
+    return task.document_id == int(document_id)
 
 
 def _json_or_none(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
+    import json
+
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
@@ -73,22 +54,14 @@ async def find_latest_pipeline_task(
     db: AsyncSession,
     document_id: int,
 ) -> SystemTaskQueue | None:
-    """Find the newest kb_pipeline task whose parameters name document_id."""
+    """Find the newest knowledge pipeline stage task for document_id."""
     document_id_value = int(document_id)
-    # Narrow in SQL first. Historical queue rows store parameters as text JSON, so
-    # keep the final Python parser as the contract check while avoiding a full
-    # table scan on every status poll.
-    needle_with_space = f'"document_id": {document_id_value}'
-    needle_without_space = f'"document_id":{document_id_value}'
     result = await db.execute(
         select(SystemTaskQueue)
         .where(
             SystemTaskQueue.module == "knowledge",
-            SystemTaskQueue.task_type == "kb_pipeline",
-            or_(
-                SystemTaskQueue.parameters.contains(needle_with_space),
-                SystemTaskQueue.parameters.contains(needle_without_space),
-            ),
+            SystemTaskQueue.task_type == "kb_pipeline_stage",
+            SystemTaskQueue.document_id == document_id_value,
         )
         .order_by(SystemTaskQueue.id.desc())
     )
@@ -160,6 +133,10 @@ def _task_payload(task: SystemTaskQueue | None) -> dict | None:
     return {
         "task_id": task.id,
         "task_type": task.task_type,
+        "stage": getattr(task, "stage_key", None),
+        "lane": getattr(task, "lane_key", None),
+        "ready_status": getattr(task, "ready_status", None),
+        "dependency_key": getattr(task, "dependency_key", None),
         "status": task.status,
         "retry_count": task.retry_count,
         "max_retries": task.max_retries,
@@ -196,6 +173,7 @@ def build_ingest_status_payload(
     relation_status = getattr(doc, "relation_status", "pending") or "pending"
     task_status = task.status if task is not None else None
     task_result = _json_or_none(task.result if task is not None else None) or {}
+    active_task_stage = str(getattr(task, "stage_key", "") if task is not None else "")
     latest_run_status = latest_run.status if latest_run is not None else ""
     latest_run_reason = latest_run.reason if latest_run is not None else ""
     stored_source_reason = document_source_unavailable_reason(doc)
@@ -262,6 +240,8 @@ def build_ingest_status_payload(
         (key for key in stage_order if not stage_summary[key]["ready"]),
         "complete",
     )
+    if task_status in ACTIVE_TASK_STATUSES and active_task_stage:
+        current_stage = active_task_stage
     if paused:
         current_stage = "paused"
     if not source_available:

@@ -1,8 +1,8 @@
-# xlsx-parser — XLSX/CSV Parser
+# xlsx-parser — XLS/XLSX/CSV Parser
 
 ## Responsibility
 
-XLSX/CSV Parser
+XLS/XLSX/CSV Parser
 
 ## Manifest Contract
 
@@ -52,7 +52,7 @@ Total public actions: 1
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
-| `parse` | `viewer` | `file_id` | Parse XLSX/CSV files into unified content blocks |
+| `parse` | `viewer` | `file_id` | Parse XLS/XLSX/CSV files into unified content blocks |
 <!-- /DOCS-SYNC -->
 
 ## Data Ownership

@@ -1,7 +1,11 @@
-from pathlib import Path
-from pydantic_settings import BaseSettings
-from pydantic import model_validator
 from functools import lru_cache
+from pathlib import Path
+
+from pydantic import model_validator
+from pydantic_settings import BaseSettings
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+BACKEND_ENV_FILE = BACKEND_DIR / ".env"
 
 
 class Settings(BaseSettings):
@@ -10,7 +14,13 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
     DB_USER: str = "postgres"
     DB_PASSWORD: str = ""
-    DB_NAME: str = "huashiwangzu_v2"
+    DB_NAME: str = "华世王镞_v2"
+    DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 60000
+    DB_USE_NULL_POOL: bool = False
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 1
+    DB_POOL_TIMEOUT: int = 120
+    DB_POOL_RECYCLE_SECONDS: int = 1800
 
     @property
     def DATABASE_URL(self) -> str:
@@ -55,7 +65,7 @@ class Settings(BaseSettings):
     LIBLIB_ACCESS_KEY: str = ""
     LIBLIB_SECRET_KEY: str = ""
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+    model_config = {"env_file": BACKEND_ENV_FILE, "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @model_validator(mode="after")
     def _validate_secrets(self):

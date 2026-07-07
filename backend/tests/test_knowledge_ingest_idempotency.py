@@ -91,7 +91,7 @@ async def test_concurrent_register_document_reuses_document_and_pipeline_task() 
             )
             task_count = await db.scalar(
                 select(func.count(SystemTaskQueue.id)).where(
-                    SystemTaskQueue.task_type == "kb_pipeline",
+                    SystemTaskQueue.task_type == "kb_pipeline_stage",
                     SystemTaskQueue.parameters.ilike(f'%"document_id": {document_id}%'),
                 )
             )
@@ -104,7 +104,7 @@ async def test_concurrent_register_document_reuses_document_and_pipeline_task() 
             if document_id is not None:
                 await db.execute(
                     delete(SystemTaskQueue).where(
-                        SystemTaskQueue.task_type == "kb_pipeline",
+                        SystemTaskQueue.task_type == "kb_pipeline_stage",
                         SystemTaskQueue.parameters.ilike(f'%"document_id": {document_id}%'),
                     )
                 )

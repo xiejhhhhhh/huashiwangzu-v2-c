@@ -109,7 +109,7 @@ async def _clear_pipeline_tasks(document_id: int):
         await db.execute(
             text(
                 "DELETE FROM framework_system_task_queues "
-                "WHERE task_type = 'kb_pipeline' "
+                "WHERE task_type = 'kb_pipeline_stage' "
                 "AND module = 'knowledge' "
                 "AND status IN ('pending', 'running') "
                 "AND parameters LIKE :pattern"
@@ -268,9 +268,10 @@ async def test_dedup_blocks_on_real_content():
         ingest2_data = ingest2.json()
         assert ingest2_data["success"], f"Ingest2 failed: {ingest2_data}"
         assert ingest2_data["data"].get("enqueued") is False, "Should NOT be enqueued (dedup)"
-        assert ingest2_data["data"].get("reason") == "content already indexed", (
-            f"Expected dedup reason, got: {ingest2_data}"
+        assert ingest2_data["data"].get("reason") in {"content already indexed", "already_in_flight"}, (
+            f"Expected dedup reuse reason, got: {ingest2_data}"
         )
+        assert ingest2_data["data"].get("duplicate_reused") is True
         print(f"Dedup blocks correctly: {ingest2_data['data']['reason']}")
 
     # 清理
@@ -327,7 +328,7 @@ async def test_dedup_allows_orphan_reingest():
             await db.execute(
                 text(
                     "DELETE FROM framework_system_task_queues "
-                    "WHERE task_type = 'kb_pipeline' "
+                    "WHERE task_type = 'kb_pipeline_stage' "
                     "AND module = 'knowledge' "
                     "AND status IN ('pending', 'running') "
                     "AND parameters LIKE :pattern"
@@ -403,7 +404,7 @@ async def test_pipeline_e2e_via_background_worker():
 
     背景管线异步执行（受 embedding 模型可用性影响），本测试验证关键点：
     1. 文档创建且未被清壳逻辑误删
-    2. kb_pipeline 任务已入队
+    2. kb_pipeline_stage root 任务已入队
     3. 文档状态持续演进（管线在处理）
     全链路真产出 chunks+search 召回在验收阶段手工验证。
     """
@@ -448,18 +449,19 @@ async def test_pipeline_e2e_via_background_worker():
         assert doc_check.status_code == 200, f"Document {doc_id} was deleted (race condition)!"
         print(f"Document {doc_id} exists (no race-condition deletion)")
 
-        # 4. 查 kb_pipeline 任务已入队
+        # 4. 查 kb_pipeline_stage root 任务已入队
         from app.models.system import SystemTaskQueue
         async with AsyncSessionLocal() as db:
             stmt = select(SystemTaskQueue).where(
-                SystemTaskQueue.task_type == "kb_pipeline",
+                SystemTaskQueue.task_type == "kb_pipeline_stage",
                 SystemTaskQueue.parameters.contains(str(doc_id)),
-                SystemTaskQueue.status == "pending",
+                SystemTaskQueue.status.in_(("pending", "running", "completed")),
             ).order_by(SystemTaskQueue.id.desc()).limit(1)
             tr = await db.execute(stmt)
             task = tr.scalar_one_or_none()
-            assert task is not None, f"No kb_pipeline task enqueued for doc_id={doc_id}"
-            print(f"kb_pipeline task id={task.id} enqueued (status={task.status})")
+            assert task is not None, f"No kb_pipeline_stage task enqueued for doc_id={doc_id}"
+            assert '"stage": "source_validate"' in (task.parameters or "")
+            print(f"kb_pipeline_stage task id={task.id} enqueued (status={task.status})")
 
         # 5. 快速短轮（~6秒）看管线有进展
         deadline = asyncio.get_event_loop().time() + 6

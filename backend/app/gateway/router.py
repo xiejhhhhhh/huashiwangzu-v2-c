@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import time
 from dataclasses import dataclass
@@ -13,10 +12,16 @@ from tenacity.wait import wait_base
 from app.gateway.config import (
     DEFAULT_MODEL,
     MODEL_PROFILES,
+    get_models_config,
     get_model_type_config,
     get_provider_configs,
 )
 from app.gateway.protocol import is_protocol_error_text
+from app.gateway.vision_preprocess import (
+    messages_contain_image_payload,
+    prepare_vision_image_for_model,
+    prepare_vision_image_for_model_from_config,
+)
 
 from .adapters import _extract_usage, get_adapter
 from .base import BaseProvider
@@ -32,80 +37,7 @@ from .openai_provider import OpenAIProvider, OpenCodeProvider
 from .usage_tracker import UsageRecord, log_usage, log_usage_event
 
 logger = logging.getLogger("v2.gateway.router")
-
-
-def _prepare_vision_image_for_model(
-    image_bytes: bytes,
-    mime_type: str,
-    *,
-    max_dimension: int = 1920,
-    max_bytes: int = 1800 * 1024,
-) -> tuple[bytes, str, dict]:
-    """Resize/compress images before embedding them in multimodal requests."""
-    metadata = {
-        "original_bytes": len(image_bytes),
-        "prepared_bytes": len(image_bytes),
-        "original_mime_type": mime_type,
-        "prepared_mime_type": mime_type,
-        "resized": False,
-        "reencoded": False,
-    }
-    try:
-        from PIL import Image
-    except Exception as exc:
-        metadata["skipped_reason"] = f"pillow_unavailable:{exc}"
-        return image_bytes, mime_type, metadata
-
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            original_size = tuple(img.size)
-            metadata["original_size"] = list(original_size)
-            working = img.copy()
-    except Exception as exc:
-        metadata["skipped_reason"] = f"unreadable_image:{exc}"
-        return image_bytes, mime_type, metadata
-
-    width, height = working.size
-    longest = max(width, height)
-    if longest > max_dimension:
-        scale = max_dimension / longest
-        new_size = (max(1, round(width * scale)), max(1, round(height * scale)))
-        working = working.resize(new_size, Image.Resampling.LANCZOS)
-        metadata["resized"] = True
-        metadata["prepared_size"] = list(new_size)
-    else:
-        metadata["prepared_size"] = [width, height]
-
-    original_can_pass = (
-        not metadata["resized"]
-        and len(image_bytes) <= max_bytes
-        and mime_type.lower() in {"image/jpeg", "image/jpg"}
-    )
-    if original_can_pass:
-        return image_bytes, mime_type, metadata
-
-    if working.mode in {"RGBA", "LA"} or (working.mode == "P" and "transparency" in working.info):
-        background = Image.new("RGB", working.size, (255, 255, 255))
-        alpha = working.convert("RGBA").getchannel("A")
-        background.paste(working.convert("RGBA"), mask=alpha)
-        working = background
-    elif working.mode != "RGB":
-        working = working.convert("RGB")
-
-    prepared = image_bytes
-    for quality in (90, 84, 78, 72):
-        out = io.BytesIO()
-        working.save(out, format="JPEG", quality=quality, optimize=True)
-        candidate = out.getvalue()
-        prepared = candidate
-        metadata["jpeg_quality"] = quality
-        if len(candidate) <= max_bytes:
-            break
-
-    metadata["prepared_bytes"] = len(prepared)
-    metadata["prepared_mime_type"] = "image/jpeg"
-    metadata["reencoded"] = True
-    return prepared, "image/jpeg", metadata
+_prepare_vision_image_for_model = prepare_vision_image_for_model
 
 
 @dataclass
@@ -157,9 +89,17 @@ class _GatewayRetryWait(wait_base):
 
 # ── Vision profile loading ─────────────────────────────────────────────
 _vision_cfg = get_model_type_config("vision")
-_VISION_PRIMARY: str = _vision_cfg.get("primary", "mimo")
-_VISION_FALLBACK: list[str] = _vision_cfg.get("fallback_chain", ["qwen3-vl"])
-_VISION_PROFILES: dict[str, dict] = _vision_cfg.get("profiles", {})
+_VISION_PRIMARY: str = str(_vision_cfg.get("primary") or "")
+_VISION_FALLBACK: list[str] = (
+    list(_vision_cfg.get("fallback_chain") or [])
+    if isinstance(_vision_cfg.get("fallback_chain"), list)
+    else []
+)
+_VISION_PROFILES: dict[str, dict] = (
+    _vision_cfg.get("profiles", {})
+    if isinstance(_vision_cfg.get("profiles", {}), dict)
+    else {}
+)
 
 
 def _profile_chain_for_model_type(
@@ -179,10 +119,27 @@ def _profile_chain_for_model_type(
     """
     cfg = get_model_type_config(model_type)
     profile_map = profiles if profiles is not None else cfg.get("profiles", {})
-    primary = primary_key or cfg.get("primary") or DEFAULT_MODEL
+    configured_primary = primary_key or cfg.get("primary")
+    primary = str(configured_primary or (DEFAULT_MODEL if model_type == "llm" else ""))
+    if not profile_map or not primary:
+        return []
     requested = requested_key if requested_key in profile_map else primary
     fallback_enabled = bool(cfg.get("fallback_on_explicit_profile", True))
     raw_fallbacks = fallback_chain if fallback_chain is not None else cfg.get("fallback_chain", [])
+    requested_profile = profile_map.get(requested) if requested in profile_map else None
+    if isinstance(requested_profile, dict):
+        fallback_policy = requested_profile.get("fallback_policy")
+        fallback_policies = get_models_config().get("fallback_policies", {})
+        if fallback_policy and isinstance(fallback_policies, dict):
+            configured_policy = fallback_policies.get(str(fallback_policy))
+            if isinstance(configured_policy, list):
+                raw_fallbacks = configured_policy
+            elif isinstance(configured_policy, dict) and isinstance(configured_policy.get("chain"), list):
+                raw_fallbacks = configured_policy["chain"]
+        elif isinstance(requested_profile.get("fallback_chain"), list):
+            raw_fallbacks = requested_profile["fallback_chain"]
+        elif requested_profile.get("fallback_profile"):
+            raw_fallbacks = [str(requested_profile["fallback_profile"])]
 
     chain = [requested]
     if fallback_enabled:
@@ -411,6 +368,19 @@ class ModelGatewayRouter:
         tools: list[dict] | None = None,
         budget: RetryBudget | None = None,
     ) -> dict:
+        if messages_contain_image_payload(messages):
+            error = (
+                "Image payloads must use gateway.describe_image_detailed so the "
+                "unified VLM image compression policy is always applied."
+            )
+            return {
+                "content": f"(Gateway policy error: {error})",
+                "error": error,
+                "diagnostics": {
+                    "requested_profile": profile_key,
+                    "policy": "vision_images_must_use_describe_image",
+                },
+            }
         candidate_keys = _profile_chain_for_model_type("llm", profile_key, profiles=MODEL_PROFILES)
         diagnostics: dict = {
             "requested_profile": profile_key,
@@ -514,6 +484,15 @@ class ModelGatewayRouter:
         profile_key: str = DEFAULT_MODEL,
         tools: list[dict] | None = None,
     ) -> AsyncGenerator[dict, None]:
+        if messages_contain_image_payload(messages):
+            yield {
+                "type": "error",
+                "content": (
+                    "Image payloads must use gateway.describe_image_detailed so the "
+                    "unified VLM image compression policy is always applied."
+                ),
+            }
+            return
         candidate_keys = _profile_chain_for_model_type("llm", profile_key, profiles=MODEL_PROFILES)
         last_error = ""
         for idx, key in enumerate(candidate_keys):
@@ -617,10 +596,15 @@ class ModelGatewayRouter:
         Falls back through _VISION_FALLBACK if the primary model fails.
         """
         import base64
-        prepared_bytes, prepared_mime_type, image_preprocess = _prepare_vision_image_for_model(
+        prepared_bytes, prepared_mime_type, image_preprocess = prepare_vision_image_for_model_from_config(
             image_bytes,
             mime_type,
         )
+        if image_preprocess.get("send_blocked"):
+            raise RuntimeError(
+                "Vision image preprocessing could not produce a safe compressed payload; "
+                "raw image send was blocked by gateway policy."
+            )
         b64 = base64.b64encode(prepared_bytes).decode("ascii")
         img_data_url = f"data:{prepared_mime_type};base64,{b64}"
         messages = [
@@ -776,8 +760,11 @@ class ModelGatewayRouter:
                             client_kw["proxy"] = httpx.Proxy(url=proxy_url)
 
                         async with httpx.AsyncClient(**client_kw) as client:
+                            model_name = profile.get("model")
+                            if not model_name:
+                                raise RuntimeError(f"Image generation profile '{key}' is missing model")
                             body = {
-                                "model": profile.get("model", "gpt-5.5"),
+                                "model": model_name,
                                 "input": prompt,
                                 "tools": [tool_config],
                                 "store": False,
@@ -850,14 +837,18 @@ async def _ensure_local_text_model(profile: dict | None = None) -> None:
     from asyncio import to_thread
 
     from app.services.model_watchdog.watchdog import ensure_model
-    watchdog_name = (profile or {}).get("watchdog", "gemma-4")
+    watchdog_name = (profile or {}).get("watchdog") or (profile or {}).get("model")
+    if not watchdog_name:
+        raise RuntimeError("Local text model profile is missing watchdog/model in models.json")
     await to_thread(ensure_model, watchdog_name)
 
 
 async def _ensure_local_vision_model(profile: dict) -> None:
-    """Ensure a local vision model (e.g. qwen3-vl) is running via watchdog."""
+    """Ensure a local vision model is running via the configured watchdog."""
     from asyncio import to_thread
 
     from app.services.model_watchdog.watchdog import ensure_model
-    watchdog_name = profile.get("watchdog", "qwen3-vl")
+    watchdog_name = profile.get("watchdog") or profile.get("model")
+    if not watchdog_name:
+        raise RuntimeError("Local vision model profile is missing watchdog/model in models.json")
     await to_thread(ensure_model, watchdog_name)

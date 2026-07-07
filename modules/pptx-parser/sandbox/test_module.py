@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import importlib.util
 import os
 import sys
@@ -47,8 +48,11 @@ async def parse_with_file(
         parse_file: Callable[[int, object, Path, str], dict[str, Any]],
     ) -> dict[str, Any]:
         assert caller == "user:1"
-        assert allowed == {"pptx"}
-        return parse_file(runner_params["file_id"], None, path, "pptx")
+        assert allowed == {"ppt", "pptx"}
+        result = parse_file(runner_params["file_id"], None, path, "pptx")
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     async def fake_store_resources(
         result: dict[str, Any],

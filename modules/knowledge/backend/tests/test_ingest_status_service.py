@@ -14,6 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from modules.knowledge.backend.services.document_service import (
+    document_deep_pipeline_complete,
     document_pipeline_complete,
     document_registration_payload,
 )
@@ -35,6 +36,9 @@ def _doc(**overrides):
         "vector_status": "pending",
         "raw_status": "pending",
         "fusion_status": "pending",
+        "profile_status": "pending",
+        "graph_status": "pending",
+        "relation_status": "pending",
         "total_chunks": 0,
         "total_pages": 0,
         "summary": None,
@@ -49,7 +53,12 @@ def _doc(**overrides):
 def _task(**overrides):
     values = {
         "id": 77,
-        "task_type": "kb_pipeline",
+        "task_type": "kb_pipeline_stage",
+        "parameters": '{"document_id": 12, "stage": "source_validate"}',
+        "stage_key": "source_validate",
+        "lane_key": "local_preprocess",
+        "ready_status": "ready",
+        "dependency_key": "knowledge:12:source_validate",
         "status": "pending",
         "retry_count": 0,
         "max_retries": 3,
@@ -99,7 +108,7 @@ def test_document_registration_payload_exposes_new_task_id() -> None:
     assert payload["task_id"] == 42
     assert payload["enqueued"] is True
     assert payload["reason"] == "created"
-    assert payload["stage"] == "kb_pipeline"
+    assert payload["stage"] == "source_validate"
     assert payload["status"] == "queued"
     assert payload["search_ready"] is False
     assert payload["deep_ready"] is False
@@ -123,7 +132,7 @@ def test_ingest_status_pending_is_not_search_ready() -> None:
     assert payload["task_id"] == 77
     assert payload["task_status"] == "pending"
     assert payload["pipeline_status"] == "queued"
-    assert payload["stage"] == "parse"
+    assert payload["stage"] == "source_validate"
     assert payload["search_ready"] is False
     assert payload["deep_ready"] is False
     assert payload["next_action"] == "wait_for_search_index"
@@ -358,3 +367,22 @@ def test_document_pipeline_complete_accepts_live_source_guard() -> None:
     assert document_pipeline_complete(doc) is True
     assert document_pipeline_complete(doc, source_available=True) is True
     assert document_pipeline_complete(doc, source_available=False) is False
+
+
+def test_document_deep_pipeline_complete_requires_derived_stages() -> None:
+    doc = _doc(
+        parse_status="done",
+        vector_status="done",
+        raw_status="done",
+        fusion_status="done",
+        profile_status="pending",
+        graph_status="done",
+        relation_status="done",
+        total_chunks=8,
+    )
+
+    assert document_pipeline_complete(doc) is True
+    assert document_deep_pipeline_complete(doc) is False
+
+    doc.profile_status = "done"
+    assert document_deep_pipeline_complete(doc) is True

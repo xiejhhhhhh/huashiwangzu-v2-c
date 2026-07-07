@@ -1,4 +1,7 @@
+import asyncio
 import importlib.util
+import shutil
+import tempfile
 from pathlib import Path
 
 from app.core.exceptions import ValidationError
@@ -6,6 +9,7 @@ from app.middleware.auth import require_permission
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.module_registry import register_capability
+from app.services.office_conversion import convert_file
 from app.services.uploaded_file_runner import run_uploaded_file_capability
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -29,10 +33,27 @@ class ParseRequest(BaseModel):
 
 
 async def _parse(params: dict, caller: str) -> dict:
-    def parse_file(file_id: int, _file: object, full_path: Path, ext: str) -> dict:
+    async def parse_file(file_id: int, _file: object, full_path: Path, ext: str) -> dict:
         try:
-            return parse_spreadsheet_file(file_id, full_path, ext)
-        except SpreadsheetParseError as exc:
+            if ext == "xls":
+                tmpdir = tempfile.mkdtemp(prefix="xls_parser_")
+                try:
+                    converted_path = await convert_file(full_path, "xlsx", tmpdir)
+                    result = await asyncio.to_thread(
+                        parse_spreadsheet_file,
+                        file_id,
+                        Path(converted_path),
+                        "xlsx",
+                    )
+                    result["format"] = "xls"
+                    result["metadata"]["format"] = "xls"
+                    result["metadata"]["converted_from"] = "xls"
+                    result["warnings"].append("converted_from_xls")
+                    return result
+                finally:
+                    await asyncio.to_thread(shutil.rmtree, tmpdir, True)
+            return await asyncio.to_thread(parse_spreadsheet_file, file_id, full_path, ext)
+        except (SpreadsheetParseError, RuntimeError, ValueError, FileNotFoundError, TimeoutError) as exc:
             raise ValidationError(str(exc)) from exc
 
     try:
@@ -54,8 +75,8 @@ async def call_parse(payload: ParseRequest, user: User = Depends(require_permiss
 
 register_capability(
     "xlsx-parser", "parse", _parse,
-    description="Parse XLSX/CSV files into unified content blocks",
-    brief="解析 XLSX 文档",
+    description="Parse XLS/XLSX/CSV files into unified content blocks",
+    brief="解析 XLS/XLSX 文档",
     parameters={"file_id": {"type": "int", "description": "File ID in file storage"}},
     min_role="viewer",
 )

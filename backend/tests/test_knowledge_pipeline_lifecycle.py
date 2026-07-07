@@ -8,6 +8,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+TEST_STORAGE_PATH = "_knowledge_tests/lifecycle-live.txt"
+
+
+@pytest.fixture(autouse=True)
+def _live_upload_fixture():
+    marker = REPO_ROOT / "data" / "uploads" / TEST_STORAGE_PATH
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("knowledge pipeline lifecycle source", encoding="utf-8")
+    try:
+        yield
+    finally:
+        marker.unlink(missing_ok=True)
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -33,10 +46,15 @@ class _FakeDocument:
     owner_id = 4
     file_id = 99
     deleted = False
+    extension = "txt"
+    total_pages = 1
     parse_status = "parsing"
     vector_status = "indexing"
     raw_status = "collecting"
     fusion_status = "running"
+    profile_status = "pending"
+    graph_status = "pending"
+    relation_status = "pending"
     parse_error = None
 
 
@@ -44,9 +62,32 @@ class _FakeDb:
     def __init__(self, doc):
         self.doc = doc
         self.commits = 0
+        self.added = []
+        self._next_id = 1000
+
+    async def scalar(self, _stmt):
+        return self.doc
 
     async def execute(self, _stmt):
         return _ScalarResult(self.doc)
+
+    async def get(self, model, item_id):
+        for item in self.added:
+            if model.__name__ == item.__class__.__name__ and getattr(item, "id", None) == item_id:
+                return item
+        return None
+
+    def add(self, item):
+        if getattr(item, "id", None) is None:
+            item.id = self._next_id
+            self._next_id += 1
+        self.added.append(item)
+
+    async def flush(self):
+        return None
+
+    async def refresh(self, _obj):
+        return None
 
     async def commit(self):
         self.commits += 1
@@ -91,15 +132,16 @@ def _load_pipeline_modules():
 
 
 @pytest.mark.asyncio
-async def test_kb_pipeline_skips_when_document_row_is_missing(monkeypatch) -> None:
+async def test_kb_pipeline_stage_skips_when_document_row_is_missing(monkeypatch) -> None:
     pipeline_service, _source_state = _load_pipeline_modules()
     db = _FakeDb(None)
 
     monkeypatch.setattr(pipeline_service, "AsyncSessionLocal", _FakeSessionFactory(db))
 
-    result = await pipeline_service._pipeline_handler({
+    result = await pipeline_service._pipeline_stage_handler({
         "document_id": 404,
         "user_id": 4,
+        "stage": "source_validate",
     })
 
     assert result["status"] == "skipped"
@@ -110,7 +152,7 @@ async def test_kb_pipeline_skips_when_document_row_is_missing(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_kb_pipeline_skips_when_source_file_is_deleted(monkeypatch) -> None:
+async def test_kb_pipeline_stage_skips_when_source_file_is_deleted(monkeypatch) -> None:
     pipeline_service, source_state = _load_pipeline_modules()
     doc = _FakeDocument()
     db = _FakeDb(doc)
@@ -132,10 +174,13 @@ async def test_kb_pipeline_skips_when_source_file_is_deleted(monkeypatch) -> Non
         "get_source_file_availability",
         fake_get_source_file_availability,
     )
+    monkeypatch.setattr(pipeline_service, "record_analysis_artifact", _noop_record_analysis_artifact)
+    monkeypatch.setattr(pipeline_service, "resolve_stage_prompt_hash", _noop_prompt_hash)
 
-    result = await pipeline_service._pipeline_handler({
+    result = await pipeline_service._pipeline_stage_handler({
         "document_id": doc.id,
         "user_id": doc.owner_id,
+        "stage": "source_validate",
     })
 
     assert result["status"] == "skipped"
@@ -147,7 +192,7 @@ async def test_kb_pipeline_skips_when_source_file_is_deleted(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_kb_pipeline_skips_when_source_file_is_missing(monkeypatch) -> None:
+async def test_kb_pipeline_stage_skips_when_source_file_is_missing(monkeypatch) -> None:
     pipeline_service, source_state = _load_pipeline_modules()
     doc = _FakeDocument()
     db = _FakeDb(doc)
@@ -169,10 +214,13 @@ async def test_kb_pipeline_skips_when_source_file_is_missing(monkeypatch) -> Non
         "get_source_file_availability",
         fake_get_source_file_availability,
     )
+    monkeypatch.setattr(pipeline_service, "record_analysis_artifact", _noop_record_analysis_artifact)
+    monkeypatch.setattr(pipeline_service, "resolve_stage_prompt_hash", _noop_prompt_hash)
 
-    result = await pipeline_service._pipeline_handler({
+    result = await pipeline_service._pipeline_stage_handler({
         "document_id": doc.id,
         "user_id": doc.owner_id,
+        "stage": "source_validate",
     })
 
     assert result["status"] == "skipped"
@@ -182,7 +230,7 @@ async def test_kb_pipeline_skips_when_source_file_is_missing(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_kb_pipeline_still_fails_when_active_source_content_is_broken(monkeypatch) -> None:
+async def test_kb_pipeline_stage_still_fails_when_active_source_content_is_broken(monkeypatch) -> None:
     pipeline_service, source_state = _load_pipeline_modules()
     doc = _FakeDocument()
     db = _FakeDb(doc)
@@ -190,7 +238,7 @@ async def test_kb_pipeline_still_fails_when_active_source_content_is_broken(monk
     async def fake_raise_if_source_unavailable(_db, _file_id):
         return None
 
-    async def fake_run_pipeline(*_args, **_kwargs):
+    async def fake_run_stage(*_args, **_kwargs):
         raise RuntimeError("File content is missing on disk")
 
     async def fake_get_source_file_availability(_db, _file_id):
@@ -202,20 +250,31 @@ async def test_kb_pipeline_still_fails_when_active_source_content_is_broken(monk
         "raise_if_source_unavailable",
         fake_raise_if_source_unavailable,
     )
-    monkeypatch.setattr(pipeline_service, "_run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(pipeline_service, "_run_stage", fake_run_stage)
     monkeypatch.setattr(
         pipeline_service,
         "get_source_file_availability",
         fake_get_source_file_availability,
     )
+    monkeypatch.setattr(pipeline_service, "record_analysis_artifact", _noop_record_analysis_artifact)
+    monkeypatch.setattr(pipeline_service, "resolve_stage_prompt_hash", _noop_prompt_hash)
 
-    result = await pipeline_service._pipeline_handler({
+    result = await pipeline_service._pipeline_stage_handler({
         "document_id": doc.id,
         "user_id": doc.owner_id,
+        "stage": "raw_text",
     })
 
     assert result["status"] == "failed"
-    assert result["error"] == "File content is missing on disk"
+    assert result["reason"] == "File content is missing on disk"
+
+
+async def _noop_record_analysis_artifact(**_kwargs):
+    return None
+
+
+async def _noop_prompt_hash(*_args, **_kwargs):
+    return None
 
 
 @pytest.mark.asyncio
@@ -225,9 +284,9 @@ async def test_enqueue_pipeline_task_dedupes_existing_inflight_task() -> None:
 
     existing = SystemTaskQueue(
         id=42,
-        task_type="kb_pipeline",
+        task_type="kb_pipeline_stage",
         module="knowledge",
-        parameters='{"document_id": 7, "user_id": 4}',
+        parameters='{"document_id": 7, "user_id": 4, "stage": "source_validate"}',
         status="running",
         creator_id=4,
     )
@@ -240,7 +299,7 @@ async def test_enqueue_pipeline_task_dedupes_existing_inflight_task() -> None:
         async def execute(self, _stmt, _params=None):
             self.execute_calls += 1
             if self.execute_calls == 1:
-                return _ScalarListResult([])
+                return _ScalarResult(None)
             return _ScalarListResult([existing])
 
         def add(self, item):
@@ -256,6 +315,8 @@ async def test_enqueue_pipeline_task_dedupes_existing_inflight_task() -> None:
         "task_id": 42,
         "enqueued": False,
         "reason": "already_in_flight",
+        "stage": "source_validate",
+        "next_task": "kb_pipeline_stage",
     }
     assert db.added == []
 
@@ -268,6 +329,9 @@ def test_parser_empty_degraded_document_can_still_be_search_ready() -> None:
     doc.vector_status = "done"
     doc.raw_status = "done"
     doc.fusion_status = "done"
+    doc.profile_status = "done"
+    doc.graph_status = "done"
+    doc.relation_status = "done"
     doc.total_chunks = 3
     doc.total_pages = 1
     doc.catalog_id = None
@@ -304,7 +368,7 @@ async def test_pipeline_debt_dry_run_keeps_live_file_for_retry_or_parser_investi
         error_message="File not found",
     )
     doc = _FakeDocument()
-    file_row = type("LiveFile", (), {"id": 99, "deleted": False})()
+    file_row = type("LiveFile", (), {"id": 99, "deleted": False, "storage_path": TEST_STORAGE_PATH})()
 
     class FakeDb:
         async def execute(self, _stmt):
@@ -371,7 +435,7 @@ async def test_pipeline_debt_dry_run_classifies_parser_empty_as_quality_debt() -
         error_message="Parser returned no content blocks",
     )
     doc = _FakeDocument()
-    file_row = type("LiveFile", (), {"id": 99, "deleted": False})()
+    file_row = type("LiveFile", (), {"id": 99, "deleted": False, "storage_path": TEST_STORAGE_PATH})()
 
     class FakeDb:
         async def execute(self, _stmt):
@@ -476,7 +540,7 @@ async def test_pipeline_debt_apply_retries_only_live_file_rows() -> None:
         (),
         {"id": 8, "owner_id": 4, "file_id": 100, "deleted": True},
     )()
-    file_row = type("LiveFile", (), {"id": 99, "deleted": False})()
+    file_row = type("LiveFile", (), {"id": 99, "deleted": False, "storage_path": TEST_STORAGE_PATH})()
 
     class FakeDb:
         def __init__(self):

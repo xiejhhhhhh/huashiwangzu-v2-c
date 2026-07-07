@@ -6,6 +6,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("v2.knowledge").getChild("init_db")
+_STARTUP_INIT_LOCK_KEY = 1262633101
 
 # 知识库模块的所有表名
 KB_TABLES = [
@@ -31,6 +32,8 @@ _INDEX_STATEMENTS = [
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_kb_documents_owner_file_active ON kb_documents(owner_id, file_id) WHERE NOT deleted",
     "CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks(document_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_chunks_owner ON kb_chunks(owner_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc_layer ON kb_chunks(document_id, index_layer)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_chunks_owner_layer ON kb_chunks(owner_id, index_layer)",
     "CREATE INDEX IF NOT EXISTS idx_kb_page_fusions_doc_page ON kb_page_fusions(document_id, page)",
     "CREATE INDEX IF NOT EXISTS idx_kb_entity_dict_owner ON kb_entity_dictionary(owner_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_graph_nodes_entity ON kb_graph_nodes(entity_id)",
@@ -122,6 +125,10 @@ _MIGRATION_STATEMENTS = [
     ("kb_page_fusions", "confidence", "ALTER TABLE kb_page_fusions ADD COLUMN IF NOT EXISTS confidence FLOAT"),
     ("kb_documents", "content_package_id", "ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS content_package_id BIGINT"),
     ("kb_chunks", "block_id", "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS block_id VARCHAR(64)"),
+    ("kb_chunks", "index_layer", "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS index_layer VARCHAR(32) DEFAULT 'base_parse'"),
+    ("kb_chunks", "index_version", "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS index_version INTEGER DEFAULT 1"),
+    ("kb_chunks", "source_stage", "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS source_stage VARCHAR(64) DEFAULT 'parse_index'"),
+    ("kb_chunks", "source_ref_id", "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS source_ref_id BIGINT"),
     ("kb_raw_data", "status", "ALTER TABLE kb_raw_data ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'done'"),
     ("kb_raw_data", "error_message", "ALTER TABLE kb_raw_data ADD COLUMN IF NOT EXISTS error_message TEXT"),
     ("kb_raw_data", "duration_ms", "ALTER TABLE kb_raw_data ADD COLUMN IF NOT EXISTS duration_ms INTEGER"),
@@ -142,6 +149,9 @@ _MIGRATION_STATEMENTS = [
     ("kb_evidence", "diagnostics_json", "ALTER TABLE kb_evidence ADD COLUMN IF NOT EXISTS diagnostics_json JSON"),
     ("kb_fact_candidates", "source_hash", "ALTER TABLE kb_fact_candidates ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)"),
     ("kb_causal_candidates", "source_hash", "ALTER TABLE kb_causal_candidates ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)"),
+    ("kb_image_assets", "storage_path", "ALTER TABLE kb_image_assets ADD COLUMN IF NOT EXISTS storage_path VARCHAR(512)"),
+    ("kb_image_assets", "mime_type", "ALTER TABLE kb_image_assets ADD COLUMN IF NOT EXISTS mime_type VARCHAR(128)"),
+    ("kb_image_assets", "byte_size", "ALTER TABLE kb_image_assets ADD COLUMN IF NOT EXISTS byte_size BIGINT"),
 ]
 
 _KNOWLEDGE_PROMPT_CATEGORY = {
@@ -398,12 +408,29 @@ async def ensure_prompt_templates(db: AsyncSession) -> None:
     logger.info("Ensured knowledge prompt templates (seeded=%d)", seeded)
 
 
+async def _run_with_startup_init_lock(db: AsyncSession) -> None:
+    """Run knowledge schema init in one process without queuing every worker."""
+    acquired = await db.scalar(text("SELECT pg_try_advisory_lock(:lock_key)"), {"lock_key": _STARTUP_INIT_LOCK_KEY})
+    if not acquired:
+        await db.commit()
+        logger.info("Knowledge startup init skipped; another process is handling schema init")
+        return
+    try:
+        await ensure_kb_tables(db)
+        await ensure_migration_columns(db)
+        await ensure_kb_indexes(db)
+        await ensure_prompt_templates(db)
+    finally:
+        try:
+            await db.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": _STARTUP_INIT_LOCK_KEY})
+            await db.commit()
+        except Exception as exc:
+            logger.warning("Knowledge startup init lock release failed: %s", exc)
+
+
 async def run_init(db: AsyncSession) -> None:
     """知识库模块启动初始化入口。"""
-    await ensure_kb_tables(db)
-    await ensure_migration_columns(db)
-    await ensure_kb_indexes(db)
-    await ensure_prompt_templates(db)
+    await _run_with_startup_init_lock(db)
 
 
 def _run_startup_init():
@@ -418,10 +445,7 @@ def _run_startup_init():
     async def _init():
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
-            await ensure_kb_tables(db)
-            await ensure_migration_columns(db)
-            await ensure_kb_indexes(db)
-            await ensure_prompt_templates(db)
+            await _run_with_startup_init_lock(db)
 
     try:
         loop = asyncio.get_event_loop()
