@@ -208,6 +208,8 @@ export function useAgentChat(props: AgentEntryProps) {
           applyToolCallEvent((e.name as string) || 'unknown', items, e)
         } else if (entryType === 'tool_result') {
           applyToolResultEvent((e.name as string) || 'unknown', e.result, items, e.duration_ms as number | undefined, e)
+        } else if (entryType === 'tool_group' || entryType === 'tool_heartbeat') {
+          applyToolProgressEvent(e, items)
         } else if (entryType === 'text') {
           textBuf += (e.content as string) || ''
         }
@@ -375,6 +377,86 @@ export function useAgentChat(props: AgentEntryProps) {
         durationMs: durationMs || 0,
       } as MsgItem)
     }
+  }
+
+  function applyToolProgressEvent(event: Record<string, unknown>, messages: MsgItem[]) {
+    const eventType = (event.type as string) || ''
+    const toolCallId = (event.tool_call_id as string) || ''
+    if (eventType === 'tool_group') {
+      messages.push({
+        id: 0,
+        role: '',
+        content: '',
+        eventType: 'tool_progress',
+        executionMode: (event.execution_mode as string) || 'serial',
+        groupIndex: Number(event.group_index) || undefined,
+        groupCount: Number(event.group_count) || undefined,
+        toolCount: Number(event.tool_count) || undefined,
+        tools: normalizeToolInfos(event.tools),
+        elapsedMs: Number(event.elapsed_ms) || 0,
+        toolNodes: [],
+      } as MsgItem)
+      return
+    }
+
+    const node: MsgItem = {
+      id: 0,
+      role: '',
+      content: '',
+      eventType: 'tool_progress_node',
+      toolName: ((event.effective_tool_name as string) || (event.name as string) || 'unknown'),
+      toolCallId,
+      node: (event.node as string) || '',
+      phase: (event.phase as string) || '',
+      status: (event.status as string) || '',
+      targetTool: (event.target_tool as string) || (event.effective_tool_name as string) || '',
+      elapsedMs: Number(event.elapsed_ms) || 0,
+    } as MsgItem
+
+    let target: MsgItem | undefined
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const item = messages[i]
+      if (item.eventType !== 'tool_progress') continue
+      if (!toolCallId) {
+        target = item
+        break
+      }
+      const hasTool = (item.tools || []).some(tool => tool.tool_call_id === toolCallId)
+      if (hasTool) {
+        target = item
+        break
+      }
+    }
+    if (!target) {
+      target = {
+        id: 0,
+        role: '',
+        content: '',
+        eventType: 'tool_progress',
+        executionMode: 'serial',
+        toolCount: 1,
+        tools: [{
+          name: (event.name as string) || '',
+          effective_tool_name: (event.effective_tool_name as string) || (event.target_tool as string) || '',
+          tool_call_id: toolCallId,
+        }],
+        toolNodes: [],
+      } as MsgItem
+      messages.push(target)
+    }
+    target.toolNodes = [...(target.toolNodes || []), node]
+    target.elapsedMs = Math.max(Number(target.elapsedMs) || 0, Number(node.elapsedMs) || 0)
+  }
+
+  function normalizeToolInfos(value: unknown): NonNullable<MsgItem['tools']> {
+    if (!Array.isArray(value)) return []
+    return value
+      .filter(isRecord)
+      .map(tool => ({
+        name: typeof tool.name === 'string' ? tool.name : '',
+        effective_tool_name: typeof tool.effective_tool_name === 'string' ? tool.effective_tool_name : '',
+        tool_call_id: typeof tool.tool_call_id === 'string' ? tool.tool_call_id : '',
+      }))
   }
 
   function eventToolReferences(
@@ -798,6 +880,9 @@ export function useAgentChat(props: AgentEntryProps) {
                 } else if (etype === 'tool_call') {
                   ensureWorkGroup()
                   applyToolCallEvent(evt.name as string || 'unknown', currentWorkGroup.value?.items ?? messages.value, evt)
+                } else if (etype === 'tool_group' || etype === 'tool_heartbeat') {
+                  ensureWorkGroup()
+                  applyToolProgressEvent(evt, currentWorkGroup.value?.items ?? messages.value)
                 } else if (etype === 'tool_result') {
                   ensureWorkGroup()
                   applyToolResultEvent(evt.name as string || 'unknown', evt.result, currentWorkGroup.value?.items ?? messages.value, evt.duration_ms as number | undefined, evt)

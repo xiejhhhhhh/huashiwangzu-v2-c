@@ -899,6 +899,46 @@ class ToolLoopRuntime:
                         t["tool_call_id"]: effective_tool_name(t)
                         for t in fast_tools
                     }
+                    _tool_groups: list[dict] = []
+                    _pending_parallel_group: list[dict] = []
+                    for t in orchestrator_tools:
+                        meta = orchestrator.determine_tool_metadata(t.get("name", ""))
+                        group_tool = {
+                            "name": t.get("name", ""),
+                            "effective_tool_name": effective_tool_name(t),
+                            "tool_call_id": t.get("tool_call_id", ""),
+                        }
+                        if meta.concurrency_safe and meta.read_only:
+                            _pending_parallel_group.append(group_tool)
+                            continue
+                        if _pending_parallel_group:
+                            _tool_groups.append({
+                                "execution_mode": "parallel" if len(_pending_parallel_group) > 1 else "serial",
+                                "tools": _pending_parallel_group,
+                            })
+                            _pending_parallel_group = []
+                        _tool_groups.append({
+                            "execution_mode": "serial",
+                            "tools": [group_tool],
+                        })
+                    if _pending_parallel_group:
+                        _tool_groups.append({
+                            "execution_mode": "parallel" if len(_pending_parallel_group) > 1 else "serial",
+                            "tools": _pending_parallel_group,
+                        })
+                    for index, group in enumerate(_tool_groups, start=1):
+                        group_event = {
+                            "type": "tool_group",
+                            "phase": "fast_tool_batch",
+                            "group_index": index,
+                            "group_count": len(_tool_groups),
+                            "execution_mode": group["execution_mode"],
+                            "tools": group["tools"],
+                            "tool_count": len(group["tools"]),
+                            "elapsed_ms": round((time.monotonic() - _tool_batch_t0) * 1000),
+                        }
+                        timeline.append(group_event)
+                        yield self._j_sse(group_event)
                     _tool_batch_task = asyncio.create_task(orchestrator.execute_batch(
                         orchestrator_tools, _tool_execute_with_timeout,
                     ))

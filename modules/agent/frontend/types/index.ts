@@ -30,6 +30,21 @@ export interface MsgItem {
   toolError?: string
   toolCallId?: string
   toolReferences?: EvidenceReference[]
+  executionMode?: string
+  groupIndex?: number
+  groupCount?: number
+  toolCount?: number
+  toolNodes?: MsgItem[]
+  tools?: Array<{
+    name?: string
+    effective_tool_name?: string
+    tool_call_id?: string
+  }>
+  node?: string
+  phase?: string
+  status?: string
+  targetTool?: string
+  elapsedMs?: number
   thinking?: string
   references?: RefItem[]
   tool_events?: unknown[]

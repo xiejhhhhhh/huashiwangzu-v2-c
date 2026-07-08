@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from .engine.tool_orchestrator import ToolMetadata
 from .runtime import tool_loop_runtime
 from .runtime.runtime_policy import RuntimePolicy
 from .runtime.stream_emitter import StreamEmitter
@@ -111,6 +112,9 @@ class _FakeSink:
 
 
 class _FakeOrchestrator:
+    def determine_tool_metadata(self, tool_name: str) -> ToolMetadata:
+        return ToolMetadata(name_pattern=tool_name, read_only=True, concurrency_safe=True)
+
     async def execute_batch(self, tools: list[dict], execute_fn: object) -> list[dict]:
         return [
             {
@@ -122,6 +126,9 @@ class _FakeOrchestrator:
 
 
 class _ExecutingOrchestrator:
+    def determine_tool_metadata(self, tool_name: str) -> ToolMetadata:
+        return ToolMetadata(name_pattern=tool_name, read_only=True, concurrency_safe=True)
+
     async def execute_batch(self, tools: list[dict], execute_fn: object) -> list[dict]:
         results = []
         for tool in tools:
@@ -315,6 +322,13 @@ async def test_fast_tool_batch_emits_heartbeat_and_timeout(
         events.append(event)
 
     decoded_events = [_decode_sse_event(event) for event in events]
+    assert any(
+        event
+        and event.get("type") == "tool_group"
+        and event.get("execution_mode") == "serial"
+        and event.get("tool_count") == 1
+        for event in decoded_events
+    )
     heartbeat_nodes = [
         (event.get("node"), event.get("status"))
         for event in decoded_events

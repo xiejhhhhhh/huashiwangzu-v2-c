@@ -26,6 +26,10 @@
           v-else-if="item.eventType === 'tool_call' || item.eventType === 'tool_result'"
           :message="item"
         />
+        <ToolProgressCard
+          v-else-if="item.eventType === 'tool_progress'"
+          :message="item"
+        />
         <div v-else-if="item.eventType === 'assistant_draft'" class="work-draft-row">
           <button class="work-draft-toggle" @click="toggleDraft(index)">
             <span class="work-draft-icon">💬</span>
@@ -48,6 +52,7 @@
 import { computed, ref, watch } from 'vue'
 import ThinkingCard from './ThinkingCard.vue'
 import ToolCallCard from './ToolCallCard.vue'
+import ToolProgressCard from './ToolProgressCard.vue'
 
 interface TraceItem {
   eventType?: string
@@ -61,6 +66,16 @@ interface TraceItem {
   toolStatus?: string
   toolError?: string
   toolCallId?: string
+  executionMode?: string
+  groupIndex?: number
+  groupCount?: number
+  toolCount?: number
+  tools?: Array<{ name?: string; effective_tool_name?: string; tool_call_id?: string }>
+  toolNodes?: TraceItem[]
+  node?: string
+  status?: string
+  targetTool?: string
+  elapsedMs?: number
   label?: string
   title?: string
   reason?: string
