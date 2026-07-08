@@ -706,6 +706,28 @@ class ToolLoopRuntime:
                 if fast_tools:
                     orchestrator = get_orchestrator()
                     AGENT_CODE = "erp_chat"
+                    _tool_batch_t0 = time.monotonic()
+                    _node_events: asyncio.Queue[dict] = asyncio.Queue()
+
+                    def _queue_tool_node(
+                        tool: dict,
+                        node: str,
+                        status: str,
+                        extra: dict | None = None,
+                    ) -> None:
+                        event = {
+                            "type": "tool_heartbeat",
+                            "phase": "fast_tool_node",
+                            "node": node,
+                            "status": status,
+                            "name": tool.get("name", ""),
+                            "effective_tool_name": effective_tool_name(tool),
+                            "tool_call_id": tool.get("tool_call_id", ""),
+                            "elapsed_ms": round((time.monotonic() - _tool_batch_t0) * 1000),
+                        }
+                        if extra:
+                            event.update(extra)
+                        _node_events.put_nowait(event)
 
                     async def _tool_execute_fn(tool: dict) -> dict:
                         effective_name = (
@@ -713,6 +735,7 @@ class ToolLoopRuntime:
                             if tool["name"] == "skill_use"
                             else tool["name"]
                         )
+                        _queue_tool_node(tool, "policy_check", "started")
                         async with AsyncSessionLocal() as _pol_db:
                             _wf_link = sink.workflow_link
                             _wf_tool_call_id = None
@@ -735,7 +758,14 @@ class ToolLoopRuntime:
                                     "tool_call_id": _wf_tool_call_id,
                                 } if _wf_link and _wf_tool_call_id else None,
                             )
+                        _queue_tool_node(
+                            tool,
+                            "policy_check",
+                            "completed",
+                            {"allowed": bool(pol.get("allowed"))},
+                        )
                         if not pol.get("allowed"):
+                            _queue_tool_node(tool, "policy_check", "blocked")
                             return {
                                 "policy_action": pol["action"],
                                 "reason": pol.get("reason", ""),
@@ -743,32 +773,119 @@ class ToolLoopRuntime:
                                 "tool_name": pol.get("tool_name", tool["name"]),
                             }
                         if tool["name"] == "skill_list":
-                            return await tool_discovery.handle_skill_list(
+                            _queue_tool_node(tool, "skill_list", "started")
+                            result = await tool_discovery.handle_skill_list(
                                 tool["args"], self.user_role,
                             )
+                            _queue_tool_node(tool, "skill_list", "completed")
+                            return result
                         elif tool["name"] == "skill_describe":
-                            return await tool_discovery.handle_skill_describe(
+                            _queue_tool_node(tool, "skill_describe", "started")
+                            result = await tool_discovery.handle_skill_describe(
                                 tool["args"], self.user_role,
                                 owner_id=self.owner_id,
                                 agent_code=AGENT_CODE,
                             )
+                            _queue_tool_node(tool, "skill_describe", "completed")
+                            return result
                         elif tool["name"] == "skill_use":
-                            return await tool_discovery.handle_skill_use(
+                            _queue_tool_node(
+                                tool,
+                                "skill_use",
+                                "started",
+                                {"target_tool": effective_name},
+                            )
+                            result = await tool_discovery.handle_skill_use(
                                 tool["args"],
                                 caller=f"user:{self.owner_id}",
                                 caller_role=self.user_role,
                             )
+                            _queue_tool_node(
+                                tool,
+                                "skill_use",
+                                "completed",
+                                {"target_tool": effective_name},
+                            )
+                            return result
                         else:
                             from app.services.module_registry import call_capability
                             module_key, action = tool_discovery.parse_tool_name(
                                 tool["name"],
                             )
                             caller = f"user:{self.owner_id}" if self.owner_id else "system:tool-loop"
-                            return await call_capability(
+                            _queue_tool_node(
+                                tool,
+                                "capability_call",
+                                "started",
+                                {"module": module_key, "action": action},
+                            )
+                            result = await call_capability(
                                 module_key, action, tool.get("args") or tool.get("arguments", {}),
                                 caller=caller,
                                 caller_role=self.user_role,
                             )
+                            _queue_tool_node(
+                                tool,
+                                "capability_call",
+                                "completed",
+                                {"module": module_key, "action": action},
+                            )
+                            return result
+
+                    async def _tool_execute_with_timeout(tool: dict) -> dict:
+                        timeout_seconds = float(self.policy.fast_tool_timeout_seconds or 0)
+                        _queue_tool_node(tool, "tool_execution", "started")
+                        if timeout_seconds <= 0:
+                            try:
+                                result = await _tool_execute_fn(tool)
+                            except Exception as exc:
+                                _queue_tool_node(
+                                    tool,
+                                    "tool_execution",
+                                    "failed",
+                                    {"error": str(exc)[:500]},
+                                )
+                                raise
+                            _queue_tool_node(tool, "tool_execution", "completed")
+                            return result
+                        effective_name = effective_tool_name(tool)
+                        try:
+                            result = await asyncio.wait_for(
+                                _tool_execute_fn(tool),
+                                timeout=timeout_seconds,
+                            )
+                            _queue_tool_node(tool, "tool_execution", "completed")
+                            return result
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Fast tool '%s' timed out after %.1fs",
+                                effective_name,
+                                timeout_seconds,
+                            )
+                            _queue_tool_node(
+                                tool,
+                                "tool_execution",
+                                "timeout",
+                                {"timeout_seconds": timeout_seconds},
+                            )
+                            return {
+                                "success": False,
+                                "error": (
+                                    f"工具 {effective_name} 在 "
+                                    f"{timeout_seconds:g} 秒内没有返回，已停止等待。"
+                                ),
+                                "error_class": "timeout",
+                                "timeout": True,
+                                "tool_name": effective_name,
+                            }
+                        except Exception as exc:
+                            _queue_tool_node(
+                                tool,
+                                "tool_execution",
+                                "failed",
+                                {"error": str(exc)[:500]},
+                            )
+                            raise
 
                     orchestrator_tools = [
                         {
@@ -782,10 +899,24 @@ class ToolLoopRuntime:
                         t["tool_call_id"]: effective_tool_name(t)
                         for t in fast_tools
                     }
-                    _tool_batch_t0 = time.monotonic()
-                    orchestrated_results = await orchestrator.execute_batch(
-                        orchestrator_tools, _tool_execute_fn,
-                    )
+                    _tool_batch_task = asyncio.create_task(orchestrator.execute_batch(
+                        orchestrator_tools, _tool_execute_with_timeout,
+                    ))
+                    while not _tool_batch_task.done():
+                        try:
+                            node_event = await asyncio.wait_for(
+                                _node_events.get(),
+                                timeout=0.25,
+                            )
+                        except asyncio.TimeoutError:
+                            continue
+                        timeline.append(node_event)
+                        yield self._j_sse(node_event)
+                    orchestrated_results = await _tool_batch_task
+                    while not _node_events.empty():
+                        node_event = _node_events.get_nowait()
+                        timeline.append(node_event)
+                        yield self._j_sse(node_event)
                     logger.info(
                         "[DIAG] ToolLoopRuntime fast tool batch count=%d duration_ms=%d",
                         len(orchestrator_tools),

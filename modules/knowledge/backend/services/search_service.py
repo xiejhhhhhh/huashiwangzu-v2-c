@@ -28,6 +28,8 @@ RETRIEVAL_SCORE_VERSION = "kb_retrieval_score_v1"
 GENERIC_QUERY_STOP_WORDS = {
     "有",
     "没",
+    "没有",
+    "不是",
     "吗",
     "呢",
     "啊",
@@ -41,6 +43,14 @@ GENERIC_QUERY_STOP_WORDS = {
     "给",
     "我",
     "个",
+    "两个",
+    "然后",
+    "资料",
+    "里面",
+    "现在",
+    "对吧",
+    "是否",
+    "是不是",
     "一下",
     "什么",
     "哪些",
@@ -58,6 +68,17 @@ PRODUCT_QUERY_HINTS = {
     "卖什么",
     "有什么产品",
     "有哪些产品",
+}
+EXISTENCE_QUERY_HINTS = {
+    "资料",
+    "知识库",
+    "有没有",
+    "是否",
+    "是不是",
+    "没有",
+    "对吧",
+    "存在",
+    "查得到",
 }
 
 
@@ -126,7 +147,10 @@ def _local_query_terms(query: str) -> list[str]:
     try:
         import jieba
 
-        tokens = [str(token).strip() for token in jieba.cut_for_search(compact)]
+        tokens = [
+            re.sub(r"[\s,，。；;：:、/\\|（）()【】\[\]{}<>《》!?！？]+", "", str(token).strip())
+            for token in jieba.cut_for_search(compact)
+        ]
     except Exception:
         tokens = re.findall(r"[A-Za-z0-9_+-]+|[\u4e00-\u9fff]{2,6}", compact)
 
@@ -146,7 +170,7 @@ def _local_query_terms(query: str) -> list[str]:
 
     stop_pattern = "|".join(re.escape(word) for word in sorted(GENERIC_QUERY_STOP_WORDS, key=len, reverse=True))
     for segment in re.split(stop_pattern, compact):
-        segment = segment.strip()
+        segment = re.sub(r"[\s,，。；;：:、/\\|（）()【】\[\]{}<>《》!?！？]+", "", segment.strip())
         if 2 <= len(segment) <= 12 and segment not in terms:
             terms.append(segment)
 
@@ -177,14 +201,16 @@ def _default_query_plan(query: str) -> dict:
 
 def _fast_local_query_plan(query: str) -> dict | None:
     compact = re.sub(r"\s+", "", query)
-    if not compact or len(compact) > 32:
+    if not compact or len(compact) > 80:
         return None
-    if not any(hint in compact for hint in PRODUCT_QUERY_HINTS):
+    product_lookup = any(hint in compact for hint in PRODUCT_QUERY_HINTS)
+    existence_lookup = any(hint in compact for hint in EXISTENCE_QUERY_HINTS)
+    if not product_lookup and not existence_lookup:
         return None
 
     terms = []
     for term in _local_query_terms(query):
-        if any(stop_word in term for stop_word in GENERIC_QUERY_STOP_WORDS | PRODUCT_QUERY_HINTS):
+        if any(stop_word in term for stop_word in GENERIC_QUERY_STOP_WORDS | PRODUCT_QUERY_HINTS | EXISTENCE_QUERY_HINTS):
             continue
         if len(term) >= 2 and term not in terms:
             terms.append(term)
@@ -193,15 +219,16 @@ def _fast_local_query_plan(query: str) -> dict | None:
 
     terms.sort(key=lambda item: (-len(item), item))
     entity = terms[0]
+    intent = "brand_product_lookup" if product_lookup else "local_existence_lookup"
     return {
-        "intent": "brand_product_lookup",
+        "intent": intent,
         "need_document_level_results": False,
-        "answer_shape": "list",
-        "terms": terms[:4],
+        "answer_shape": "list" if product_lookup else "qa",
+        "terms": terms[:6],
         "entities": [entity],
         "document_types": [],
         "constraints": [],
-        "source": "local_fast_product_query",
+        "source": "local_fast_product_query" if product_lookup else "local_fast_existence_query",
         "query": query,
     }
 
@@ -1433,7 +1460,9 @@ async def hybrid_search(
     if not fast_local_plan:
         structured_results = await structured_signal_search(db, query_plan, owner_id, top_k=top_k * 4)
     kw_results = await keyword_search(db, _keyword_query_for_plan(query, query_plan), owner_id, top_k=top_k * 2)
-    vec_results = await vector_search(db, query, owner_id, top_k=top_k * 2)
+    vec_results = []
+    if not fast_local_plan:
+        vec_results = await vector_search(db, query, owner_id, top_k=top_k * 2)
 
     # RRF 融合
     results = rrf_fusion(

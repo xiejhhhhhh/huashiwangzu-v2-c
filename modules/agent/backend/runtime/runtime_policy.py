@@ -37,6 +37,8 @@ class RuntimePolicy:
             scanned for inline XML tool calls after streaming.
         allow_final_summary_fallback: When True, a final summary turn
             is generated when all tool rounds are exhausted.
+        fast_tool_timeout_seconds: Hard timeout for inline tool calls so
+            one slow capability cannot exhaust the whole chat response.
     """
 
     max_tool_rounds: int = 5
@@ -47,6 +49,7 @@ class RuntimePolicy:
     allow_final_summary_fallback: bool = True
     enable_single_pass_streaming_tools: bool = True
     llm_stop_decision_enabled: bool = False
+    fast_tool_timeout_seconds: float = 18.0
 
     # ── Checkpointer (crash recovery) ──────────────────────────────
 

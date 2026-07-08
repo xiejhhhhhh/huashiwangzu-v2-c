@@ -101,6 +101,19 @@ async def test_brand_product_query_uses_local_fast_plan() -> None:
 
 
 @pytest.mark.asyncio
+async def test_existence_query_uses_local_fast_plan() -> None:
+    plan = await search_service.plan_query(
+        "蔻诺，不是有轻颜和博泉吗？两个的。然后资料里面现在没有俏小喵对吧？",
+    )
+
+    assert plan["source"] == "local_fast_existence_query"
+    assert plan["intent"] == "local_existence_lookup"
+    assert plan["answer_shape"] == "qa"
+    assert {"蔻诺", "轻颜", "博泉", "俏小喵"}.issubset(set(plan["terms"]))
+    assert not any("，" in term for term in plan["terms"])
+
+
+@pytest.mark.asyncio
 async def test_fast_brand_product_query_skips_heavy_recall(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
@@ -115,18 +128,48 @@ async def test_fast_brand_product_query_skips_heavy_recall(monkeypatch: pytest.M
         calls["keyword_top_k"] = top_k
         return []
 
-    async def fake_vector(*_args, **_kwargs):
-        return []
+    async def fail_vector(*_args, **_kwargs):
+        raise AssertionError("fast product lookup must not run vector_search")
 
     monkeypatch.setattr(search_service, "document_candidate_search", fail_document_candidate)
     monkeypatch.setattr(search_service, "structured_signal_search", fail_structured_signal)
     monkeypatch.setattr(search_service, "keyword_search", fake_keyword)
-    monkeypatch.setattr(search_service, "vector_search", fake_vector)
+    monkeypatch.setattr(search_service, "vector_search", fail_vector)
 
     results = await hybrid_search(object(), "娇薇诗有什么产品", OWNER_ID, top_k=10)
 
     assert results == []
     assert calls["keyword_query"] == "娇薇诗 娇薇"
+    assert calls["keyword_top_k"] == 20
+
+
+@pytest.mark.asyncio
+async def test_fast_existence_query_skips_heavy_recall(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    async def fail_document_candidate(*_args, **_kwargs):
+        raise AssertionError("fast existence lookup must not run document_candidate_search")
+
+    async def fail_structured_signal(*_args, **_kwargs):
+        raise AssertionError("fast existence lookup must not run structured_signal_search")
+
+    async def fake_keyword(_db, query: str, _owner_id: int, top_k: int = 20):
+        calls["keyword_query"] = query
+        calls["keyword_top_k"] = top_k
+        return []
+
+    async def fail_vector(*_args, **_kwargs):
+        raise AssertionError("fast existence lookup must not run vector_search")
+
+    monkeypatch.setattr(search_service, "document_candidate_search", fail_document_candidate)
+    monkeypatch.setattr(search_service, "structured_signal_search", fail_structured_signal)
+    monkeypatch.setattr(search_service, "keyword_search", fake_keyword)
+    monkeypatch.setattr(search_service, "vector_search", fail_vector)
+
+    results = await hybrid_search(object(), "资料里面现在没有俏小喵对吧", OWNER_ID, top_k=10)
+
+    assert results == []
+    assert calls["keyword_query"] == "俏小喵"
     assert calls["keyword_top_k"] == 20
 
 

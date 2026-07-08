@@ -72,6 +72,10 @@ class _DummySession:
 
 
 class _FakeSink:
+    workflow_link = None
+    workflow_run_id = None
+    workflow_step_id = None
+
     async def record_failure(self, *args: object, **kwargs: object) -> None:
         return None
 
@@ -115,6 +119,19 @@ class _FakeOrchestrator:
                 "result": {"success": False, "error": "Connection refused"},
             },
         ]
+
+
+class _ExecutingOrchestrator:
+    async def execute_batch(self, tools: list[dict], execute_fn: object) -> list[dict]:
+        results = []
+        for tool in tools:
+            result = await execute_fn(tool)
+            results.append({
+                "name": tool.get("name", ""),
+                "tool_call_id": tool.get("tool_call_id", ""),
+                "result": result,
+            })
+        return results
 
 
 def _decode_sse_event(event: object) -> dict | None:
@@ -213,3 +230,103 @@ async def test_run_marks_external_tool_failure_events(
     assert tool_messages
     assert '"success": false' in tool_messages[0]["content"]
     assert '"failure_kind": "hard"' in tool_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_fast_tool_batch_emits_heartbeat_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_stream_until_tool_or_done(
+        self: ToolLoopRuntime,
+        messages: list[dict],
+        tools: list[dict] | None,
+        full: list[str],
+        thinking_parts: list[str],
+        timeline: list[dict],
+        emitter: StreamEmitter,
+    ) -> AsyncIterator[object]:
+        yield {
+            "type": "_stream_result",
+            "result": {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_list",
+                            "arguments": {},
+                        },
+                    },
+                ],
+                "usage": {},
+            },
+        }
+
+    async def fake_generate_final_summary(
+        self: ToolLoopRuntime,
+        messages: list[dict],
+        tool_events: list[dict],
+        timeline: list[dict],
+        full: list[str],
+    ) -> AsyncIterator[object]:
+        if False:
+            yield None
+
+    async def fake_check_action_allowed(*args: object, **kwargs: object) -> dict:
+        return {"allowed": True}
+
+    async def slow_skill_list(*args: object, **kwargs: object) -> dict:
+        await tool_loop_runtime.asyncio.sleep(0.05)
+        return {"skills": []}
+
+    monkeypatch.setattr(
+        ToolLoopRuntime,
+        "_stream_until_tool_or_done",
+        fake_stream_until_tool_or_done,
+    )
+    monkeypatch.setattr(
+        ToolLoopRuntime,
+        "_generate_final_summary",
+        fake_generate_final_summary,
+    )
+    monkeypatch.setattr(tool_loop_runtime, "AsyncSessionLocal", lambda: _DummySession())
+    monkeypatch.setattr(tool_loop_runtime, "get_orchestrator", lambda: _ExecutingOrchestrator())
+    monkeypatch.setattr(tool_loop_runtime, "check_action_allowed", fake_check_action_allowed)
+    monkeypatch.setattr(tool_loop_runtime.tool_discovery, "handle_skill_list", slow_skill_list)
+
+    runtime = ToolLoopRuntime(
+        conversation_id=1,
+        owner_id=1,
+        policy=RuntimePolicy(
+            max_tool_rounds=1,
+            enable_single_pass_streaming_tools=True,
+            fast_tool_timeout_seconds=0.02,
+        ),
+    )
+    messages = [{"role": "user", "content": "list skills"}]
+    events: list[object] = []
+
+    async for event in runtime.run(
+        messages,
+        [{"type": "function", "function": {"name": "skill_list"}}],
+        _FakeSink(),  # type: ignore[arg-type]
+    ):
+        events.append(event)
+
+    decoded_events = [_decode_sse_event(event) for event in events]
+    heartbeat_nodes = [
+        (event.get("node"), event.get("status"))
+        for event in decoded_events
+        if event and event.get("type") == "tool_heartbeat"
+    ]
+    assert ("policy_check", "started") in heartbeat_nodes
+    assert ("skill_list", "started") in heartbeat_nodes
+    assert ("tool_execution", "timeout") in heartbeat_nodes
+    assert any(
+        event
+        and event.get("type") == "tool_result"
+        and event.get("error_class") == "timeout"
+        and event.get("hard_failure") is True
+        for event in decoded_events
+    )
