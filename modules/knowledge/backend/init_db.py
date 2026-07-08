@@ -1,5 +1,6 @@
 """知识库模块表初始化：确保知识库表在数据库中存在，支持无痛列补齐。"""
 import logging
+import re
 
 from app.models.base import Base
 from sqlalchemy import select, text
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("v2.knowledge").getChild("init_db")
 _STARTUP_INIT_LOCK_KEY = 1262633101
+_INDEX_NAME_RE = re.compile(r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+([^\s]+)", re.IGNORECASE)
 
 # 知识库模块的所有表名
 KB_TABLES = [
@@ -22,6 +24,7 @@ KB_TABLES = [
     "kb_validation_reports", "kb_artifact_lineage", "kb_terms",
     "kb_term_occurrences", "kb_term_edges", "kb_fact_candidates",
     "kb_causal_candidates", "kb_query_contexts", "kb_retrieval_learning_events",
+    "kb_query_routing_rules",
 ]
 
 # 关键索引语句（幂等，CREATE INDEX IF NOT EXISTS）
@@ -115,6 +118,8 @@ _INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_kb_retrieval_learning_doc ON kb_retrieval_learning_events(owner_id, document_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_kb_retrieval_learning_context ON kb_retrieval_learning_events(query_context_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_kb_retrieval_learning_owner_source ON kb_retrieval_learning_events(owner_id, source_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_query_routing_owner_enabled ON kb_query_routing_rules(owner_id, enabled, priority)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_kb_query_routing_owner_key ON kb_query_routing_rules(owner_id, rule_key)",
 ]
 
 # ALTER 列补齐语句（幂等，ADD COLUMN IF NOT EXISTS）。
@@ -160,6 +165,9 @@ _MIGRATION_STATEMENTS = [
     ("kb_evidence", "prompt_hash", "ALTER TABLE kb_evidence ADD COLUMN IF NOT EXISTS prompt_hash VARCHAR(64)"),
     ("kb_evidence", "model_used", "ALTER TABLE kb_evidence ADD COLUMN IF NOT EXISTS model_used VARCHAR(128)"),
     ("kb_evidence", "diagnostics_json", "ALTER TABLE kb_evidence ADD COLUMN IF NOT EXISTS diagnostics_json JSON"),
+    ("kb_conclusion_evidence", "source", "ALTER TABLE kb_conclusion_evidence ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT 'algorithmic'"),
+    ("kb_conclusion_evidence", "model_used", "ALTER TABLE kb_conclusion_evidence ADD COLUMN IF NOT EXISTS model_used VARCHAR(128)"),
+    ("kb_conclusion_evidence", "diagnostics_json", "ALTER TABLE kb_conclusion_evidence ADD COLUMN IF NOT EXISTS diagnostics_json JSON"),
     ("kb_fact_candidates", "source_hash", "ALTER TABLE kb_fact_candidates ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)"),
     ("kb_causal_candidates", "source_hash", "ALTER TABLE kb_causal_candidates ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)"),
     ("kb_image_assets", "storage_path", "ALTER TABLE kb_image_assets ADD COLUMN IF NOT EXISTS storage_path VARCHAR(512)"),
@@ -296,6 +304,69 @@ _KNOWLEDGE_PROMPTS = [
     },
 ]
 
+_QUERY_ROUTING_RULES = [
+    {
+        "rule_key": "fast_product_lookup",
+        "rule_type": "intent",
+        "match_type": "any_contains",
+        "pattern": "产品\n品类\n系列\n款式\n卖什么\n有什么产品\n有哪些产品",
+        "intent": "brand_product_lookup",
+        "answer_shape": "list",
+        "route_source": "local_fast_product_query",
+        "weight": 3.0,
+        "priority": 100,
+        "diagnostics_json": {
+            "schema_version": "kb_query_routing_rule_v1",
+            "need_document_level_results": False,
+            "filter_matched_patterns_from_terms": True,
+        },
+    },
+    {
+        "rule_key": "fast_existence_lookup",
+        "rule_type": "intent",
+        "match_type": "any_contains",
+        "pattern": "资料\n知识库\n有没有\n是否\n是不是\n没有\n对吧\n存在\n查得到",
+        "intent": "local_existence_lookup",
+        "answer_shape": "qa",
+        "route_source": "local_fast_existence_query",
+        "weight": 2.5,
+        "priority": 90,
+        "diagnostics_json": {
+            "schema_version": "kb_query_routing_rule_v1",
+            "need_document_level_results": False,
+            "filter_matched_patterns_from_terms": True,
+        },
+    },
+    {
+        "rule_key": "document_level_lookup",
+        "rule_type": "document_level",
+        "match_type": "any_contains",
+        "pattern": "报告\n文件\n资料\n文档\n表格\n表\n清单\n名单\n记录\n合同\n价目表",
+        "intent": "local_document_lookup",
+        "answer_shape": "list",
+        "route_source": "local_simple_keyword_query",
+        "weight": 2.0,
+        "priority": 80,
+        "diagnostics_json": {
+            "schema_version": "kb_query_routing_rule_v1",
+            "need_document_level_results": True,
+            "filter_matched_patterns_from_terms": False,
+        },
+    },
+    {
+        "rule_key": "complex_query_needs_llm",
+        "rule_type": "llm_required",
+        "match_type": "any_contains",
+        "pattern": "为什么\n原因\n怎么\n如何\n对比\n比较\n区别\n关系\n影响\n总结\n归纳\n分析\n判断\n推理\n建议\n步骤",
+        "weight": 4.0,
+        "priority": 120,
+        "diagnostics_json": {
+            "schema_version": "kb_query_routing_rule_v1",
+            "reason": "complex_query_planning",
+        },
+    },
+]
+
 
 async def ensure_kb_tables(db: AsyncSession) -> None:
     """确保所有 kb_* 表已创建。"""
@@ -331,6 +402,7 @@ async def ensure_kb_tables(db: AsyncSession) -> None:
         KbPipelineStageRun,
         KbPipelineStale,
         KbQueryContext,
+        KbQueryRoutingRule,
         KbRawData,
         KbRetrievalLearningEvent,
         KbTerm,
@@ -350,6 +422,12 @@ async def ensure_kb_indexes(db: AsyncSession) -> None:
     """确保关键索引存在（无痛迁移）。"""
     for stmt in _INDEX_STATEMENTS:
         try:
+            match = _INDEX_NAME_RE.search(stmt)
+            if match:
+                index_name = match.group(1).strip('"')
+                exists = await db.scalar(text("SELECT to_regclass(:index_name)"), {"index_name": index_name})
+                if exists:
+                    continue
             await db.execute(text(stmt))
         except Exception as e:
             logger.warning("Index creation skipped (%s): %s", stmt[:60], e)
@@ -424,6 +502,26 @@ async def ensure_prompt_templates(db: AsyncSession) -> None:
     logger.info("Ensured knowledge prompt templates (seeded=%d)", seeded)
 
 
+async def ensure_query_routing_rules(db: AsyncSession) -> None:
+    """Seed editable local planner rules for cold start."""
+    from .models import KbQueryRoutingRule
+
+    seeded = 0
+    for item in _QUERY_ROUTING_RULES:
+        exists = await db.scalar(
+            select(KbQueryRoutingRule.id).where(
+                KbQueryRoutingRule.owner_id == 0,
+                KbQueryRoutingRule.rule_key == item["rule_key"],
+            ).limit(1)
+        )
+        if exists:
+            continue
+        db.add(KbQueryRoutingRule(owner_id=0, enabled=True, **item))
+        seeded += 1
+    await db.commit()
+    logger.info("Ensured knowledge query routing rules (seeded=%d)", seeded)
+
+
 async def _run_with_startup_init_lock(db: AsyncSession) -> None:
     """Run knowledge schema init in one process without queuing every worker."""
     acquired = await db.scalar(text("SELECT pg_try_advisory_lock(:lock_key)"), {"lock_key": _STARTUP_INIT_LOCK_KEY})
@@ -436,6 +534,7 @@ async def _run_with_startup_init_lock(db: AsyncSession) -> None:
         await ensure_migration_columns(db)
         await ensure_kb_indexes(db)
         await ensure_prompt_templates(db)
+        await ensure_query_routing_rules(db)
     finally:
         try:
             await db.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": _STARTUP_INIT_LOCK_KEY})

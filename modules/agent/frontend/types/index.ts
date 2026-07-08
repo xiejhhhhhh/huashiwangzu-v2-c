@@ -6,7 +6,22 @@ export interface AgentEntryProps {
 
 export interface ConvItem { id: number; title: string; status?: string }
 export interface ModelProfile { key: string; name: string; provider: string; model: string }
-export interface RefItem { type: string; title: string; source: string; excerpt: string; url?: string }
+export interface RefItem {
+  type: string
+  title: string
+  source: string
+  excerpt: string
+  url?: string
+  open_url?: string
+  download_url?: string
+  file_id?: string | number | null
+  source_file_id?: string | number | null
+  document_id?: string | number | null
+  chunk_id?: string | number | null
+  page?: string | number | null
+  section?: string | null
+  format?: string | null
+}
 export interface ApiBody<T> { success: boolean; data: T; error?: string | null }
 
 export interface UsageData {

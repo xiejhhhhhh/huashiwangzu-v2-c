@@ -253,6 +253,9 @@ class KbConclusionEvidence(Base, TimestampMixin):
     evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
     document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(64), default="algorithmic")
+    model_used: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    diagnostics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class KbEntityMergeLog(Base, TimestampMixin):
@@ -586,6 +589,28 @@ class KbQueryContext(Base, TimestampMixin):
     facts: Mapped[list | None] = mapped_column(JSON, nullable=True)
     evidence_refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
     result_document_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    diagnostics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class KbQueryRoutingRule(Base, TimestampMixin):
+    """Local query planner routing rules, tuned by DB data instead of code literals."""
+    __tablename__ = "kb_query_routing_rules"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "rule_key", name="uq_kb_query_routing_owner_key"),
+        KB_TABLE_ARGS_EXTEND,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rule_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(64), default="intent")
+    match_type: Mapped[str] = mapped_column(String(32), default="contains")
+    pattern: Mapped[str] = mapped_column(Text, default="")
+    intent: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    answer_shape: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    route_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     diagnostics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 

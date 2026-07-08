@@ -85,7 +85,7 @@ STAGE_LANE_KEYS = {
     "parse_index": "local_preprocess",
     "raw_text": "local_preprocess",
     "page_render": "local_preprocess",
-    "raw_ocr": "local_preprocess",
+    "raw_ocr": "model_analysis",
     "raw_vision": "model_analysis",
     "fusion": "model_analysis",
     "profile": "model_analysis",
@@ -439,7 +439,10 @@ async def _enqueue_successors(
     force_fusion: bool = False,
 ) -> list[dict]:
     enqueued: list[dict] = []
-    await db.refresh(doc)
+    fresh_doc = await db.scalar(select(KbDocument).where(KbDocument.id == int(doc.id)))
+    if fresh_doc is None:
+        return enqueued
+    doc = fresh_doc
 
     if completed_stage == ROOT_STAGE:
         visual_assets_missing = (
@@ -761,6 +764,8 @@ async def _pipeline_stage_handler(params: dict) -> dict:
                     force_raw=force_raw,
                     force_fusion=force_fusion,
                 )
+                await _release_stage_transaction(db, document_id=document_id, stage=stage)
+                doc = await db.scalar(select(KbDocument).where(KbDocument.id == document_id)) or doc
                 if stage == "relations":
                     await _finish_pipeline_run(db, pipeline_run_id, "done", diagnostics={"last_stage": stage})
                 elif not successors:

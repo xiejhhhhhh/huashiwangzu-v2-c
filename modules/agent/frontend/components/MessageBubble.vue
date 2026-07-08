@@ -101,6 +101,12 @@ interface RefItem {
   source?: string
   excerpt?: string
   url?: string
+  open_url?: string
+  download_url?: string
+  file_id?: string | number | null
+  source_file_id?: string | number | null
+  page?: string | number | null
+  format?: string | null
 }
 interface UsageInfo {
   prompt_tokens?: number
@@ -209,7 +215,7 @@ const sourceLinks = computed(() => {
   const refs = props.message.references || []
   const links: Array<{ key: string; title: string; url?: string }> = []
   for (const refItem of refs) {
-    const url = refItem.url?.trim()
+    const url = sourceUrl(refItem)
     const title = (refItem.title || refItem.source || url || '').trim()
     if (!title) continue
     const key = url || `${refItem.type}:${title}`
@@ -219,6 +225,19 @@ const sourceLinks = computed(() => {
   }
   return links.slice(0, 6)
 })
+
+function sourceUrl(refItem: RefItem): string {
+  const explicit = refItem.open_url?.trim() || refItem.url?.trim() || ''
+  if (explicit) return explicit
+  const fileId = Number(refItem.file_id ?? refItem.source_file_id)
+  if (!Number.isInteger(fileId) || fileId <= 0) return refItem.download_url?.trim() || ''
+  const qs = new URLSearchParams()
+  qs.set('file_id', String(fileId))
+  qs.set('file_name', refItem.source || refItem.title || '')
+  if (refItem.format) qs.set('format', String(refItem.format))
+  if (refItem.page !== undefined && refItem.page !== null) qs.set('page', String(refItem.page))
+  return `app://file/open?${qs.toString()}`
+}
 
 const contentImages = computed<GeneratedImageEntry[]>(() => extractGeneratedImages(props.message.content))
 
@@ -281,7 +300,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function openExternalLink(url: string) {
+  if (openInternalFileLink(url)) return
   window.open(url, '_blank')
+}
+
+function openInternalFileLink(url: string): boolean {
+  if (!url.startsWith('app://file/open')) return false
+  try {
+    const parsed = new URL(url)
+    const fileId = Number(parsed.searchParams.get('file_id') || parsed.searchParams.get('fileId'))
+    if (!Number.isInteger(fileId) || fileId <= 0) return true
+    const pageRaw = parsed.searchParams.get('page')
+    const page = pageRaw ? Number(pageRaw) : undefined
+    const payload: Record<string, unknown> = {
+      fileId,
+      fileName: parsed.searchParams.get('file_name') || parsed.searchParams.get('fileName') || '',
+      format: parsed.searchParams.get('format') || '',
+    }
+    if (Number.isInteger(page) && Number(page) > 0) payload.page = Number(page)
+    const bus = (window as unknown as { __DESKTOP_EVENT_BUS__?: { emit: (name: string, payload: Record<string, unknown>) => void } }).__DESKTOP_EVENT_BUS__
+    if (bus) {
+      bus.emit('file:open', payload)
+    } else {
+      window.dispatchEvent(new CustomEvent('desktop:open-file', { detail: payload }))
+    }
+    return true
+  } catch {
+    return true
+  }
 }
 
 function onSourceClick(e: MouseEvent) {

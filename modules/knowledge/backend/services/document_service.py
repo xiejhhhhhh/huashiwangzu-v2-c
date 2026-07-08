@@ -332,6 +332,8 @@ async def enqueue_incomplete_documents(
     include_search_incomplete: bool = True,
 ) -> dict:
     """Preview or enqueue live documents whose deep pipeline is not complete."""
+    from app.models.system import SystemTaskQueue
+
     from ..models import KbDocument, KbImageAsset
     from .source_file_state import get_source_file_availability
 
@@ -341,6 +343,7 @@ async def enqueue_incomplete_documents(
         if str(ext or "").strip()
     }
     bounded_limit = max(1, min(int(limit or 20), 500))
+    scan_limit = max(bounded_limit, min(max(bounded_limit * 20, 1000), 10000))
     expected_page_count = func.greatest(func.coalesce(KbDocument.total_pages, 1), 1)
     active_page_asset_count = (
         select(func.count(KbImageAsset.id))
@@ -375,16 +378,33 @@ async def enqueue_incomplete_documents(
             ),
         )
         .order_by(KbDocument.updated_at.desc(), KbDocument.id.desc())
-        .limit(bounded_limit * 3)
+        .limit(scan_limit)
     )
     if normalized_extensions:
         stmt = stmt.where(KbDocument.extension.in_(normalized_extensions))
+
+    inflight_result = await db.execute(
+        select(SystemTaskQueue.document_id).where(
+            SystemTaskQueue.module == "knowledge",
+            SystemTaskQueue.task_type == "kb_pipeline_stage",
+            SystemTaskQueue.status.in_(("pending", "running")),
+            SystemTaskQueue.document_id.is_not(None),
+        )
+    )
+    inflight_document_ids = {
+        int(document_id)
+        for document_id in inflight_result.scalars().all()
+        if document_id is not None
+    }
 
     result = await db.execute(stmt)
     candidates = []
     skipped = []
     enqueued = []
+    scanned = 0
+    already_in_flight = 0
     for doc in result.scalars().all():
+        scanned += 1
         if len(candidates) >= bounded_limit:
             break
         source_state = await get_source_file_availability(db, int(doc.file_id))
@@ -434,6 +454,10 @@ async def enqueue_incomplete_documents(
             "page_asset_count": page_asset_count,
             "expected_page_assets": expected_assets,
         }
+        if int(doc.id) in inflight_document_ids:
+            already_in_flight += 1
+            skipped.append({**item, "reason": "already_in_flight"})
+            continue
         candidates.append(item)
         if not dry_run:
             task_info = await enqueue_pipeline_task(
@@ -442,6 +466,11 @@ async def enqueue_incomplete_documents(
                 owner_id,
                 priority=priority,
             )
+            if task_info.get("reason") == "already_in_flight":
+                already_in_flight += 1
+                skipped.append({**item, **task_info})
+                candidates.pop()
+                continue
             enqueued.append({**item, **task_info})
 
     if not dry_run:
@@ -450,9 +479,11 @@ async def enqueue_incomplete_documents(
     return {
         "dry_run": dry_run,
         "limit": bounded_limit,
+        "scan_limit": scan_limit,
+        "scanned": scanned,
         "matched": len(candidates),
         "enqueued": len([item for item in enqueued if item.get("enqueued")]),
-        "already_in_flight": len([item for item in enqueued if item.get("reason") == "already_in_flight"]),
+        "already_in_flight": already_in_flight,
         "items": candidates if dry_run else enqueued,
         "skipped": skipped[:50],
     }

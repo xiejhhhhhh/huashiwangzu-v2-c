@@ -240,30 +240,30 @@
   },
   "module_routing": {
     "knowledge": {
-      "default_profile": "deepseek-v4-flash",
-      "default_vision_profile": "qwen3-vl",
+      "default_profile": "gpt-5.5-knowledge",
+      "default_vision_profile": "gpt-5.5-vision",
       "fallback_profile": "deepseek-v4-pro",
       "pause_after_fallback": true,
       "pipeline_concurrency": {
-        "raw_collect": 8,
+        "raw_collect": 16,
         "raw_text": 64,
-        "page_render": 20,
+        "page_render": 32,
         "page_render_pages": 2,
-        "raw_ocr": 20,
-        "raw_vision": 12,
-        "page_fusion": 64,
-        "fusion": 64,
-        "profile": 20,
-        "graph": 32,
-        "relations": 24,
-        "cognitive_index": 2,
+        "raw_ocr": 80,
+        "raw_vision": 80,
+        "page_fusion": 100,
+        "fusion": 120,
+        "profile": 80,
+        "graph": 6,
+        "relations": 2,
+        "cognitive_index": 1,
         "cognitive_terms_per_document": 200,
         "entity_extract": 32,
         "relation_vector_candidates": 2000,
         "relation_entity_candidates": 1000,
         "relation_write_batch": 100,
         "graph_write_batch": 10,
-        "model_call_global": 120
+        "model_call_global": 150
       },
       "image_preprocess": {
         "raw_ocr_max_side": 1600,
@@ -285,12 +285,12 @@
         "relations": 8
       },
       "stages": {
-        "raw_ocr": "qwen3-vl",
-        "raw_vision": "qwen3-vl",
-        "fusion": "deepseek-v4-flash",
-        "profile": "deepseek-v4-flash",
-        "entity": "deepseek-v4-flash",
-        "legacy_page_fusion": "deepseek-v4-flash"
+        "raw_ocr": "gpt-5.5-vision",
+        "raw_vision": "gpt-5.5-vision",
+        "fusion": "gpt-5.5-knowledge",
+        "profile": "gpt-5.5-knowledge",
+        "entity": "gpt-5.5-knowledge",
+        "legacy_page_fusion": "gpt-5.5-knowledge"
       }
     }
   },

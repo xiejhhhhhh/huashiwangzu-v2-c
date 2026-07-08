@@ -61,12 +61,19 @@ import viewerShell from '@/shared/components/viewer-shell.vue'
 import { apiPost, downloadBlob } from './api'
 import type { FileOpenPayload } from '../runtime'
 
-const props = defineProps<{ fileId?: number; fileName?: string; format?: string; mode?: string }>()
+const props = defineProps<{ fileId?: number; fileName?: string; format?: string; mode?: string; page?: number }>()
 
-function getPayload(): { fileId: number; fileName: string } | null {
-  if (props.fileId) return { fileId: Number(props.fileId), fileName: props.fileName || '' }
-  const p = (window as unknown as { __MODULE_OPEN_FILE_PAYLOAD__?: FileOpenPayload }).__MODULE_OPEN_FILE_PAYLOAD__
-  if (p?.fileId) return { fileId: p.fileId, fileName: p.fileName || '' }
+function toPositivePage(value: unknown): number | undefined {
+  const page = Number(value)
+  return Number.isInteger(page) && page > 0 ? page : undefined
+}
+
+function getPayload(): { fileId: number; fileName: string; page?: number } | null {
+  if (props.fileId) {
+    return { fileId: Number(props.fileId), fileName: props.fileName || '', page: toPositivePage(props.page) }
+  }
+  const p = (window as unknown as { __MODULE_OPEN_FILE_PAYLOAD__?: FileOpenPayload & { page?: number } }).__MODULE_OPEN_FILE_PAYLOAD__
+  if (p?.fileId) return { fileId: p.fileId, fileName: p.fileName || '', page: toPositivePage(p.page) }
   return null
 }
 
@@ -120,7 +127,7 @@ function setPageRef(idx: number, el: unknown) {
   pageRefs[idx] = el as HTMLDivElement | null
 }
 
-async function loadPdf(fid: number) {
+async function loadPdf(fid: number, initialPage?: number) {
   try {
     loadError.value = ''
     fileId.value = fid
@@ -138,6 +145,10 @@ async function loadPdf(fid: number) {
     await nextTick()
     await renderAllPages()
     await buildTextIndex()
+    if (initialPage) {
+      await nextTick()
+      goPage(Math.min(initialPage, pageCount.value))
+    }
   } catch (e: unknown) {
     loadError.value = e instanceof Error ? e.message : 'PDF 加载失败'
   }
@@ -382,7 +393,7 @@ onMounted(() => {
   const p = getPayload()
   if (p && p.fileId) {
     fileName.value = p.fileName || 'document.pdf'
-    loadPdf(p.fileId)
+    loadPdf(p.fileId, p.page)
   }
 })
 </script>

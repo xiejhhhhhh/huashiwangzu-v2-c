@@ -23,12 +23,19 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.database import AsyncSessionLocal, engine, init_db
 from app.core.exceptions import NotFound
 from app.models.file import File
-from modules.knowledge.backend.init_db import ensure_kb_indexes, ensure_kb_tables, ensure_migration_columns
+from modules.knowledge.backend.init_db import (
+    ensure_kb_indexes,
+    ensure_kb_tables,
+    ensure_migration_columns,
+    ensure_query_routing_rules,
+)
 from modules.knowledge.backend.models import KbChunk, KbDocument, KbPageFusion, KbRawData
 from modules.knowledge.backend.services import document_service, pipeline_service
 from modules.knowledge.backend.services import search_service
 from modules.knowledge.backend.services.embedding_service import get_chunk_by_id
 from modules.knowledge.backend.services.search_service import (
+    _build_local_query_plan_from_rules,
+    _classify_model_warm_state,
     get_document_chunks,
     hybrid_search,
     keyword_search,
@@ -39,6 +46,33 @@ from modules.knowledge.backend.services.search_service import (
 OWNER_ID = 1
 VECTOR_SIZE = 1024
 _FRAMEWORK_READY = False
+
+
+def _test_rule(
+    rule_key: str,
+    rule_type: str,
+    pattern: str,
+    *,
+    intent: str | None = None,
+    answer_shape: str | None = None,
+    route_source: str | None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+    diagnostics_json: dict | None = None,
+) -> dict:
+    return {
+        "rule_key": rule_key,
+        "rule_type": rule_type,
+        "match_type": "any_contains",
+        "pattern": pattern,
+        "intent": intent,
+        "answer_shape": answer_shape,
+        "route_source": route_source,
+        "weight": weight,
+        "priority": priority,
+        "enabled": True,
+        "diagnostics_json": diagnostics_json or {},
+    }
 
 
 def test_rrf_fusion_prioritizes_document_candidates_for_list_queries() -> None:
@@ -90,7 +124,9 @@ def test_rrf_fusion_prioritizes_document_candidates_for_list_queries() -> None:
 
 @pytest.mark.asyncio
 async def test_brand_product_query_uses_local_fast_plan() -> None:
-    plan = await search_service.plan_query("娇薇诗有什么产品")
+    await _ensure_framework_ready()
+    async with AsyncSessionLocal() as db:
+        plan = await search_service.plan_query("娇薇诗有什么产品", db=db, owner_id=OWNER_ID)
 
     assert plan["source"] == "local_fast_product_query"
     assert plan["intent"] == "brand_product_lookup"
@@ -102,15 +138,32 @@ async def test_brand_product_query_uses_local_fast_plan() -> None:
 
 @pytest.mark.asyncio
 async def test_existence_query_uses_local_fast_plan() -> None:
-    plan = await search_service.plan_query(
-        "蔻诺，不是有轻颜和博泉吗？两个的。然后资料里面现在没有俏小喵对吧？",
-    )
+    await _ensure_framework_ready()
+    async with AsyncSessionLocal() as db:
+        plan = await search_service.plan_query(
+            "蔻诺，不是有轻颜和博泉吗？两个的。然后资料里面现在没有俏小喵对吧？",
+            db=db,
+            owner_id=OWNER_ID,
+        )
 
     assert plan["source"] == "local_fast_existence_query"
     assert plan["intent"] == "local_existence_lookup"
     assert plan["answer_shape"] == "qa"
     assert {"蔻诺", "轻颜", "博泉", "俏小喵"}.issubset(set(plan["terms"]))
     assert not any("，" in term for term in plan["terms"])
+
+
+@pytest.mark.asyncio
+async def test_simple_document_lookup_uses_local_plan() -> None:
+    await _ensure_framework_ready()
+    async with AsyncSessionLocal() as db:
+        plan = await search_service.plan_query("苏蜜雅 精华水 检测报告", db=db, owner_id=OWNER_ID)
+
+    assert plan["source"] == "local_simple_keyword_query"
+    assert plan["intent"] == "local_document_lookup"
+    assert plan["need_document_level_results"] is True
+    assert "苏蜜雅" in plan["terms"]
+    assert plan["document_types"]
 
 
 @pytest.mark.asyncio
@@ -131,6 +184,27 @@ async def test_fast_brand_product_query_skips_heavy_recall(monkeypatch: pytest.M
     async def fail_vector(*_args, **_kwargs):
         raise AssertionError("fast product lookup must not run vector_search")
 
+    async def fake_query_plan(query: str, *_args, **_kwargs):
+        return _build_local_query_plan_from_rules(
+            query,
+            [
+                _test_rule(
+                    "fast_product_lookup",
+                    "intent",
+                    "产品",
+                    intent="brand_product_lookup",
+                    answer_shape="list",
+                    route_source="local_fast_product_query",
+                    weight=3.0,
+                    diagnostics_json={
+                        "need_document_level_results": False,
+                        "filter_matched_patterns_from_terms": True,
+                    },
+                )
+            ],
+        )
+
+    monkeypatch.setattr(search_service, "plan_query", fake_query_plan)
     monkeypatch.setattr(search_service, "document_candidate_search", fail_document_candidate)
     monkeypatch.setattr(search_service, "structured_signal_search", fail_structured_signal)
     monkeypatch.setattr(search_service, "keyword_search", fake_keyword)
@@ -141,6 +215,14 @@ async def test_fast_brand_product_query_skips_heavy_recall(monkeypatch: pytest.M
     assert results == []
     assert calls["keyword_query"] == "娇薇诗 娇薇"
     assert calls["keyword_top_k"] == 20
+    assert results.diagnostics["path"]["fast_local_plan"] is True
+    assert results.diagnostics["path"]["query_plan_source"] == "local_fast_product_query"
+    stages = {stage["name"]: stage for stage in results.diagnostics["stages"]}
+    assert stages["vector_search"]["status"] == "skipped"
+    assert stages["vector_search"]["reason"] == "fast_local_plan"
+    embedding_node = next(node for node in results.diagnostics["model_nodes"] if node["name"] == "embedding")
+    assert embedding_node["used"] is False
+    assert embedding_node["warm_state"] == "not_used"
 
 
 @pytest.mark.asyncio
@@ -161,6 +243,27 @@ async def test_fast_existence_query_skips_heavy_recall(monkeypatch: pytest.Monke
     async def fail_vector(*_args, **_kwargs):
         raise AssertionError("fast existence lookup must not run vector_search")
 
+    async def fake_query_plan(query: str, *_args, **_kwargs):
+        return _build_local_query_plan_from_rules(
+            query,
+            [
+                _test_rule(
+                    "fast_existence_lookup",
+                    "intent",
+                    "资料\n没有\n对吧",
+                    intent="local_existence_lookup",
+                    answer_shape="qa",
+                    route_source="local_fast_existence_query",
+                    weight=3.0,
+                    diagnostics_json={
+                        "need_document_level_results": False,
+                        "filter_matched_patterns_from_terms": True,
+                    },
+                )
+            ],
+        )
+
+    monkeypatch.setattr(search_service, "plan_query", fake_query_plan)
     monkeypatch.setattr(search_service, "document_candidate_search", fail_document_candidate)
     monkeypatch.setattr(search_service, "structured_signal_search", fail_structured_signal)
     monkeypatch.setattr(search_service, "keyword_search", fake_keyword)
@@ -171,6 +274,20 @@ async def test_fast_existence_query_skips_heavy_recall(monkeypatch: pytest.Monke
     assert results == []
     assert calls["keyword_query"] == "俏小喵"
     assert calls["keyword_top_k"] == 20
+    stages = {stage["name"]: stage for stage in results.diagnostics["stages"]}
+    assert stages["structured_signal_search"]["status"] == "skipped"
+    assert stages["vector_search"]["status"] == "skipped"
+    rerank_node = next(node for node in results.diagnostics["model_nodes"] if node["name"] == "rerank")
+    assert rerank_node["used"] is False
+    assert rerank_node["reason"] == "use_rerank_false"
+
+
+def test_model_warm_state_classifier_uses_observed_latency() -> None:
+    assert _classify_model_warm_state(100.0) == "warm"
+    assert _classify_model_warm_state(1800.0) == "warming_or_busy"
+    assert _classify_model_warm_state(3500.0) == "cold_or_loading"
+    assert _classify_model_warm_state(None) == "unknown"
+    assert _classify_model_warm_state(100.0, status="failed") == "unavailable"
 
 
 def _upload_path(storage_path: str) -> Path:
@@ -194,6 +311,7 @@ async def _ensure_framework_ready() -> None:
         await ensure_kb_tables(db)
         await ensure_migration_columns(db)
         await ensure_kb_indexes(db)
+        await ensure_query_routing_rules(db)
     _FRAMEWORK_READY = True
 
 
@@ -339,7 +457,7 @@ async def test_search_filters_deleted_doc_and_unavailable_source(monkeypatch: py
         async def fake_embedding(_query: str) -> list[float]:
             return [1.0] + [0.0] * (VECTOR_SIZE - 1)
 
-        async def fake_query_plan(query: str) -> dict:
+        async def fake_query_plan(query: str, *_args, **_kwargs) -> dict:
             return {
                 "intent": "test_search",
                 "need_document_level_results": False,

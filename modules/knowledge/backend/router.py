@@ -25,6 +25,10 @@ from .services.cognitive_v3_service import (
     persist_query_context,
 )
 from .services.dashboard_service import get_dashboard_stats
+from .services.derived_governance_service import (
+    backfill_derived_governance,
+    derived_governance_counts,
+)
 from .services.document_service import (
     enqueue_incomplete_documents,
     enqueue_pipeline_task,
@@ -36,7 +40,7 @@ from .services.document_service import (
     soft_delete_document,
 )
 from .services.embedding_service import get_chunk_by_id
-from .services.enterprise_import_service import import_enterprise_source_batch
+from .services.enterprise_import_service import enqueue_enterprise_source_import, import_enterprise_source_batch
 from .services.entity_service import get_entity_dictionary, get_graph_context, get_page_fusion
 from .services.fusion_service import get_page_fusion_detail
 from .services.governance_service import (
@@ -303,6 +307,15 @@ class V3BackfillRequest(BaseModel):
 class V3DeriveDocumentRequest(BaseModel):
     document_id: int
     limit: int = Field(default=200, ge=1, le=1000)
+
+
+class DerivedGovernanceBackfillRequest(BaseModel):
+    dry_run: bool = True
+    limit: int = Field(default=5000, ge=1, le=50000)
+    include_lineage: bool = True
+    include_conclusion_evidence: bool = True
+    include_entity_aliases: bool = True
+    include_disambiguation: bool = True
 
 
 class RetrievalFeedbackReflectRequest(BaseModel):
@@ -660,6 +673,7 @@ async def api_search(
         query=payload.query,
         results=enriched,
         query_plan=getattr(results, "query_plan", None),
+        diagnostics=getattr(results, "diagnostics", None),
     )
     await db.commit()
     return ApiResponse(data={
@@ -670,6 +684,7 @@ async def api_search(
             "top_k": payload.top_k,
             "use_rerank": payload.use_rerank,
             "query_plan": getattr(results, "query_plan", None),
+            "diagnostics": getattr(results, "diagnostics", None),
             "query_context": query_context,
         },
     })
@@ -956,6 +971,34 @@ async def api_cognitive_v3_derive_document(
     return ApiResponse(data=result)
 
 
+@router.post("/governance/derived/backfill")
+async def api_derived_governance_backfill(
+    payload: DerivedGovernanceBackfillRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    result = await backfill_derived_governance(
+        db,
+        owner_id=user.id,
+        dry_run=payload.dry_run,
+        limit=payload.limit,
+        include_lineage=payload.include_lineage,
+        include_conclusion_evidence=payload.include_conclusion_evidence,
+        include_entity_aliases=payload.include_entity_aliases,
+        include_disambiguation=payload.include_disambiguation,
+    )
+    return ApiResponse(data=result)
+
+
+@router.get("/governance/derived/counts")
+async def api_derived_governance_counts(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    result = await derived_governance_counts(db, owner_id=user.id)
+    return ApiResponse(data=result)
+
+
 @router.post("/governance/retrieval-feedback/reflect")
 async def api_reflect_retrieval_feedback(
     payload: RetrievalFeedbackReflectRequest,
@@ -1020,6 +1063,7 @@ async def _cap_search(params: dict, caller: str) -> dict:
             query=query,
             results=enriched,
             query_plan=getattr(results, "query_plan", None),
+            diagnostics=getattr(results, "diagnostics", None),
         )
         await db.commit()
         return {
@@ -1030,6 +1074,7 @@ async def _cap_search(params: dict, caller: str) -> dict:
                 "top_k": top_k,
                 "use_rerank": False,
                 "query_plan": getattr(results, "query_plan", None),
+                "diagnostics": getattr(results, "diagnostics", None),
                 "query_context": query_context,
             },
         }
@@ -1171,6 +1216,30 @@ async def _cap_derive_cognitive_index(params: dict, caller: str) -> dict:
         return result
 
 
+async def _cap_backfill_derived_governance(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    dry_run = bool(params.get("dry_run", True))
+    limit = int(params.get("limit", 5000) or 5000)
+    async with AsyncSessionLocal() as db:
+        return await backfill_derived_governance(
+            db,
+            owner_id=owner_id,
+            dry_run=dry_run,
+            limit=limit,
+            include_lineage=bool(params.get("include_lineage", True)),
+            include_conclusion_evidence=bool(params.get("include_conclusion_evidence", True)),
+            include_entity_aliases=bool(params.get("include_entity_aliases", True)),
+            include_disambiguation=bool(params.get("include_disambiguation", True)),
+        )
+
+
+async def _cap_get_derived_governance_counts(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    _ = params
+    async with AsyncSessionLocal() as db:
+        return await derived_governance_counts(db, owner_id=owner_id)
+
+
 async def _cap_reflect_retrieval_feedback(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     query_context_id = int(params.get("query_context_id", 0) or 0)
@@ -1238,6 +1307,32 @@ async def _cap_import_enterprise_source_batch(params: dict, caller: str) -> dict
             dry_run=dry_run,
             extensions=extensions,
             skip_existing_md5=skip_existing_md5,
+        )
+
+async def _cap_enqueue_enterprise_source_import(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    source_root = str(params.get("source_root", "") or "")
+    target_root_name = str(params.get("target_root_name", "企业微盘导入") or "企业微盘导入")
+    batch_size = int(params.get("batch_size", 200) or 200)
+    priority = int(params.get("priority", 12) or 12)
+    skip_existing_md5 = bool(params.get("skip_existing_md5", True))
+    extensions_param = params.get("extensions") or []
+    if isinstance(extensions_param, str):
+        extensions = [part.strip() for part in extensions_param.split(",") if part.strip()]
+    elif isinstance(extensions_param, list):
+        extensions = [str(part).strip() for part in extensions_param if str(part).strip()]
+    else:
+        extensions = []
+    async with AsyncSessionLocal() as db:
+        return await enqueue_enterprise_source_import(
+            db,
+            owner_id=owner_id,
+            source_root=source_root,
+            target_root_name=target_root_name,
+            extensions=extensions,
+            skip_existing_md5=skip_existing_md5,
+            batch_size=batch_size,
+            priority=priority,
         )
 
 # 注册对外能力：Agent 会通过 list_capabilities 自动发现 knowledge__search 等工具。
@@ -1440,6 +1535,39 @@ register_capability(
     min_role="admin",
 )
 register_capability(
+    "knowledge", "backfill_derived_governance", _cap_backfill_derived_governance,
+    description=(
+        "Backfill derived governance side indexes from existing analysis artifacts, "
+        "fact candidates, and entity dictionary rows"
+    ),
+    brief="回填知识库派生治理索引",
+    parameters={
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+        "limit": {"type": "integer", "description": "Maximum source rows to inspect per index, default 5000"},
+        "include_lineage": {"type": "boolean", "description": "Backfill kb_artifact_lineage, default true"},
+        "include_conclusion_evidence": {
+            "type": "boolean",
+            "description": "Backfill kb_conclusion_evidence from fact candidates, default true",
+        },
+        "include_entity_aliases": {
+            "type": "boolean",
+            "description": "Backfill kb_entity_aliases from open-ended entity name variants, default true",
+        },
+        "include_disambiguation": {
+            "type": "boolean",
+            "description": "Backfill kb_disambiguation from alias/name collisions, default true",
+        },
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "get_derived_governance_counts", _cap_get_derived_governance_counts,
+    description="Count derived governance side-index rows for the current owner",
+    brief="统计派生治理索引",
+    parameters={},
+    min_role="admin",
+)
+register_capability(
     "knowledge", "reflect_retrieval_feedback", _cap_reflect_retrieval_feedback,
     description="Use later conversation excerpts to infer implicit feedback for a persisted knowledge search query context",
     brief="复盘知识库检索反馈",
@@ -1476,6 +1604,20 @@ register_capability(
         "limit": {"type": "integer", "description": "Maximum files to import, default 20, capped at 200"},
         "extensions": {"type": "array", "description": "Optional extension filter"},
         "skip_existing_md5": {"type": "boolean", "description": "Skip owner files with existing md5, default true"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "enqueue_enterprise_source_import", _cap_enqueue_enterprise_source_import,
+    description="Enqueue a durable background enterprise source-folder import that loops in bounded batches",
+    brief="后台导入企业资料",
+    parameters={
+        "source_root": {"type": "string", "description": "Local source directory to scan"},
+        "target_root_name": {"type": "string", "description": "Target root folder name, default 企业微盘导入"},
+        "batch_size": {"type": "integer", "description": "Files per internal batch, default 200, capped at 200"},
+        "extensions": {"type": "array", "description": "Optional extension filter"},
+        "skip_existing_md5": {"type": "boolean", "description": "Reuse existing content by md5, default true"},
+        "priority": {"type": "integer", "description": "Background import task priority, default 12"},
     },
     min_role="admin",
 )

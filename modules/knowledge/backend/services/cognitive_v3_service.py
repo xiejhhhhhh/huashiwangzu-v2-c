@@ -38,6 +38,7 @@ from ..models import (
 from .analysis_artifact_service import stable_hash
 
 TERM_SCHEMA_VERSION = "kb_term_graph_v1"
+COGNITIVE_INDEX_WRITE_BATCH = 10
 
 _TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9_+-]{1,}|[A-Z]{1,8}\d{3,}")
 _CAUSAL_PATTERNS = (
@@ -433,6 +434,7 @@ async def derive_document_cognitive_index(
     )
     if doc is None:
         return {"terms": 0, "term_occurrences": 0, "fact_candidates": 0, "causal_candidates": 0}
+    document_filename = str(doc.filename or "")
 
     for model in (KbTermOccurrence, KbFactCandidate, KbCausalCandidate):
         await db.execute(
@@ -441,6 +443,7 @@ async def derive_document_cognitive_index(
                 model.document_id == document_id,
             )
         )
+    await db.commit()
 
     profile = await db.scalar(
         select(KbDocumentProfile).where(
@@ -454,6 +457,7 @@ async def derive_document_cognitive_index(
             KbPageFusion.owner_id == owner_id,
         ).order_by(KbPageFusion.page.asc()).limit(500)
     )).scalars().all()
+    await db.commit()
 
     source_texts: list[tuple[str, int | None, int | None, str]] = []
     for fusion in fusions:
@@ -507,9 +511,14 @@ async def derive_document_cognitive_index(
             confidence=0.65,
         )
         term_id_map[normalized] = int(item.id)
+        if len(term_id_map) % COGNITIVE_INDEX_WRITE_BATCH == 0:
+            await db.commit()
+            db.expunge_all()
+    await db.commit()
+    db.expunge_all()
 
     occurrence_count = 0
-    for item in occurrence_inputs:
+    for index, item in enumerate(occurrence_inputs, start=1):
         normalized = str(item["normalized"])
         term_id = term_id_map.get(normalized)
         if term_id is None:
@@ -560,10 +569,15 @@ async def derive_document_cognitive_index(
         )
         if result.scalar_one_or_none() is not None:
             occurrence_count += 1
+        if index % COGNITIVE_INDEX_WRITE_BATCH == 0:
+            await db.commit()
+            db.expunge_all()
+    await db.commit()
+    db.expunge_all()
 
     edge_count = 0
     ordered_term_ids = [term_id_map[normalized] for normalized in term_order if normalized in term_id_map]
-    for left_id, right_id in zip(ordered_term_ids, ordered_term_ids[1:]):
+    for index, (left_id, right_id) in enumerate(zip(ordered_term_ids, ordered_term_ids[1:]), start=1):
         if int(left_id) == int(right_id):
             continue
         source_id, target_id = sorted((int(left_id), int(right_id)))
@@ -595,9 +609,15 @@ async def derive_document_cognitive_index(
         )
         if result.scalar_one_or_none() is not None:
             edge_count += 1
+        if index % COGNITIVE_INDEX_WRITE_BATCH == 0:
+            await db.commit()
+            db.expunge_all()
+    await db.commit()
+    db.expunge_all()
 
     fact_count = 0
     if profile is not None:
+        profile_confidence = profile.confidence or 0.65
         for label, claim in (
             ("subject", profile.subject),
             ("doc_type", profile.doc_type),
@@ -635,12 +655,12 @@ async def derive_document_cognitive_index(
                     {
                         "owner_id": owner_id,
                         "document_id": document_id,
-                        "subject": doc.filename,
+                        "subject": document_filename,
                         "predicate": label,
                         "object_value": str(claim)[:2000],
                         "claim_text": str(claim)[:4000],
                         "source_hash": source_hash,
-                        "confidence": profile.confidence or 0.65,
+                        "confidence": profile_confidence,
                         "diagnostics_json": json.dumps(
                             {"schema_version": "kb_fact_candidate_v1", "source_hash": source_hash},
                             ensure_ascii=False,
@@ -649,8 +669,11 @@ async def derive_document_cognitive_index(
                 )
                 if result.scalar_one_or_none() is not None:
                     fact_count += 1
+        await db.commit()
+        db.expunge_all()
 
     causal_count = 0
+    causal_write_count = 0
     for text_value, page, fusion_id, source_type in source_texts:
         for sentence in re.split(r"(?<=[。！？!?；;])|\n+", text_value):
             for pattern in _CAUSAL_PATTERNS:
@@ -709,9 +732,14 @@ async def derive_document_cognitive_index(
                 )
                 if result.scalar_one_or_none() is not None:
                     causal_count += 1
+                causal_write_count += 1
+                if causal_write_count % COGNITIVE_INDEX_WRITE_BATCH == 0:
+                    await db.commit()
+                    db.expunge_all()
                 break
+    await db.commit()
+    db.expunge_all()
 
-    await db.flush()
     return {
         "terms": len(term_id_map),
         "term_occurrences": occurrence_count,
@@ -755,12 +783,18 @@ async def record_artifact_lineage(
     return lineage
 
 
-def build_query_context_payload(query: str, results: list[dict], query_plan: dict | None = None) -> dict:
+def build_query_context_payload(
+    query: str,
+    results: list[dict],
+    query_plan: dict | None = None,
+    diagnostics: dict | None = None,
+) -> dict:
     expanded_terms = extract_terms(query, limit=24)
     result_query_plan = query_plan or next(
         (item.get("query_plan") for item in results if isinstance(item.get("query_plan"), dict)),
         None,
     )
+    retrieval_diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
     document_ids = sorted({
         int(item.get("document_id"))
         for item in results
@@ -818,6 +852,66 @@ def build_query_context_payload(query: str, results: list[dict], query_plan: dic
         for item in results
         if item.get("source") or item.get("retrieval_source")
     })
+    diagnostics_payload = {
+        "schema_version": "kb_query_context_v1",
+        "strategy": "query_plan_keyword_vector_term_context",
+        "result_count": len(results),
+        "query_plan": result_query_plan or {},
+        "query_plan_source": (result_query_plan or {}).get("source"),
+        "retrieval_score_version": (
+            score_breakdowns[0]["score_breakdown"].get("version")
+            if score_breakdowns and isinstance(score_breakdowns[0].get("score_breakdown"), dict)
+            else None
+        ),
+        "retrieval_channels": retrieval_channels,
+        "candidate_snapshots": candidate_snapshots,
+        "score_breakdowns": score_breakdowns,
+        "nodes": [
+            {
+                "node_type": "query_intent_plan",
+                "status": "done" if result_query_plan else "missing",
+                "source": (result_query_plan or {}).get("source"),
+                "intent": (result_query_plan or {}).get("intent"),
+                "answer_shape": (result_query_plan or {}).get("answer_shape"),
+                "need_document_level_results": (result_query_plan or {}).get(
+                    "need_document_level_results"
+                ),
+                "terms": (result_query_plan or {}).get("terms", []),
+                "entities": (result_query_plan or {}).get("entities", []),
+                "document_types": (result_query_plan or {}).get("document_types", []),
+                "constraints": (result_query_plan or {}).get("constraints", []),
+            }
+        ],
+    }
+    if retrieval_diagnostics:
+        diagnostics_payload["retrieval_diagnostics"] = retrieval_diagnostics
+        diagnostics_payload["nodes"].extend(
+            {
+                "node_type": "retrieval_stage",
+                "name": stage.get("name"),
+                "status": stage.get("status"),
+                "duration_ms": stage.get("duration_ms"),
+                "result_count": stage.get("result_count"),
+                "reason": stage.get("reason"),
+            }
+            for stage in retrieval_diagnostics.get("stages", [])
+            if isinstance(stage, dict)
+        )
+        diagnostics_payload["nodes"].extend(
+            {
+                "node_type": "model_residency",
+                "name": node.get("name"),
+                "status": node.get("status"),
+                "used": node.get("used"),
+                "duration_ms": node.get("duration_ms"),
+                "warm_state": node.get("warm_state"),
+                "basis": node.get("basis"),
+                "reason": node.get("reason"),
+            }
+            for node in retrieval_diagnostics.get("model_nodes", [])
+            if isinstance(node, dict)
+        )
+
     return {
         "expanded_terms": expanded_terms,
         "related_terms": [],
@@ -825,37 +919,7 @@ def build_query_context_payload(query: str, results: list[dict], query_plan: dic
         "facts": facts,
         "evidence_refs": evidence_refs,
         "result_document_ids": document_ids,
-        "diagnostics": {
-            "schema_version": "kb_query_context_v1",
-            "strategy": "query_plan_keyword_vector_term_context",
-            "result_count": len(results),
-            "query_plan": result_query_plan or {},
-            "query_plan_source": (result_query_plan or {}).get("source"),
-            "retrieval_score_version": (
-                score_breakdowns[0]["score_breakdown"].get("version")
-                if score_breakdowns and isinstance(score_breakdowns[0].get("score_breakdown"), dict)
-                else None
-            ),
-            "retrieval_channels": retrieval_channels,
-            "candidate_snapshots": candidate_snapshots,
-            "score_breakdowns": score_breakdowns,
-            "nodes": [
-                {
-                    "node_type": "query_intent_plan",
-                    "status": "done" if result_query_plan else "missing",
-                    "source": (result_query_plan or {}).get("source"),
-                    "intent": (result_query_plan or {}).get("intent"),
-                    "answer_shape": (result_query_plan or {}).get("answer_shape"),
-                    "need_document_level_results": (result_query_plan or {}).get(
-                        "need_document_level_results"
-                    ),
-                    "terms": (result_query_plan or {}).get("terms", []),
-                    "entities": (result_query_plan or {}).get("entities", []),
-                    "document_types": (result_query_plan or {}).get("document_types", []),
-                    "constraints": (result_query_plan or {}).get("constraints", []),
-                }
-            ],
-        },
+        "diagnostics": diagnostics_payload,
     }
 
 
@@ -973,8 +1037,9 @@ async def persist_query_context(
     query: str,
     results: list[dict],
     query_plan: dict | None = None,
+    diagnostics: dict | None = None,
 ) -> dict:
-    payload = build_query_context_payload(query, results, query_plan=query_plan)
+    payload = build_query_context_payload(query, results, query_plan=query_plan, diagnostics=diagnostics)
     await _enrich_query_context(db, owner_id=owner_id, payload=payload)
     normalized = normalize_term(query)
     row = KbQueryContext(

@@ -32,10 +32,26 @@ async def _startup() -> None:
     await ensure_framework_scheduling_columns()
     try:
         async with engine.begin() as conn:
-            await conn.execute(sa_text(
-                "ALTER TABLE framework_content_packages "
-                "ADD COLUMN IF NOT EXISTS origin_type VARCHAR(32) DEFAULT 'uploaded'"
-            ))
+            await conn.execute(sa_text("SET LOCAL lock_timeout = '1000ms'"))
+            await conn.execute(sa_text("SET LOCAL statement_timeout = '10000ms'"))
+            origin_type_exists = await conn.scalar(
+                sa_text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'framework_content_packages'
+                          AND column_name = 'origin_type'
+                    )
+                    """
+                )
+            )
+            if not origin_type_exists:
+                await conn.execute(sa_text(
+                    "ALTER TABLE framework_content_packages "
+                    "ADD COLUMN origin_type VARCHAR(32) DEFAULT 'uploaded'"
+                ))
     except Exception as exc:
         logger.warning("Migration origin_type skipped: %s", exc)
 

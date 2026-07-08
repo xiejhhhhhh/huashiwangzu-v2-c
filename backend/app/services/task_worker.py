@@ -4,6 +4,7 @@ Consumes SystemTaskQueue (framework_system_task_queues). Concurrency-safe via
 FOR UPDATE SKIP LOCKED. Modules register handlers by task_type.
 """
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -25,11 +26,12 @@ POLL_INTERVAL_SECONDS = 2.0
 RUNNING_TIMEOUT_SECONDS = 1200  # running 超过 20 分钟视为死任务，回收重排
 CONFIG_RELOAD_SECONDS = 5.0
 DEFAULT_MAX_LANES_PER_PROCESS = 16
-ABSOLUTE_MAX_LANES_PER_PROCESS = 128
+ABSOLUTE_MAX_LANES_PER_PROCESS = 256
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "data" / "config" / "task_worker.json"
 WORKER_LEADER_LOCK_KEY = 94022025
 WORKER_CLAIM_LOCK_KEY = 94022026
 WORKER_PROCESS_SLOT_LOCK_BASE = 94022100
+WORKER_STAGE_CLAIM_LOCK_BASE = 94022200
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ class _ClaimCandidate:
     running_limit: int
     lane_running_count: int = 0
     lane_running_limit: int = 0
+    dispatch_rank: int = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,10 @@ class WorkerConfig:
     startup_reclaim_min_age_seconds: int = 10
     stage_concurrency: dict[str, StageConcurrencyRule] | None = None
     lane_concurrency: dict[str, dict[str, int]] | None = None
+    stage_dispatch_order: dict[str, dict[str, int]] | None = None
+    paused_task_types: set[str] | None = None
+    paused_stages: dict[str, set[str]] | None = None
+    paused_lanes: dict[str, set[str]] | None = None
 
 # task_type -> async handler(parameters: dict) -> dict | None
 TaskHandler = Callable[[dict], Awaitable[dict | None]]
@@ -197,6 +204,54 @@ def _parse_lane_concurrency(raw: object) -> dict[str, dict[str, int]]:
     return rules
 
 
+def _parse_stage_dispatch_order(raw: object) -> dict[str, dict[str, int]]:
+    if not isinstance(raw, dict):
+        return {}
+    rules: dict[str, dict[str, int]] = {}
+    for task_type, rule_raw in raw.items():
+        task_type_key = str(task_type or "").strip()
+        if not task_type_key:
+            continue
+        order: dict[str, int] = {}
+        if isinstance(rule_raw, list):
+            for idx, stage in enumerate(rule_raw):
+                stage_key = str(stage or "").strip()
+                if stage_key:
+                    order[stage_key] = idx
+        elif isinstance(rule_raw, dict):
+            for stage, rank in rule_raw.items():
+                stage_key = str(stage or "").strip()
+                if not stage_key:
+                    continue
+                order[stage_key] = _clamp_int(rank, 1_000_000, 0, 1_000_000)
+        if order:
+            rules[task_type_key] = order
+    return rules
+
+
+def _parse_paused_task_types(raw: object) -> set[str]:
+    if not isinstance(raw, list):
+        return set()
+    return {str(item or "").strip() for item in raw if str(item or "").strip()}
+
+
+def _parse_paused_dimension(raw: object) -> dict[str, set[str]]:
+    if not isinstance(raw, dict):
+        return {}
+    rules: dict[str, set[str]] = {}
+    for task_type, values in raw.items():
+        task_type_key = str(task_type or "").strip()
+        if not task_type_key:
+            continue
+        if isinstance(values, list):
+            parsed = {str(item or "").strip() for item in values if str(item or "").strip()}
+        else:
+            parsed = {str(values or "").strip()} if str(values or "").strip() else set()
+        if parsed:
+            rules[task_type_key] = parsed
+    return rules
+
+
 def _parse_worker_config(raw: dict | None) -> WorkerConfig:
     raw = raw or {}
     max_lanes_per_process = _clamp_int(
@@ -277,6 +332,10 @@ def _parse_worker_config(raw: dict | None) -> WorkerConfig:
         ),
         stage_concurrency=_parse_stage_concurrency(raw.get("stage_concurrency")),
         lane_concurrency=_parse_lane_concurrency(raw.get("lane_concurrency")),
+        stage_dispatch_order=_parse_stage_dispatch_order(raw.get("stage_dispatch_order")),
+        paused_task_types=_parse_paused_task_types(raw.get("paused_task_types")),
+        paused_stages=_parse_paused_dimension(raw.get("paused_stages")),
+        paused_lanes=_parse_paused_dimension(raw.get("paused_lanes")),
     )
 
 
@@ -666,7 +725,7 @@ def _choose_stage_fair_candidate(candidates: list[_ClaimCandidate]) -> _ClaimCan
     if not candidates:
         return None
 
-    def score(candidate: _ClaimCandidate) -> tuple[float, int, float, int]:
+    def score(candidate: _ClaimCandidate) -> tuple[float, int, int, float, int]:
         running_limit = max(1, int(candidate.running_limit or 1))
         available_slots = max(0, running_limit - int(candidate.running_count or 0))
         available_ratio = available_slots / running_limit
@@ -678,9 +737,39 @@ def _choose_stage_fair_candidate(candidates: list[_ClaimCandidate]) -> _ClaimCan
             available_slots = min(available_slots, lane_available_slots)
         created_at = candidate.created_at
         created_ts = created_at.timestamp() if created_at is not None else 0.0
-        return (available_ratio, available_slots, -created_ts, -candidate.id)
+        return (available_ratio, -int(candidate.dispatch_rank), available_slots, -created_ts, -candidate.id)
 
     return max(candidates, key=score)
+
+
+def _claim_group_lock_key(task_type: str, stage_key: str, lane_key: str = "") -> int:
+    raw = f"{task_type}:{stage_key}:{lane_key}".encode("utf-8")
+    digest = hashlib.blake2b(raw, digest_size=4).digest()
+    offset = int.from_bytes(digest, "big") % 1_000_000
+    return WORKER_STAGE_CLAIM_LOCK_BASE + offset
+
+
+async def _try_claim_group_lock(db, task_type: str, stage_key: str, lane_key: str = "") -> bool:
+    return bool(
+        await db.scalar(
+            text("select pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": _claim_group_lock_key(task_type, stage_key, lane_key)},
+        )
+    )
+
+
+def _task_paused(task_type: str, stage_key: str = "", lane_key: str = "", config: WorkerConfig | None = None) -> bool:
+    config = config or _runtime_config
+    task_type_key = str(task_type or "")
+    stage = str(stage_key or "")
+    lane = str(lane_key or "")
+    if task_type_key in (config.paused_task_types or set()):
+        return True
+    paused_stages = config.paused_stages or {}
+    if stage and stage in (paused_stages.get(task_type_key) or set()):
+        return True
+    paused_lanes = config.paused_lanes or {}
+    return bool(lane and lane in (paused_lanes.get(task_type_key) or set()))
 
 
 async def _select_stage_fair_task_id(
@@ -693,6 +782,7 @@ async def _select_stage_fair_task_id(
     config: WorkerConfig,
 ) -> int | None:
     candidates: list[_ClaimCandidate] = []
+    dispatch_order = config.stage_dispatch_order or {}
     ready_filter = and_(
         SystemTaskQueue.status == "pending",
         or_(
@@ -708,6 +798,10 @@ async def _select_stage_fair_task_id(
     for task_type, rule in sorted(rules.items()):
         stage_limits = rule.stage_max_running or {}
         for stage_key, limit in sorted(stage_limits.items()):
+            if _task_paused(task_type, stage_key, config=config):
+                continue
+            if config.claim_lock_scope == "none" and not await _try_claim_group_lock(db, task_type, stage_key):
+                continue
             running_count = running_counts.get((task_type, stage_key), 0)
             if running_count >= limit:
                 continue
@@ -733,6 +827,8 @@ async def _select_stage_fair_task_id(
             if candidate is None:
                 continue
             lane_key = str(candidate.lane_key or "")
+            if _task_paused(str(candidate.task_type or ""), stage_key, lane_key, config=config):
+                continue
             lane_rules = (config.lane_concurrency or {}).get(str(candidate.task_type or "")) or {}
             lane_limit = int(lane_rules.get(lane_key) or 0)
             lane_running_count = lane_running_counts.get((str(candidate.task_type or ""), lane_key), 0)
@@ -750,6 +846,7 @@ async def _select_stage_fair_task_id(
                     running_limit=int(limit),
                     lane_running_count=lane_running_count,
                     lane_running_limit=lane_limit,
+                    dispatch_rank=(dispatch_order.get(str(candidate.task_type or "")) or {}).get(stage_key, 1_000_000),
                 )
             )
 
@@ -765,12 +862,21 @@ async def _select_stage_fair_task_id(
         .where(
             ready_filter,
             SystemTaskQueue.task_type.not_in(tuple(rules.keys())),
+            SystemTaskQueue.task_type.not_in(tuple(config.paused_task_types or set())),
         )
         .order_by(SystemTaskQueue.priority.desc(), SystemTaskQueue.id)
         .limit(config.claim_candidate_scan_limit)
         .with_for_update(skip_locked=True)
     )
     unmanaged_candidate = unmanaged_row.first()
+    if unmanaged_candidate is not None:
+        if _task_paused(
+            str(unmanaged_candidate.task_type or ""),
+            str(unmanaged_candidate.stage_key or ""),
+            str(unmanaged_candidate.lane_key or ""),
+            config=config,
+        ):
+            unmanaged_candidate = None
     if unmanaged_candidate is not None:
         candidates.append(
             _ClaimCandidate(
@@ -782,6 +888,10 @@ async def _select_stage_fair_task_id(
                 created_at=unmanaged_candidate.created_at,
                 running_count=0,
                 running_limit=max(1, min(config.worker_lanes_per_process or 1, 8)),
+                dispatch_rank=(dispatch_order.get(str(unmanaged_candidate.task_type or "")) or {}).get(
+                    str(unmanaged_candidate.stage_key or ""),
+                    1_000_000,
+                ),
             )
         )
 
@@ -841,6 +951,7 @@ async def _claim_one_task(db, config: WorkerConfig | None = None) -> ClaimedTask
             )
         else:
             concurrency_filters = _concurrency_sql_filters(rules=rules, running_counts=running_counts)
+            paused_task_types = tuple(config.paused_task_types or set())
             row = await db.execute(
                 select(
                     SystemTaskQueue.id,
@@ -859,6 +970,11 @@ async def _claim_one_task(db, config: WorkerConfig | None = None) -> ClaimedTask
                             SystemTaskQueue.scheduled_at.is_(None),
                             SystemTaskQueue.scheduled_at <= now,
                         ),
+                        *(
+                            [SystemTaskQueue.task_type.not_in(paused_task_types)]
+                            if paused_task_types
+                            else []
+                        ),
                         *concurrency_filters,
                     ),
                 )
@@ -871,7 +987,13 @@ async def _claim_one_task(db, config: WorkerConfig | None = None) -> ClaimedTask
                 (
                     int(candidate_id)
                     for candidate_id, task_type, stage_key, lane_key in candidates
-                    if _stage_allowed_by_stage_concurrency(
+                    if not _task_paused(
+                        str(task_type or ""),
+                        str(stage_key or ""),
+                        str(lane_key or ""),
+                        config=config,
+                    )
+                    and _stage_allowed_by_stage_concurrency(
                         str(task_type or ""),
                         str(stage_key or ""),
                         running_counts=running_counts,
@@ -1059,6 +1181,15 @@ async def _release_active_tasks_on_shutdown(task_ids: list[int] | None = None) -
         logger.error("Failed to release running tasks during worker shutdown: %s", exc)
 
 
+async def _rollback_idle_worker_transaction(db) -> None:
+    """Return a polling session to the pool without an open transaction."""
+    try:
+        if db.in_transaction():
+            await db.rollback()
+    except Exception as exc:
+        logger.warning("Task worker idle transaction rollback failed: %s", exc)
+
+
 async def _worker_lane_loop(lane_id: int) -> None:
     global _last_active
     logger.info("Task worker lane %s started", lane_id)
@@ -1068,6 +1199,7 @@ async def _worker_lane_loop(lane_id: int) -> None:
             async with AsyncSessionLocal() as db:
                 await _recover_stale_tasks_if_due(db, config)
                 task = await _claim_one_task(db, config)
+                await _rollback_idle_worker_transaction(db)
             if task is None:
                 await asyncio.sleep(config.poll_interval_seconds)
                 continue
@@ -1152,6 +1284,7 @@ async def _worker_supervisor_loop() -> None:
                 config = _load_worker_config()
                 async with AsyncSessionLocal() as db:
                     await _recover_stale_tasks_if_due(db, config)
+                    await _rollback_idle_worker_transaction(db)
                 _reconcile_lanes(config.worker_lanes_per_process)
                 await asyncio.sleep(config.config_reload_seconds)
         except asyncio.CancelledError:
@@ -1212,6 +1345,14 @@ def worker_health() -> dict:
         task_type: dict(rule or {})
         for task_type, rule in (_runtime_config.lane_concurrency or {}).items()
     }
+    paused_stages = {
+        task_type: sorted(values)
+        for task_type, values in (_runtime_config.paused_stages or {}).items()
+    }
+    paused_lanes = {
+        task_type: sorted(values)
+        for task_type, values in (_runtime_config.paused_lanes or {}).items()
+    }
     return {
         "running": _worker_task is not None and not _worker_task.done(),
         "configured_lanes_per_process": _runtime_config.worker_lanes_per_process,
@@ -1236,6 +1377,9 @@ def worker_health() -> dict:
         "registered_handlers": sorted(_HANDLERS.keys()),
         "stage_concurrency": stage_concurrency,
         "lane_concurrency": lane_concurrency,
+        "paused_task_types": sorted(_runtime_config.paused_task_types or set()),
+        "paused_stages": paused_stages,
+        "paused_lanes": paused_lanes,
         "last_active": _last_active.isoformat() if _last_active else None,
         "process_local": True,
         "pid": os.getpid(),

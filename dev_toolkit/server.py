@@ -82,6 +82,9 @@ try:
     from dev_toolkit.release_response import build_release_gate_response as build_release_gate_payload
     from dev_toolkit.response_shaping import ResponseShapeOptions, dumps_response
     from dev_toolkit.sql_guard import check_sql_readonly, readonly_psql_env
+    from dev_toolkit.system_tools import handle_tool as system_handle_tool
+    from dev_toolkit.system_tools import handles_tool as system_handles_tool
+    from dev_toolkit.system_tools import tool_definitions as system_tool_definitions
     from dev_toolkit.timing_tools import append_timing_item, parse_timing_data
     from dev_toolkit.tool_job_tools import handle_tool as tool_job_handle_tool
     from dev_toolkit.tool_job_tools import handles_tool as tool_job_handles_tool
@@ -158,6 +161,9 @@ except ModuleNotFoundError:
     from release_response import build_release_gate_response as build_release_gate_payload
     from response_shaping import ResponseShapeOptions, dumps_response
     from sql_guard import check_sql_readonly, readonly_psql_env
+    from system_tools import handle_tool as system_handle_tool
+    from system_tools import handles_tool as system_handles_tool
+    from system_tools import tool_definitions as system_tool_definitions
     from timing_tools import append_timing_item, parse_timing_data
     from tool_job_tools import handle_tool as tool_job_handle_tool
     from tool_job_tools import handles_tool as tool_job_handles_tool
@@ -661,55 +667,28 @@ async def _workspace_reset(confirm: str, scope: str = "all") -> dict[str, Any]:
 
 async def _restart_backend() -> dict[str, Any]:
     """重启后端服务并验证健康检查。"""
-    import signal
-
-    result = {"status": "ok", "restarted": False, "port": 0, "health": ""}
-
-    # 1. 找 uvicorn 进程并杀掉
-    killed = 0
-    try:
-        out = subprocess.run(
-            ["pgrep", "-f", "uvicorn app.main:app"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for pid_str in out.stdout.strip().split("\n"):
-            pid_str = pid_str.strip()
-            if pid_str:
-                try:
-                    os.kill(int(pid_str), signal.SIGTERM)
-                    killed += 1
-                except OSError:
-                    pass
-    except Exception:
-        pass
-
-    result["killed"] = killed
-
-    # 2. 等待端口释放
-    for _ in range(5):
-        try:
-            subprocess.run(
-                ["lsof", "-ti:33000"], capture_output=True, timeout=3,
-            )
-            await asyncio.sleep(1.0)
-        except Exception:
-            break
-
-    # 3. 启动后端
+    started_at = time.monotonic()
     start_script = REPO_ROOT / "scripts" / "start_backend.sh"
+    result = {
+        "status": "ok",
+        "restarted": False,
+        "port": 0,
+        "health": "",
+        "duration_seconds": 0.0,
+    }
     if not start_script.exists():
         result["error"] = f"start_backend.sh not found at {start_script}"
         return result
 
     proc = await asyncio.create_subprocess_exec(
-        "zsh", str(start_script),
+        "zsh", str(start_script), "--restart",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         cwd=str(REPO_ROOT),
     )
     stdout, stderr = await proc.communicate()
     output = (stdout + stderr).decode("utf-8", errors="replace")
+    result["script_returncode"] = proc.returncode
 
-    # 4. 等待健康检查
     port = 33000
     port_file = REPO_ROOT / "backend" / "logs" / ".backend.port"
     if port_file.exists():
@@ -730,10 +709,11 @@ async def _restart_backend() -> dict[str, Any]:
             pass
         await asyncio.sleep(1.0)
 
-    result["restarted"] = True
+    result["restarted"] = proc.returncode == 0
     result["port"] = port
     result["health"] = health
-    result["output"] = output[-500:]
+    result["duration_seconds"] = round(time.monotonic() - started_at, 3)
+    result["output_tail"] = output[-2000:]
     return result
 
 
@@ -1786,6 +1766,7 @@ async def list_tools() -> list[Tool]:
         *db_reverse_tool_definitions(),
         *insight_tool_definitions(),
         *knowledge_tool_definitions(),
+        *system_tool_definitions(),
         *worktree_tool_definitions(),
         *tool_usage_tool_definitions(),
         *user_profile_tool_definitions(),
@@ -1833,6 +1814,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await insight_handle_tool(REPO_ROOT, TOOL_USAGE_PATH, name, arguments)
         elif knowledge_handles_tool(name):
             result = await knowledge_handle_tool(REPO_ROOT, name, arguments)
+        elif system_handles_tool(name):
+            result = await system_handle_tool(REPO_ROOT, name, arguments)
         elif worktree_handles_tool(name):
             result = await worktree_handle_tool(_run_command_json, REPO_ROOT, name, arguments)
         elif tool_usage_handles_tool(name):

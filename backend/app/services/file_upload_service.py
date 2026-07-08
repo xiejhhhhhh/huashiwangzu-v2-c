@@ -1,5 +1,6 @@
 import hashlib
 import os
+import shutil
 from pathlib import Path
 from typing import BinaryIO
 
@@ -43,13 +44,16 @@ async def upload_file(
 
     # Check name conflict in target directory (after path resolution)
     existing_name = await db.execute(
-        select(File).where(
+        select(File)
+        .where(
             File.name == name_part,
             File.extension == ext_part,
             File.folder_id == target_folder_id,
             File.owner_id == owner_id,
             File.deleted.is_(False),
         )
+        .order_by(File.id.asc())
+        .limit(1)
     )
     if existing_name.scalar_one_or_none():
         raise AppException("A file with the same name already exists in this directory", status_code=409)
@@ -128,12 +132,15 @@ async def _ensure_folder_path(
     current_parent = parent_id
     for part in parts:
         existing = await db.execute(
-            select(Folder).where(
+            select(Folder)
+            .where(
                 Folder.name == part,
                 Folder.parent_id == current_parent,
                 Folder.owner_id == owner_id,
                 Folder.deleted.is_(False),
             )
+            .order_by(Folder.id.asc())
+            .limit(1)
         )
         folder = existing.scalar_one_or_none()
         if not folder:
@@ -274,13 +281,16 @@ async def upload_file_from_path(
         target_folder_id = await _ensure_folder_path(db, relative_path, owner_id, target_folder_id)
 
     existing_name = await db.execute(
-        select(File).where(
+        select(File)
+        .where(
             File.name == name_part,
             File.extension == ext_part,
             File.folder_id == target_folder_id,
             File.owner_id == owner_id,
             File.deleted.is_(False),
         )
+        .order_by(File.id.asc())
+        .limit(1)
     )
     if existing_name.scalar_one_or_none():
         raise AppException("A file with the same name already exists in this directory", status_code=409)
@@ -317,7 +327,14 @@ async def upload_file_from_path(
         await db.refresh(new_file)
     else:
         abs_content_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.rename(abs_content_path)
+        try:
+            file_path.rename(abs_content_path)
+        except OSError:
+            shutil.copy2(file_path, abs_content_path)
+            try:
+                file_path.unlink()
+            except OSError:
+                pass
         new_file = File(
             name=name_part, extension=ext_part or "", size=file_size,
             folder_id=target_folder_id, owner_id=owner_id,

@@ -55,7 +55,7 @@ Backend HTTP prefix: `/api/knowledge`
 <!-- DOCS-SYNC: section=public_actions -->
 Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-Total public actions: 24
+Total public actions: 27
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
@@ -63,11 +63,14 @@ Total public actions: 24
 | `archive_source_unavailable_documents` | `admin` | `audit_reason`, `confirm`, `dry_run`, `limit`, `reason` | dry-run 或确认归档源文件不可用的知识库文档 |
 | `audit_lifecycle_debt` | `admin` | `limit`, `reason` | 审计源文件已删除、缺失、路径异常或磁盘文件缺失的 active 知识库文档 |
 | `backfill_cognitive_v3` | `admin` | `build_terms`, `dry_run`, `limit`, `source_root` | 回填知识库 V3 内容复用链路、批次验收报告和可选认知派生索引 |
+| `backfill_derived_governance` | `admin` | `dry_run`, `include_conclusion_evidence`, `include_disambiguation`, `include_entity_aliases`, `include_lineage`, `limit` | 从已有分析产物、事实候选和实体词典回填知识库派生治理索引 |
 | `classify_pipeline_debt` | `admin` | `categories`, `category`, `category_limits`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 分类历史知识库管道债，不修改队列 |
 | `derive_cognitive_index` | `admin` | `document_id`, `limit` | 按单文档重建 V3 词项、事实和因果候选派生索引 |
 | `enqueue_incomplete_documents` | `admin` | `dry_run`, `extensions`, `include_search_incomplete`, `limit`, `priority` | 预览或补排未完成深层知识分析的文档 |
+| `enqueue_enterprise_source_import` | `admin` | `batch_size`, `extensions`, `priority`, `skip_existing_md5`, `source_root`, `target_root_name` | 将企业源目录扫描投递到后台队列，按文件任务导入并触发知识库分析 |
 | `export` | `viewer` | `document_id`, `format` | 导出已解析文档（markdown/html/json） |
 | `get_block` | `viewer` | `block_id` | 按 block_id 获取内容块详情 |
+| `get_derived_governance_counts` | `admin` | none | 统计当前用户的知识库派生治理索引行数 |
 | `get_entity_dictionary` | `viewer` | `keyword` | 查询实体词典 |
 | `get_evidence_detail` | `viewer` | `entity_id` | 获取证据详情 |
 | `get_graph_context` | `viewer` | `entity_id` | 查询图谱上下文 |

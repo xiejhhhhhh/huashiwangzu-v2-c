@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import re
+import time
 from collections.abc import Sequence
 
 from app.models.file import File
@@ -25,6 +26,8 @@ DOCUMENT_SEARCH_MAX_CANDIDATES = 200
 QUERY_PLAN_TIMEOUT_SECONDS = 15.0
 QUERY_PLAN_MAX_TERMS = 16
 RETRIEVAL_SCORE_VERSION = "kb_retrieval_score_v1"
+MODEL_WARM_THRESHOLD_MS = 1500.0
+MODEL_COLD_THRESHOLD_MS = 3000.0
 GENERIC_QUERY_STOP_WORDS = {
     "有",
     "没",
@@ -60,34 +63,121 @@ GENERIC_QUERY_STOP_WORDS = {
     "列表",
     "列出",
 }
-PRODUCT_QUERY_HINTS = {
-    "产品",
-    "品类",
-    "系列",
-    "款式",
-    "卖什么",
-    "有什么产品",
-    "有哪些产品",
-}
-EXISTENCE_QUERY_HINTS = {
-    "资料",
-    "知识库",
-    "有没有",
-    "是否",
-    "是不是",
-    "没有",
-    "对吧",
-    "存在",
-    "查得到",
-}
-
-
 class SearchResults(list):
     """List-like search results with retrieval diagnostics attached."""
 
-    def __init__(self, items: list[dict], *, query_plan: dict | None = None) -> None:
+    def __init__(
+        self,
+        items: list[dict],
+        *,
+        query_plan: dict | None = None,
+        diagnostics: dict | None = None,
+    ) -> None:
         super().__init__(items)
         self.query_plan = query_plan or {}
+        self.diagnostics = diagnostics or {}
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _classify_model_warm_state(duration_ms: float | None, *, status: str = "done") -> str:
+    if status in {"failed", "unavailable"}:
+        return "unavailable"
+    if duration_ms is None:
+        return "unknown"
+    if duration_ms >= MODEL_COLD_THRESHOLD_MS:
+        return "cold_or_loading"
+    if duration_ms >= MODEL_WARM_THRESHOLD_MS:
+        return "warming_or_busy"
+    return "warm"
+
+
+class _RetrievalDiagnostics:
+    """In-memory stage ledger for one retrieval call."""
+
+    def __init__(self, *, query: str, top_k: int, use_rerank: bool) -> None:
+        self._started_at = time.perf_counter()
+        self._stages: list[dict] = []
+        self._model_nodes: list[dict] = []
+        self._path: dict = {
+            "query": query,
+            "top_k": top_k,
+            "use_rerank": use_rerank,
+        }
+
+    def set_path(self, **values: object) -> None:
+        self._path.update(values)
+
+    def stage(
+        self,
+        name: str,
+        *,
+        duration_ms: float | None = None,
+        status: str = "done",
+        result_count: int | None = None,
+        reason: str | None = None,
+        error: str | None = None,
+        **extra: object,
+    ) -> None:
+        entry = {
+            "name": name,
+            "status": status,
+        }
+        if duration_ms is not None:
+            entry["duration_ms"] = duration_ms
+        if result_count is not None:
+            entry["result_count"] = result_count
+        if reason:
+            entry["reason"] = reason
+        if error:
+            entry["error"] = error[:300]
+        entry.update({key: value for key, value in extra.items() if value is not None})
+        self._stages.append(entry)
+
+    def skipped(self, name: str, reason: str) -> None:
+        self.stage(name, status="skipped", reason=reason, duration_ms=0.0)
+
+    def model_node(
+        self,
+        name: str,
+        *,
+        used: bool,
+        duration_ms: float | None = None,
+        status: str = "done",
+        reason: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._model_nodes.append({
+            "name": name,
+            "used": used,
+            "status": status,
+            "duration_ms": duration_ms,
+            "warm_state": _classify_model_warm_state(duration_ms, status=status) if used else "not_used",
+            "basis": "observed_call_latency_ms" if used else "not_called",
+            "warm_threshold_ms": MODEL_WARM_THRESHOLD_MS,
+            "cold_threshold_ms": MODEL_COLD_THRESHOLD_MS,
+            **({"reason": reason} if reason else {}),
+            **({"error": error[:300]} if error else {}),
+        })
+
+    def build(self, *, result_count: int) -> dict:
+        total_duration_ms = _elapsed_ms(self._started_at)
+        slowest_stage = max(
+            self._stages,
+            key=lambda item: float(item.get("duration_ms") or 0.0),
+            default=None,
+        )
+        return {
+            "schema_version": "kb_retrieval_diagnostics_v1",
+            "total_duration_ms": total_duration_ms,
+            "result_count": result_count,
+            "path": self._path,
+            "stages": self._stages,
+            "model_nodes": self._model_nodes,
+            "slowest_stage": slowest_stage,
+        }
 
 
 def _live_source_fields() -> dict[str, bool | str]:
@@ -140,9 +230,13 @@ def _clean_query_text(query: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _local_query_terms(query: str) -> list[str]:
+def _local_query_terms(query: str, custom_terms: Sequence[str] | None = None) -> list[str]:
     compact = re.sub(r"\s+", "", query)
     terms: list[str] = []
+    for custom_term in custom_terms or []:
+        term = str(custom_term or "").strip()
+        if len(term) >= 2 and term in compact and term not in terms:
+            terms.append(term)
     tokens: list[str] = []
     try:
         import jieba
@@ -184,6 +278,209 @@ def _local_query_terms(query: str) -> list[str]:
     return terms[:QUERY_PLAN_MAX_TERMS]
 
 
+def _rule_value(rule: object, key: str, default: object = None) -> object:
+    if isinstance(rule, dict):
+        return rule.get(key, default)
+    return getattr(rule, key, default)
+
+
+def _split_rule_patterns(pattern: object) -> list[str]:
+    return [
+        part.strip()
+        for part in re.split(r"[\n,，;；]+", str(pattern or ""))
+        if part.strip()
+    ]
+
+
+def _matched_rule_patterns(rule: object, *, query: str, terms: list[str]) -> list[str]:
+    match_type = str(_rule_value(rule, "match_type", "contains") or "contains")
+    patterns = _split_rule_patterns(_rule_value(rule, "pattern", ""))
+    if not patterns:
+        return []
+
+    compact = re.sub(r"\s+", "", query).lower()
+    normalized_terms = {_normalize_term_text(term) for term in terms}
+    matched: list[str] = []
+    for pattern in patterns:
+        normalized_pattern = _normalize_term_text(pattern)
+        if not normalized_pattern:
+            continue
+        if match_type in {"contains", "any_contains"} and normalized_pattern in compact:
+            matched.append(pattern)
+        elif match_type == "term" and normalized_pattern in normalized_terms:
+            matched.append(pattern)
+        elif match_type == "regex":
+            try:
+                if re.search(pattern, query, flags=re.I):
+                    matched.append(pattern)
+            except re.error:
+                logger.warning("Invalid query routing regex skipped: %s", pattern)
+    return matched
+
+
+def _rule_diagnostics(rule: object) -> dict:
+    diagnostics = _rule_value(rule, "diagnostics_json", {}) or {}
+    return diagnostics if isinstance(diagnostics, dict) else {}
+
+
+def _build_local_query_plan_from_rules(
+    query: str,
+    rules: Sequence[object],
+    custom_terms: Sequence[str] | None = None,
+) -> dict | None:
+    terms = _local_query_terms(query, custom_terms=custom_terms)
+    if not terms:
+        return None
+
+    intent_scores: dict[str, float] = {}
+    source_scores: dict[str, float] = {}
+    answer_shape_scores: dict[str, float] = {}
+    document_score = 0.0
+    llm_required_score = 0.0
+    filtered_patterns: list[str] = []
+    document_patterns: list[str] = []
+    matched_rules: list[dict] = []
+
+    for rule in rules:
+        if _rule_value(rule, "enabled", True) is False:
+            continue
+        matched_patterns = _matched_rule_patterns(rule, query=query, terms=terms)
+        if not matched_patterns:
+            continue
+
+        rule_type = str(_rule_value(rule, "rule_type", "intent") or "intent")
+        weight = float(_rule_value(rule, "weight", 1.0) or 0.0)
+        diagnostics = _rule_diagnostics(rule)
+        matched_rules.append({
+            "rule_key": _rule_value(rule, "rule_key", ""),
+            "rule_type": rule_type,
+            "matched_patterns": matched_patterns[:8],
+            "weight": weight,
+            "priority": _rule_value(rule, "priority", 0),
+        })
+
+        if diagnostics.get("filter_matched_patterns_from_terms"):
+            filtered_patterns.extend(matched_patterns)
+        if rule_type == "llm_required":
+            llm_required_score += weight
+            continue
+
+        intent = str(_rule_value(rule, "intent", "") or "")
+        if intent:
+            intent_scores[intent] = intent_scores.get(intent, 0.0) + weight
+        route_source = str(_rule_value(rule, "route_source", "") or "")
+        if route_source:
+            source_scores[route_source] = source_scores.get(route_source, 0.0) + weight
+        answer_shape = str(_rule_value(rule, "answer_shape", "") or "")
+        if answer_shape:
+            answer_shape_scores[answer_shape] = answer_shape_scores.get(answer_shape, 0.0) + weight
+        if rule_type == "document_level" or diagnostics.get("need_document_level_results") is True:
+            document_score += weight
+            document_patterns.extend(matched_patterns)
+        elif diagnostics.get("need_document_level_results") is False:
+            document_score = min(document_score, 0.0)
+
+    local_score = sum(intent_scores.values()) + document_score
+    if not matched_rules or local_score <= 0.0:
+        return None
+    if llm_required_score >= max(3.5, local_score + 0.5):
+        return None
+
+    filtered_norms = {_normalize_term_text(pattern) for pattern in filtered_patterns}
+    plan_terms = [
+        term
+        for term in terms
+        if not any(pattern and pattern in _normalize_term_text(term) for pattern in filtered_norms)
+    ] or terms
+    plan_terms = plan_terms[:QUERY_PLAN_MAX_TERMS]
+    source = max(source_scores.items(), key=lambda item: item[1])[0] if source_scores else "local_simple_keyword_query"
+    if source.startswith("local_fast_"):
+        plan_terms.sort(key=lambda item: (-len(item), item))
+    intent = max(intent_scores.items(), key=lambda item: item[1])[0] if intent_scores else "local_keyword_lookup"
+    answer_shape = (
+        max(answer_shape_scores.items(), key=lambda item: item[1])[0]
+        if answer_shape_scores
+        else ("list" if document_score > 0.0 else "mixed")
+    )
+    document_types = [
+        term
+        for term in terms
+        if any(_normalize_term_text(pattern) in _normalize_term_text(term) for pattern in document_patterns)
+    ][:4]
+    entities = []
+    if source.startswith("local_fast_") and plan_terms:
+        entities = [sorted(plan_terms, key=lambda item: (-len(item), item))[0]]
+
+    return {
+        "intent": intent,
+        "need_document_level_results": document_score > 0.0,
+        "answer_shape": answer_shape,
+        "terms": plan_terms,
+        "entities": entities,
+        "document_types": document_types,
+        "constraints": [],
+        "source": source,
+        "query": query,
+        "query_routing": {
+            "schema_version": "kb_query_routing_v1",
+            "matched_rules": matched_rules,
+            "intent_scores": intent_scores,
+            "document_score": round(document_score, 4),
+            "llm_required_score": round(llm_required_score, 4),
+            "source_scores": source_scores,
+            "custom_terms_count": len(custom_terms or []),
+        },
+    }
+
+
+async def _load_query_tokenizer_terms(db: AsyncSession | None, owner_id: int | None, query: str) -> list[str]:
+    if db is None or owner_id is None or not hasattr(db, "execute"):
+        return []
+    compact = _normalize_term_text(query)
+    if len(compact) < 2:
+        return []
+    try:
+        from ..models import KbTerm
+
+        result = await db.execute(
+            select(KbTerm.term)
+            .where(
+                KbTerm.owner_id == owner_id,
+                KbTerm.status == "active",
+                KbTerm.normalized != "",
+                sa_text(":compact LIKE '%' || kb_terms.normalized || '%'"),
+            )
+            .order_by(sa_text("length(kb_terms.normalized) DESC"), KbTerm.confidence.desc().nullslast())
+            .limit(40),
+            {"compact": compact},
+        )
+        return [str(term) for term in result.scalars().all() if str(term or "").strip()]
+    except Exception as exc:
+        logger.warning("Query tokenizer terms unavailable, using generic tokenizer: %s", exc)
+        return []
+
+
+async def _load_query_routing_rules(db: AsyncSession | None, owner_id: int | None) -> list[object]:
+    if db is None or owner_id is None or not hasattr(db, "execute"):
+        return []
+    try:
+        from ..models import KbQueryRoutingRule
+
+        result = await db.execute(
+            select(KbQueryRoutingRule)
+            .where(
+                KbQueryRoutingRule.enabled.is_(True),
+                KbQueryRoutingRule.owner_id.in_([0, owner_id]),
+            )
+            .order_by(KbQueryRoutingRule.priority.desc(), KbQueryRoutingRule.weight.desc(), KbQueryRoutingRule.id.asc())
+            .limit(200)
+        )
+        return list(result.scalars().all())
+    except Exception as exc:
+        logger.warning("Query routing rules unavailable, falling back to LLM planner: %s", exc)
+        return []
+
+
 def _default_query_plan(query: str) -> dict:
     terms = _local_query_terms(query)
     return {
@@ -195,40 +492,6 @@ def _default_query_plan(query: str) -> dict:
         "document_types": [],
         "constraints": [],
         "source": "local_fallback",
-        "query": query,
-    }
-
-
-def _fast_local_query_plan(query: str) -> dict | None:
-    compact = re.sub(r"\s+", "", query)
-    if not compact or len(compact) > 80:
-        return None
-    product_lookup = any(hint in compact for hint in PRODUCT_QUERY_HINTS)
-    existence_lookup = any(hint in compact for hint in EXISTENCE_QUERY_HINTS)
-    if not product_lookup and not existence_lookup:
-        return None
-
-    terms = []
-    for term in _local_query_terms(query):
-        if any(stop_word in term for stop_word in GENERIC_QUERY_STOP_WORDS | PRODUCT_QUERY_HINTS | EXISTENCE_QUERY_HINTS):
-            continue
-        if len(term) >= 2 and term not in terms:
-            terms.append(term)
-    if not terms:
-        return None
-
-    terms.sort(key=lambda item: (-len(item), item))
-    entity = terms[0]
-    intent = "brand_product_lookup" if product_lookup else "local_existence_lookup"
-    return {
-        "intent": intent,
-        "need_document_level_results": False,
-        "answer_shape": "list" if product_lookup else "qa",
-        "terms": terms[:6],
-        "entities": [entity],
-        "document_types": [],
-        "constraints": [],
-        "source": "local_fast_product_query" if product_lookup else "local_fast_existence_query",
         "query": query,
     }
 
@@ -291,11 +554,13 @@ def _normalize_query_plan(query: str, plan: dict | None, *, source: str) -> dict
     }
 
 
-async def plan_query(query: str) -> dict:
+async def plan_query(query: str, db: AsyncSession | None = None, owner_id: int | None = None) -> dict:
     """Use the model to translate a natural query into a structured retrieval plan."""
-    fast_plan = _fast_local_query_plan(query)
-    if fast_plan is not None:
-        return fast_plan
+    rules = await _load_query_routing_rules(db, owner_id)
+    custom_terms = await _load_query_tokenizer_terms(db, owner_id, query)
+    local_plan = _build_local_query_plan_from_rules(query, rules, custom_terms=custom_terms)
+    if local_plan is not None:
+        return local_plan
 
     messages = [
         {
@@ -577,22 +842,56 @@ async def keyword_search(db: AsyncSession, query: str, owner_id: int, top_k: int
     return results[:top_k]
 
 
-async def vector_search(db: AsyncSession, query: str, owner_id: int, top_k: int = 20) -> list[dict]:
+async def vector_search(
+    db: AsyncSession,
+    query: str,
+    owner_id: int,
+    top_k: int = 20,
+    diagnostics: _RetrievalDiagnostics | None = None,
+) -> list[dict]:
     """向量检索：用 pgvector 在数据库侧召回 TopK，避免 Python 全量扫块。"""
     from .profile_vector_service import vector_literal
 
     # 获取 query 向量
+    embedding_started_at = time.perf_counter()
     try:
         query_emb = await get_embedding(query)
     except Exception as e:
+        duration_ms = _elapsed_ms(embedding_started_at)
+        if diagnostics is not None:
+            diagnostics.stage("embedding_request", duration_ms=duration_ms, status="failed", error=str(e))
+            diagnostics.model_node(
+                "embedding",
+                used=True,
+                duration_ms=duration_ms,
+                status="failed",
+                error=str(e),
+            )
         logger.warning("get_embedding failed for query '%s': %s", query[:50], e)
         return []
+    duration_ms = _elapsed_ms(embedding_started_at)
+    if diagnostics is not None:
+        embedding_status = "done" if query_emb else "empty"
+        diagnostics.stage(
+            "embedding_request",
+            duration_ms=duration_ms,
+            status=embedding_status,
+            result_count=1 if query_emb else 0,
+        )
+        diagnostics.model_node(
+            "embedding",
+            used=True,
+            duration_ms=duration_ms,
+            status=embedding_status,
+            reason=None if query_emb else "empty_embedding",
+        )
 
     if not query_emb:
         return []
 
     limit = max(1, min(int(top_k or 20), VECTOR_SEARCH_MAX_CANDIDATES))
     query_vector = vector_literal(query_emb)
+    sql_started_at = time.perf_counter()
     await db.execute(sa_text(f"SET LOCAL hnsw.ef_search = {int(VECTOR_SEARCH_EF_SEARCH)}"))
     result = await db.execute(
         sa_text(
@@ -637,8 +936,11 @@ async def vector_search(db: AsyncSession, query: str, owner_id: int, top_k: int 
             "limit": limit,
         },
     )
+    rows = result.mappings().all()
+    if diagnostics is not None:
+        diagnostics.stage("vector_sql", duration_ms=_elapsed_ms(sql_started_at), result_count=len(rows))
     scored: list[dict] = []
-    for i, row in enumerate(result.mappings().all()):
+    for i, row in enumerate(rows):
         score = float(row["score"] or 0.0)
         if score <= 0.0:
             continue
@@ -1448,23 +1750,66 @@ async def hybrid_search(
     use_rerank: bool = False,
 ) -> list[dict]:
     """混合检索：向量 + 关键词 → RRF 融合 → 可选 rerank。"""
-    query_plan = await plan_query(query)
+    diagnostics = _RetrievalDiagnostics(query=query, top_k=top_k, use_rerank=use_rerank)
+    planning_started_at = time.perf_counter()
+    query_plan = await plan_query(query, db=db, owner_id=owner_id)
+    diagnostics.stage(
+        "query_plan",
+        duration_ms=_elapsed_ms(planning_started_at),
+        source=query_plan.get("source"),
+        intent=query_plan.get("intent"),
+        answer_shape=query_plan.get("answer_shape"),
+    )
     document_intent = bool(query_plan.get("need_document_level_results"))
     fast_local_plan = _is_fast_local_query_plan(query_plan)
+    diagnostics.set_path(
+        query_plan_source=query_plan.get("source"),
+        intent=query_plan.get("intent"),
+        answer_shape=query_plan.get("answer_shape"),
+        document_intent=document_intent,
+        fast_local_plan=fast_local_plan,
+    )
 
     # 关键词和向量检索保留原有高召回；名单/报告类查询额外走文档画像候选。
     doc_results = []
     if document_intent and not fast_local_plan:
+        stage_started_at = time.perf_counter()
         doc_results = await document_candidate_search(db, query_plan, owner_id, top_k=top_k * 4)
+        diagnostics.stage(
+            "document_candidate_search",
+            duration_ms=_elapsed_ms(stage_started_at),
+            result_count=len(doc_results),
+        )
+    else:
+        diagnostics.skipped(
+            "document_candidate_search",
+            "fast_local_plan" if fast_local_plan else "query_plan_not_document_level",
+        )
     structured_results = []
     if not fast_local_plan:
+        stage_started_at = time.perf_counter()
         structured_results = await structured_signal_search(db, query_plan, owner_id, top_k=top_k * 4)
+        diagnostics.stage(
+            "structured_signal_search",
+            duration_ms=_elapsed_ms(stage_started_at),
+            result_count=len(structured_results),
+        )
+    else:
+        diagnostics.skipped("structured_signal_search", "fast_local_plan")
+    stage_started_at = time.perf_counter()
     kw_results = await keyword_search(db, _keyword_query_for_plan(query, query_plan), owner_id, top_k=top_k * 2)
+    diagnostics.stage("keyword_search", duration_ms=_elapsed_ms(stage_started_at), result_count=len(kw_results))
     vec_results = []
     if not fast_local_plan:
-        vec_results = await vector_search(db, query, owner_id, top_k=top_k * 2)
+        stage_started_at = time.perf_counter()
+        vec_results = await vector_search(db, query, owner_id, top_k=top_k * 2, diagnostics=diagnostics)
+        diagnostics.stage("vector_search", duration_ms=_elapsed_ms(stage_started_at), result_count=len(vec_results))
+    else:
+        diagnostics.skipped("vector_search", "fast_local_plan")
+        diagnostics.model_node("embedding", used=False, status="skipped", reason="fast_local_plan")
 
     # RRF 融合
+    stage_started_at = time.perf_counter()
     results = rrf_fusion(
         kw_results,
         vec_results,
@@ -1474,15 +1819,25 @@ async def hybrid_search(
         dedupe_by_document=document_intent,
         query_plan=query_plan,
     )
+    diagnostics.stage("rrf_fusion", duration_ms=_elapsed_ms(stage_started_at), result_count=len(results))
     for result in results:
         result.setdefault("query_plan", query_plan)
+    stage_started_at = time.perf_counter()
     results = await verify_and_score_results(db, results, owner_id=owner_id, query_plan=query_plan)
+    diagnostics.stage(
+        "verify_and_score_results",
+        duration_ms=_elapsed_ms(stage_started_at),
+        result_count=len(results),
+    )
 
     # 可选 rerank
     if use_rerank and results:
+        stage_started_at = time.perf_counter()
         try:
             docs = [r["text"] for r in results]
             reranked = await rerank(query, docs, top_k=top_k)
+            rerank_duration_ms = _elapsed_ms(stage_started_at)
+            diagnostics.model_node("rerank", used=True, duration_ms=rerank_duration_ms)
             rerank_map = {}
             for i, rr in enumerate(reranked):
                 idx = rr.get("index")
@@ -1495,10 +1850,29 @@ async def hybrid_search(
             results.sort(key=lambda x: -(x.get("rerank_score", 0) or 0))
             for i, r in enumerate(results):
                 r["final_rank"] = i + 1
+            diagnostics.stage("rerank", duration_ms=rerank_duration_ms, result_count=len(reranked))
         except Exception as e:
+            rerank_duration_ms = _elapsed_ms(stage_started_at)
+            diagnostics.model_node(
+                "rerank",
+                used=True,
+                duration_ms=rerank_duration_ms,
+                status="failed",
+                error=str(e),
+            )
+            diagnostics.stage("rerank", duration_ms=rerank_duration_ms, status="failed", error=str(e))
             logger.warning("Rerank failed (non-fatal): %s", e)
+    else:
+        reason = "use_rerank_false" if not use_rerank else "empty_results"
+        diagnostics.skipped("rerank", reason)
+        diagnostics.model_node("rerank", used=False, status="skipped", reason=reason)
 
-    return SearchResults(results[:top_k], query_plan=query_plan)
+    final_results = results[:top_k]
+    return SearchResults(
+        final_results,
+        query_plan=query_plan,
+        diagnostics=diagnostics.build(result_count=len(final_results)),
+    )
 
 
 async def get_document_chunks(db: AsyncSession, document_id: int, owner_id: int | None = None) -> list[dict]:

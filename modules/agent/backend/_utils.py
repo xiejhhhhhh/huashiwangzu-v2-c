@@ -1,5 +1,6 @@
 import json
 import logging
+from urllib.parse import urlencode
 
 logger = logging.getLogger("v2.agent").getChild("_utils")
 
@@ -76,8 +77,18 @@ def _extract_knowledge_refs(result: dict) -> list[dict]:
     if not isinstance(results_list, list):
         return refs
     for r_item in results_list:
-        doc_name = r_item.get("document_name") or r_item.get("filename", "")
+        if not isinstance(r_item, dict):
+            continue
+        if not _looks_like_knowledge_result(r_item):
+            continue
+        doc_name = (
+            r_item.get("document_name")
+            or r_item.get("source_file")
+            or r_item.get("filename", "")
+        )
+        file_id = r_item.get("file_id") or r_item.get("source_file_id")
         page = r_item.get("page")
+        extension = _knowledge_result_extension(r_item, doc_name)
         excerpt = (r_item.get("text") or r_item.get("page_fusion", "") or "")[:240]
         title_parts = []
         if doc_name:
@@ -85,13 +96,25 @@ def _extract_knowledge_refs(result: dict) -> list[dict]:
         if page is not None:
             title_parts.append(f"第{page}页")
         title = " ".join(title_parts) if title_parts else "知识库"
-        refs.append({
+        open_url = ""
+        if file_id:
+            query = {
+                "file_id": file_id,
+                "file_name": doc_name or "",
+                "format": extension,
+            }
+            if page is not None:
+                query["page"] = page
+            open_url = f"app://file/open?{urlencode(query)}"
+        ref = {
             "type": "knowledge",
+            "ref_key": "file_id" if file_id else "document_id",
+            "ref_id": str(file_id or r_item.get("document_id") or ""),
             "title": title,
             "source": doc_name or "知识库",
             "source_module": "knowledge",
-            "file_id": r_item.get("file_id"),
-            "source_file_id": r_item.get("source_file_id"),
+            "file_id": file_id,
+            "source_file_id": file_id,
             "document_id": r_item.get("document_id"),
             "chunk_id": r_item.get("chunk_id"),
             "package_id": r_item.get("content_package_id") or r_item.get("package_id"),
@@ -99,8 +122,45 @@ def _extract_knowledge_refs(result: dict) -> list[dict]:
             "section": r_item.get("section"),
             "score": r_item.get("score"),
             "excerpt": excerpt,
-        })
+            "download_url": f"/api/files/download/{file_id}" if file_id else "",
+        }
+        if extension:
+            ref["format"] = extension
+        if open_url:
+            ref["open_url"] = open_url
+            ref["url"] = open_url
+        refs.append(ref)
     return refs
+
+
+def _looks_like_knowledge_result(item: dict) -> bool:
+    return any(
+        item.get(key) is not None
+        for key in (
+            "file_id",
+            "source_file_id",
+            "document_id",
+            "chunk_id",
+            "content_package_id",
+            "package_id",
+            "document_name",
+            "source_file",
+            "filename",
+            "page_fusion",
+        )
+    )
+
+
+def _knowledge_result_extension(item: dict, doc_name: object) -> str:
+    explicit = str(item.get("extension") or item.get("format") or "").strip().lower().lstrip(".")
+    if explicit:
+        return explicit
+    for candidate in (item.get("source_file"), item.get("filename"), doc_name):
+        name = str(candidate or "").strip()
+        suffix = name.rsplit(".", 1)[-1].strip().lower() if "." in name else ""
+        if suffix:
+            return suffix
+    return ""
 
 
 def _extract_file_refs(name: str, result: dict) -> list[dict]:
@@ -256,15 +316,17 @@ def references_from_tool_events(events: list[dict]) -> list[dict]:
     for event in events:
         if event.get("type") != "tool_result":
             continue
-        name = event.get("name", "") or ""
+        name = event.get("effective_tool_name") or event.get("name", "") or ""
         result = event.get("result", {}) or {}
         name, result = _unwrap_skill_result(name, result)
+        has_knowledge_refs = False
 
         # Dispatch by tool name prefix
         extractor = _TOOL_EXTRACTORS.get(name)
         if extractor:
             extracted = extractor(result)
             if extracted:
+                has_knowledge_refs = name == "knowledge__search"
                 _extend_unique_refs(refs, extracted)
 
         # File-reading tools (matched by prefix)
@@ -277,7 +339,11 @@ def references_from_tool_events(events: list[dict]) -> list[dict]:
         # (knowledge__get_block, knowledge__get_page_fusion, etc.)
         knowledge_refs = _extract_knowledge_refs(result)
         if knowledge_refs:
+            has_knowledge_refs = True
             _extend_unique_refs(refs, knowledge_refs)
+
+        if has_knowledge_refs:
+            continue
 
         artifact_refs = artifact_refs_from_value(result)
         if artifact_refs:

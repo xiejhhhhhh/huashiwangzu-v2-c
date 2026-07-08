@@ -410,6 +410,43 @@
       "min_role": "admin"
     },
     {
+      "action": "backfill_derived_governance",
+      "description": "从已有分析产物、事实候选和实体词典回填知识库派生治理索引",
+      "parameters": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "每类索引最多检查来源行数（默认5000）"
+        },
+        "include_lineage": {
+          "type": "boolean",
+          "description": "是否回填 kb_artifact_lineage，默认 true"
+        },
+        "include_conclusion_evidence": {
+          "type": "boolean",
+          "description": "是否从事实候选回填 kb_conclusion_evidence，默认 true"
+        },
+        "include_entity_aliases": {
+          "type": "boolean",
+          "description": "是否从实体名称变体回填 kb_entity_aliases，默认 true"
+        },
+        "include_disambiguation": {
+          "type": "boolean",
+          "description": "是否从别名/名称碰撞回填 kb_disambiguation，默认 true"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "get_derived_governance_counts",
+      "description": "统计当前用户的知识库派生治理索引行数",
+      "parameters": {},
+      "min_role": "admin"
+    },
+    {
       "action": "reflect_retrieval_feedback",
       "description": "根据后续对话片段复盘一次知识库检索的隐式反馈",
       "parameters": {
@@ -478,6 +515,37 @@
         "skip_existing_md5": {
           "type": "boolean",
           "description": "是否跳过当前用户已存在 md5，默认 true"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "enqueue_enterprise_source_import",
+      "description": "将企业源目录扫描投递到后台队列，按文件任务导入并触发知识库分析",
+      "parameters": {
+        "source_root": {
+          "type": "string",
+          "description": "本地源目录"
+        },
+        "target_root_name": {
+          "type": "string",
+          "description": "目标根目录名，默认 企业微盘导入"
+        },
+        "batch_size": {
+          "type": "integer",
+          "description": "扫描任务每批提交的文件任务数，默认1000"
+        },
+        "extensions": {
+          "type": "array",
+          "description": "可选扩展名过滤"
+        },
+        "skip_existing_md5": {
+          "type": "boolean",
+          "description": "是否标记同 MD5 内容复用，默认 true"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "后台导入文件任务优先级，默认8"
         }
       },
       "min_role": "admin"

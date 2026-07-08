@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String, Text
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin
 
 logger = logging.getLogger("v2.models.system")
+TASK_QUEUE_MIGRATION_LOCK_KEY = 94022027
 
 
 class SystemLog(Base, TimestampMixin):
@@ -104,59 +106,185 @@ class SystemTaskQueue(Base, TimestampMixin):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="预计算的下次运行时间")
 
 
+@dataclass(frozen=True)
+class _TaskQueueColumnMigration:
+    column: str
+    ddl: str
+
+
+async def _task_queue_column_exists(db, column: str) -> bool:
+    from sqlalchemy import text
+
+    return bool(
+        await db.scalar(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'framework_system_task_queues'
+                      AND column_name = :column
+                )
+                """
+            ),
+            {"column": column},
+        )
+    )
+
+
+async def _task_queue_index_exists(db, index_name: str) -> bool:
+    from sqlalchemy import text
+
+    return bool(await db.scalar(text("SELECT to_regclass(:index_name) IS NOT NULL"), {"index_name": index_name}))
+
+
 async def ensure_framework_scheduling_columns() -> None:
-    """Ensure task queue scheduling and DAG dispatch columns exist."""
+    """Ensure task queue scheduling and DAG dispatch columns exist without hot DDL locks."""
     from sqlalchemy import text
 
     from app.database import AsyncSessionLocal
 
-    statements = [
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS recur VARCHAR(32)",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS document_id BIGINT",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS stage_key VARCHAR(64)",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS lane_key VARCHAR(64)",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS ready_status VARCHAR(32) DEFAULT 'ready'",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS dependency_key VARCHAR(128)",
-        "ALTER TABLE framework_system_task_queues ADD COLUMN IF NOT EXISTS blocked_reason TEXT",
-        "UPDATE framework_system_task_queues SET ready_status = 'ready' WHERE ready_status IS NULL",
-        """
-        UPDATE framework_system_task_queues
-        SET
-            document_id = COALESCE(document_id, NULLIF(parameters::jsonb->>'document_id', '')::bigint),
-            stage_key = COALESCE(stage_key, parameters::jsonb->>'stage')
-        WHERE task_type = 'kb_pipeline_stage'
-          AND parameters IS NOT NULL
-          AND parameters ~ '^\\s*\\{'
-          AND (document_id IS NULL OR stage_key IS NULL)
-        """,
-        """
-        UPDATE framework_system_task_queues
-        SET lane_key = CASE stage_key
-            WHEN 'source_validate' THEN 'local_preprocess'
-            WHEN 'parse_index' THEN 'local_preprocess'
-            WHEN 'raw_text' THEN 'local_preprocess'
-            WHEN 'raw_ocr' THEN 'local_preprocess'
-            WHEN 'raw_vision' THEN 'model_analysis'
-            WHEN 'fusion' THEN 'model_analysis'
-            WHEN 'profile' THEN 'model_analysis'
-            WHEN 'graph' THEN 'model_analysis'
-            WHEN 'relations' THEN 'relation_build'
-            ELSE lane_key
-        END
-        WHERE task_type = 'kb_pipeline_stage'
-          AND lane_key IS NULL
-          AND stage_key IS NOT NULL
-        """,
-        "CREATE INDEX IF NOT EXISTS idx_framework_task_queue_dispatch ON framework_system_task_queues(status, ready_status, lane_key, priority DESC, id)",
-        "CREATE INDEX IF NOT EXISTS idx_framework_task_queue_stage ON framework_system_task_queues(task_type, stage_key, status)",
-        "CREATE INDEX IF NOT EXISTS idx_framework_task_queue_doc_stage ON framework_system_task_queues(task_type, document_id, stage_key, status)",
+    columns = [
+        _TaskQueueColumnMigration("scheduled_at", "ALTER TABLE framework_system_task_queues ADD COLUMN scheduled_at TIMESTAMPTZ"),
+        _TaskQueueColumnMigration("recur", "ALTER TABLE framework_system_task_queues ADD COLUMN recur VARCHAR(32)"),
+        _TaskQueueColumnMigration("next_run_at", "ALTER TABLE framework_system_task_queues ADD COLUMN next_run_at TIMESTAMPTZ"),
+        _TaskQueueColumnMigration("document_id", "ALTER TABLE framework_system_task_queues ADD COLUMN document_id BIGINT"),
+        _TaskQueueColumnMigration("stage_key", "ALTER TABLE framework_system_task_queues ADD COLUMN stage_key VARCHAR(64)"),
+        _TaskQueueColumnMigration("lane_key", "ALTER TABLE framework_system_task_queues ADD COLUMN lane_key VARCHAR(64)"),
+        _TaskQueueColumnMigration("ready_status", "ALTER TABLE framework_system_task_queues ADD COLUMN ready_status VARCHAR(32) DEFAULT 'ready'"),
+        _TaskQueueColumnMigration("dependency_key", "ALTER TABLE framework_system_task_queues ADD COLUMN dependency_key VARCHAR(128)"),
+        _TaskQueueColumnMigration("blocked_reason", "ALTER TABLE framework_system_task_queues ADD COLUMN blocked_reason TEXT"),
+    ]
+    indexes = [
+        (
+            "idx_framework_task_queue_dispatch",
+            "CREATE INDEX idx_framework_task_queue_dispatch ON framework_system_task_queues(status, ready_status, lane_key, priority DESC, id)",
+        ),
+        (
+            "idx_framework_task_queue_stage",
+            "CREATE INDEX idx_framework_task_queue_stage ON framework_system_task_queues(task_type, stage_key, status)",
+        ),
+        (
+            "idx_framework_task_queue_doc_stage",
+            "CREATE INDEX idx_framework_task_queue_doc_stage ON framework_system_task_queues(task_type, document_id, stage_key, status)",
+        ),
     ]
     try:
         async with AsyncSessionLocal() as db:
-            for stmt in statements:
-                await db.execute(text(stmt))
+            locked = await db.scalar(
+                text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+                {"lock_key": TASK_QUEUE_MIGRATION_LOCK_KEY},
+            )
+            if not locked:
+                logger.info("Task queue DAG migration skipped: another process owns migration lock")
+                return
+
+            await db.execute(text("SET LOCAL lock_timeout = '1000ms'"))
+            await db.execute(text("SET LOCAL statement_timeout = '10000ms'"))
+
+            changed = False
+            existing_columns = {
+                migration.column: await _task_queue_column_exists(db, migration.column)
+                for migration in columns
+            }
+            for migration in columns:
+                if existing_columns[migration.column]:
+                    continue
+                await db.execute(text(migration.ddl))
+                changed = True
+
+            if existing_columns.get("ready_status", True):
+                missing_ready_status = await db.scalar(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM framework_system_task_queues
+                            WHERE ready_status IS NULL
+                            LIMIT 1
+                        )
+                        """
+                    )
+                )
+                if missing_ready_status:
+                    await db.execute(text("UPDATE framework_system_task_queues SET ready_status = 'ready' WHERE ready_status IS NULL"))
+            if existing_columns.get("document_id", True) and existing_columns.get("stage_key", True):
+                missing_doc_stage = await db.scalar(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM framework_system_task_queues
+                            WHERE task_type = 'kb_pipeline_stage'
+                              AND parameters IS NOT NULL
+                              AND parameters ~ '^\\s*\\{'
+                              AND (document_id IS NULL OR stage_key IS NULL)
+                            LIMIT 1
+                        )
+                        """
+                    )
+                )
+                if missing_doc_stage:
+                    await db.execute(
+                        text(
+                            """
+                            UPDATE framework_system_task_queues
+                            SET
+                                document_id = COALESCE(document_id, NULLIF(parameters::jsonb->>'document_id', '')::bigint),
+                                stage_key = COALESCE(stage_key, parameters::jsonb->>'stage')
+                            WHERE task_type = 'kb_pipeline_stage'
+                              AND parameters IS NOT NULL
+                              AND parameters ~ '^\\s*\\{'
+                              AND (document_id IS NULL OR stage_key IS NULL)
+                            """
+                        )
+                    )
+            if existing_columns.get("lane_key", True) and existing_columns.get("stage_key", True):
+                missing_lane = await db.scalar(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM framework_system_task_queues
+                            WHERE task_type = 'kb_pipeline_stage'
+                              AND lane_key IS NULL
+                              AND stage_key IS NOT NULL
+                            LIMIT 1
+                        )
+                        """
+                    )
+                )
+                if missing_lane:
+                    await db.execute(
+                        text(
+                            """
+                            UPDATE framework_system_task_queues
+                            SET lane_key = CASE stage_key
+                                WHEN 'source_validate' THEN 'local_preprocess'
+                                WHEN 'parse_index' THEN 'local_preprocess'
+                                WHEN 'raw_text' THEN 'local_preprocess'
+                                WHEN 'raw_ocr' THEN 'model_analysis'
+                                WHEN 'raw_vision' THEN 'model_analysis'
+                                WHEN 'fusion' THEN 'model_analysis'
+                                WHEN 'profile' THEN 'model_analysis'
+                                WHEN 'graph' THEN 'model_analysis'
+                                WHEN 'relations' THEN 'relation_build'
+                                ELSE lane_key
+                            END
+                            WHERE task_type = 'kb_pipeline_stage'
+                              AND lane_key IS NULL
+                              AND stage_key IS NOT NULL
+                            """
+                        )
+                    )
+
+            for index_name, index_ddl in indexes:
+                if not await _task_queue_index_exists(db, index_name):
+                    await db.execute(text(index_ddl))
+                    changed = True
             await db.commit()
+            if changed:
+                logger.info("Task queue DAG migration applied missing columns/indexes")
     except Exception as exc:
-        logger.warning("Task queue DAG column migration skipped: %s", exc)
+        logger.warning("Task queue DAG migration skipped to avoid startup lock contention: %s", exc)

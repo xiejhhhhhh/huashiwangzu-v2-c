@@ -1,5 +1,6 @@
 export type DesktopEventTypes = {
   'file:uploaded': { folderId?: number; fileName: string }
+  'file:open': { fileId: number; fileName?: string; format?: string; page?: number }
   'file:deleted': { itemType: 'file' | 'folder'; id: number }
   'file:restored': { itemType: 'file' | 'folder'; id: number }
   'file:renamed': { itemType: 'file' | 'folder'; id: number; newName: string }

@@ -34,6 +34,7 @@ TOOL_NAMES = {
     "knowledge_cleanup_noise",
     "workspace_audit",
     "workspace_reset",
+    "restart_backend",
     "_restart_backend",
     "_verify_tool_args",
     "_snap_diff",
@@ -338,8 +339,13 @@ def tool_definitions() -> list[Any]:
             },
         ),
         Tool(
+            name="restart_backend",
+            description="重启后端服务 (zsh scripts/start_backend.sh --restart)，返回脚本输出、耗时、健康检查和端口。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
             name="_restart_backend",
-            description="重启后端服务 (kill uvicorn + start_backend.sh). 返回健康检查和端口。",
+            description="兼容旧名：重启后端服务，建议改用 restart_backend。",
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
@@ -459,7 +465,7 @@ async def handle_tool(context: CoreToolContext, name: str, arguments: dict[str, 
             ensure_ascii=False,
             indent=2,
         )
-    if name == "_restart_backend":
+    if name in {"restart_backend", "_restart_backend"}:
         return json.dumps(await context.restart_backend(), ensure_ascii=False, indent=2)
     if name == "_verify_tool_args":
         return json.dumps(await context.verify_tool_args(), ensure_ascii=False, indent=2)

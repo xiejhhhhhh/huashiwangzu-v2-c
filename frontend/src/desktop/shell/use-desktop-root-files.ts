@@ -49,16 +49,28 @@ export function useDesktopRootFiles() {
     openFileByRecord({ fileId: file.id, fileName: displayName(file), format: file.format })
   }
 
+  function openFileFromEvent(payload: { fileId: number; fileName?: string; format?: string; page?: number }) {
+    if (!payload?.fileId) return
+    openFileByRecord({
+      fileId: payload.fileId,
+      fileName: payload.fileName || '',
+      format: payload.format || '',
+      page: payload.page,
+    })
+  }
+
   onMounted(() => {
     void loadDesktopFiles()
     on('refresh:file-list', onFileRefresh)
     on('file:uploaded', onFileRefresh)
     on('file:created', onFileRefresh)
+    on('file:open', openFileFromEvent)
   })
   onUnmounted(() => {
     off('refresh:file-list', onFileRefresh)
     off('file:uploaded', onFileRefresh)
     off('file:created', onFileRefresh)
+    off('file:open', openFileFromEvent)
   })
 
   return { desktopFileList, desktopFileLoadState, loadDesktopFiles, openDesktopEntry }

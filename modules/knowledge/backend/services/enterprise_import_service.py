@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import os
 import shutil
@@ -9,8 +10,11 @@ import tempfile
 from pathlib import Path
 
 from app.core.exceptions import ValidationError
+from app.database import AsyncSessionLocal
 from app.models.file import File, Folder
+from app.models.system import SystemTaskQueue
 from app.services.file_upload_service import upload_file_from_path
+from app.services.task_worker import register_task_handler
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +25,8 @@ DEFAULT_IMPORT_EXTENSIONS = {
     "jpg", "jpeg", "png", "webp", "bmp", "tiff", "txt", "md",
 }
 VIDEO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "wmv", "flv", "m4v"}
+ENTERPRISE_IMPORT_SCAN_TASK = "kb_enterprise_import"
+ENTERPRISE_IMPORT_FILE_TASK = "kb_enterprise_import_file"
 
 
 def _normalize_extensions(values: list[str] | None) -> set[str]:
@@ -69,12 +75,15 @@ async def _find_folder_id(db: AsyncSession, owner_id: int, relative_path: str) -
     for part in [part for part in relative_path.split("/") if part]:
         condition = Folder.parent_id.is_(None) if current_parent is None else Folder.parent_id == current_parent
         result = await db.execute(
-            select(Folder).where(
+            select(Folder)
+            .where(
                 Folder.name == part,
                 condition,
                 Folder.owner_id == owner_id,
                 Folder.deleted.is_(False),
             )
+            .order_by(Folder.id.asc())
+            .limit(1)
         )
         folder = result.scalar_one_or_none()
         if folder is None:
@@ -95,13 +104,16 @@ async def _find_existing_target_file(
         return None
     name_part, ext_part = os.path.splitext(filename)
     result = await db.execute(
-        select(File).where(
+        select(File)
+        .where(
             File.name == name_part,
             File.extension == ext_part.lstrip(".").lower(),
             File.folder_id == folder_id,
             File.owner_id == owner_id,
             File.deleted.is_(False),
         )
+        .order_by(File.id.asc())
+        .limit(1)
     )
     return result.scalar_one_or_none()
 
@@ -215,3 +227,197 @@ async def import_enterprise_source_batch(
         "items": selected if dry_run else imported,
         "skipped_sample": skipped[:50],
     }
+
+
+async def enqueue_enterprise_source_import(
+    db: AsyncSession,
+    *,
+    owner_id: int,
+    source_root: str,
+    target_root_name: str = "企业微盘导入",
+    extensions: list[str] | None = None,
+    skip_existing_md5: bool = True,
+    batch_size: int = 1000,
+    priority: int = 8,
+) -> dict:
+    root = Path(source_root).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise ValidationError("source_root must be an existing directory")
+    bounded_batch_size = max(1, min(int(batch_size or 1000), 5000))
+    parameters = {
+        "owner_id": owner_id,
+        "source_root": str(root),
+        "target_root_name": target_root_name,
+        "extensions": extensions or [],
+        "skip_existing_md5": skip_existing_md5,
+        "batch_size": bounded_batch_size,
+        "priority": int(priority),
+    }
+    task = SystemTaskQueue(
+        task_type=ENTERPRISE_IMPORT_SCAN_TASK,
+        module="knowledge",
+        parameters=json.dumps(parameters, ensure_ascii=False),
+        priority=priority,
+        status="pending",
+        creator_id=owner_id,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    return {
+        "enqueued": True,
+        "task_id": int(task.id),
+        "task_type": task.task_type,
+        "mode": "scan_then_enqueue_files",
+        "source_root": str(root),
+        "target_root_name": target_root_name,
+        "batch_size": bounded_batch_size,
+        "extensions": sorted(_normalize_extensions(extensions)),
+    }
+
+
+async def _import_one_enterprise_source_file(params: dict) -> dict:
+    owner_id = int(params.get("owner_id") or params.get("creator_id") or 0)
+    if owner_id <= 0:
+        raise ValidationError("owner_id is required")
+    source_root = Path(str(params.get("source_root") or "")).expanduser().resolve()
+    source_path = Path(str(params.get("source_path") or "")).expanduser().resolve()
+    target_root_name = str(params.get("target_root_name") or "企业微盘导入")
+    skip_existing_md5 = bool(params.get("skip_existing_md5", True))
+
+    if not source_root.exists() or not source_root.is_dir():
+        raise ValidationError("source_root must be an existing directory")
+    if not source_path.exists() or not source_path.is_file():
+        return {"skipped": True, "reason": "source_file_missing", "source_path": str(source_path)}
+    if not source_path.is_relative_to(source_root):
+        raise ValidationError("source_path must be inside source_root")
+
+    relative_path = source_path.relative_to(source_root)
+    clean_target_root = (target_root_name or "企业微盘导入").strip().strip("/") or "企业微盘导入"
+    target_relative_path = _relative_import_path(clean_target_root, relative_path)
+
+    try:
+        md5_hash = _file_md5(source_path)
+    except OSError as exc:
+        return {"skipped": True, "reason": f"read_failed:{exc}", "path": str(relative_path)}
+
+    async with AsyncSessionLocal() as db:
+        existing_target = await _find_existing_target_file(
+            db,
+            owner_id=owner_id,
+            target_relative_path=target_relative_path,
+            filename=source_path.name,
+        )
+        if existing_target is not None:
+            reason = (
+                "target_file_already_imported"
+                if existing_target.md5_hash == md5_hash
+                else "target_name_conflict"
+            )
+            return {
+                "skipped": True,
+                "reason": reason,
+                "path": str(relative_path),
+                "file_id": int(existing_target.id),
+            }
+
+        duplicate_content = False
+        if skip_existing_md5:
+            duplicate_content = bool(await db.scalar(
+                select(File.id).where(
+                    File.owner_id == owner_id,
+                    File.deleted.is_(False),
+                    File.md5_hash == md5_hash,
+                ).limit(1)
+            ))
+
+        mime_type = mimetypes.guess_type(str(source_path))[0] or "application/octet-stream"
+        with tempfile.TemporaryDirectory(prefix="kb-enterprise-import-") as temp_dir:
+            temp_path = Path(temp_dir) / source_path.name
+            shutil.copy2(source_path, temp_path)
+            file_info = await upload_file_from_path(
+                db,
+                temp_path,
+                source_path.name,
+                owner_id,
+                relative_path=target_relative_path,
+                md5_hex=md5_hash,
+                mime_type=mime_type,
+            )
+            doc_info = await register_document(db, int(file_info["id"]), owner_id)
+
+    return {
+        "skipped": False,
+        "path": str(relative_path),
+        "size": source_path.stat().st_size,
+        "md5_hash": md5_hash,
+        "extension": source_path.suffix.lower().lstrip("."),
+        "target_relative_path": target_relative_path,
+        "content_action": "reuse_existing_content" if duplicate_content else "store_new_content",
+        "file_id": int(file_info["id"]),
+        "document_id": int(doc_info["document_id"]),
+        "task_id": doc_info.get("task_id"),
+        "enqueued": bool(doc_info.get("enqueued")),
+        "reason": doc_info.get("reason"),
+        "deduplicated": bool(file_info.get("deduplicated")),
+        "duplicate_reused": bool(doc_info.get("duplicate_reused")),
+    }
+
+
+async def _enterprise_import_task_handler(params: dict) -> dict:
+    owner_id = int(params.get("owner_id") or params.get("creator_id") or 0)
+    if owner_id <= 0:
+        raise ValidationError("owner_id is required")
+    source_root = Path(str(params.get("source_root") or "")).expanduser().resolve()
+    if not source_root.exists() or not source_root.is_dir():
+        raise ValidationError("source_root must be an existing directory")
+    target_root_name = str(params.get("target_root_name") or "企业微盘导入")
+    extensions_param = params.get("extensions") or []
+    extensions = [str(item).strip() for item in extensions_param if str(item).strip()]
+    skip_existing_md5 = bool(params.get("skip_existing_md5", True))
+    batch_size = max(1, min(int(params.get("batch_size") or 1000), 5000))
+    priority = int(params.get("priority") or 8)
+    allowed_extensions = _normalize_extensions(extensions)
+    queued = 0
+    scanned = 0
+
+    async with AsyncSessionLocal() as db:
+        for source_path in _iter_source_files(source_root, allowed_extensions):
+            scanned += 1
+            relative_path = source_path.relative_to(source_root)
+            file_params = {
+                "owner_id": owner_id,
+                "source_root": str(source_root),
+                "source_path": str(source_path),
+                "relative_path": str(relative_path),
+                "target_root_name": target_root_name,
+                "skip_existing_md5": skip_existing_md5,
+            }
+            task = SystemTaskQueue(
+                task_type=ENTERPRISE_IMPORT_FILE_TASK,
+                module="knowledge",
+                parameters=json.dumps(file_params, ensure_ascii=False),
+                priority=priority,
+                status="pending",
+                creator_id=owner_id,
+            )
+            db.add(task)
+            queued += 1
+            if queued % batch_size == 0:
+                await db.commit()
+        await db.commit()
+
+    return {
+        "done": True,
+        "mode": "scan_then_enqueue_files",
+        "source_root": str(source_root),
+        "target_root_name": target_root_name,
+        "extensions": sorted(allowed_extensions),
+        "scanned": scanned,
+        "queued": queued,
+        "file_task_type": ENTERPRISE_IMPORT_FILE_TASK,
+    }
+
+
+register_task_handler(ENTERPRISE_IMPORT_SCAN_TASK, _enterprise_import_task_handler)
+register_task_handler(ENTERPRISE_IMPORT_FILE_TASK, _import_one_enterprise_source_file)

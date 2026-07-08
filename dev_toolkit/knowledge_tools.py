@@ -85,11 +85,61 @@ async def main():
             where task_type='kb_pipeline_stage'
             group by stage_key
         '''))).mappings().all()
+        pending_breakdown = (await db.execute(text('''
+            select stage_key,
+                   coalesce(lane_key,'') lane_key,
+                   coalesce(ready_status,'ready') ready_status,
+                   priority,
+                   count(*) count
+            from framework_system_task_queues
+            where task_type='kb_pipeline_stage' and status='pending'
+            group by stage_key, lane_key, ready_status, priority
+            order by stage_key, ready_status, priority desc
+        '''))).mappings().all()
+        lane_running = (await db.execute(text('''
+            select coalesce(lane_key,'') lane_key, count(*) running
+            from framework_system_task_queues
+            where task_type='kb_pipeline_stage' and status='running'
+            group by lane_key
+        '''))).mappings().all()
         db_states = (await db.execute(text('''
-            select coalesce(state,'null') state, count(*) count
+            select coalesce(state,'null') state,
+                   coalesce(wait_event_type,'null') wait_event_type,
+                   coalesce(wait_event,'null') wait_event,
+                   count(*) count
             from pg_stat_activity
             where datname=current_database()
-            group by state order by state
+            group by state, wait_event_type, wait_event
+            order by count(*) desc
+        '''))).mappings().all()
+        lock_waits = (await db.execute(text('''
+            select state,
+                   wait_event_type,
+                   wait_event,
+                   round(extract(epoch from now() - query_start))::int query_age_s,
+                   left(regexp_replace(query, '\\s+', ' ', 'g'), 240) query,
+                   count(*) count
+            from pg_stat_activity
+            where datname=current_database()
+              and wait_event_type = 'Lock'
+            group by state, wait_event_type, wait_event, query_age_s, query
+            order by count(*) desc, query_age_s desc
+            limit 20
+        '''))).mappings().all()
+        long_transactions = (await db.execute(text('''
+            select pid,
+                   state,
+                   wait_event_type,
+                   wait_event,
+                   round(extract(epoch from now() - xact_start))::int xact_age_s,
+                   round(extract(epoch from now() - query_start))::int query_age_s,
+                   left(regexp_replace(query, '\\s+', ' ', 'g'), 240) query
+            from pg_stat_activity
+            where datname=current_database()
+              and xact_start is not null
+              and (state = 'idle in transaction' or now() - xact_start > interval '20 seconds')
+            order by xact_start nulls last
+            limit 30
         '''))).mappings().all()
         failures = (await db.execute(text('''
             select id, document_id, stage_key, retry_count, max_retries,
@@ -129,7 +179,20 @@ async def main():
         "success": True,
         "stages": stages,
         "totals": totals,
+        "pending_breakdown": [dict(row) for row in pending_breakdown],
+        "lane_running": [dict(row) for row in lane_running],
         "db_states": [dict(row) for row in db_states],
+        "db_pressure": {
+            "lock_wait_count": sum(int(row["count"]) for row in lock_waits),
+            "idle_in_transaction_count": sum(
+                int(row["count"])
+                for row in db_states
+                if row["state"] == "idle in transaction"
+            ),
+            "long_transaction_count": len(long_transactions),
+            "lock_waits": [dict(row) for row in lock_waits],
+            "long_transactions": [dict(row) for row in long_transactions],
+        },
         "recent_failures": [{**dict(row), "updated_at": str(row["updated_at"])} for row in failures],
     }, ensure_ascii=False, default=str))
 
@@ -152,7 +215,76 @@ asyncio.run(main())
             "success": False,
             "error": stderr.decode("utf-8", errors="replace")[-4000:],
         }
-    return json.loads(stdout.decode("utf-8"))
+    snapshot = json.loads(stdout.decode("utf-8"))
+    worker_config = _load_worker_config(repo_root)
+    snapshot["worker_config"] = worker_config
+    _annotate_queue_limits(snapshot, worker_config)
+    return snapshot
+
+
+def _load_worker_config(repo_root: Path) -> dict[str, Any]:
+    path = repo_root / "backend" / "data" / "config" / "task_worker.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"loaded": False, "path": str(path), "error": str(exc)}
+    return {
+        "loaded": True,
+        "path": str(path),
+        "worker_lanes_per_process": data.get("worker_lanes_per_process"),
+        "worker_process_slots": data.get("worker_process_slots"),
+        "max_lanes_per_process": data.get("max_lanes_per_process"),
+        "poll_interval_seconds": data.get("poll_interval_seconds"),
+        "stage_concurrency": (data.get("stage_concurrency") or {}).get("kb_pipeline_stage", {}),
+        "lane_concurrency": (data.get("lane_concurrency") or {}).get("kb_pipeline_stage", {}),
+    }
+
+
+def _annotate_queue_limits(snapshot: dict[str, Any], worker_config: dict[str, Any]) -> None:
+    stages = snapshot.get("stages") or []
+    lane_running = {
+        row.get("lane_key") or "": int(row.get("running") or 0)
+        for row in snapshot.get("lane_running") or []
+        if isinstance(row, dict)
+    }
+    stage_limits = worker_config.get("stage_concurrency") or {}
+    lane_limits = worker_config.get("lane_concurrency") or {}
+    reasons: dict[str, int] = {}
+    for item in stages:
+        if not isinstance(item, dict):
+            continue
+        stage = str(item.get("stage") or "")
+        lane = str(item.get("lane") or "")
+        ready = int(item.get("ready") or 0)
+        pending = int(item.get("pending") or 0)
+        running = int(item.get("running") or 0)
+        stage_limit = _optional_positive_int(stage_limits.get(stage))
+        lane_limit = _optional_positive_int(lane_limits.get(lane))
+        current_lane_running = lane_running.get(lane, 0)
+        if pending <= 0:
+            reason = "no_pending"
+        elif ready <= 0:
+            reason = "blocked_not_ready"
+        elif stage_limit is not None and running >= stage_limit:
+            reason = "stage_concurrency_full"
+        elif lane_limit is not None and current_lane_running >= lane_limit:
+            reason = "lane_concurrency_full"
+        else:
+            reason = "ready_waiting_for_worker_poll_or_free_worker"
+        item["configured_stage_concurrency"] = stage_limit
+        item["configured_lane_concurrency"] = lane_limit
+        item["lane_running"] = current_lane_running
+        item["pending_diagnosis"] = reason
+        reasons[reason] = reasons.get(reason, 0) + pending
+    snapshot["pending_diagnosis_summary"] = reasons
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _project_python(repo_root: Path) -> str:
