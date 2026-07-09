@@ -18,6 +18,7 @@ from app.services.task_worker import register_task_handler
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models import KbSourceFileManifest
 from .document_service import SUPPORTED_EXTENSIONS, register_document
 
 DEFAULT_IMPORT_EXTENSIONS = {
@@ -25,6 +26,15 @@ DEFAULT_IMPORT_EXTENSIONS = {
     "jpg", "jpeg", "png", "webp", "bmp", "tiff", "txt", "md",
 }
 VIDEO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "wmv", "flv", "m4v"}
+EXCLUDED_SOURCE_DIR_NAMES = {
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    ".Spotlight-V100",
+    ".TemporaryItems",
+    ".Trashes",
+    ".fseventsd",
+    ".accelerate",
+}
 ENTERPRISE_IMPORT_SCAN_TASK = "kb_enterprise_import"
 ENTERPRISE_IMPORT_FILE_TASK = "kb_enterprise_import_file"
 
@@ -49,6 +59,14 @@ def _file_md5(path: Path) -> str:
     return digest.hexdigest()
 
 
+def is_ignored_source_path(path: Path) -> bool:
+    parts = set(path.parts)
+    if parts.intersection(EXCLUDED_SOURCE_DIR_NAMES):
+        return True
+    name = path.name
+    return name.startswith(("~$", "._")) or name.endswith((".tmp", ".temp"))
+
+
 def _relative_import_path(target_root_name: str, relative_path: Path) -> str:
     parent = relative_path.parent
     if str(parent) == ".":
@@ -59,6 +77,8 @@ def _relative_import_path(target_root_name: str, relative_path: Path) -> str:
 def _iter_source_files(source_root: Path, extensions: set[str]) -> list[Path]:
     files: list[Path] = []
     for path in source_root.rglob("*"):
+        if is_ignored_source_path(path):
+            continue
         if not path.is_file():
             continue
         ext = path.suffix.lower().lstrip(".")
@@ -276,6 +296,29 @@ async def enqueue_enterprise_source_import(
     }
 
 
+async def _mark_source_manifest(
+    db: AsyncSession,
+    manifest_id: int,
+    *,
+    status: str,
+    file_id: int | None = None,
+    document_id: int | None = None,
+    error_message: str | None = None,
+    md5_hash: str | None = None,
+) -> None:
+    manifest = await db.get(KbSourceFileManifest, int(manifest_id))
+    if manifest is None:
+        return
+    manifest.import_status = status
+    manifest.error_message = error_message
+    if file_id is not None:
+        manifest.file_id = int(file_id)
+    if document_id is not None:
+        manifest.document_id = int(document_id)
+    if md5_hash is not None:
+        manifest.md5_hash = md5_hash
+
+
 async def _import_one_enterprise_source_file(params: dict) -> dict:
     owner_id = int(params.get("owner_id") or params.get("creator_id") or 0)
     if owner_id <= 0:
@@ -284,11 +327,41 @@ async def _import_one_enterprise_source_file(params: dict) -> dict:
     source_path = Path(str(params.get("source_path") or "")).expanduser().resolve()
     target_root_name = str(params.get("target_root_name") or "企业微盘导入")
     skip_existing_md5 = bool(params.get("skip_existing_md5", True))
+    source_manifest_id = int(params.get("source_manifest_id") or 0)
 
     if not source_root.exists() or not source_root.is_dir():
+        if source_manifest_id > 0:
+            async with AsyncSessionLocal() as db:
+                await _mark_source_manifest(
+                    db,
+                    source_manifest_id,
+                    status="error",
+                    error_message="source_root_unavailable",
+                )
+                await db.commit()
         raise ValidationError("source_root must be an existing directory")
     if not source_path.exists() or not source_path.is_file():
+        if source_manifest_id > 0:
+            async with AsyncSessionLocal() as db:
+                await _mark_source_manifest(
+                    db,
+                    source_manifest_id,
+                    status="missing",
+                    error_message="source_file_missing",
+                )
+                await db.commit()
         return {"skipped": True, "reason": "source_file_missing", "source_path": str(source_path)}
+    if is_ignored_source_path(source_path):
+        if source_manifest_id > 0:
+            async with AsyncSessionLocal() as db:
+                await _mark_source_manifest(
+                    db,
+                    source_manifest_id,
+                    status="skipped",
+                    error_message="ignored_source_path",
+                )
+                await db.commit()
+        return {"skipped": True, "reason": "ignored_source_path", "source_path": str(source_path)}
     if not source_path.is_relative_to(source_root):
         raise ValidationError("source_path must be inside source_root")
 
@@ -299,6 +372,15 @@ async def _import_one_enterprise_source_file(params: dict) -> dict:
     try:
         md5_hash = _file_md5(source_path)
     except OSError as exc:
+        if source_manifest_id > 0:
+            async with AsyncSessionLocal() as db:
+                await _mark_source_manifest(
+                    db,
+                    source_manifest_id,
+                    status="error",
+                    error_message=f"read_failed:{exc}",
+                )
+                await db.commit()
         return {"skipped": True, "reason": f"read_failed:{exc}", "path": str(relative_path)}
 
     async with AsyncSessionLocal() as db:
@@ -314,6 +396,16 @@ async def _import_one_enterprise_source_file(params: dict) -> dict:
                 if existing_target.md5_hash == md5_hash
                 else "target_name_conflict"
             )
+            if source_manifest_id > 0:
+                await _mark_source_manifest(
+                    db,
+                    source_manifest_id,
+                    status="skipped",
+                    file_id=int(existing_target.id),
+                    error_message=reason,
+                    md5_hash=md5_hash,
+                )
+                await db.commit()
             return {
                 "skipped": True,
                 "reason": reason,
@@ -331,20 +423,43 @@ async def _import_one_enterprise_source_file(params: dict) -> dict:
                 ).limit(1)
             ))
 
-        mime_type = mimetypes.guess_type(str(source_path))[0] or "application/octet-stream"
-        with tempfile.TemporaryDirectory(prefix="kb-enterprise-import-") as temp_dir:
-            temp_path = Path(temp_dir) / source_path.name
-            shutil.copy2(source_path, temp_path)
-            file_info = await upload_file_from_path(
+        try:
+            mime_type = mimetypes.guess_type(str(source_path))[0] or "application/octet-stream"
+            with tempfile.TemporaryDirectory(prefix="kb-enterprise-import-") as temp_dir:
+                temp_path = Path(temp_dir) / source_path.name
+                shutil.copy2(source_path, temp_path)
+                file_info = await upload_file_from_path(
+                    db,
+                    temp_path,
+                    source_path.name,
+                    owner_id,
+                    relative_path=target_relative_path,
+                    md5_hex=md5_hash,
+                    mime_type=mime_type,
+                )
+                doc_info = await register_document(db, int(file_info["id"]), owner_id)
+        except Exception as exc:
+            if source_manifest_id > 0:
+                await _mark_source_manifest(
+                    db,
+                    source_manifest_id,
+                    status="error",
+                    error_message=str(exc)[:2000],
+                    md5_hash=md5_hash,
+                )
+                await db.commit()
+            raise
+        if source_manifest_id > 0:
+            await _mark_source_manifest(
                 db,
-                temp_path,
-                source_path.name,
-                owner_id,
-                relative_path=target_relative_path,
-                md5_hex=md5_hash,
-                mime_type=mime_type,
+                source_manifest_id,
+                status="imported",
+                file_id=int(file_info["id"]),
+                document_id=int(doc_info["document_id"]),
+                error_message=None,
+                md5_hash=md5_hash,
             )
-            doc_info = await register_document(db, int(file_info["id"]), owner_id)
+            await db.commit()
 
     return {
         "skipped": False,

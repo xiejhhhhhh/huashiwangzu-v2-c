@@ -1,8 +1,9 @@
 """知识库分块与向量化服务。"""
 import logging
 import re
+from time import monotonic
 
-from app.services.model_services import get_embedding
+from app.services.model_services import get_embeddings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,17 @@ logger = logging.getLogger("v2.knowledge").getChild("embedding")
 MAX_CHUNK_CHARS = 512       # 每块最大字符数
 MIN_CHUNK_CHARS = 100       # 最小分块阈值（小于此值合并到前一块）
 OVERLAP_CHARS = 50          # 块间重叠字符数
+
+EMBEDDING_UNAVAILABLE_MARKERS = (
+    "llama.cpp server binary is not configured",
+    "Embedding profile not found",
+    "No primary embedding model",
+    "No server_url in embedding profile",
+    "Model '",
+)
+EMBEDDING_UNAVAILABLE_TTL_SECONDS = 300.0
+_embedding_disabled_until = 0.0
+_embedding_disabled_reason = ""
 
 
 def clean_text_for_index(value: object) -> str:
@@ -114,6 +126,24 @@ def extract_keywords(text: str, max_keywords: int = 10) -> str:
     return ", ".join(w for w, _ in sorted_words[:max_keywords])
 
 
+def _is_embedding_service_unavailable(exc: Exception) -> bool:
+    """Return true for configuration/startup failures that will repeat for every chunk."""
+    message = str(exc)
+    return any(marker in message for marker in EMBEDDING_UNAVAILABLE_MARKERS)
+
+
+def _legacy_embedding_temporarily_disabled() -> str:
+    if monotonic() < _embedding_disabled_until:
+        return _embedding_disabled_reason
+    return ""
+
+
+def _remember_legacy_embedding_unavailable(reason: str) -> None:
+    global _embedding_disabled_reason, _embedding_disabled_until
+    _embedding_disabled_reason = reason
+    _embedding_disabled_until = monotonic() + EMBEDDING_UNAVAILABLE_TTL_SECONDS
+
+
 async def chunk_and_embed(
     document_id: int,
     owner_id: int,
@@ -176,21 +206,41 @@ async def chunk_and_embed(
 
     logger.info("Chunked document_id=%d into %d chunks", document_id, len(chunks_to_store))
 
-    # 批量向量化（每批 5 个，避免请求超时）
+    # 批量向量化；配置不可用时整篇快速降级，避免每个 chunk 重复拉起失败模型。
     batch_size = 5
     total = len(chunks_to_store)
+    cached_unavailable_reason = _legacy_embedding_temporarily_disabled()
+    if cached_unavailable_reason:
+        logger.info(
+            "Embedding temporarily disabled for document_id=%d; skipped legacy kb_chunks.embedding for %d chunks: %s",
+            document_id,
+            total,
+            cached_unavailable_reason,
+        )
+        return chunks_to_store
+
+    embedding_disabled_reason: str | None = None
     for i in range(0, total, batch_size):
+        if embedding_disabled_reason:
+            break
         batch = chunks_to_store[i:i + batch_size]
         texts = [ch["text"] for ch in batch]
         try:
-            embeddings = []
-            for text in texts:
-                emb = await get_embedding(text)
-                embeddings.append(emb)
+            embeddings = await get_embeddings(texts)
             for j, emb in enumerate(embeddings):
                 if i + j < total:
                     chunks_to_store[i + j]["embedding"] = emb
         except Exception as e:
+            if _is_embedding_service_unavailable(e):
+                embedding_disabled_reason = str(e)
+                _remember_legacy_embedding_unavailable(embedding_disabled_reason)
+                logger.warning(
+                    "Embedding unavailable for document_id=%d; skipped legacy kb_chunks.embedding for %d chunks: %s",
+                    document_id,
+                    total - i,
+                    embedding_disabled_reason,
+                )
+                break
             logger.warning("Embedding batch %d failed (non-fatal): %s", i // batch_size, e)
             # 向量化失败的块 embedding 为 None，不影响后续检索（纯文本检索仍可用）
 

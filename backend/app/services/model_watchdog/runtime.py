@@ -33,6 +33,117 @@ def touch_model(record: ModelRecord) -> None:
     _atomic_write_json(_last_used_path(record.name), payload)
 
 
+def mark_model_starting(record: ModelRecord, message: str = "") -> None:
+    if record.model_type != "local":
+        return
+    now = time.time()
+    _atomic_write_json(
+        _startup_path(record.name),
+        {
+            "model": record.name,
+            "purpose": record.purpose,
+            "port": record.port,
+            "state": "starting",
+            "message": message,
+            "started_at": now,
+            "updated_at": now,
+            "last_progress_at": now,
+            "progress_reason": "launch_requested",
+            "pid": os.getpid(),
+        },
+    )
+
+
+def mark_model_loading(record: ModelRecord, *, message: str = "", details: dict | None = None) -> None:
+    if record.model_type != "local":
+        return
+    now = time.time()
+    previous = _read_json(_startup_path(record.name))
+    started_at = float(previous.get("started_at") or now)
+    payload = {
+        **previous,
+        "model": record.name,
+        "purpose": record.purpose,
+        "port": record.port,
+        "state": "loading",
+        "message": message,
+        "started_at": started_at,
+        "updated_at": now,
+        "last_progress_at": now,
+        "progress_reason": (details or {}).get("progress_reason", "loading_progress"),
+        "elapsed_seconds": max(0.0, now - started_at),
+        "pid": os.getpid(),
+    }
+    if details:
+        payload["details"] = details
+    _atomic_write_json(_startup_path(record.name), payload)
+
+
+def mark_model_healthy(record: ModelRecord, *, message: str = "", details: dict | None = None) -> None:
+    if record.model_type != "local":
+        return
+    now = time.time()
+    previous = _read_json(_startup_path(record.name))
+    started_at = float(previous.get("started_at") or now)
+    payload = {
+        **previous,
+        "model": record.name,
+        "purpose": record.purpose,
+        "port": record.port,
+        "state": "healthy",
+        "message": message,
+        "started_at": started_at,
+        "updated_at": now,
+        "last_progress_at": now,
+        "progress_reason": "health_check_passed",
+        "elapsed_seconds": max(0.0, now - started_at),
+        "pid": os.getpid(),
+    }
+    if details:
+        payload["details"] = details
+    _atomic_write_json(_startup_path(record.name), payload)
+
+
+def mark_model_failed(record: ModelRecord, *, message: str, details: dict | None = None) -> None:
+    if record.model_type != "local":
+        return
+    now = time.time()
+    previous = _read_json(_startup_path(record.name))
+    started_at = float(previous.get("started_at") or now)
+    payload = {
+        **previous,
+        "model": record.name,
+        "purpose": record.purpose,
+        "port": record.port,
+        "state": "failed",
+        "message": message,
+        "started_at": started_at,
+        "updated_at": now,
+        "elapsed_seconds": max(0.0, now - started_at),
+        "pid": os.getpid(),
+    }
+    if details:
+        payload["details"] = details
+    _atomic_write_json(_startup_path(record.name), payload)
+
+
+def model_startup_state(record: ModelRecord) -> dict:
+    state = _read_json(_startup_path(record.name))
+    if not state:
+        return {
+            "state": "unknown",
+            "message": "",
+            "started_at": None,
+            "updated_at": None,
+            "last_progress_at": None,
+            "elapsed_seconds": None,
+        }
+    now = time.time()
+    started_at = float(state.get("started_at") or 0)
+    state["elapsed_seconds"] = max(0.0, now - started_at) if started_at else None
+    return state
+
+
 @contextmanager
 def model_usage(record: ModelRecord) -> Iterator[None]:
     if record.model_type != "local":
@@ -72,6 +183,7 @@ def model_runtime_state(record: ModelRecord, now: float | None = None) -> dict:
         "idle_seconds": idle_seconds,
         "active_leases": len(active_leases),
         "leases": active_leases,
+        "startup": model_startup_state(record),
     }
 
 
@@ -99,6 +211,10 @@ def should_reap_idle_model(
 
 def _last_used_path(model_name: str) -> Path:
     return runtime_dir() / f"{model_name}.last_used.json"
+
+
+def _startup_path(model_name: str) -> Path:
+    return runtime_dir() / f"{model_name}.startup.json"
 
 
 def _lease_path(model_name: str) -> Path:

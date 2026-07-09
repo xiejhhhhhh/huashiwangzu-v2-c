@@ -87,6 +87,11 @@ from .services.rerun_planner_service import plan_pipeline_rerun
 from .services.retrieval_learning_service import reflect_retrieval_feedback
 from .services.search_service import get_document_chunks, hybrid_search
 from .services.source_file_state import get_live_document_or_raise
+from .services.source_manifest_service import (
+    enqueue_source_manifest_import,
+    scan_source_manifest,
+    source_manifest_summary,
+)
 
 logger = logging.getLogger("v2.knowledge").getChild("router")
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -1419,6 +1424,64 @@ async def _cap_enqueue_enterprise_source_import(params: dict, caller: str) -> di
             priority=priority,
         )
 
+async def _cap_scan_source_manifest(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    source_root = str(params.get("source_root", "") or "")
+    target_root_name = str(params.get("target_root_name", "企业微盘导入") or "企业微盘导入")
+    limit = int(params.get("limit", 10000) or 10000)
+    mark_missing = bool(params.get("mark_missing", False))
+    extensions_param = params.get("extensions") or []
+    if isinstance(extensions_param, str):
+        extensions = [part.strip() for part in extensions_param.split(",") if part.strip()]
+    elif isinstance(extensions_param, list):
+        extensions = [str(part).strip() for part in extensions_param if str(part).strip()]
+    else:
+        extensions = []
+    async with AsyncSessionLocal() as db:
+        return await scan_source_manifest(
+            db,
+            owner_id=owner_id,
+            source_root=source_root,
+            target_root_name=target_root_name,
+            extensions=extensions,
+            limit=limit,
+            mark_missing=mark_missing,
+        )
+
+
+async def _cap_source_manifest_summary(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    source_root = str(params.get("source_root", "") or "").strip() or None
+    async with AsyncSessionLocal() as db:
+        return await source_manifest_summary(db, owner_id=owner_id, source_root=source_root)
+
+
+async def _cap_enqueue_source_manifest_import(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    source_root = str(params.get("source_root", "") or "")
+    target_root_name = str(params.get("target_root_name", "企业微盘导入") or "企业微盘导入")
+    limit = int(params.get("limit", 1000) or 1000)
+    priority = int(params.get("priority", 8) or 8)
+    skip_existing_md5 = bool(params.get("skip_existing_md5", True))
+    extensions_param = params.get("extensions") or []
+    if isinstance(extensions_param, str):
+        extensions = [part.strip() for part in extensions_param.split(",") if part.strip()]
+    elif isinstance(extensions_param, list):
+        extensions = [str(part).strip() for part in extensions_param if str(part).strip()]
+    else:
+        extensions = []
+    async with AsyncSessionLocal() as db:
+        return await enqueue_source_manifest_import(
+            db,
+            owner_id=owner_id,
+            source_root=source_root,
+            target_root_name=target_root_name,
+            extensions=extensions,
+            limit=limit,
+            priority=priority,
+            skip_existing_md5=skip_existing_md5,
+        )
+
 # 注册对外能力：Agent 会通过 list_capabilities 自动发现 knowledge__search 等工具。
 register_capability(
     "knowledge", "search", _cap_search,
@@ -1733,6 +1796,42 @@ register_capability(
         "extensions": {"type": "array", "description": "Optional extension filter"},
         "skip_existing_md5": {"type": "boolean", "description": "Reuse existing content by md5, default true"},
         "priority": {"type": "integer", "description": "Background import task priority, default 12"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "scan_source_manifest", _cap_scan_source_manifest,
+    description="Scan an external physical source directory into a durable manifest without importing files",
+    brief="扫描外部源清单",
+    parameters={
+        "source_root": {"type": "string", "description": "Local source directory to scan"},
+        "target_root_name": {"type": "string", "description": "Target root folder name for later import"},
+        "limit": {"type": "integer", "description": "Maximum files to scan in this call, default 10000"},
+        "extensions": {"type": "array", "description": "Optional extension filter"},
+        "mark_missing": {"type": "boolean", "description": "Mark previously seen files absent from this full scan as missing"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "source_manifest_summary", _cap_source_manifest_summary,
+    description="Summarize external source manifest rows by root, extension, and import status",
+    brief="外部源清单汇总",
+    parameters={
+        "source_root": {"type": "string", "description": "Optional source root filter"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "enqueue_source_manifest_import", _cap_enqueue_source_manifest_import,
+    description="Enqueue import tasks for discovered or changed external source manifest rows",
+    brief="投递外部源清单导入",
+    parameters={
+        "source_root": {"type": "string", "description": "Manifest source root to import from"},
+        "target_root_name": {"type": "string", "description": "Target root folder name"},
+        "limit": {"type": "integer", "description": "Maximum manifest rows to enqueue, default 1000"},
+        "extensions": {"type": "array", "description": "Optional extension filter"},
+        "skip_existing_md5": {"type": "boolean", "description": "Reuse existing content by md5, default true"},
+        "priority": {"type": "integer", "description": "Background import task priority, default 8"},
     },
     min_role="admin",
 )

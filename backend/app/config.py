@@ -5,6 +5,7 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = BACKEND_DIR.parent
 BACKEND_ENV_FILE = BACKEND_DIR / ".env"
 
 
@@ -79,7 +80,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "JWT_SECRET is empty — must be set via .env or environment variable"
             )
+        self.UPLOAD_DIR = self._resolve_project_path(self.UPLOAD_DIR)
+        self.STORAGE_ROOT = self._resolve_project_path(self.STORAGE_ROOT)
         return self
+
+    @staticmethod
+    def _resolve_project_path(value: str) -> str:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return str(path.resolve())
 
 
 @lru_cache

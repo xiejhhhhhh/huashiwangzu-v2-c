@@ -367,6 +367,56 @@ def test_knowledge_concurrency_reads_models_json_between_batches(tmp_path, monke
     assert model_routing.resolve_knowledge_pipeline_priority("bad", 5) == 5
 
 
+def test_model_stage_auto_pause_updates_worker_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.json"
+    worker_path = tmp_path / "task_worker.json"
+    config_path.write_text("{}", encoding="utf-8")
+    worker_path.write_text(
+        json.dumps(
+            {
+                "paused_task_types": ["kb_enterprise_import"],
+                "paused_stages": {"kb_pipeline_stage": ["raw_text"]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_routing, "get_models_config_path", lambda: config_path)
+
+    result = model_routing.pause_model_stage_queue(
+        "profile",
+        reason="model_fallback_exhausted",
+        error_message="all fallback profiles failed",
+    )
+
+    saved = json.loads(worker_path.read_text(encoding="utf-8"))
+    assert result["paused"] is True
+    assert result["group"] == "llm"
+    assert saved["paused_task_types"] == ["kb_enterprise_import"]
+    assert saved["paused_stages"]["kb_pipeline_stage"] == ["fusion", "graph", "profile", "raw_text"]
+    assert saved["model_auto_pause"]["stage"] == "profile"
+    assert saved["model_auto_pause"]["group"] == "llm"
+
+
+def test_model_stage_auto_pause_groups_vlm_stages(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.json"
+    worker_path = tmp_path / "task_worker.json"
+    config_path.write_text("{}", encoding="utf-8")
+    worker_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(model_routing, "get_models_config_path", lambda: config_path)
+
+    result = model_routing.pause_model_stage_queue(
+        "raw_vision",
+        reason="model_fallback_exhausted",
+        error_message="vision relay failed",
+    )
+
+    saved = json.loads(worker_path.read_text(encoding="utf-8"))
+    assert result["paused"] is True
+    assert result["group"] == "vlm"
+    assert saved["paused_stages"]["kb_pipeline_stage"] == ["raw_ocr", "raw_vision"]
+
+
 @pytest.mark.asyncio
 async def test_knowledge_model_call_slot_limits_parallel_entries(monkeypatch):
     monkeypatch.setattr(model_routing, "resolve_knowledge_model_call_concurrency", lambda default=10: 1)
@@ -614,6 +664,77 @@ async def test_page_render_materializes_pages_with_independent_commits(monkeypat
     assert result["page_concurrency"] == 3
     assert max_active == 3
     assert sum(session.commits for session in sessions) == 3
+    assert db.commits == 2
+
+
+@pytest.mark.asyncio
+async def test_page_render_treats_image_zero_pages_as_one_page(monkeypatch):
+    doc = _FakeDocument()
+    doc.extension = "jpg"
+    doc.total_pages = 0
+
+    class MainDb:
+        def __init__(self):
+            self.commits = 0
+
+        async def scalar(self, _stmt):
+            return doc
+
+        async def commit(self):
+            self.commits += 1
+
+    class PageDb:
+        def __init__(self):
+            self.commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    class PageSession:
+        def __init__(self, sessions: list[PageDb]):
+            self.db = PageDb()
+            sessions.append(self.db)
+
+        async def __aenter__(self):
+            return self.db
+
+        async def __aexit__(self, *_exc_info):
+            return None
+
+    class Asset:
+        id = 99
+        width = 1600
+        height = 900
+
+    sessions: list[PageDb] = []
+    read_pages: list[int] = []
+
+    async def fake_read_image(_file_id, _user_id):
+        read_pages.append(1)
+        return b"image", "image/jpeg"
+
+    async def fake_existing(*_args, **_kwargs):
+        return None
+
+    async def fake_upsert(*_args, **_kwargs):
+        return Asset()
+
+    monkeypatch.setattr(page_asset_service, "AsyncSessionLocal", lambda: PageSession(sessions))
+    monkeypatch.setattr(page_asset_service, "_read_source_image_bytes", fake_read_image)
+    monkeypatch.setattr(page_asset_service, "_existing_page_asset", fake_existing)
+    monkeypatch.setattr(page_asset_service, "_prepare_page_asset_bytes", lambda data, mime: (data, mime, {}))
+    monkeypatch.setattr(page_asset_service, "_upsert_page_asset", fake_upsert)
+
+    db = MainDb()
+    result = await page_asset_service.materialize_page_assets_stage(db, doc.id, doc.owner_id, doc.file_id, 1)
+
+    assert result["status"] == "done"
+    assert result["total_pages"] == 1
+    assert result["assets"] == 1
+    assert result["materialized"] == 1
+    assert doc.total_pages == 1
+    assert read_pages == [1]
+    assert sum(session.commits for session in sessions) == 1
     assert db.commits == 2
 
 
@@ -1086,6 +1207,31 @@ async def test_source_validate_skips_office_lock_files(monkeypatch):
     assert db.doc.parse_status == "skipped"
     assert db.doc.vector_status == "skipped"
     assert db.doc.raw_status == "skipped"
+    assert document_service.document_deep_pipeline_complete(db.doc) is True
+    assert document_service.document_parse_allows_search(db.doc) is False
+
+
+@pytest.mark.asyncio
+async def test_source_validate_skips_windows_recycle_metadata_files(monkeypatch):
+    async def fake_source_available(*_args, **_kwargs):
+        return SimpleNamespace(available=True, physical_path=None)
+
+    monkeypatch.setattr(pipeline_service, "get_source_file_availability", fake_source_available)
+
+    db = _EmptyParseDb()
+    db.doc.filename = "$IAH7BC8"
+    db.doc.extension = "docx"
+
+    result = await pipeline_service._run_stage(
+        db,
+        doc=db.doc,
+        user_id=db.doc.owner_id,
+        stage=pipeline_service.ROOT_STAGE,
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "non_content_windows_recycle_metadata_file"
+    assert db.doc.parse_status == "skipped"
     assert document_service.document_deep_pipeline_complete(db.doc) is True
     assert document_service.document_parse_allows_search(db.doc) is False
 

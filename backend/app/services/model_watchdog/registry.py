@@ -24,6 +24,9 @@ class ModelRecord:
         launch: dict | None = None,
         auto_unload: bool = False,
         idle_timeout_seconds: int = 0,
+        launch_timeout_seconds: int = 0,
+        startup_stall_timeout_seconds: int = 0,
+        max_startup_seconds: int = 0,
     ):
         self.name = name
         self.purpose = purpose
@@ -36,6 +39,9 @@ class ModelRecord:
         self.launch = launch or {}
         self.auto_unload = auto_unload
         self.idle_timeout_seconds = idle_timeout_seconds
+        self.launch_timeout_seconds = launch_timeout_seconds
+        self.startup_stall_timeout_seconds = startup_stall_timeout_seconds
+        self.max_startup_seconds = max_startup_seconds
 
     def health_url(self) -> str:
         return f"{self.endpoint.rstrip('/')}/{self.health_path.lstrip('/')}"
@@ -53,6 +59,9 @@ class ModelRecord:
             "launch": self.launch,
             "auto_unload": self.auto_unload,
             "idle_timeout_seconds": self.idle_timeout_seconds,
+            "launch_timeout_seconds": self.launch_timeout_seconds,
+            "startup_stall_timeout_seconds": self.startup_stall_timeout_seconds,
+            "max_startup_seconds": self.max_startup_seconds,
         }
 
 
@@ -86,6 +95,27 @@ def _load_from_config() -> None:
             )
             or 0
         )
+        launch_timeout_seconds = int(
+            info.get(
+                "launch_timeout_seconds",
+                watchdog_defaults.get("launch_timeout", 0),
+            )
+            or 0
+        )
+        startup_stall_timeout_seconds = int(
+            info.get(
+                "startup_stall_timeout_seconds",
+                watchdog_defaults.get("startup_stall_timeout_seconds", 0),
+            )
+            or 0
+        )
+        max_startup_seconds = int(
+            info.get(
+                "max_startup_seconds",
+                watchdog_defaults.get("max_startup_seconds", 0),
+            )
+            or 0
+        )
         record = ModelRecord(
             name=name,
             purpose=info.get("purpose", ""),
@@ -98,6 +128,9 @@ def _load_from_config() -> None:
             launch=info.get("launch") or {},
             auto_unload=auto_unload,
             idle_timeout_seconds=idle_timeout_seconds,
+            launch_timeout_seconds=launch_timeout_seconds,
+            startup_stall_timeout_seconds=startup_stall_timeout_seconds,
+            max_startup_seconds=max_startup_seconds,
         )
         _REGISTRY[name] = record
 

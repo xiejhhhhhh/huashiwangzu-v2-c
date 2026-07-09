@@ -274,7 +274,7 @@ async def materialize_page_assets_stage(
         except Exception:
             total_pages = int(doc.total_pages or 1)
     else:
-        total_pages = int(doc.total_pages or 1)
+        total_pages = max(int(doc.total_pages or 1), 1)
     doc.total_pages = total_pages
     await db.commit()
 

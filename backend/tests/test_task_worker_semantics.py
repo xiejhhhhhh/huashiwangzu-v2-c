@@ -195,6 +195,30 @@ def test_task_worker_config_parses_explicit_lane_concurrency() -> None:
     }
 
 
+def test_task_worker_config_parses_dynamic_stage_concurrency() -> None:
+    config = task_worker._parse_worker_config({
+        "dynamic_stage_concurrency": {
+            "kb_pipeline_stage": {
+                "model_analysis": {
+                    "enabled": True,
+                    "min_per_stage": 4,
+                    "max_per_stage": 999,
+                    "fair_share_ratio": 0.75,
+                },
+                "local_preprocess": False,
+            },
+        },
+    })
+
+    model_rule = (config.dynamic_stage_concurrency or {})["kb_pipeline_stage"]["model_analysis"]
+    local_rule = (config.dynamic_stage_concurrency or {})["kb_pipeline_stage"]["local_preprocess"]
+    assert model_rule.enabled is True
+    assert model_rule.min_per_stage == 4
+    assert model_rule.max_per_stage == task_worker.ABSOLUTE_MAX_LANES_PER_PROCESS
+    assert model_rule.fair_share_ratio == 0.75
+    assert local_rule.enabled is False
+
+
 def test_task_worker_config_parses_pause_rules() -> None:
     config = task_worker._parse_worker_config({
         "paused_task_types": ["manual_task"],
@@ -390,6 +414,7 @@ async def test_task_worker_stage_dispatch_order_claims_fast_root_first() -> None
     render_stage = "page_render"
     config = task_worker._parse_worker_config({
         "claim_lock_scope": "process",
+        "paused_task_types": ["kb_pipeline_stage"],
         "stage_concurrency": {
             task_type: {
                 root_stage: 160,
@@ -435,10 +460,165 @@ async def test_task_worker_stage_dispatch_order_claims_fast_root_first() -> None
 
 
 @pytest.mark.asyncio
+async def test_task_worker_dynamic_stage_concurrency_lets_single_active_stage_use_lane_budget() -> None:
+    task_type = f"test_dynamic_single_{uuid4().hex}"
+    config = task_worker._parse_worker_config({
+        "claim_lock_scope": "process",
+        "paused_task_types": ["kb_pipeline_stage"],
+        "stage_concurrency": {
+            task_type: {
+                "fusion": 75,
+                "profile": 75,
+            },
+        },
+        "lane_concurrency": {
+            task_type: {
+                "model_analysis": 200,
+            },
+        },
+        "dynamic_stage_concurrency": {
+            task_type: {
+                "model_analysis": {
+                    "enabled": True,
+                    "max_per_stage": 200,
+                    "fair_share_ratio": 0.5,
+                },
+            },
+        },
+    })
+
+    async with AsyncSessionLocal() as db:
+        try:
+            for _ in range(75):
+                db.add(SystemTaskQueue(
+                    task_type=task_type,
+                    module="test",
+                    status="running",
+                    priority=10,
+                    parameters=json.dumps({"stage": "fusion"}),
+                    stage_key="fusion",
+                    lane_key="model_analysis",
+                    ready_status="ready",
+                    started_at=datetime.now(timezone.utc),
+                ))
+            expected = SystemTaskQueue(
+                task_type=task_type,
+                module="test",
+                status="pending",
+                priority=10,
+                parameters=json.dumps({"stage": "fusion"}),
+                stage_key="fusion",
+                lane_key="model_analysis",
+                ready_status="ready",
+            )
+            db.add(expected)
+            await db.commit()
+
+            claimed = await task_worker._claim_one_task(db, config)
+
+            assert claimed is not None
+            assert claimed.id == expected.id
+            assert claimed.stage_key == "fusion"
+        finally:
+            await db.execute(delete(SystemTaskQueue).where(SystemTaskQueue.task_type == task_type))
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_task_worker_dynamic_stage_concurrency_claims_underfilled_active_stage() -> None:
+    task_type = f"test_dynamic_balance_{uuid4().hex}"
+    config = task_worker._parse_worker_config({
+        "claim_lock_scope": "process",
+        "paused_task_types": ["kb_pipeline_stage"],
+        "stage_concurrency": {
+            task_type: {
+                "fusion": 200,
+                "graph": 200,
+                "profile": 200,
+            },
+        },
+        "lane_concurrency": {
+            task_type: {
+                "model_analysis": 198,
+            },
+        },
+        "dynamic_stage_concurrency": {
+            task_type: {
+                "model_analysis": {
+                    "enabled": True,
+                    "max_per_stage": 198,
+                    "fair_share_ratio": 1.0,
+                },
+            },
+        },
+    })
+
+    async with AsyncSessionLocal() as db:
+        try:
+            for _ in range(80):
+                db.add(SystemTaskQueue(
+                    task_type=task_type,
+                    module="test",
+                    status="running",
+                    priority=99,
+                    parameters=json.dumps({"stage": "fusion"}),
+                    stage_key="fusion",
+                    lane_key="model_analysis",
+                    ready_status="ready",
+                    started_at=datetime.now(timezone.utc),
+                ))
+            for stage in ("graph", "profile"):
+                for _ in range(20):
+                    db.add(SystemTaskQueue(
+                        task_type=task_type,
+                        module="test",
+                        status="running",
+                        priority=1,
+                        parameters=json.dumps({"stage": stage}),
+                        stage_key=stage,
+                        lane_key="model_analysis",
+                        ready_status="ready",
+                        started_at=datetime.now(timezone.utc),
+                    ))
+            db.add(SystemTaskQueue(
+                task_type=task_type,
+                module="test",
+                status="pending",
+                priority=99,
+                parameters=json.dumps({"stage": "fusion"}),
+                stage_key="fusion",
+                lane_key="model_analysis",
+                ready_status="ready",
+            ))
+            graph_task = SystemTaskQueue(
+                task_type=task_type,
+                module="test",
+                status="pending",
+                priority=1,
+                parameters=json.dumps({"stage": "graph"}),
+                stage_key="graph",
+                lane_key="model_analysis",
+                ready_status="ready",
+            )
+            db.add(graph_task)
+            await db.commit()
+
+            claimed = await task_worker._claim_one_task(db, config)
+
+            assert claimed is not None
+            assert claimed.stage_key == "graph"
+            assert claimed.id == graph_task.id
+        finally:
+            await db.execute(delete(SystemTaskQueue).where(SystemTaskQueue.task_type == task_type))
+            await db.commit()
+
+
+@pytest.mark.asyncio
 async def test_task_worker_pause_stage_skips_vlm_but_claims_local_stage() -> None:
     task_type = f"test_paused_stage_{uuid4().hex}"
     config = task_worker._parse_worker_config({
         "claim_lock_scope": "process",
+        "paused_task_types": ["kb_pipeline_stage"],
         "stage_concurrency": {
             task_type: {
                 "source_validate": 16,
@@ -492,6 +672,7 @@ async def test_task_worker_lane_concurrency_claims_model_when_local_lane_is_full
     model_stage = "profile"
     config = task_worker._parse_worker_config({
         "claim_lock_scope": "process",
+        "paused_task_types": ["kb_pipeline_stage"],
         "stage_concurrency": {
             task_type: {
                 local_stage: 40,

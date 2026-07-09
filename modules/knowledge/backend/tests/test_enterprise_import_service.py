@@ -16,9 +16,11 @@ import pytest
 
 import modules.knowledge.backend.services.enterprise_import_service as enterprise_import
 from modules.knowledge.backend.services.enterprise_import_service import (
+    _iter_source_files,
     _normalize_extensions,
     _relative_import_path,
     import_enterprise_source_batch,
+    is_ignored_source_path,
 )
 
 
@@ -56,6 +58,24 @@ def test_normalize_extensions_filters_unsupported_and_video() -> None:
 def test_relative_import_path_preserves_source_parent() -> None:
     assert _relative_import_path("企业微盘导入", Path("品牌/资料/a.pdf")) == "企业微盘导入/品牌/资料"
     assert _relative_import_path("企业微盘导入", Path("a.pdf")) == "企业微盘导入"
+
+
+def test_source_path_filter_skips_recycle_bin_and_temp_files(tmp_path: Path) -> None:
+    assert is_ignored_source_path(Path("/Volumes/新加卷/$RECYCLE.BIN/a.pdf")) is True
+    assert is_ignored_source_path(Path("/Volumes/新加卷/资料/~$lock.docx")) is True
+    assert is_ignored_source_path(Path("/Volumes/新加卷/资料/产品.pdf")) is False
+
+    source_root = tmp_path / "source"
+    keep = source_root / "资料" / "产品.pdf"
+    ignored = source_root / "$RECYCLE.BIN" / "old.pdf"
+    keep.parent.mkdir(parents=True)
+    ignored.parent.mkdir(parents=True)
+    keep.write_bytes(b"ok")
+    ignored.write_bytes(b"old")
+
+    files = _iter_source_files(source_root, {"pdf"})
+
+    assert files == [keep]
 
 
 @pytest.mark.asyncio

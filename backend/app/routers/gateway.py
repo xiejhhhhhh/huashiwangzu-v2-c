@@ -60,6 +60,12 @@ async def health(user: User = Depends(require_permission("viewer"))):
     return ApiResponse(data=result)
 
 
+@router.get("/watchdog")
+async def watchdog_status(user: User = Depends(require_permission("viewer"))):
+    from app.services.model_watchdog.watchdog import runtime_status_all
+    return ApiResponse(data=runtime_status_all())
+
+
 @router.post("/chat")
 async def chat(payload: ChatRequest, user: User = Depends(require_permission("viewer"))):
     messages = [m.model_dump() for m in payload.messages]

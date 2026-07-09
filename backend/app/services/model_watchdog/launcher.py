@@ -5,12 +5,19 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 
 from app.config import get_settings
 from app.gateway.config import get_models_config
 from app.services.model_watchdog.registry import ModelRecord
+from app.services.model_watchdog.runtime import (
+    mark_model_failed,
+    mark_model_healthy,
+    mark_model_loading,
+    mark_model_starting,
+)
 
 logger = logging.getLogger("model_watchdog.launcher")
 
@@ -20,6 +27,7 @@ _SCRIPTS_DIR = Path(__file__).parent.parent.parent.parent / "scripts" / "models"
 def launch_model(record: ModelRecord) -> None:
     config = get_settings()
     launch_cmd = _build_launch_command(record)
+    mark_model_starting(record, "launch command accepted by watchdog")
 
     screen_session = f"model_{record.name}"
 
@@ -52,8 +60,9 @@ def launch_model(record: ModelRecord) -> None:
 
     _poll_until_healthy(
         record=record,
-        timeout=config.MODEL_WATCHDOG_TIMEOUT,
+        timeout=record.launch_timeout_seconds or config.MODEL_WATCHDOG_TIMEOUT,
         interval=config.MODEL_WATCHDOG_POLL_INTERVAL,
+        launch_cmd=launch_cmd,
     )
 
 
@@ -61,15 +70,58 @@ def _poll_until_healthy(
     record: ModelRecord,
     timeout: int,
     interval: float,
+    launch_cmd: list[str] | None = None,
 ) -> None:
     health_url = record.health_url()
-    deadline = time.time() + timeout
+    start_time = time.time()
+    startup_stall_timeout = max(10, record.startup_stall_timeout_seconds or timeout)
+    max_startup_seconds = max(timeout, record.max_startup_seconds or (timeout + startup_stall_timeout))
+    last_progress_at = start_time
+    last_signal = _LoadingSignal()
 
     with httpx.Client(timeout=5, trust_env=False) as client:
-        while time.time() < deadline:
+        while True:
+            now = time.time()
+            decision = _startup_wait_decision(
+                elapsed_seconds=now - start_time,
+                seconds_since_progress=now - last_progress_at,
+                launch_timeout_seconds=timeout,
+                startup_stall_timeout_seconds=startup_stall_timeout,
+                max_startup_seconds=max_startup_seconds,
+            )
+            if not decision.continue_waiting:
+                snapshot = _model_process_snapshot(record, launch_cmd or [])
+                details = {
+                    "reason": decision.reason,
+                    "elapsed_seconds": round(now - start_time, 3),
+                    "seconds_since_progress": round(now - last_progress_at, 3),
+                    "launch_timeout_seconds": timeout,
+                    "startup_stall_timeout_seconds": startup_stall_timeout,
+                    "max_startup_seconds": max_startup_seconds,
+                    "process": snapshot,
+                }
+                message = (
+                    f"Model {record.name} did not become healthy: {decision.reason} "
+                    f"(endpoint: {health_url})"
+                )
+                mark_model_failed(record, message=message, details=details)
+                raise TimeoutError(message)
+
+            status_code: int | None = None
             try:
                 resp = client.get(health_url)
+                status_code = resp.status_code
                 if _healthy_status(record, resp.status_code):
+                    elapsed = time.time() - start_time
+                    details = {
+                        "http_status": resp.status_code,
+                        "elapsed_seconds": round(elapsed, 3),
+                    }
+                    mark_model_healthy(
+                        record,
+                        message=f"model is healthy after {elapsed:.1f}s",
+                        details=details,
+                    )
                     logger.info(
                         "Model %s is healthy (HTTP %d)", record.name, resp.status_code
                     )
@@ -77,12 +129,25 @@ def _poll_until_healthy(
             except (httpx.RequestError, httpx.TimeoutException):
                 pass
 
-            time.sleep(interval)
+            signal = _loading_signal(record, launch_cmd or [], status_code)
+            if signal.is_progress_since(last_signal):
+                last_progress_at = time.time()
+                last_signal = signal
+                mark_model_loading(
+                    record,
+                    message=f"model is loading ({signal.reason})",
+                    details={
+                        "progress_reason": signal.reason,
+                        "http_status": status_code,
+                        "process": signal.process,
+                        "elapsed_seconds": round(last_progress_at - start_time, 3),
+                        "launch_timeout_seconds": timeout,
+                        "startup_stall_timeout_seconds": startup_stall_timeout,
+                        "max_startup_seconds": max_startup_seconds,
+                    },
+                )
 
-    raise TimeoutError(
-        f"Model {record.name} did not become healthy within {timeout}s "
-        f"(endpoint: {health_url})"
-    )
+            time.sleep(interval)
 
 
 def kill_model(record: ModelRecord) -> None:
@@ -237,15 +302,161 @@ def _expand_config_value(value: str) -> str:
     return os.path.expanduser(os.path.expandvars(value))
 
 
-def _kill_processes_on_port(port: int) -> list[int]:
+class _StartupDecision(NamedTuple):
+    continue_waiting: bool
+    reason: str
+
+
+class _LoadingSignal(NamedTuple):
+    process_key: str = ""
+    rss_mb: float = 0.0
+    http_status: int | None = None
+    reason: str = "no_signal"
+    process: dict | None = None
+
+    def is_progress_since(self, previous: "_LoadingSignal") -> bool:
+        if self.http_status is not None and self.http_status != previous.http_status:
+            return True
+        if self.process_key and self.process_key != previous.process_key:
+            return True
+        if self.rss_mb > previous.rss_mb + 32:
+            return True
+        return False
+
+
+def _startup_wait_decision(
+    *,
+    elapsed_seconds: float,
+    seconds_since_progress: float,
+    launch_timeout_seconds: int,
+    startup_stall_timeout_seconds: int,
+    max_startup_seconds: int,
+) -> _StartupDecision:
+    if elapsed_seconds >= max_startup_seconds:
+        return _StartupDecision(False, "max_startup_timeout")
+    if elapsed_seconds < launch_timeout_seconds:
+        return _StartupDecision(True, "within_launch_timeout")
+    if seconds_since_progress < startup_stall_timeout_seconds:
+        return _StartupDecision(True, "loading_progress_observed")
+    return _StartupDecision(False, "loading_stalled")
+
+
+def _loading_signal(
+    record: ModelRecord,
+    launch_cmd: list[str],
+    http_status: int | None,
+) -> _LoadingSignal:
+    process = _model_process_snapshot(record, launch_cmd)
+    pids = process.get("pids", [])
+    rss_mb = float(process.get("rss_mb") or 0.0)
+    if pids and rss_mb > 0:
+        return _LoadingSignal(
+            process_key=",".join(str(pid) for pid in pids),
+            rss_mb=rss_mb,
+            http_status=http_status,
+            reason="process_rss_progress",
+            process=process,
+        )
+    if pids:
+        return _LoadingSignal(
+            process_key=",".join(str(pid) for pid in pids),
+            rss_mb=0.0,
+            http_status=http_status,
+            reason="process_detected",
+            process=process,
+        )
+    if http_status is not None:
+        return _LoadingSignal(
+            http_status=http_status,
+            reason="health_endpoint_responded",
+            process=process,
+        )
+    return _LoadingSignal(process=process)
+
+
+def _model_process_snapshot(record: ModelRecord, launch_cmd: list[str]) -> dict:
+    pids = set(_pids_on_port(record.port))
+    fragments = _process_match_fragments(record, launch_cmd)
+    if fragments:
+        pids.update(_pids_matching_fragments(fragments))
+    processes: list[dict] = []
+    total_rss = 0
+    try:
+        import psutil
+
+        for pid in sorted(pids):
+            try:
+                proc = psutil.Process(pid)
+                rss = int(proc.memory_info().rss)
+                total_rss += rss
+                processes.append({
+                    "pid": pid,
+                    "rss_mb": round(rss / 1024 / 1024, 2),
+                    "status": proc.status(),
+                    "cmdline": " ".join(proc.cmdline())[:500],
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except ImportError:
+        pass
+    return {
+        "pids": sorted(pids),
+        "rss_mb": round(total_rss / 1024 / 1024, 2),
+        "processes": processes,
+        "match_fragments": fragments,
+    }
+
+
+def _pids_on_port(port: int) -> list[int]:
     if port <= 0:
         return []
     result = _run_quiet(["lsof", "-ti", f"tcp:{port}"], timeout=5, text=True)
-    pids = sorted({
+    return sorted({
         int(line.strip())
         for line in (result.stdout or "").splitlines()
         if line.strip().isdigit()
     })
+
+
+def _process_match_fragments(record: ModelRecord, launch_cmd: list[str]) -> list[str]:
+    fragments: set[str] = set()
+    if record.startup_script:
+        fragments.add(Path(record.startup_script).name)
+    for arg in launch_cmd:
+        if not arg:
+            continue
+        path = Path(arg)
+        if path.suffix.lower() in {".gguf", ".safetensors", ".bin", ".py"}:
+            fragments.add(path.name)
+        elif "Qwen" in arg or "bge-" in arg or "gemma" in arg:
+            fragments.add(path.name or arg)
+    if record.name:
+        fragments.add(record.name)
+    return sorted(fragment for fragment in fragments if len(fragment) >= 4)
+
+
+def _pids_matching_fragments(fragments: list[str]) -> list[int]:
+    try:
+        import psutil
+
+        pids: list[int] = []
+        current_pid = os.getpid()
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            pid = int(proc.info.get("pid") or 0)
+            if pid <= 0 or pid == current_pid:
+                continue
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            if cmdline and any(fragment in cmdline for fragment in fragments):
+                pids.append(pid)
+        return pids
+    except ImportError:
+        return []
+
+
+def _kill_processes_on_port(port: int) -> list[int]:
+    if port <= 0:
+        return []
+    pids = _pids_on_port(port)
     for pid in pids:
         _terminate_process_group(pid)
     return pids

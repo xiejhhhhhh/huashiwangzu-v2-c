@@ -24,9 +24,9 @@ logger = logging.getLogger("v2.knowledge").getChild("document")
 SUPPORTED_EXTENSIONS = {
     "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "csv", "tsv", "txt", "md", "markdown",
     "json", "yaml", "yml", "eml", "msg",
-    "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg",
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "svg",
 }
-IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "svg"}
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "svg"}
 VISUAL_ASSET_EXTENSIONS = {"pdf", *IMAGE_EXTENSIONS}
 
 _ACTIVE_OR_SOURCE_ERROR_STATUSES = {
@@ -42,6 +42,7 @@ SOURCE_UNAVAILABLE_REASONS = {
 NON_CONTENT_FILE_REASONS = {
     "non_content_appledouble_sidecar",
     "non_content_office_lock_file",
+    "non_content_windows_recycle_metadata_file",
 }
 PARSER_NO_CONTENT_MARKER = "Parser returned no content blocks"
 IMAGE_VECTOR_SKIPPED_MARKER = "Image base vectorization skipped; use OCR/VLM raw outputs"

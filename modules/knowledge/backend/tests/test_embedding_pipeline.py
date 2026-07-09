@@ -36,6 +36,40 @@ _POLL_INTERVAL = 3       # 每 3 秒轮询一次
 _FRAMEWORK_READY = False
 
 
+def test_chunk_embedding_counts_uses_legacy_vector_store(monkeypatch):
+    service = _load_knowledge_service("chunk_embedding_service")
+    calls = []
+
+    class FakeDb:
+        async def scalar(self, stmt, params=None):
+            sql = str(stmt)
+            calls.append(("scalar", sql, params))
+            if "kb_chunks.embedding IS NOT NULL" in sql:
+                return 3
+            return 7
+
+    monkeypatch.setattr(
+        service,
+        "resolve_chunk_embedding_contract",
+        lambda profile_key=None: {
+            "profile_key": "bge-m3",
+            "embedding_model": "bge-m3",
+            "embedding_version": 1,
+            "dimensions": 1024,
+            "vector_store": "kb_chunks",
+        },
+    )
+
+    result = asyncio.run(service.get_chunk_embedding_counts(FakeDb(), owner_id=4, profile_key="bge-m3"))
+
+    assert result["vector_store"] == "kb_chunks"
+    assert result["eligible_chunks"] == 7
+    assert result["active_embeddings"] == 3
+    assert result["remaining"] == 4
+    assert any("kb_chunks.embedding IS NOT NULL" in call[1] for call in calls)
+    assert not any("FROM kb_chunk_embeddings" in call[1] for call in calls)
+
+
 def _uid():
     return uuid.uuid4().hex[:8]
 

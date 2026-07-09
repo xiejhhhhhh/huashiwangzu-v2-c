@@ -452,6 +452,37 @@ class KbIngestBatch(Base, TimestampMixin):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class KbSourceFileManifest(Base, TimestampMixin):
+    """外部物理源文件清单，用于增量扫描、入队和导入状态复用。"""
+    __tablename__ = "kb_source_file_manifest"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_id",
+            "source_root",
+            "relative_path",
+            name="uq_kb_source_file_manifest_owner_root_path",
+        ),
+        KB_TABLE_ARGS_EXTEND,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_root: Mapped[str] = mapped_column(String(1024), nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    source_path: Mapped[str] = mapped_column(String(3072), nullable=False)
+    target_root_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    extension: Mapped[str] = mapped_column(String(32), default="")
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    mtime_ns: Mapped[int] = mapped_column(BigInteger, default=0)
+    md5_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fingerprint: Mapped[str] = mapped_column(String(128), default="")
+    scan_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    import_status: Mapped[str] = mapped_column(String(32), default="discovered")
+    import_task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    file_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    document_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class KbValidationReport(Base, TimestampMixin):
     """V3 验收报告：保存批次覆盖、重复复用、失败项和抽检结论。"""
     __tablename__ = "kb_validation_reports"

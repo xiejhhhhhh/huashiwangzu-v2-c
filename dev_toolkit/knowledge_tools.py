@@ -10,7 +10,22 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-TOOL_NAMES = {"knowledge_pipeline_snapshot"}
+from dev_toolkit.knowledge_source_gap import (
+    normalize_extensions,
+    normalize_int_list,
+    normalize_string_list,
+    source_gap_snapshot,
+)
+from dev_toolkit.knowledge_source_manifest_audit import source_manifest_import_audit_snapshot
+
+TOOL_NAMES = {
+    "knowledge_pipeline_snapshot",
+    "knowledge_source_gap_snapshot",
+    "knowledge_source_manifest_audit",
+    "knowledge_source_manifest_summary",
+    "knowledge_source_manifest_scan",
+    "knowledge_source_manifest_enqueue",
+}
 
 
 def tool_definitions() -> list[Any]:
@@ -32,6 +47,100 @@ def tool_definitions() -> list[Any]:
                 },
             },
         ),
+        Tool(
+            name="knowledge_source_gap_snapshot",
+            description="只读统计企业微盘/外盘等文件根目录还有多少文件未注册或未完成知识库分析。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "root_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要递归统计的文件夹根名称，默认企业微盘导入、新加卷、本地资料库导入",
+                    },
+                    "root_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "可选根文件夹 ID；传入后会和 root_names 合并统计",
+                    },
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "纳入知识库分析口径的后缀白名单；默认覆盖文档、表格、PPT、文本和常见图片",
+                    },
+                    "sample_limit": {
+                        "type": "integer",
+                        "description": "每个根目录返回多少个未分析大文件样本，默认 12",
+                        "default": 12,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="knowledge_source_manifest_summary",
+            description="汇总外部物理源 manifest 状态，查看哪些文件已发现、已排队、已导入、跳过或失败。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_root": {"type": "string", "description": "可选源目录过滤，例如 /Volumes/新加卷"},
+                    "owner_id": {"type": "integer", "description": "用户 ID，默认 1"},
+                },
+            },
+        ),
+        Tool(
+            name="knowledge_source_manifest_audit",
+            description=(
+                "只读审计外部源 manifest 中 imported 行是否已落 framework_file_items、"
+                "kb_documents、kb_chunks、kb_raw_data 和 kb_pipeline_stage_runs。"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_root": {"type": "string", "description": "可选源目录过滤，例如 /Volumes/新加卷"},
+                    "owner_id": {"type": "integer", "description": "用户 ID，默认 1"},
+                    "limit": {"type": "integer", "description": "最多审计 imported manifest 行数，默认1000"},
+                    "sample_limit": {"type": "integer", "description": "最多返回异常样本数，默认25"},
+                    "stages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "关键 pipeline stage 列表；默认知识库 DAG stage",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="knowledge_source_manifest_scan",
+            description="扫描外部物理源目录并落盘 manifest，不导入文件；后续可按 manifest 增量投递。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_root": {"type": "string", "description": "源目录，例如 /Volumes/新加卷"},
+                    "target_root_name": {"type": "string", "description": "后续导入目标根目录名"},
+                    "extensions": {"type": "array", "items": {"type": "string"}, "description": "扩展名过滤"},
+                    "limit": {"type": "integer", "description": "本次最多扫描文件数，默认10000"},
+                    "mark_missing": {"type": "boolean", "description": "完整扫描时标记已消失文件"},
+                    "owner_id": {"type": "integer", "description": "用户 ID，默认 1"},
+                },
+                "required": ["source_root"],
+            },
+        ),
+        Tool(
+            name="knowledge_source_manifest_enqueue",
+            description="从已扫描 manifest 中投递未导入/变更/失败文件到现有企业源导入队列。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_root": {"type": "string", "description": "源目录，例如 /Volumes/新加卷"},
+                    "target_root_name": {"type": "string", "description": "导入目标根目录名"},
+                    "extensions": {"type": "array", "items": {"type": "string"}, "description": "扩展名过滤"},
+                    "limit": {"type": "integer", "description": "最多投递清单行数，默认1000"},
+                    "priority": {"type": "integer", "description": "导入任务优先级，默认8"},
+                    "skip_existing_md5": {"type": "boolean", "description": "是否复用同 MD5 内容，默认 true"},
+                    "owner_id": {"type": "integer", "description": "用户 ID，默认 1"},
+                },
+                "required": ["source_root"],
+            },
+        ),
     ]
 
 
@@ -40,6 +149,40 @@ def handles_tool(name: str) -> bool:
 
 
 async def handle_tool(repo_root: Path, name: str, arguments: dict[str, Any]) -> str:
+    if name == "knowledge_source_manifest_audit":
+        result = await source_manifest_import_audit_snapshot(
+            repo_root,
+            owner_id=int(arguments.get("owner_id", 1) or 1),
+            source_root=str(arguments.get("source_root", "") or ""),
+            limit=int(arguments.get("limit", 1000) or 1000),
+            sample_limit=int(arguments.get("sample_limit", 25) or 25),
+            critical_stages=normalize_string_list(arguments.get("stages")),
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    if name in {
+        "knowledge_source_manifest_summary",
+        "knowledge_source_manifest_scan",
+        "knowledge_source_manifest_enqueue",
+    }:
+        result = await _source_manifest_tool(repo_root, name, arguments)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    if name == "knowledge_source_gap_snapshot":
+        root_names = arguments.get("root_names")
+        root_ids = arguments.get("root_ids")
+        extensions = arguments.get("extensions")
+        sample_limit = int(arguments.get("sample_limit", 12) or 12)
+        snapshot = await source_gap_snapshot(
+            repo_root,
+            root_names=normalize_string_list(root_names) or [
+                "企业微盘导入",
+                "新加卷",
+                "本地资料库导入",
+            ],
+            root_ids=normalize_int_list(root_ids),
+            extensions=normalize_extensions(extensions),
+            sample_limit=max(0, sample_limit),
+        )
+        return json.dumps(snapshot, ensure_ascii=False, indent=2)
     if name != "knowledge_pipeline_snapshot":
         raise ValueError(f"未知知识库工具: {name}")
     failed_limit = int(arguments.get("failed_limit", 20) or 20)
@@ -47,6 +190,82 @@ async def handle_tool(repo_root: Path, name: str, arguments: dict[str, Any]) -> 
     snapshot = await _db_snapshot(repo_root, failed_limit=max(0, failed_limit))
     snapshot["log_summary"] = _log_summary(repo_root, max(0, log_lines))
     return json.dumps(snapshot, ensure_ascii=False, indent=2)
+
+
+async def _source_manifest_tool(repo_root: Path, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    action = name.removeprefix("knowledge_source_manifest_")
+    script = f"""
+import asyncio
+import json
+from app.database import AsyncSessionLocal
+from modules.knowledge.backend.services.source_manifest_service import (
+    enqueue_source_manifest_import,
+    scan_source_manifest,
+    source_manifest_summary,
+)
+
+ARGS = json.loads({json.dumps(json.dumps(arguments, ensure_ascii=False))})
+ACTION = {json.dumps(action)}
+
+def _string_list(value):
+    if value is None:
+        return []
+    raw = value if isinstance(value, list) else [value]
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+async def main():
+    owner_id = int(ARGS.get("owner_id", 1) or 1)
+    source_root = str(ARGS.get("source_root", "") or "")
+    async with AsyncSessionLocal() as db:
+        if ACTION == "summary":
+            return await source_manifest_summary(
+                db,
+                owner_id=owner_id,
+                source_root=source_root.strip() or None,
+            )
+        if ACTION == "scan":
+            return await scan_source_manifest(
+                db,
+                owner_id=owner_id,
+                source_root=source_root,
+                target_root_name=str(ARGS.get("target_root_name", "企业微盘导入") or "企业微盘导入"),
+                extensions=_string_list(ARGS.get("extensions")),
+                limit=int(ARGS.get("limit", 10000) or 10000),
+                mark_missing=bool(ARGS.get("mark_missing", False)),
+            )
+        if ACTION == "enqueue":
+            return await enqueue_source_manifest_import(
+                db,
+                owner_id=owner_id,
+                source_root=source_root,
+                target_root_name=str(ARGS.get("target_root_name", "企业微盘导入") or "企业微盘导入"),
+                extensions=_string_list(ARGS.get("extensions")),
+                limit=int(ARGS.get("limit", 1000) or 1000),
+                priority=int(ARGS.get("priority", 8) or 8),
+                skip_existing_md5=bool(ARGS.get("skip_existing_md5", True)),
+            )
+        raise ValueError(f"unknown source manifest action: {{ACTION}}")
+
+print(json.dumps(asyncio.run(main()), ensure_ascii=False, default=str))
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = ".:backend"
+    proc = await asyncio.create_subprocess_exec(
+        _project_python(repo_root),
+        "-c",
+        script,
+        cwd=repo_root,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return {
+            "success": False,
+            "error": stderr.decode("utf-8", errors="replace")[-4000:],
+        }
+    return json.loads(stdout.decode("utf-8"))
 
 
 async def _db_snapshot(repo_root: Path, *, failed_limit: int) -> dict[str, Any]:

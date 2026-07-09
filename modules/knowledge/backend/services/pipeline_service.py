@@ -48,6 +48,8 @@ from .document_service import (
 from .entity_service import process_document_entities_from_fusions
 from .fusion_service import fuse_all_pages
 from .model_routing import (
+    is_model_stage,
+    pause_model_stage_queue,
     resolve_knowledge_concurrency,
     resolve_knowledge_pipeline_priority,
     should_pause_after_result,
@@ -722,6 +724,19 @@ async def _pipeline_stage_handler(params: dict) -> dict:
                 result = {"document_id": document_id, "status": "skipped", "reason": source_state.reason}
             else:
                 result = {"document_id": document_id, "status": "failed", "error": str(exc)}
+                if is_model_stage(stage):
+                    pause_result = pause_model_stage_queue(
+                        stage,
+                        reason="model_fallback_exhausted",
+                        error_message=str(exc),
+                    )
+                    if pause_result.get("paused"):
+                        result["pause"] = {
+                            "status": "paused",
+                            "reason": "model_fallback_exhausted",
+                            "after_stage": stage,
+                            **pause_result,
+                        }
                 logger.error("Knowledge pipeline stage failed doc_id=%d stage=%s: %s", document_id, stage, exc)
 
         status, reason = _stage_status_from_result(result)

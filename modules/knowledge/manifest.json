@@ -589,6 +589,75 @@
       "min_role": "admin"
     },
     {
+      "action": "scan_source_manifest",
+      "description": "扫描外部物理源目录到持久清单，不直接导入文件",
+      "parameters": {
+        "source_root": {
+          "type": "string",
+          "description": "本地源目录"
+        },
+        "target_root_name": {
+          "type": "string",
+          "description": "后续导入目标根目录名"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "本次最多扫描文件数，默认10000"
+        },
+        "extensions": {
+          "type": "array",
+          "description": "可选扩展名过滤"
+        },
+        "mark_missing": {
+          "type": "boolean",
+          "description": "完整扫描时将未再出现的旧清单标记为 missing"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "source_manifest_summary",
+      "description": "按来源、扩展名和导入状态汇总外部源清单",
+      "parameters": {
+        "source_root": {
+          "type": "string",
+          "description": "可选源目录过滤"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "enqueue_source_manifest_import",
+      "description": "从外部源清单中投递尚未进入导入队列的文件",
+      "parameters": {
+        "source_root": {
+          "type": "string",
+          "description": "清单源目录"
+        },
+        "target_root_name": {
+          "type": "string",
+          "description": "目标根目录名"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "最多投递清单行数，默认1000"
+        },
+        "extensions": {
+          "type": "array",
+          "description": "可选扩展名过滤"
+        },
+        "skip_existing_md5": {
+          "type": "boolean",
+          "description": "是否复用同 MD5 内容，默认 true"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "后台导入文件任务优先级，默认8"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
       "action": "get_ocr_words",
       "description": "获取 PDF OCR 词坐标",
       "parameters": {

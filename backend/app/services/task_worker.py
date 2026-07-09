@@ -40,6 +40,14 @@ class StageConcurrencyRule:
 
 
 @dataclass(frozen=True)
+class DynamicStageConcurrencyRule:
+    enabled: bool = False
+    min_per_stage: int = 1
+    max_per_stage: int = ABSOLUTE_MAX_LANES_PER_PROCESS
+    fair_share_ratio: float = 0.5
+
+
+@dataclass(frozen=True)
 class ClaimedTask:
     id: int
     task_type: str
@@ -82,6 +90,7 @@ class WorkerConfig:
     startup_reclaim_min_age_seconds: int = 10
     stage_concurrency: dict[str, StageConcurrencyRule] | None = None
     lane_concurrency: dict[str, dict[str, int]] | None = None
+    dynamic_stage_concurrency: dict[str, dict[str, DynamicStageConcurrencyRule]] | None = None
     stage_dispatch_order: dict[str, dict[str, int]] | None = None
     paused_task_types: set[str] | None = None
     paused_stages: dict[str, set[str]] | None = None
@@ -201,6 +210,52 @@ def _parse_lane_concurrency(raw: object) -> dict[str, dict[str, int]]:
                 lane_limits[lane_key] = parsed_limit
         if lane_limits:
             rules[task_type_key] = lane_limits
+    return rules
+
+
+def _parse_dynamic_stage_concurrency(raw: object) -> dict[str, dict[str, DynamicStageConcurrencyRule]]:
+    if not isinstance(raw, dict):
+        return {}
+    rules: dict[str, dict[str, DynamicStageConcurrencyRule]] = {}
+    for task_type, task_raw in raw.items():
+        task_type_key = str(task_type or "").strip()
+        if not task_type_key or not isinstance(task_raw, dict):
+            continue
+        lane_rules: dict[str, DynamicStageConcurrencyRule] = {}
+        for lane, lane_raw in task_raw.items():
+            lane_key = str(lane or "").strip()
+            if not lane_key:
+                continue
+            if isinstance(lane_raw, bool):
+                enabled = lane_raw
+                lane_raw = {}
+            elif isinstance(lane_raw, dict):
+                enabled = _coerce_bool(lane_raw.get("enabled"), True)
+            else:
+                continue
+            lane_rules[lane_key] = DynamicStageConcurrencyRule(
+                enabled=enabled,
+                min_per_stage=_clamp_int(
+                    lane_raw.get("min_per_stage") if isinstance(lane_raw, dict) else None,
+                    1,
+                    1,
+                    ABSOLUTE_MAX_LANES_PER_PROCESS,
+                ),
+                max_per_stage=_clamp_int(
+                    lane_raw.get("max_per_stage") if isinstance(lane_raw, dict) else None,
+                    ABSOLUTE_MAX_LANES_PER_PROCESS,
+                    1,
+                    ABSOLUTE_MAX_LANES_PER_PROCESS,
+                ),
+                fair_share_ratio=_clamp_float(
+                    lane_raw.get("fair_share_ratio") if isinstance(lane_raw, dict) else None,
+                    0.5,
+                    0.0,
+                    1.0,
+                ),
+            )
+        if lane_rules:
+            rules[task_type_key] = lane_rules
     return rules
 
 
@@ -332,6 +387,9 @@ def _parse_worker_config(raw: dict | None) -> WorkerConfig:
         ),
         stage_concurrency=_parse_stage_concurrency(raw.get("stage_concurrency")),
         lane_concurrency=_parse_lane_concurrency(raw.get("lane_concurrency")),
+        dynamic_stage_concurrency=_parse_dynamic_stage_concurrency(
+            raw.get("dynamic_stage_concurrency"),
+        ),
         stage_dispatch_order=_parse_stage_dispatch_order(raw.get("stage_dispatch_order")),
         paused_task_types=_parse_paused_task_types(raw.get("paused_task_types")),
         paused_stages=_parse_paused_dimension(raw.get("paused_stages")),
@@ -686,6 +744,80 @@ def _task_allowed_by_lane_concurrency(
     )
 
 
+def _dynamic_stage_rule(
+    task_type: str,
+    lane_key: str,
+    config: WorkerConfig,
+) -> DynamicStageConcurrencyRule | None:
+    task_rules = (config.dynamic_stage_concurrency or {}).get(str(task_type or "")) or {}
+    rule = task_rules.get(str(lane_key or ""))
+    if rule is None or not rule.enabled:
+        return None
+    return rule
+
+
+def _effective_stage_running_limit(
+    *,
+    task_type: str,
+    stage_key: str,
+    lane_key: str,
+    configured_limit: int,
+    pending_counts: dict[tuple[str, str, str], int],
+    stage_lane_running_counts: dict[tuple[str, str, str], int],
+    config: WorkerConfig,
+) -> int:
+    dynamic_rule = _dynamic_stage_rule(task_type, lane_key, config)
+    if dynamic_rule is None:
+        return int(configured_limit)
+
+    lane_limit = ((config.lane_concurrency or {}).get(task_type) or {}).get(lane_key)
+    if not lane_limit:
+        return int(configured_limit)
+
+    stage_rule = (config.stage_concurrency or {}).get(task_type)
+    stage_limits = (stage_rule.stage_max_running if stage_rule else {}) or {}
+    if not stage_limits or stage_key not in stage_limits:
+        return int(configured_limit)
+
+    active_stages: list[str] = []
+    backlog_by_stage: dict[str, int] = {}
+    for candidate_stage in stage_limits:
+        if _task_paused(task_type, candidate_stage, lane_key, config=config):
+            continue
+        pending_count = pending_counts.get((task_type, candidate_stage, lane_key), 0)
+        running_count = stage_lane_running_counts.get((task_type, candidate_stage, lane_key), 0)
+        backlog = int(pending_count) + int(running_count)
+        if backlog <= 0:
+            continue
+        active_stages.append(candidate_stage)
+        backlog_by_stage[candidate_stage] = backlog
+
+    if stage_key not in active_stages:
+        return int(configured_limit)
+
+    lane_budget = max(1, min(int(lane_limit), ABSOLUTE_MAX_LANES_PER_PROCESS))
+    max_per_stage = max(
+        dynamic_rule.min_per_stage,
+        min(int(dynamic_rule.max_per_stage), lane_budget),
+    )
+    if len(active_stages) == 1:
+        return max_per_stage
+
+    active_count = max(1, len(active_stages))
+    fair_pool = int(round(lane_budget * dynamic_rule.fair_share_ratio))
+    fair_pool = max(0, min(lane_budget, fair_pool))
+    weighted_pool = max(0, lane_budget - fair_pool)
+    equal_share = fair_pool // active_count
+
+    total_backlog = max(1, sum(backlog_by_stage.values()))
+    weighted_share = int(
+        round(weighted_pool * backlog_by_stage.get(stage_key, 0) / total_backlog),
+    )
+    limit = equal_share + weighted_share
+    limit = max(int(dynamic_rule.min_per_stage), limit)
+    return min(max_per_stage, limit)
+
+
 def _concurrency_sql_filters(
     *,
     rules: dict[str, StageConcurrencyRule],
@@ -794,6 +926,55 @@ async def _select_stage_fair_task_id(
             SystemTaskQueue.scheduled_at <= now,
         ),
     )
+    pending_counts: dict[tuple[str, str, str], int] = {}
+    stage_lane_running_counts: dict[tuple[str, str, str], int] = {}
+    dynamic_task_types = {
+        task_type
+        for task_type, lane_rules in (config.dynamic_stage_concurrency or {}).items()
+        if any(rule.enabled for rule in lane_rules.values())
+    }
+    if dynamic_task_types:
+        pending_rows = await db.execute(
+            select(
+                SystemTaskQueue.task_type,
+                SystemTaskQueue.stage_key,
+                SystemTaskQueue.lane_key,
+                func.count(SystemTaskQueue.id),
+            )
+            .where(
+                ready_filter,
+                SystemTaskQueue.task_type.in_(tuple(sorted(dynamic_task_types))),
+            )
+            .group_by(
+                SystemTaskQueue.task_type,
+                SystemTaskQueue.stage_key,
+                SystemTaskQueue.lane_key,
+            )
+        )
+        for task_type, stage_key, lane_key, count in pending_rows.all():
+            if stage_key and lane_key:
+                pending_counts[(str(task_type or ""), str(stage_key or ""), str(lane_key or ""))] = int(count or 0)
+
+        running_rows = await db.execute(
+            select(
+                SystemTaskQueue.task_type,
+                SystemTaskQueue.stage_key,
+                SystemTaskQueue.lane_key,
+                func.count(SystemTaskQueue.id),
+            )
+            .where(
+                SystemTaskQueue.status == "running",
+                SystemTaskQueue.task_type.in_(tuple(sorted(dynamic_task_types))),
+            )
+            .group_by(
+                SystemTaskQueue.task_type,
+                SystemTaskQueue.stage_key,
+                SystemTaskQueue.lane_key,
+            )
+        )
+        for task_type, stage_key, lane_key, count in running_rows.all():
+            if stage_key and lane_key:
+                stage_lane_running_counts[(str(task_type or ""), str(stage_key or ""), str(lane_key or ""))] = int(count or 0)
 
     for task_type, rule in sorted(rules.items()):
         stage_limits = rule.stage_max_running or {}
@@ -803,7 +984,8 @@ async def _select_stage_fair_task_id(
             if config.claim_lock_scope == "none" and not await _try_claim_group_lock(db, task_type, stage_key):
                 continue
             running_count = running_counts.get((task_type, stage_key), 0)
-            if running_count >= limit:
+            stage_has_dynamic_rule = bool((config.dynamic_stage_concurrency or {}).get(task_type))
+            if not stage_has_dynamic_rule and running_count >= limit:
                 continue
             row = await db.execute(
                 select(
@@ -834,6 +1016,17 @@ async def _select_stage_fair_task_id(
             lane_running_count = lane_running_counts.get((str(candidate.task_type or ""), lane_key), 0)
             if lane_limit > 0 and lane_running_count >= lane_limit:
                 continue
+            effective_limit = _effective_stage_running_limit(
+                task_type=str(candidate.task_type or ""),
+                stage_key=stage_key,
+                lane_key=lane_key,
+                configured_limit=int(limit),
+                pending_counts=pending_counts,
+                stage_lane_running_counts=stage_lane_running_counts,
+                config=config,
+            )
+            if running_count >= effective_limit:
+                continue
             candidates.append(
                 _ClaimCandidate(
                     id=int(candidate.id),
@@ -843,7 +1036,7 @@ async def _select_stage_fair_task_id(
                     priority=int(candidate.priority or 0),
                     created_at=candidate.created_at,
                     running_count=running_count,
-                    running_limit=int(limit),
+                    running_limit=effective_limit,
                     lane_running_count=lane_running_count,
                     lane_running_limit=lane_limit,
                     dispatch_rank=(dispatch_order.get(str(candidate.task_type or "")) or {}).get(stage_key, 1_000_000),
@@ -1345,6 +1538,18 @@ def worker_health() -> dict:
         task_type: dict(rule or {})
         for task_type, rule in (_runtime_config.lane_concurrency or {}).items()
     }
+    dynamic_stage_concurrency = {
+        task_type: {
+            lane_key: {
+                "enabled": rule.enabled,
+                "min_per_stage": rule.min_per_stage,
+                "max_per_stage": rule.max_per_stage,
+                "fair_share_ratio": rule.fair_share_ratio,
+            }
+            for lane_key, rule in lane_rules.items()
+        }
+        for task_type, lane_rules in (_runtime_config.dynamic_stage_concurrency or {}).items()
+    }
     paused_stages = {
         task_type: sorted(values)
         for task_type, values in (_runtime_config.paused_stages or {}).items()
@@ -1377,6 +1582,7 @@ def worker_health() -> dict:
         "registered_handlers": sorted(_HANDLERS.keys()),
         "stage_concurrency": stage_concurrency,
         "lane_concurrency": lane_concurrency,
+        "dynamic_stage_concurrency": dynamic_stage_concurrency,
         "paused_task_types": sorted(_runtime_config.paused_task_types or set()),
         "paused_stages": paused_stages,
         "paused_lanes": paused_lanes,

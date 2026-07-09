@@ -4,7 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import tempfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 
@@ -14,6 +17,9 @@ logger = logging.getLogger("v2.knowledge").getChild("model_routing")
 
 KNOWLEDGE_ROUTING_KEY = "knowledge"
 DEFAULT_MODEL_CALL_GLOBAL_CONCURRENCY = 10
+PIPELINE_TASK_TYPE = "kb_pipeline_stage"
+LLM_STAGES = {"fusion", "profile", "graph"}
+VLM_STAGES = {"raw_ocr", "raw_vision"}
 
 _model_call_active = 0
 _model_call_condition: asyncio.Condition | None = None
@@ -126,6 +132,114 @@ def should_pause_after_result(result: dict[str, Any]) -> bool:
     if not pause_after_model_fallback():
         return False
     return bool(result.get("model_degraded"))
+
+
+def is_model_stage(stage: str) -> bool:
+    return stage in LLM_STAGES or stage in VLM_STAGES
+
+
+def model_stage_group(stage: str) -> str:
+    if stage in VLM_STAGES:
+        return "vlm"
+    if stage in LLM_STAGES:
+        return "llm"
+    return "unknown"
+
+
+def model_stage_group_members(stage: str) -> set[str]:
+    if stage in VLM_STAGES:
+        return set(VLM_STAGES)
+    if stage in LLM_STAGES:
+        return set(LLM_STAGES)
+    return {stage} if stage else set()
+
+
+def _task_worker_config_path() -> Any:
+    return get_models_config_path().with_name("task_worker.json")
+
+
+def pause_model_stage_queue(stage: str, *, reason: str, error_message: str = "") -> dict[str, Any]:
+    """Pause knowledge model stages in the worker hot-reload config.
+
+    The caller reaches this only after the gateway has exhausted its configured
+    profile/fallback attempts. Pausing pending model stages prevents a bad
+    account, relay, or local model outage from burning retries across the
+    remaining queue.
+    """
+    if not is_model_stage(stage):
+        return {"paused": False, "reason": "not_model_stage", "stage": stage}
+
+    config_path = _task_worker_config_path()
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raw = {}
+    except FileNotFoundError:
+        raw = {}
+    except Exception as exc:
+        logger.warning("Cannot read task worker config for model auto-pause: %s", exc)
+        return {"paused": False, "reason": "config_read_failed", "stage": stage, "error": str(exc)}
+
+    paused_stages = raw.get("paused_stages")
+    if not isinstance(paused_stages, dict):
+        paused_stages = {}
+    existing_raw = paused_stages.get(PIPELINE_TASK_TYPE)
+    if isinstance(existing_raw, list):
+        existing = {str(item or "").strip() for item in existing_raw if str(item or "").strip()}
+    elif str(existing_raw or "").strip():
+        existing = {str(existing_raw).strip()}
+    else:
+        existing = set()
+
+    group = model_stage_group(stage)
+    target_stages = model_stage_group_members(stage)
+    updated = sorted(existing | target_stages)
+    paused_stages[PIPELINE_TASK_TYPE] = updated
+    raw["paused_stages"] = paused_stages
+    raw["model_auto_pause"] = {
+        "enabled": True,
+        "stage": stage,
+        "group": group,
+        "paused_stages": sorted(target_stages),
+        "reason": reason,
+        "error_message": str(error_message or "")[:1000],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{config_path.name}.",
+        suffix=".tmp",
+        dir=str(config_path.parent),
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(raw, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temp_name, config_path)
+    except Exception as exc:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        logger.warning("Cannot write task worker config for model auto-pause: %s", exc)
+        return {"paused": False, "reason": "config_write_failed", "stage": stage, "error": str(exc)}
+
+    logger.error(
+        "Paused knowledge %s model stages after exhausted fallback stage=%s stages=%s reason=%s",
+        group,
+        stage,
+        ",".join(sorted(target_stages)),
+        reason,
+    )
+    return {
+        "paused": True,
+        "stage": stage,
+        "group": group,
+        "paused_stages": sorted(target_stages),
+        "reason": reason,
+    }
 
 
 def resolve_knowledge_concurrency(

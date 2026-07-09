@@ -113,6 +113,22 @@ def _hash_content(content: str) -> str:
     return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _clean_text_for_postgres(value: object) -> str:
+    return str(value or "").replace("\x00", "").strip()
+
+
+def _clean_json_for_postgres(value):
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {str(key).replace("\x00", ""): _clean_json_for_postgres(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clean_json_for_postgres(item) for item in value]
+    if isinstance(value, tuple):
+        return [_clean_json_for_postgres(item) for item in value]
+    return value
+
+
 def _strip_png_text_chunks(img_bytes: bytes) -> tuple[bytes, dict]:
     diagnostics = {
         "stripped": False,
@@ -429,6 +445,8 @@ async def _exec_round_1_text(
         error_message = str(e)
 
     duration_ms = round((perf_counter() - started) * 1000)
+    content = _clean_text_for_postgres(content)
+    error_message = _clean_text_for_postgres(error_message)
     status = "done" if content else ("failed" if error_message else "degraded")
     record = KbRawData(
         document_id=doc_id,
@@ -534,6 +552,9 @@ async def _exec_round_2_ocr(
         error_message = str(e)
 
     duration_ms = round((perf_counter() - started) * 1000)
+    content = _clean_text_for_postgres(content)
+    error_message = _clean_text_for_postgres(error_message)
+    metadata = _clean_json_for_postgres(metadata)
     status = "done" if content else ("failed" if error_message else "degraded")
     record = KbRawData(
         document_id=doc_id,
@@ -604,6 +625,9 @@ async def _exec_round_3_vision(
         error_message = str(e)
 
     duration_ms = round((perf_counter() - started) * 1000)
+    content = _clean_text_for_postgres(content)
+    error_message = _clean_text_for_postgres(error_message)
+    metadata = _clean_json_for_postgres(metadata)
     status = "done" if content else ("failed" if error_message else "degraded")
     record = KbRawData(
         document_id=doc_id,

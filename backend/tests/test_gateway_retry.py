@@ -850,6 +850,8 @@ async def test_configured_llm_chain_keeps_global_default_and_exposes_gpt55_profi
     assert knowledge_routing["stages"]["fusion"] == "deepseek-v4-flash"
     assert models_config["watchdog_defaults"]["auto_unload"] is True
     assert models_config["watchdog_defaults"]["idle_timeout_seconds"] == 180
+    assert models_config["watchdog_defaults"]["startup_stall_timeout_seconds"] == 180
+    assert models_config["watchdog_defaults"]["max_startup_seconds"] == 900
     assert get_model_type_config("vision")["primary"] == "gpt-5.5-vision"
     assert get_models_config()["providers"]["gptstore-text"]["session_affinity"]["scope"] == "request"
     assert get_models_config()["providers"]["gptstore-text"]["auth_recovery"] == {
@@ -1196,10 +1198,86 @@ def test_watchdog_record_exposes_idle_unload_policy() -> None:
         port=39999,
         auto_unload=True,
         idle_timeout_seconds=180,
+        launch_timeout_seconds=120,
+        startup_stall_timeout_seconds=180,
+        max_startup_seconds=900,
     )
 
     assert record.to_dict()["auto_unload"] is True
     assert record.to_dict()["idle_timeout_seconds"] == 180
+    assert record.to_dict()["launch_timeout_seconds"] == 120
+    assert record.to_dict()["startup_stall_timeout_seconds"] == 180
+    assert record.to_dict()["max_startup_seconds"] == 900
+
+
+def test_watchdog_startup_wait_decision_extends_while_loading_progresses() -> None:
+    decision = watchdog_launcher._startup_wait_decision(
+        elapsed_seconds=130,
+        seconds_since_progress=20,
+        launch_timeout_seconds=120,
+        startup_stall_timeout_seconds=180,
+        max_startup_seconds=900,
+    )
+
+    assert decision.continue_waiting is True
+    assert decision.reason == "loading_progress_observed"
+
+
+def test_watchdog_startup_wait_decision_fails_when_loading_stalls() -> None:
+    decision = watchdog_launcher._startup_wait_decision(
+        elapsed_seconds=320,
+        seconds_since_progress=190,
+        launch_timeout_seconds=120,
+        startup_stall_timeout_seconds=180,
+        max_startup_seconds=900,
+    )
+
+    assert decision.continue_waiting is False
+    assert decision.reason == "loading_stalled"
+
+
+def test_watchdog_loading_signal_detects_rss_growth_as_progress() -> None:
+    previous = watchdog_launcher._LoadingSignal(
+        process_key="1",
+        rss_mb=256,
+        http_status=None,
+        reason="process_rss_progress",
+        process={},
+    )
+    current = watchdog_launcher._LoadingSignal(
+        process_key="1",
+        rss_mb=320,
+        http_status=None,
+        reason="process_rss_progress",
+        process={},
+    )
+
+    assert current.is_progress_since(previous) is True
+
+
+def test_watchdog_runtime_startup_state_records_loading_status(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(watchdog_runtime, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(watchdog_runtime, "_LEASE_DIR", tmp_path / "runtime" / "leases")
+    record = ModelRecord(
+        name="demo",
+        purpose="text",
+        endpoint="http://127.0.0.1:39999",
+        health_path="/v1/models",
+        model_type="local",
+        port=39999,
+    )
+
+    watchdog_runtime.mark_model_starting(record, "launching")
+    watchdog_runtime.mark_model_loading(
+        record,
+        message="rss growing",
+        details={"progress_reason": "process_rss_progress", "process": {"rss_mb": 512}},
+    )
+    state = watchdog_runtime.model_runtime_state(record)
+
+    assert state["startup"]["state"] == "loading"
+    assert state["startup"]["message"] == "rss growing"
+    assert state["startup"]["details"]["process"]["rss_mb"] == 512
 
 
 def test_watchdog_idle_reaper_skips_active_lease(monkeypatch, tmp_path) -> None:

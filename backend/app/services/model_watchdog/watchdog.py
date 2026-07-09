@@ -151,6 +151,20 @@ def status_all() -> dict[str, bool]:
     return results
 
 
+def runtime_status_all() -> dict[str, dict]:
+    results: dict[str, dict] = {}
+    for record in list_models():
+        healthy = _check_health(record)
+        state = model_runtime_state(record)
+        results[record.name] = {
+            **state,
+            "healthy": healthy,
+            "ready": healthy,
+            "state": "healthy" if healthy else state.get("startup", {}).get("state", "unknown"),
+        }
+    return results
+
+
 def _healthy_status(record: ModelRecord, status_code: int) -> bool:
     if record.model_type == "local":
         return 200 <= status_code < 300

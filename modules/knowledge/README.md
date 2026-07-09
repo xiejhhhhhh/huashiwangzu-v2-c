@@ -55,7 +55,7 @@ Backend HTTP prefix: `/api/knowledge`
 <!-- DOCS-SYNC: section=public_actions -->
 Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
 
-Total public actions: 29
+Total public actions: 32
 
 | Action | min_role | Parameters | Purpose |
 |---|---|---|---|
@@ -68,6 +68,7 @@ Total public actions: 29
 | `classify_pipeline_debt` | `admin` | `categories`, `category`, `category_limits`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 分类历史知识库管道债，不修改队列 |
 | `derive_cognitive_index` | `admin` | `document_id`, `limit` | 按单文档重建 V3 词项、事实和因果候选派生索引 |
 | `enqueue_enterprise_source_import` | `admin` | `batch_size`, `extensions`, `priority`, `skip_existing_md5`, `source_root`, `target_root_name` | 将企业源目录扫描投递到后台队列，按文件任务导入并触发知识库分析 |
+| `enqueue_source_manifest_import` | `admin` | `extensions`, `limit`, `priority`, `skip_existing_md5`, `source_root`, `target_root_name` | 从外部源清单中投递尚未进入导入队列的文件 |
 | `enqueue_incomplete_documents` | `admin` | `dry_run`, `extensions`, `include_search_incomplete`, `limit`, `priority` | 预览或补排未完成深层知识分析的文档 |
 | `export` | `viewer` | `document_id`, `format` | 导出已解析文档（markdown/html/json） |
 | `get_block` | `viewer` | `block_id` | 按 block_id 获取内容块详情 |
@@ -87,7 +88,9 @@ Total public actions: 29
 | `reconcile_pending_pipeline_queue` | `admin` | `categories`, `category`, `category_limits`, `dry_run`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 或归档已不可执行的 pending 知识库管道队列任务，保留仍可执行的 live pending |
 | `reconcile_running_pipeline_queue` | `admin` | `categories`, `category`, `category_limits`, `dry_run`, `limit`, `limit_each`, `order`, `task_ids` | dry-run 或恢复中断的 running 知识库管道队列任务，live 任务回 pending，obsolete 任务归档 skipped |
 | `reflect_retrieval_feedback` | `admin` | `conversation_excerpt`, `query_context_id` | 根据后续对话片段复盘一次知识库检索的隐式反馈 |
+| `scan_source_manifest` | `admin` | `extensions`, `limit`, `mark_missing`, `source_root`, `target_root_name` | 扫描外部物理源目录到持久清单，不直接导入文件 |
 | `search` | `viewer` | `embedding_profile`, `query`, `top_k` | 按关键词搜索知识库，返回相关块 |
+| `source_manifest_summary` | `admin` | `source_root` | 按来源、扩展名和导入状态汇总外部源清单 |
 <!-- /DOCS-SYNC -->
 
 ## Data Ownership
@@ -127,6 +130,7 @@ Total public actions: 29
 | `kb_query_contexts` | Owned by `knowledge` module |
 | `kb_raw_data` | Owned by `knowledge` module |
 | `kb_retrieval_learning_events` | Owned by `knowledge` module |
+| `kb_source_file_manifest` | Owned by `knowledge` module |
 | `kb_term_edges` | Owned by `knowledge` module |
 | `kb_term_occurrences` | Owned by `knowledge` module |
 | `kb_terms` | Owned by `knowledge` module |

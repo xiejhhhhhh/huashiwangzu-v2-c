@@ -10,7 +10,9 @@
     "model_load_seconds": 20,
     "auto_unload": true,
     "idle_timeout_seconds": 180,
-    "idle_reap_interval_seconds": 30
+    "idle_reap_interval_seconds": 30,
+    "startup_stall_timeout_seconds": 180,
+    "max_startup_seconds": 900
   },
   "providers": {
     "opencode": {
@@ -88,9 +90,7 @@
   "fallback_policies": {
     "knowledge_text_primary": {
       "description": "Knowledge text analysis: GPTStore first, direct cloud fallback for high-throughput batch ingestion.",
-      "chain": [
-        "deepseek-v4-flash"
-      ]
+      "chain": []
     },
     "knowledge_vision_primary": {
       "description": "Knowledge vision analysis: GPTStore VLM first; failed relay/account attempts should remain retryable instead of falling back to lower-priority providers.",
@@ -99,12 +99,11 @@
   },
   "model_types": {
     "llm": {
-      "primary": "deepseek-v4-flash",
+      "primary": "gpt-5.5-knowledge",
       "fallback_on_explicit_profile": true,
       "fallback_chain": [
         "gemma-4",
-        "ollama-local",
-        "deepseek-v4-pro"
+        "ollama-local"
       ],
       "profiles": {
         "gpt-5.5-knowledge": {
@@ -299,9 +298,9 @@
   },
   "module_routing": {
     "knowledge": {
-      "default_profile": "deepseek-v4-flash",
+      "default_profile": "gpt-5.5-knowledge",
       "default_vision_profile": "gpt-5.5-vision",
-      "fallback_profile": "deepseek-v4-pro",
+      "fallback_profile": "gpt-5.5-knowledge",
       "pause_after_fallback": true,
       "pipeline_concurrency": {
         "raw_collect": 16,
@@ -322,7 +321,7 @@
         "relation_entity_candidates": 1000,
         "relation_write_batch": 100,
         "graph_write_batch": 10,
-        "model_call_global": 150
+    "model_call_global": 200
       },
       "image_preprocess": {
         "raw_ocr_max_side": 1600,
@@ -346,10 +345,10 @@
       "stages": {
         "raw_ocr": "gpt-5.5-vision",
         "raw_vision": "gpt-5.5-vision",
-        "fusion": "deepseek-v4-flash",
-        "profile": "deepseek-v4-flash",
-        "entity": "deepseek-v4-flash",
-        "legacy_page_fusion": "deepseek-v4-flash"
+        "fusion": "gpt-5.5-knowledge",
+        "profile": "gpt-5.5-knowledge",
+        "entity": "gpt-5.5-knowledge",
+        "legacy_page_fusion": "gpt-5.5-knowledge"
       }
     }
   },

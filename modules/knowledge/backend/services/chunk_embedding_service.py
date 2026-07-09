@@ -1,6 +1,7 @@
 """Versioned chunk embedding sidecar helpers."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -91,7 +92,7 @@ async def upsert_chunk_embedding(
             VALUES (
                 :owner_id, :document_id, :chunk_id, :index_layer,
                 :embedding_model, :embedding_version, :embedding_dim,
-                CAST(:embedding AS vector), :source_hash, 'active', :diagnostics_json
+                CAST(:embedding AS vector), :source_hash, 'active', CAST(:diagnostics_json AS json)
             )
             ON CONFLICT (owner_id, chunk_id, embedding_model, embedding_version)
             DO UPDATE SET
@@ -115,11 +116,14 @@ async def upsert_chunk_embedding(
             "embedding_dim": dimensions,
             "embedding": vector_literal(normalized),
             "source_hash": source_hash,
-            "diagnostics_json": {
-                "schema_version": "kb_chunk_embedding_v1",
-                "profile_key": contract["profile_key"],
-                "vector_store": contract["vector_store"],
-            },
+            "diagnostics_json": json.dumps(
+                {
+                    "schema_version": "kb_chunk_embedding_v1",
+                    "profile_key": contract["profile_key"],
+                    "vector_store": contract["vector_store"],
+                },
+                ensure_ascii=False,
+            ),
         },
     )
     return True
@@ -132,6 +136,7 @@ async def get_chunk_embedding_counts(
     profile_key: str | None = None,
 ) -> dict[str, Any]:
     contract = resolve_chunk_embedding_contract(profile_key)
+    vector_store = str(contract["vector_store"])
     eligible_total = await db.scalar(
         select(func.count(KbChunk.id))
         .select_from(KbChunk)
@@ -145,31 +150,47 @@ async def get_chunk_embedding_counts(
             KbChunk.text != "",
         )
     ) or 0
-    active_total = await db.scalar(
-        text(
-            """
-            SELECT count(*)
-            FROM kb_chunk_embeddings
-            WHERE owner_id = :owner_id
-              AND embedding_model = :embedding_model
-              AND embedding_version = :embedding_version
-              AND embedding_dim = :embedding_dim
-              AND status = 'active'
-            """
-        ),
-        {
-            "owner_id": owner_id,
-            "embedding_model": contract["embedding_model"],
-            "embedding_version": contract["embedding_version"],
-            "embedding_dim": contract["dimensions"],
-        },
-    ) or 0
+    if vector_store == "kb_chunks":
+        active_total = await db.scalar(
+            select(func.count(KbChunk.id))
+            .select_from(KbChunk)
+            .join(KbDocument, KbDocument.id == KbChunk.document_id)
+            .join(File, File.id == KbDocument.file_id)
+            .where(
+                KbChunk.owner_id == owner_id,
+                KbDocument.owner_id == owner_id,
+                KbDocument.deleted.is_(False),
+                File.deleted.is_(False),
+                KbChunk.text != "",
+                KbChunk.embedding.is_not(None),
+            )
+        ) or 0
+    else:
+        active_total = await db.scalar(
+            text(
+                """
+                SELECT count(*)
+                FROM kb_chunk_embeddings
+                WHERE owner_id = :owner_id
+                  AND embedding_model = :embedding_model
+                  AND embedding_version = :embedding_version
+                  AND embedding_dim = :embedding_dim
+                  AND status = 'active'
+                """
+            ),
+            {
+                "owner_id": owner_id,
+                "embedding_model": contract["embedding_model"],
+                "embedding_version": contract["embedding_version"],
+                "embedding_dim": contract["dimensions"],
+            },
+        ) or 0
     return {
         "profile_key": contract["profile_key"],
         "embedding_model": contract["embedding_model"],
         "embedding_version": contract["embedding_version"],
         "dimensions": contract["dimensions"],
-        "vector_store": contract["vector_store"],
+        "vector_store": vector_store,
         "eligible_chunks": int(eligible_total),
         "active_embeddings": int(active_total),
         "remaining": max(0, int(eligible_total) - int(active_total)),

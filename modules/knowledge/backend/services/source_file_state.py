@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 NON_CONTENT_FILE_REASONS = {
     "non_content_appledouble_sidecar",
     "non_content_office_lock_file",
+    "non_content_windows_recycle_metadata_file",
 }
 
 
@@ -34,6 +35,8 @@ def classify_non_content_file(file: File | None, physical_path: str | None = Non
         return "non_content_office_lock_file"
     if any(candidate.startswith("._") for candidate in candidates):
         return "non_content_appledouble_sidecar"
+    if any(candidate.startswith("$I") and len(candidate) >= 3 for candidate in candidates):
+        return "non_content_windows_recycle_metadata_file"
     if physical_path:
         try:
             with Path(physical_path).open("rb") as fh:
