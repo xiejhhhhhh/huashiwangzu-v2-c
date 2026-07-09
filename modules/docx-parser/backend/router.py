@@ -1,7 +1,10 @@
 import asyncio
+import re
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from app.core.exceptions import ValidationError
 from app.middleware.auth import require_permission
@@ -30,12 +33,15 @@ async def _parse_docx_with_repair(file_id: int, full_path: Path) -> dict:
     except DocxParseError as first_error:
         tmpdir = tempfile.mkdtemp(prefix="docx_repair_")
         try:
-            converted_path = await convert_file(full_path, "docx", tmpdir)
-            result = await asyncio.to_thread(parse_docx_file, file_id, Path(converted_path))
-            result["metadata"]["repaired_from"] = "docx"
-            result["warnings"].append("repaired_from_docx")
-            result["warnings"].append(str(first_error))
-            return result
+            try:
+                converted_path = await convert_file(full_path, "docx", tmpdir)
+                result = await asyncio.to_thread(parse_docx_file, file_id, Path(converted_path))
+                result["metadata"]["repaired_from"] = "docx"
+                result["warnings"].append("repaired_from_docx")
+                result["warnings"].append(str(first_error))
+                return result
+            except (RuntimeError, FileNotFoundError, TimeoutError, DocxParseError) as repair_error:
+                return await _parse_docx_text_fallback(file_id, full_path, first_error, repair_error, tmpdir)
         finally:
             await asyncio.to_thread(shutil.rmtree, tmpdir, True)
 
@@ -92,6 +98,44 @@ def _parser_error_message(exc: BaseException) -> str:
     return f"{PARSER_NAME} failed without diagnostic output ({type(exc).__name__})"
 
 
+async def _parse_docx_text_fallback(
+    file_id: int,
+    full_path: Path,
+    first_error: BaseException,
+    repair_error: BaseException,
+    tmpdir: str,
+) -> dict:
+    try:
+        text_path = await convert_doc_to_text_with_textutil(full_path, tmpdir, timeout_seconds=30)
+        return await asyncio.to_thread(
+            _parse_text_fallback_result,
+            file_id,
+            full_path,
+            Path(text_path).read_text(encoding="utf-8", errors="replace"),
+            "textutil_docx_text_extraction",
+            [first_error, repair_error],
+            "docx",
+        )
+    except (RuntimeError, FileNotFoundError, TimeoutError) as text_error:
+        try:
+            text = await asyncio.to_thread(_extract_docx_zip_text, full_path)
+        except (OSError, RuntimeError, zipfile.BadZipFile, ET.ParseError) as zip_error:
+            raise RuntimeError(
+                f"{_parser_error_message(repair_error)}; "
+                f"textutil fallback unavailable: {_parser_error_message(text_error)}; "
+                f"zip text fallback unavailable: {_parser_error_message(zip_error)}"
+            ) from zip_error
+        return await asyncio.to_thread(
+            _parse_text_fallback_result,
+            file_id,
+            full_path,
+            text,
+            "docx_zip_text_extraction",
+            [first_error, repair_error, text_error],
+            "docx",
+        )
+
+
 def _parse_doc_text_fallback(
     file_id: int,
     full_path: Path,
@@ -99,6 +143,24 @@ def _parse_doc_text_fallback(
     fallback_reason: BaseException | str,
 ) -> dict:
     text = text_path.read_text(encoding="utf-8", errors="replace")
+    return _parse_text_fallback_result(
+        file_id,
+        full_path,
+        text,
+        "textutil_doc_text_extraction",
+        [fallback_reason],
+        "doc",
+    )
+
+
+def _parse_text_fallback_result(
+    file_id: int,
+    full_path: Path,
+    text: str,
+    fallback_parser: str,
+    fallback_reasons: list[BaseException | str],
+    source_format: str,
+) -> dict:
     paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
     if not paragraphs and text.strip():
         paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
@@ -112,22 +174,27 @@ def _parse_doc_text_fallback(
                 "module": "docx-parser",
                 "file_id": file_id,
                 "paragraph": index,
-                "fallback": "textutil",
+                "fallback": fallback_parser,
             },
         }
         for index, paragraph in enumerate(paragraphs, start=1)
     ]
-    convert_message = (
-        _parser_error_message(fallback_reason)
-        if isinstance(fallback_reason, BaseException)
-        else str(fallback_reason).strip()
+    convert_message = "; ".join(
+        message
+        for message in (_fallback_reason_message(reason) for reason in fallback_reasons)
+        if message
+    )
+    mime_type = (
+        "application/msword"
+        if source_format == "doc"
+        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
     return {
         "schema_version": "content-ir/v1",
         "content_type": "document",
         "title": full_path.name,
         "file_id": file_id,
-        "format": "doc",
+        "format": source_format,
         "source_file_id": file_id,
         "source_module": "docx-parser",
         "parser": "docx-parser",
@@ -135,23 +202,57 @@ def _parse_doc_text_fallback(
             "module": "docx-parser",
             "file_id": file_id,
             "filename": full_path.name,
-            "mime_type": "application/msword",
+            "mime_type": mime_type,
         },
         "blocks": blocks,
         "resources": [],
         "metadata": {
             "parser": "docx-parser",
-            "format": "doc",
+            "format": source_format,
             "filename": full_path.name,
             "paragraph_count": len(blocks),
             "resource_count": 0,
-            "converted_from": "doc",
-            "fallback_parser": "textutil",
+            "converted_from": source_format,
+            "fallback_parser": fallback_parser,
             "fallback_reason": convert_message,
         },
-        "warnings": ["converted_from_doc_text_fallback", convert_message],
+        "warnings": [f"converted_from_{source_format}_text_fallback", convert_message],
         "resource_diagnostics": [],
     }
+
+
+def _fallback_reason_message(reason: BaseException | str) -> str:
+    if isinstance(reason, BaseException):
+        return _parser_error_message(reason)
+    return str(reason).strip()
+
+
+def _extract_docx_zip_text(full_path: Path) -> str:
+    with zipfile.ZipFile(full_path) as archive:
+        try:
+            document_xml = archive.read("word/document.xml")
+        except KeyError as exc:
+            raise RuntimeError("DOCX archive does not contain word/document.xml") from exc
+    root = ET.fromstring(document_xml)
+    paragraphs: list[str] = []
+    for paragraph in root.iter():
+        if not paragraph.tag.endswith("}p"):
+            continue
+        parts: list[str] = []
+        for node in paragraph.iter():
+            if node.tag.endswith("}t") and node.text:
+                parts.append(node.text)
+            elif node.tag.endswith("}tab"):
+                parts.append("\t")
+            elif node.tag.endswith("}br"):
+                parts.append("\n")
+        paragraph_text = re.sub(r"[ \t]+", " ", "".join(parts)).strip()
+        if paragraph_text:
+            paragraphs.append(paragraph_text)
+    text = "\n\n".join(paragraphs).strip()
+    if not text:
+        raise RuntimeError("DOCX zip text fallback extracted no text")
+    return text
 
 
 @router.get("/health")

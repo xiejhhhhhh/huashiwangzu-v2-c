@@ -87,12 +87,15 @@ def _poll_until_healthy(
 
 def kill_model(record: ModelRecord) -> None:
     screen_session = f"model_{record.name}"
-    subprocess.run(
-        ["screen", "-S", screen_session, "-X", "quit"],
-        capture_output=True,
-        timeout=5,
+    _run_quiet(["screen", "-S", screen_session, "-X", "quit"], timeout=5)
+    stopped_pids = _kill_processes_on_port(record.port)
+    _run_quiet(["screen", "-wipe"], timeout=5)
+    logger.info(
+        "Model %s stopped via screen session %s; port_pids=%s",
+        record.name,
+        screen_session,
+        stopped_pids,
     )
-    logger.info("Screen session %s terminated", screen_session)
 
 
 def _healthy_status(record: ModelRecord, status_code: int) -> bool:
@@ -232,3 +235,87 @@ def _format_launch_arg(value: str, mapping: dict[str, str]) -> str:
 
 def _expand_config_value(value: str) -> str:
     return os.path.expanduser(os.path.expandvars(value))
+
+
+def _kill_processes_on_port(port: int) -> list[int]:
+    if port <= 0:
+        return []
+    result = _run_quiet(["lsof", "-ti", f"tcp:{port}"], timeout=5, text=True)
+    pids = sorted({
+        int(line.strip())
+        for line in (result.stdout or "").splitlines()
+        if line.strip().isdigit()
+    })
+    for pid in pids:
+        _terminate_process_group(pid)
+    return pids
+
+
+def _terminate_process_group(pid: int) -> None:
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        children = proc.children(recursive=True)
+        targets = [*children, proc]
+        for target in targets:
+            try:
+                target.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        gone, alive = psutil.wait_procs(targets, timeout=5)
+        for target in alive:
+            try:
+                target.kill()
+            except psutil.NoSuchProcess:
+                pass
+        return
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.debug("psutil process-tree termination failed for pid %s: %s", pid, exc)
+
+    try:
+        os.kill(pid, 15)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        logger.warning("No permission to terminate model process pid %s", pid)
+        return
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not _process_alive(pid):
+            return
+        time.sleep(0.2)
+
+    try:
+        os.kill(pid, 9)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        logger.warning("No permission to kill model process pid %s", pid)
+        return
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _run_quiet(command: list[str], *, timeout: int, text: bool = False) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=text,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        logger.debug("Command failed while managing model process: %s (%s)", command, exc)
+        return subprocess.CompletedProcess(command, returncode=1, stdout="", stderr=str(exc))

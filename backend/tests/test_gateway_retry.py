@@ -19,6 +19,8 @@ from app.gateway.router import (
     _retry_delay,
 )
 from app.services.model_watchdog import launcher as watchdog_launcher
+from app.services.model_watchdog import runtime as watchdog_runtime
+from app.services.model_watchdog import watchdog as watchdog_module
 from app.services.model_watchdog.registry import ModelRecord
 
 
@@ -842,9 +844,12 @@ async def test_configured_llm_chain_keeps_global_default_and_exposes_gpt55_profi
     assert vision_profiles["gpt-5.5-vision"]["fallback_policy"] == "knowledge_vision_primary"
     assert fallback_policies["knowledge_vision_primary"]["chain"] == []
     assert vision_cfg["fallback_chain"] == []
-    assert knowledge_routing["default_profile"] == "gpt-5.5-knowledge"
-    assert knowledge_routing["fallback_profile"] == "deepseek-v4-flash"
+    assert knowledge_routing["default_profile"] == "deepseek-v4-flash"
+    assert knowledge_routing["fallback_profile"] == "deepseek-v4-pro"
     assert knowledge_routing["stages"]["raw_vision"] == "gpt-5.5-vision"
+    assert knowledge_routing["stages"]["fusion"] == "deepseek-v4-flash"
+    assert models_config["watchdog_defaults"]["auto_unload"] is True
+    assert models_config["watchdog_defaults"]["idle_timeout_seconds"] == 180
     assert get_model_type_config("vision")["primary"] == "gpt-5.5-vision"
     assert get_models_config()["providers"]["gptstore-text"]["session_affinity"]["scope"] == "request"
     assert get_models_config()["providers"]["gptstore-text"]["auth_recovery"] == {
@@ -1179,6 +1184,73 @@ def test_watchdog_llama_launch_command_fails_fast_for_missing_model(monkeypatch,
 
     with pytest.raises(FileNotFoundError, match="Configured model file missing"):
         watchdog_launcher._build_launch_command(record)
+
+
+def test_watchdog_record_exposes_idle_unload_policy() -> None:
+    record = ModelRecord(
+        name="demo",
+        purpose="text",
+        endpoint="http://127.0.0.1:39999",
+        health_path="/v1/models",
+        model_type="local",
+        port=39999,
+        auto_unload=True,
+        idle_timeout_seconds=180,
+    )
+
+    assert record.to_dict()["auto_unload"] is True
+    assert record.to_dict()["idle_timeout_seconds"] == 180
+
+
+def test_watchdog_idle_reaper_skips_active_lease(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(watchdog_runtime, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(watchdog_runtime, "_LEASE_DIR", tmp_path / "runtime" / "leases")
+    record = ModelRecord(
+        name="demo",
+        purpose="text",
+        endpoint="http://127.0.0.1:39999",
+        health_path="/v1/models",
+        model_type="local",
+        port=39999,
+        auto_unload=True,
+        idle_timeout_seconds=180,
+    )
+
+    watchdog_runtime.touch_model(record)
+    now = 10_000.0
+    monkeypatch.setattr(watchdog_runtime.time, "time", lambda: now)
+    with watchdog_runtime.model_usage(record):
+        should_reap, reason = watchdog_runtime.should_reap_idle_model(record, now=now + 500)
+
+    assert should_reap is False
+    assert reason == "active_lease"
+
+
+def test_watchdog_idle_reaper_kills_idle_healthy_model(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(watchdog_runtime, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(watchdog_runtime, "_LEASE_DIR", tmp_path / "runtime" / "leases")
+    record = ModelRecord(
+        name="demo",
+        purpose="text",
+        endpoint="http://127.0.0.1:39999",
+        health_path="/v1/models",
+        model_type="local",
+        port=39999,
+        auto_unload=True,
+        idle_timeout_seconds=180,
+    )
+    killed: list[str] = []
+
+    monkeypatch.setattr(watchdog_module, "list_local_models", lambda: [record])
+    monkeypatch.setattr(watchdog_module, "_check_health", lambda item: True)
+    monkeypatch.setattr(watchdog_module, "kill_model", lambda item: killed.append(item.name))
+    watchdog_runtime.touch_model(record)
+
+    result = watchdog_module.reap_idle_models(now=watchdog_runtime.time.time() + 181)
+
+    assert killed == ["demo"]
+    assert result["demo"]["reaped"] is True
+    assert result["demo"]["reason"] == "idle_timeout"
 
 
 @pytest.mark.asyncio

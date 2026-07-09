@@ -5,6 +5,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -43,6 +44,7 @@ model_routing = _load_service("model_routing")
 page_asset_service = _load_service("page_asset_service")
 pipeline_service = _load_service("pipeline_service")
 raw_collection_service = _load_service("raw_collection_service")
+source_file_state = _load_service("source_file_state")
 stage_result_cache_service = _load_service("stage_result_cache_service")
 
 classify_fusion_status = fusion_service.classify_fusion_status
@@ -1059,6 +1061,44 @@ async def test_pipeline_stage_artifact_records_exact_dag_stage(monkeypatch):
     assert captured["model_profile"] == "gpt-5.5-knowledge"
     assert captured["model_used"] == "deepseek-v4-flash"
     assert captured["diagnostics"]["model_diagnostics"][0]["selected_profile"] == "deepseek-v4-flash"
+
+
+@pytest.mark.asyncio
+async def test_source_validate_skips_office_lock_files(monkeypatch):
+    async def fake_source_available(*_args, **_kwargs):
+        return SimpleNamespace(available=True, physical_path=None)
+
+    monkeypatch.setattr(pipeline_service, "get_source_file_availability", fake_source_available)
+
+    db = _EmptyParseDb()
+    db.doc.filename = "~$亚捷招商话术"
+    db.doc.extension = "docx"
+
+    result = await pipeline_service._run_stage(
+        db,
+        doc=db.doc,
+        user_id=db.doc.owner_id,
+        stage=pipeline_service.ROOT_STAGE,
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "non_content_office_lock_file"
+    assert db.doc.parse_status == "skipped"
+    assert db.doc.vector_status == "skipped"
+    assert db.doc.raw_status == "skipped"
+    assert document_service.document_deep_pipeline_complete(db.doc) is True
+    assert document_service.document_parse_allows_search(db.doc) is False
+
+
+def test_appledouble_files_are_classified_from_header(tmp_path):
+    appledouble = tmp_path / "metadata.docx"
+    appledouble.write_bytes(b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X" + b"\x00" * 32)
+    file_row = SimpleNamespace(name="metadata.docx", storage_path="aa/bb/metadata.docx")
+
+    assert (
+        source_file_state.classify_non_content_file(file_row, str(appledouble))
+        == "non_content_appledouble_sidecar"
+    )
 
 
 @pytest.mark.asyncio

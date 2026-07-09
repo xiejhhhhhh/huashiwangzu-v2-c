@@ -1,12 +1,22 @@
+import asyncio
 import logging
+import time
 
 import httpx
 
-from app.services.model_watchdog.launcher import launch_model
+from app.gateway.config import get_models_config
+from app.services.model_watchdog.launcher import kill_model, launch_model
 from app.services.model_watchdog.registry import (
     ModelRecord,
     get_model,
+    list_local_models,
     list_models,
+)
+from app.services.model_watchdog.runtime import (
+    model_runtime_state,
+    model_usage,
+    should_reap_idle_model,
+    touch_model,
 )
 
 logger = logging.getLogger("model_watchdog.watchdog")
@@ -34,10 +44,12 @@ def ensure_model(name: str) -> ModelRecord:
     record = get_model(name)
 
     if _HEALTHY_CACHE.get(name):
+        touch_model(record)
         return record
 
     if _check_health(record):
         _HEALTHY_CACHE[name] = True
+        touch_model(record)
         logger.info("Model %s is already healthy, skipping launch", name)
         return record
 
@@ -53,6 +65,7 @@ def ensure_model(name: str) -> ModelRecord:
     )
     launch_model(record)
     _HEALTHY_CACHE[name] = True
+    touch_model(record)
     return record
 
 
@@ -61,6 +74,74 @@ def invalidate_cache(name: str | None = None) -> None:
         _HEALTHY_CACHE.pop(name, None)
     else:
         _HEALTHY_CACHE.clear()
+
+
+def use_model(name: str):
+    record = get_model(name)
+    return model_usage(record)
+
+
+def reap_idle_models(now: float | None = None) -> dict[str, dict]:
+    now = now or time.time()
+    results: dict[str, dict] = {}
+    for record in list_local_models():
+        healthy = _check_health(record)
+        state = model_runtime_state(record, now=now)
+        if (
+            healthy
+            and record.auto_unload
+            and record.idle_timeout_seconds > 0
+            and state.get("last_used_at") is None
+        ):
+            touch_model(record)
+            state = model_runtime_state(record, now=now)
+            results[record.name] = {
+                **state,
+                "healthy_before": healthy,
+                "reaped": False,
+                "reason": "idle_timer_started",
+            }
+            continue
+        should_reap, reason = should_reap_idle_model(record, now=now)
+        if should_reap and healthy:
+            logger.info(
+                "Reaping idle model %s after %.1fs idle (timeout=%ss)",
+                record.name,
+                state.get("idle_seconds") or 0,
+                record.idle_timeout_seconds,
+            )
+            kill_model(record)
+            invalidate_cache(record.name)
+            results[record.name] = {
+                **state,
+                "healthy_before": healthy,
+                "reaped": True,
+                "reason": reason,
+            }
+            continue
+        if not healthy:
+            invalidate_cache(record.name)
+        results[record.name] = {
+            **state,
+            "healthy_before": healthy,
+            "reaped": False,
+            "reason": reason,
+        }
+    return results
+
+
+async def idle_reaper_loop() -> None:
+    defaults = get_models_config().get("watchdog_defaults", {})
+    interval_seconds = float(defaults.get("idle_reap_interval_seconds", 30) or 30)
+    interval_seconds = max(5.0, interval_seconds)
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            await asyncio.to_thread(reap_idle_models)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Model idle reaper failed: %s", exc)
 
 
 def status_all() -> dict[str, bool]:

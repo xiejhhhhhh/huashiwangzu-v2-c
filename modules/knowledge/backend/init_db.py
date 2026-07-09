@@ -12,7 +12,7 @@ _INDEX_NAME_RE = re.compile(r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s
 
 # 知识库模块的所有表名
 KB_TABLES = [
-    "kb_catalogs", "kb_documents", "kb_chunks", "kb_page_fusions",
+    "kb_catalogs", "kb_documents", "kb_chunks", "kb_chunk_embeddings", "kb_page_fusions",
     "kb_raw_data", "kb_document_profiles", "kb_document_profile_vectors", "kb_file_relations",
     "kb_entity_dictionary", "kb_entity_aliases", "kb_disambiguation",
     "kb_graph_nodes", "kb_graph_edges", "kb_chunk_entities",
@@ -37,6 +37,17 @@ _INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_kb_chunks_owner ON kb_chunks(owner_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc_layer ON kb_chunks(document_id, index_layer)",
     "CREATE INDEX IF NOT EXISTS idx_kb_chunks_owner_layer ON kb_chunks(owner_id, index_layer)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_chunk_embeddings_chunk ON kb_chunk_embeddings(owner_id, chunk_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_chunk_embeddings_doc ON kb_chunk_embeddings(owner_id, document_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kb_chunk_embeddings_model_status ON kb_chunk_embeddings(owner_id, embedding_model, embedding_version, status)",
+    (
+        "CREATE INDEX IF NOT EXISTS idx_kb_chunk_embeddings_qwen3_8b_hnsw "
+        "ON kb_chunk_embeddings USING hnsw "
+        "((subvector(embedding::vector(4096), 1, 2000)::vector(2000)) vector_cosine_ops) "
+        "WITH (m = 16, ef_construction = 200) "
+        "WHERE embedding_model = 'qwen3-embedding-8b' AND embedding_version = 1 "
+        "AND embedding_dim = 4096 AND status = 'active'"
+    ),
     "CREATE INDEX IF NOT EXISTS idx_kb_page_fusions_doc_page ON kb_page_fusions(document_id, page)",
     "CREATE INDEX IF NOT EXISTS idx_kb_entity_dict_owner ON kb_entity_dictionary(owner_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_graph_nodes_entity ON kb_graph_nodes(entity_id)",
@@ -173,6 +184,17 @@ _MIGRATION_STATEMENTS = [
     ("kb_image_assets", "storage_path", "ALTER TABLE kb_image_assets ADD COLUMN IF NOT EXISTS storage_path VARCHAR(512)"),
     ("kb_image_assets", "mime_type", "ALTER TABLE kb_image_assets ADD COLUMN IF NOT EXISTS mime_type VARCHAR(128)"),
     ("kb_image_assets", "byte_size", "ALTER TABLE kb_image_assets ADD COLUMN IF NOT EXISTS byte_size BIGINT"),
+]
+
+_DDL_MIGRATION_STATEMENTS = [
+    (
+        "kb_chunk_embeddings_qwen3_index_expression",
+        "DROP INDEX IF EXISTS idx_kb_chunk_embeddings_qwen3_8b_hnsw",
+    ),
+    (
+        "kb_chunk_embeddings_embedding_unbounded",
+        "ALTER TABLE kb_chunk_embeddings ALTER COLUMN embedding TYPE vector USING embedding::vector",
+    ),
 ]
 
 _KNOWLEDGE_PROMPT_CATEGORY = {
@@ -376,6 +398,7 @@ async def ensure_kb_tables(db: AsyncSession) -> None:
         KbCatalog,
         KbCausalCandidate,
         KbChunk,
+        KbChunkEmbedding,
         KbChunkEntity,
         KbConclusionEvidence,
         KbContentObject,
@@ -465,6 +488,48 @@ async def ensure_migration_columns(db: AsyncSession) -> None:
     logger.info("Ensured migration columns on kb_documents and kb_page_fusions")
 
 
+async def ensure_ddl_migrations(db: AsyncSession) -> None:
+    """Run rare DDL migrations that are not simple column additions."""
+    for marker, stmt in _DDL_MIGRATION_STATEMENTS:
+        try:
+            if marker == "kb_chunk_embeddings_embedding_unbounded":
+                dim = await db.scalar(
+                    text(
+                        """
+                        SELECT a.atttypmod
+                        FROM pg_attribute a
+                        JOIN pg_class c ON c.oid = a.attrelid
+                        WHERE c.relname = 'kb_chunk_embeddings'
+                          AND a.attname = 'embedding'
+                          AND NOT a.attisdropped
+                        LIMIT 1
+                        """
+                    )
+                )
+                if dim in (None, -1):
+                    continue
+            if marker == "kb_chunk_embeddings_qwen3_index_expression":
+                indexdef = await db.scalar(
+                    text(
+                        """
+                        SELECT indexdef
+                        FROM pg_indexes
+                        WHERE schemaname = current_schema()
+                          AND indexname = 'idx_kb_chunk_embeddings_qwen3_8b_hnsw'
+                        LIMIT 1
+                        """
+                    )
+                )
+                if not indexdef or "subvector" in str(indexdef):
+                    continue
+            await db.execute(text(stmt))
+            await db.commit()
+        except Exception as e:
+            logger.warning("DDL migration skipped (%s): %s", marker, e)
+            await db.rollback()
+    logger.info("Ensured kb_* DDL migrations")
+
+
 async def ensure_prompt_templates(db: AsyncSession) -> None:
     """Seed knowledge runtime prompts into the framework prompt registry."""
     from app.models.prompt import PromptCategory, PromptTemplate
@@ -532,6 +597,7 @@ async def _run_with_startup_init_lock(db: AsyncSession) -> None:
     try:
         await ensure_kb_tables(db)
         await ensure_migration_columns(db)
+        await ensure_ddl_migrations(db)
         await ensure_kb_indexes(db)
         await ensure_prompt_templates(db)
         await ensure_query_routing_rules(db)

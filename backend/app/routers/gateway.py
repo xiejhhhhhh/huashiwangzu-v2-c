@@ -6,12 +6,14 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.schemas.common import ApiResponse
-from app.middleware.auth import require_permission
-from app.models.user import User
 from app.gateway.config import DEFAULT_MODEL
 from app.gateway.router import gateway_router
-from app.services.model_services import get_embedding, rerank as rerank_service, describe_image as describe_image_service
+from app.middleware.auth import require_permission
+from app.models.user import User
+from app.schemas.common import ApiResponse
+from app.services.model_services import describe_image as describe_image_service
+from app.services.model_services import get_embeddings
+from app.services.model_services import rerank as rerank_service
 
 logger = logging.getLogger("v2.gateway.api")
 router = APIRouter(prefix="/api/gateway", tags=["gateway"])
@@ -30,6 +32,8 @@ class ChatRequest(BaseModel):
 
 class EmbeddingRequest(BaseModel):
     texts: list[str]
+    model: str | None = None
+    profile_key: str | None = None
 
 
 class RerankRequest(BaseModel):
@@ -85,10 +89,8 @@ async def chat_stream(payload: ChatRequest, user: User = Depends(require_permiss
 
 @router.post("/embedding")
 async def embedding(payload: EmbeddingRequest, user: User = Depends(require_permission("viewer"))):
-    embeddings: list[list[float]] = []
-    for text in payload.texts:
-        vec = await get_embedding(text)
-        embeddings.append(vec)
+    profile_key = payload.profile_key or payload.model
+    embeddings = await get_embeddings(payload.texts, profile_key=profile_key)
     return ApiResponse(data={"embeddings": embeddings, "count": len(embeddings)})
 
 

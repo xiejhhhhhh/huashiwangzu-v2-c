@@ -36,10 +36,12 @@ from .analysis_artifact_service import (
 )
 from .cognitive_v3_service import derive_document_cognitive_index
 from .document_service import (
+    NON_CONTENT_FILE_REASONS,
     SOURCE_UNAVAILABLE_REASONS,
     document_deep_pipeline_complete,
     document_parse_allows_search,
     document_vector_stage_terminal,
+    mark_document_non_content_skipped,
     mark_document_source_unavailable,
     parse_and_index_document,
 )
@@ -54,7 +56,7 @@ from .page_asset_service import materialize_page_assets_stage, page_assets_compl
 from .profile_service import generate_document_profile
 from .raw_collection_service import collect_raw_stage
 from .relation_service import compute_file_relations
-from .source_file_state import get_source_file_availability, raise_if_source_unavailable
+from .source_file_state import classify_non_content_file, get_source_file_availability, raise_if_source_unavailable
 from .stage_result_cache_service import delete_stage_result_cache, write_stage_result_cache
 
 logger = logging.getLogger("v2.knowledge").getChild("pipeline")
@@ -439,10 +441,11 @@ async def _enqueue_successors(
     force_fusion: bool = False,
 ) -> list[dict]:
     enqueued: list[dict] = []
-    fresh_doc = await db.scalar(select(KbDocument).where(KbDocument.id == int(doc.id)))
-    if fresh_doc is None:
-        return enqueued
-    doc = fresh_doc
+    if hasattr(db, "scalar"):
+        fresh_doc = await db.scalar(select(KbDocument).where(KbDocument.id == int(doc.id)))
+        if fresh_doc is None:
+            return enqueued
+        doc = fresh_doc
 
     if completed_stage == ROOT_STAGE:
         visual_assets_missing = (
@@ -519,6 +522,16 @@ async def _run_stage(
             mark_document_source_unavailable(doc, source_state.reason)
             await db.commit()
             return {"document_id": int(doc.id), "status": "skipped", "reason": source_state.reason}
+        non_content_reason = classify_non_content_file(doc, source_state.physical_path)
+        if non_content_reason:
+            mark_document_non_content_skipped(doc, non_content_reason)
+            await db.commit()
+            return {
+                "document_id": int(doc.id),
+                "file_id": int(doc.file_id),
+                "status": "skipped",
+                "reason": non_content_reason,
+            }
         return {"document_id": int(doc.id), "status": "done", "reason": "source_available"}
 
     if stage == "parse_index":
@@ -612,7 +625,11 @@ def _stage_status_from_result(result: dict) -> tuple[str, str]:
 
 
 def _is_terminal_skip(reason: str) -> bool:
-    return reason in SOURCE_UNAVAILABLE_REASONS or reason in {"doc_missing", "doc_deleted"}
+    return (
+        reason in SOURCE_UNAVAILABLE_REASONS
+        or reason in NON_CONTENT_FILE_REASONS
+        or reason in {"doc_missing", "doc_deleted"}
+    )
 
 
 async def _release_stage_transaction(db: AsyncSession, *, document_id: int, stage: str) -> None:
@@ -665,15 +682,26 @@ async def _pipeline_stage_handler(params: dict) -> dict:
         try:
             await raise_if_source_unavailable(db, file_id)
             await _release_stage_transaction(db, document_id=document_id, stage=stage)
-            result = await _run_stage(
-                db,
-                doc=doc,
-                user_id=user_id,
-                stage=stage,
-                task_id=task_id,
-                force_raw=force_raw,
-                force_fusion=force_fusion,
-            )
+            non_content_reason = classify_non_content_file(doc)
+            if non_content_reason:
+                mark_document_non_content_skipped(doc, non_content_reason)
+                await db.commit()
+                result = {
+                    "document_id": document_id,
+                    "file_id": file_id,
+                    "status": "skipped",
+                    "reason": non_content_reason,
+                }
+            else:
+                result = await _run_stage(
+                    db,
+                    doc=doc,
+                    user_id=user_id,
+                    stage=stage,
+                    task_id=task_id,
+                    force_raw=force_raw,
+                    force_fusion=force_fusion,
+                )
         except Exception as exc:
             try:
                 await db.rollback()

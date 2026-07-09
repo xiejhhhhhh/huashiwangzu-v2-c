@@ -7,7 +7,10 @@
   "watchdog_defaults": {
     "poll_interval": 2.0,
     "launch_timeout": 120,
-    "model_load_seconds": 20
+    "model_load_seconds": 20,
+    "auto_unload": true,
+    "idle_timeout_seconds": 180,
+    "idle_reap_interval_seconds": 30
   },
   "providers": {
     "opencode": {
@@ -27,7 +30,13 @@
       },
       "auth_recovery": {
         "strategy": "rotate_session",
-        "status_codes": [401, 429, 502, 503, 504],
+        "status_codes": [
+          401,
+          429,
+          502,
+          503,
+          504
+        ],
         "max_attempts": 5,
         "delay_seconds": 0.2,
         "exception_names": [
@@ -79,7 +88,9 @@
   "fallback_policies": {
     "knowledge_text_primary": {
       "description": "Knowledge text analysis: GPTStore first, direct cloud fallback for high-throughput batch ingestion.",
-      "chain": ["deepseek-v4-flash"]
+      "chain": [
+        "deepseek-v4-flash"
+      ]
     },
     "knowledge_vision_primary": {
       "description": "Knowledge vision analysis: GPTStore VLM first; failed relay/account attempts should remain retryable instead of falling back to lower-priority providers.",
@@ -90,7 +101,11 @@
     "llm": {
       "primary": "deepseek-v4-flash",
       "fallback_on_explicit_profile": true,
-      "fallback_chain": ["gemma-4", "ollama-local", "deepseek-v4-pro"],
+      "fallback_chain": [
+        "gemma-4",
+        "ollama-local",
+        "deepseek-v4-pro"
+      ],
       "profiles": {
         "gpt-5.5-knowledge": {
           "provider": "gptstore-text",
@@ -167,14 +182,58 @@
     },
     "embedding": {
       "primary": "bge-m3",
+      "knowledge_sidecar_primary": "qwen3-embedding-8b",
       "fallback_chain": [],
+      "vector_stores": {
+        "kb_chunk_embeddings": {
+          "kind": "pgvector_sidecar",
+          "table": "kb_chunk_embeddings",
+          "vector_column": "embedding",
+          "dimension_mode": "dynamic",
+          "index_strategy": "partial_hnsw_by_profile_version_dimension",
+          "metadata_columns": [
+            "owner_id",
+            "document_id",
+            "chunk_id",
+            "embedding_model",
+            "embedding_version",
+            "embedding_dim",
+            "status"
+          ]
+        },
+        "kb_chunks": {
+          "kind": "legacy_pgvector_column",
+          "table": "kb_chunks",
+          "vector_column": "embedding",
+          "dimensions": 1024,
+          "migration_status": "compatibility_only"
+        }
+      },
       "profiles": {
         "bge-m3": {
           "provider": "llama",
           "model": "bge-m3",
           "server_url": "http://127.0.0.1:30000",
           "watchdog": "bge-m3",
-          "response_adapter": "openai_compat"
+          "response_adapter": "openai_compat",
+          "dimensions": 1024,
+          "embedding_version": 1,
+          "vector_store": "kb_chunks"
+        },
+        "qwen3-embedding-8b": {
+          "provider": "local-openai-compatible",
+          "model": "Qwen/Qwen3-Embedding-8B",
+          "server_url": "http://127.0.0.1:30004",
+          "watchdog": "qwen3-embedding-8b",
+          "response_adapter": "openai_compat",
+          "dimensions": 4096,
+          "embedding_version": 1,
+          "vector_store": "kb_chunk_embeddings",
+          "vector_index": "idx_kb_chunk_embeddings_qwen3_8b_hnsw",
+          "index_dimensions": 2000,
+          "index_strategy": "subvector_hnsw_then_full_vector_rerank",
+          "rerank_full_vector": true,
+          "model_path": "/Users/hekunhua/Documents/AI模型/Embedding模型/Qwen3-Embedding-8B"
         }
       }
     },
@@ -240,7 +299,7 @@
   },
   "module_routing": {
     "knowledge": {
-      "default_profile": "gpt-5.5-knowledge",
+      "default_profile": "deepseek-v4-flash",
       "default_vision_profile": "gpt-5.5-vision",
       "fallback_profile": "deepseek-v4-pro",
       "pause_after_fallback": true,
@@ -287,10 +346,10 @@
       "stages": {
         "raw_ocr": "gpt-5.5-vision",
         "raw_vision": "gpt-5.5-vision",
-        "fusion": "gpt-5.5-knowledge",
-        "profile": "gpt-5.5-knowledge",
-        "entity": "gpt-5.5-knowledge",
-        "legacy_page_fusion": "gpt-5.5-knowledge"
+        "fusion": "deepseek-v4-flash",
+        "profile": "deepseek-v4-flash",
+        "entity": "deepseek-v4-flash",
+        "legacy_page_fusion": "deepseek-v4-flash"
       }
     }
   },
@@ -307,12 +366,18 @@
         "backend": "llama.cpp",
         "model_path": "Embedding模型/bge-m3-q4_k_m.gguf",
         "args": [
-          "-m", "{model_path}",
-          "--port", "{port}",
-          "--sleep-idle-seconds", "300",
-          "-c", "8192",
-          "-ngl", "99",
-          "--pooling", "cls",
+          "-m",
+          "{model_path}",
+          "--port",
+          "{port}",
+          "--sleep-idle-seconds",
+          "300",
+          "-c",
+          "8192",
+          "-ngl",
+          "99",
+          "--pooling",
+          "cls",
           "--embeddings"
         ]
       }
@@ -329,12 +394,41 @@
         "backend": "llama.cpp",
         "model_path": "Embedding模型/bge-reranker-v2-m3-Q4_K_M.gguf",
         "args": [
-          "-m", "{model_path}",
-          "--port", "{port}",
-          "--sleep-idle-seconds", "300",
-          "-c", "8192",
-          "-ngl", "99",
+          "-m",
+          "{model_path}",
+          "--port",
+          "{port}",
+          "--sleep-idle-seconds",
+          "300",
+          "-c",
+          "8192",
+          "-ngl",
+          "99",
           "--rerank"
+        ]
+      }
+    },
+    "qwen3-embedding-8b": {
+      "purpose": "embedding",
+      "endpoint": "http://127.0.0.1:30004",
+      "health_path": "/v1/models",
+      "model_type": "local",
+      "startup_script": "",
+      "port": 30004,
+      "description": "Qwen3-Embedding-8B HF local embedding server for 4096D knowledge chunk sidecar vectors",
+      "launch": {
+        "backend": "transformers",
+        "model_path": "/Users/hekunhua/Documents/AI模型/Embedding模型/Qwen3-Embedding-8B",
+        "script_path": "/Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/scripts/models/serve_qwen3_embedding.py",
+        "command": [
+          "python3",
+          "{script_path}",
+          "--model-path",
+          "{model_path}",
+          "--port",
+          "{port}",
+          "--max-length",
+          "8192"
         ]
       }
     },
@@ -351,12 +445,18 @@
         "model_path": "图片分析模型/Qwen3VL-8B-Instruct-Q4_K_M.gguf",
         "mmproj_path": "图片分析模型/mmproj-Qwen3VL-8B-Instruct-F16.gguf",
         "args": [
-          "-m", "{model_path}",
-          "--mmproj", "{mmproj_path}",
-          "--port", "{port}",
-          "--sleep-idle-seconds", "300",
-          "-c", "32768",
-          "-ngl", "99"
+          "-m",
+          "{model_path}",
+          "--mmproj",
+          "{mmproj_path}",
+          "--port",
+          "{port}",
+          "--sleep-idle-seconds",
+          "300",
+          "-c",
+          "32768",
+          "-ngl",
+          "99"
         ]
       }
     },
@@ -372,11 +472,16 @@
         "backend": "llama.cpp",
         "model_path": "文本模型/google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
         "args": [
-          "-m", "{model_path}",
-          "--port", "{port}",
-          "--sleep-idle-seconds", "300",
-          "-c", "8192",
-          "-ngl", "99"
+          "-m",
+          "{model_path}",
+          "--port",
+          "{port}",
+          "--sleep-idle-seconds",
+          "300",
+          "-c",
+          "8192",
+          "-ngl",
+          "99"
         ]
       }
     },

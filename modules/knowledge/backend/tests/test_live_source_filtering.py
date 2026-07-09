@@ -322,6 +322,7 @@ async def _cleanup(doc_ids: list[int], file_ids: list[int]) -> None:
             await db.execute(text("DELETE FROM kb_pipeline_runs WHERE document_id = :doc_id"), {"doc_id": doc_id})
             await db.execute(text("DELETE FROM kb_raw_data WHERE document_id = :doc_id"), {"doc_id": doc_id})
             await db.execute(text("DELETE FROM kb_page_fusions WHERE document_id = :doc_id"), {"doc_id": doc_id})
+            await db.execute(text("DELETE FROM kb_chunk_embeddings WHERE document_id = :doc_id"), {"doc_id": doc_id})
             await db.execute(text("DELETE FROM kb_chunks WHERE document_id = :doc_id"), {"doc_id": doc_id})
             await db.execute(text("DELETE FROM kb_documents WHERE id = :doc_id"), {"doc_id": doc_id})
         for file_id in file_ids:
@@ -454,7 +455,7 @@ async def test_search_filters_deleted_doc_and_unavailable_source(monkeypatch: py
     marker = uuid.uuid4().hex[:8]
     docs, ids = await _create_case(marker)
     try:
-        async def fake_embedding(_query: str) -> list[float]:
+        async def fake_embedding(_query: str, *_args, **_kwargs) -> list[float]:
             return [1.0] + [0.0] * (VECTOR_SIZE - 1)
 
         async def fake_query_plan(query: str, *_args, **_kwargs) -> dict:
@@ -490,6 +491,66 @@ async def test_search_filters_deleted_doc_and_unavailable_source(monkeypatch: py
         for item in keyword_results + vector_results + hybrid_results:
             assert item["source_available"] is True
             assert item["source_state"] == "available"
+    finally:
+        await _cleanup(list(docs.values()), [ids["live_file"], ids["deleted_file"]])
+
+
+@pytest.mark.asyncio
+async def test_vector_search_uses_versioned_chunk_embedding_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = uuid.uuid4().hex[:8]
+    docs, ids = await _create_case(marker)
+    vector = "[" + ",".join(["1"] + ["0"] * 4095) + "]"
+    try:
+        async def fake_embedding(_query: str, profile_key: str | None = None) -> list[float]:
+            assert profile_key == "qwen3-embedding-8b"
+            return [1.0] + [0.0] * 4095
+
+        def fake_contract(profile_key: str | None = None) -> dict:
+            return {
+                "profile_key": profile_key or "qwen3-embedding-8b",
+                "embedding_version": 1,
+                "vector_store": "kb_chunk_embeddings",
+            }
+
+        monkeypatch.setattr(search_service, "get_embedding", fake_embedding)
+        monkeypatch.setattr(search_service, "get_embedding_profile_contract", fake_contract)
+        async with AsyncSessionLocal() as db:
+            for key in ("live", "deleted_doc", "source_deleted", "source_missing"):
+                await db.execute(
+                    text(
+                        """
+                        INSERT INTO kb_chunk_embeddings (
+                            owner_id, document_id, chunk_id, index_layer,
+                            embedding_model, embedding_version, embedding_dim,
+                            embedding, source_hash, status
+                        )
+                        VALUES (
+                            :owner_id, :document_id, :chunk_id, 'base_parse',
+                            'qwen3-embedding-8b', 1, 4096,
+                            CAST(:embedding AS vector), :source_hash, 'active'
+                        )
+                        """
+                    ),
+                    {
+                        "owner_id": OWNER_ID,
+                        "document_id": docs[key],
+                        "chunk_id": ids[key],
+                        "embedding": vector,
+                        "source_hash": f"test-{marker}-{key}",
+                    },
+                )
+            await db.commit()
+            vector_results = await vector_search(
+                db,
+                marker,
+                OWNER_ID,
+                top_k=10,
+                embedding_profile="qwen3-embedding-8b",
+            )
+
+        assert [item["document_id"] for item in vector_results] == [docs["live"]]
+        assert vector_results[0]["vector_store"] == "kb_chunk_embeddings"
+        assert vector_results[0]["embedding_model"] == "qwen3-embedding-8b"
     finally:
         await _cleanup(list(docs.values()), [ids["live_file"], ids["deleted_file"]])
 

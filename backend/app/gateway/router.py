@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
@@ -427,15 +428,16 @@ class ModelGatewayRouter:
             })
 
             effective_budget = _retry_budget_from_profile(profile, budget)
-            result = await _call_with_unified_retry(
-                provider=self.get_provider(profile["provider"]),
-                req=req,
-                model=profile["model"],
-                caller_module="gateway.chat",
-                profile_key=key,
-                provider_name=profile.get("provider", ""),
-                budget=effective_budget,
-            )
+            with _watchdog_usage_context(profile):
+                result = await _call_with_unified_retry(
+                    provider=self.get_provider(profile["provider"]),
+                    req=req,
+                    model=profile["model"],
+                    caller_module="gateway.chat",
+                    profile_key=key,
+                    provider_name=profile.get("provider", ""),
+                    budget=effective_budget,
+                )
             diagnostics["attempts"].append({
                 "profile": key,
                 "provider": profile.get("provider", ""),
@@ -519,22 +521,23 @@ class ModelGatewayRouter:
             provider = self.get_provider(profile["provider"])
             emitted_content = False
             try:
-                async for event in provider.chat_stream(
-                    messages=messages,
-                    model=profile["model"],
-                    temperature=profile["temperature"],
-                    max_tokens=profile["max_tokens"],
-                    tools=tools,
-                ):
-                    if event.get("type") == "error":
-                        last_error = str(event.get("content") or "")
-                        if is_protocol_error_text(last_error) or emitted_content:
-                            yield event
-                            return
-                        raise RuntimeError(last_error)
-                    if event.get("type") in {"token", "thinking", "tool_call"}:
-                        emitted_content = True
-                    yield event
+                with _watchdog_usage_context(profile):
+                    async for event in provider.chat_stream(
+                        messages=messages,
+                        model=profile["model"],
+                        temperature=profile["temperature"],
+                        max_tokens=profile["max_tokens"],
+                        tools=tools,
+                    ):
+                        if event.get("type") == "error":
+                            last_error = str(event.get("content") or "")
+                            if is_protocol_error_text(last_error) or emitted_content:
+                                yield event
+                                return
+                            raise RuntimeError(last_error)
+                        if event.get("type") in {"token", "thinking", "tool_call"}:
+                            emitted_content = True
+                        yield event
                 if idx > 0:
                     logger.warning("LLM stream fallback succeeded: %s", key)
                 return
@@ -641,13 +644,14 @@ class ModelGatewayRouter:
                 if profile.get("provider") == "llama":
                     await _ensure_local_vision_model(profile)
                 provider = self.get_provider(profile["provider"])
-                raw = await provider.chat(
-                    messages=messages,
-                    model=profile.get("model", key),
-                    temperature=profile.get("temperature", 0.7),
-                    max_tokens=profile.get("max_tokens", 4096),
-                    tools=None,
-                )
+                with _watchdog_usage_context(profile):
+                    raw = await provider.chat(
+                        messages=messages,
+                        model=profile.get("model", key),
+                        temperature=profile.get("temperature", 0.7),
+                        max_tokens=profile.get("max_tokens", 4096),
+                        tools=None,
+                    )
                 if "error" in raw:
                     raise RuntimeError(raw.get("content") or raw.get("error"))
                 if profile.get("provider") in ("local",):
@@ -852,3 +856,11 @@ async def _ensure_local_vision_model(profile: dict) -> None:
     if not watchdog_name:
         raise RuntimeError("Local vision model profile is missing watchdog/model in models.json")
     await to_thread(ensure_model, watchdog_name)
+
+
+def _watchdog_usage_context(profile: dict):
+    watchdog_name = profile.get("watchdog")
+    if not watchdog_name:
+        return nullcontext()
+    from app.services.model_watchdog.watchdog import use_model
+    return use_model(str(watchdog_name))

@@ -84,6 +84,33 @@ class KbChunk(Base, TimestampMixin):
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class KbChunkEmbedding(Base, TimestampMixin):
+    """Versioned chunk vector sidecar for model upgrades without rewriting kb_chunks."""
+    __tablename__ = "kb_chunk_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_id",
+            "chunk_id",
+            "embedding_model",
+            "embedding_version",
+            name="uq_kb_chunk_embeddings_owner_chunk_model_version",
+        ),
+        KB_TABLE_ARGS_EXTEND,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chunk_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    index_layer: Mapped[str] = mapped_column(String(32), default="base_parse")
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_version: Mapped[int] = mapped_column(Integer, default=1)
+    embedding_dim: Mapped[int] = mapped_column(Integer, default=0)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    diagnostics_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
 class KbPageFusion(Base, TimestampMixin):
     """页级融合：三轮交叉印证后的单页权威描述（第4层）。"""
     __tablename__ = "kb_page_fusions"

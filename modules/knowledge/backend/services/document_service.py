@@ -39,6 +39,10 @@ SOURCE_UNAVAILABLE_REASONS = {
     "source_path_unsafe",
     "source_file_physical_missing",
 }
+NON_CONTENT_FILE_REASONS = {
+    "non_content_appledouble_sidecar",
+    "non_content_office_lock_file",
+}
 PARSER_NO_CONTENT_MARKER = "Parser returned no content blocks"
 IMAGE_VECTOR_SKIPPED_MARKER = "Image base vectorization skipped; use OCR/VLM raw outputs"
 IMAGE_PARSE_TEXT_MAX_CHARS = 2000
@@ -68,10 +72,18 @@ def document_source_unavailable_reason(doc) -> str | None:
     return reason if reason in SOURCE_UNAVAILABLE_REASONS else None
 
 
+def document_non_content_reason(doc) -> str | None:
+    """Return the durable terminal skip reason for non-content sidecar files."""
+    reason = (doc.parse_error or "").strip()
+    return reason if reason in NON_CONTENT_FILE_REASONS else None
+
+
 def document_pipeline_complete(doc, *, source_available: bool | None = None) -> bool:
     """Return whether the durable knowledge pipeline has fully completed."""
     if source_available is False or document_source_unavailable_reason(doc):
         return False
+    if document_non_content_reason(doc):
+        return True
     return (
         document_parse_allows_search(doc)
         and document_vector_stage_terminal(doc)
@@ -82,6 +94,8 @@ def document_pipeline_complete(doc, *, source_available: bool | None = None) -> 
 
 def document_deep_pipeline_complete(doc, *, source_available: bool | None = None) -> bool:
     """Return whether the full searchable and deep-analysis pipeline is complete."""
+    if document_non_content_reason(doc):
+        return True
     if not document_pipeline_complete(doc, source_available=source_available):
         return False
     return (
@@ -94,6 +108,8 @@ def document_deep_pipeline_complete(doc, *, source_available: bool | None = None
 def document_parse_allows_search(doc) -> bool:
     """Return whether parse state can support a searchable document."""
     if document_source_unavailable_reason(doc):
+        return False
+    if document_non_content_reason(doc):
         return False
     if doc.parse_status == "done":
         return True
@@ -155,6 +171,22 @@ def mark_document_source_unavailable(doc, reason: str) -> None:
         doc.raw_status = "pending"
     if getattr(doc, "fusion_status", "pending") in _ACTIVE_OR_SOURCE_ERROR_STATUSES:
         doc.fusion_status = "pending"
+    doc.parse_error = reason[:2000]
+
+
+def mark_document_non_content_skipped(doc, reason: str) -> None:
+    """Mark filesystem sidecars and editor lock files as terminal non-searchable inputs."""
+    doc.parse_status = "skipped"
+    doc.vector_status = "skipped"
+    doc.raw_status = "skipped"
+    doc.fusion_status = "skipped"
+    if hasattr(doc, "profile_status"):
+        doc.profile_status = "skipped"
+    if hasattr(doc, "graph_status"):
+        doc.graph_status = "skipped"
+    if hasattr(doc, "relation_status"):
+        doc.relation_status = "skipped"
+    doc.total_chunks = 0
     doc.parse_error = reason[:2000]
 
 

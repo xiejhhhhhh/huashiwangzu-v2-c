@@ -31,20 +31,23 @@
   },
   "stage_dispatch_order": {
     "kb_pipeline_stage": [
-      "source_validate",
+      "raw_vision",
+      "fusion",
+      "profile",
+      "graph",
+      "raw_ocr",
       "page_render",
       "parse_index",
       "raw_text",
-      "raw_ocr",
-      "raw_vision",
-      "fusion",
-      "graph",
-      "profile",
+      "source_validate",
       "cognitive_index",
       "relations"
     ]
   },
-  "paused_task_types": [],
+  "paused_task_types": [
+    "kb_enterprise_import",
+    "kb_enterprise_import_file"
+  ],
   "paused_stages": {
     "kb_pipeline_stage": [
       "raw_vision"

@@ -9,6 +9,11 @@ from app.models.file import File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+NON_CONTENT_FILE_REASONS = {
+    "non_content_appledouble_sidecar",
+    "non_content_office_lock_file",
+}
+
 
 @dataclass(frozen=True)
 class SourceFileAvailability:
@@ -16,6 +21,28 @@ class SourceFileAvailability:
     reason: str = ""
     storage_path: str | None = None
     physical_path: str | None = None
+
+
+def classify_non_content_file(file: File | None, physical_path: str | None = None) -> str | None:
+    """Return a terminal skip reason for filesystem sidecars and editor lock files."""
+    if not file:
+        return None
+    name = str(getattr(file, "name", "") or getattr(file, "filename", "") or "").strip()
+    storage_name = Path(str(getattr(file, "storage_path", "") or "")).name
+    candidates = [value for value in (name, storage_name) if value]
+    if any(candidate.startswith("~$") for candidate in candidates):
+        return "non_content_office_lock_file"
+    if any(candidate.startswith("._") for candidate in candidates):
+        return "non_content_appledouble_sidecar"
+    if physical_path:
+        try:
+            with Path(physical_path).open("rb") as fh:
+                header = fh.read(18)
+            if header.startswith(b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X"):
+                return "non_content_appledouble_sidecar"
+        except OSError:
+            return None
+    return None
 
 
 def classify_file_availability(file: File | None) -> SourceFileAvailability:

@@ -18,6 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .init_db import _run_startup_init
 from .services import file_lifecycle_service, pipeline_service  # noqa: F401
+from .services.chunk_embedding_service import (
+    DEFAULT_CHUNK_EMBEDDING_PROFILE,
+    backfill_chunk_embeddings,
+    get_chunk_embedding_counts,
+)
 from .services.chunk_rebuild_service import rebuild_document_chunks
 from .services.cognitive_v3_service import (
     backfill_cognitive_v3,
@@ -232,6 +237,7 @@ class SearchRequest(BaseModel):
     query: str
     top_k: int = 10
     use_rerank: bool = False
+    embedding_profile: str | None = None
 class MergeEntitiesRequest(BaseModel):
     source_entity_ids: list[int]
     target_entity_id: int
@@ -321,6 +327,13 @@ class DerivedGovernanceBackfillRequest(BaseModel):
 class RetrievalFeedbackReflectRequest(BaseModel):
     query_context_id: int = Field(..., gt=0)
     conversation_excerpt: str = Field(..., min_length=1, max_length=16000)
+
+
+class ChunkEmbeddingBackfillRequest(BaseModel):
+    dry_run: bool = True
+    limit: int = Field(default=1000, ge=1, le=50000)
+    batch_size: int = Field(default=8, ge=1, le=64)
+    embedding_profile: str = DEFAULT_CHUNK_EMBEDDING_PROFILE
 
 @router.get("/health")
 async def health():
@@ -665,7 +678,14 @@ async def api_search(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("viewer")),
 ):
-    results = await hybrid_search(db, payload.query, user.id, payload.top_k, payload.use_rerank)
+    results = await hybrid_search(
+        db,
+        payload.query,
+        user.id,
+        payload.top_k,
+        payload.use_rerank,
+        embedding_profile=payload.embedding_profile,
+    )
     enriched, context_data = await _enrich_search_results(db, results, user.id)
     query_context = await persist_query_context(
         db,
@@ -1015,6 +1035,33 @@ async def api_reflect_retrieval_feedback(
     return ApiResponse(data=result)
 
 
+@router.get("/governance/chunk-embeddings/counts")
+async def api_chunk_embedding_counts(
+    embedding_profile: str = Query(default=DEFAULT_CHUNK_EMBEDDING_PROFILE),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    result = await get_chunk_embedding_counts(db, owner_id=user.id, profile_key=embedding_profile)
+    return ApiResponse(data=result)
+
+
+@router.post("/governance/chunk-embeddings/backfill")
+async def api_chunk_embedding_backfill(
+    payload: ChunkEmbeddingBackfillRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("admin")),
+):
+    result = await backfill_chunk_embeddings(
+        db,
+        owner_id=user.id,
+        profile_key=payload.embedding_profile,
+        dry_run=payload.dry_run,
+        limit=payload.limit,
+        batch_size=payload.batch_size,
+    )
+    return ApiResponse(data=result)
+
+
 # ── Cross-module capabilities ───────────────────────────────
 
 async def _enqueue_task(db, stage: str, document_id: int, user_id: int) -> ApiResponse:
@@ -1047,10 +1094,19 @@ async def _cap_search(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     query = str(params.get("query", "")).strip()
     top_k = int(params.get("top_k", 10) or 10)
+    embedding_profile = params.get("embedding_profile")
+    embedding_profile = str(embedding_profile).strip() if embedding_profile else None
     if not query:
         raise ValueError("query is required")
     async with AsyncSessionLocal() as db:
-        results = await hybrid_search(db, query, owner_id, top_k=top_k, use_rerank=False)
+        results = await hybrid_search(
+            db,
+            query,
+            owner_id,
+            top_k=top_k,
+            use_rerank=False,
+            embedding_profile=embedding_profile,
+        )
         enriched, context_data = await _enrich_search_results(
             db,
             results,
@@ -1259,6 +1315,34 @@ async def _cap_reflect_retrieval_feedback(params: dict, caller: str) -> dict:
         return result
 
 
+async def _cap_get_chunk_embedding_counts(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    embedding_profile = str(
+        params.get("embedding_profile") or DEFAULT_CHUNK_EMBEDDING_PROFILE
+    ).strip()
+    async with AsyncSessionLocal() as db:
+        return await get_chunk_embedding_counts(db, owner_id=owner_id, profile_key=embedding_profile)
+
+
+async def _cap_backfill_chunk_embeddings(params: dict, caller: str) -> dict:
+    owner_id = resolve_user_id(caller)
+    embedding_profile = str(
+        params.get("embedding_profile") or DEFAULT_CHUNK_EMBEDDING_PROFILE
+    ).strip()
+    dry_run = bool(params.get("dry_run", True))
+    limit = int(params.get("limit", 1000) or 1000)
+    batch_size = int(params.get("batch_size", 8) or 8)
+    async with AsyncSessionLocal() as db:
+        return await backfill_chunk_embeddings(
+            db,
+            owner_id=owner_id,
+            profile_key=embedding_profile,
+            dry_run=dry_run,
+            limit=limit,
+            batch_size=batch_size,
+        )
+
+
 async def _cap_enqueue_incomplete_documents(params: dict, caller: str) -> dict:
     owner_id = resolve_user_id(caller)
     dry_run = bool(params.get("dry_run", True))
@@ -1343,6 +1427,10 @@ register_capability(
     parameters={
         "query": {"type": "string", "description": "Search query"},
         "top_k": {"type": "integer", "description": "Number of results, default 5"},
+        "embedding_profile": {
+            "type": "string",
+            "description": "Optional embedding profile key, e.g. qwen3-embedding-8b",
+        },
     },
     min_role="viewer",
 )
@@ -1574,6 +1662,33 @@ register_capability(
     parameters={
         "query_context_id": {"type": "integer", "description": "Persisted kb_query_contexts ID"},
         "conversation_excerpt": {"type": "string", "description": "Later conversation excerpt after the search"},
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "get_chunk_embedding_counts", _cap_get_chunk_embedding_counts,
+    description="Count versioned chunk embedding sidecar coverage for a configured embedding profile",
+    brief="统计块向量覆盖率",
+    parameters={
+        "embedding_profile": {
+            "type": "string",
+            "description": "Embedding profile key, default qwen3-embedding-8b",
+        },
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "backfill_chunk_embeddings", _cap_backfill_chunk_embeddings,
+    description="Dry-run or backfill versioned chunk embeddings into the configured sidecar vector store",
+    brief="补跑块向量边车",
+    parameters={
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+        "limit": {"type": "integer", "description": "Maximum chunks to inspect/backfill, default 1000"},
+        "batch_size": {"type": "integer", "description": "Embedding batch size, default 8"},
+        "embedding_profile": {
+            "type": "string",
+            "description": "Embedding profile key, default qwen3-embedding-8b",
+        },
     },
     min_role="admin",
 )

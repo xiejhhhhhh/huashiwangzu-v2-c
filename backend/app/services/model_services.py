@@ -11,17 +11,32 @@ from asyncio import to_thread
 import httpx
 
 from app.gateway.config import get_model_type_config
-from app.services.model_watchdog.watchdog import ensure_model
+from app.services.model_watchdog.watchdog import ensure_model, use_model
 
 logger = logging.getLogger("v2.model_services")
 
 
-def _embedding_profile() -> dict:
+def resolve_embedding_profile_key(profile_key: str | None = None) -> str:
     emb = get_model_type_config("embedding")
-    pk = emb.get("primary", "")
+    pk = profile_key or emb.get("primary", "")
     if not pk:
         raise RuntimeError("No primary embedding model in models.json")
-    return emb["profiles"][pk]
+    if pk not in emb.get("profiles", {}):
+        raise RuntimeError(f"Embedding profile not found in models.json: {pk}")
+    return str(pk)
+
+
+def get_embedding_profile_contract(profile_key: str | None = None) -> dict:
+    """Return embedding profile metadata with the resolved profile key attached."""
+    emb = get_model_type_config("embedding")
+    pk = resolve_embedding_profile_key(profile_key)
+    profile = dict(emb["profiles"][pk])
+    profile["profile_key"] = pk
+    return profile
+
+
+def _embedding_profile(profile_key: str | None = None) -> dict:
+    return get_embedding_profile_contract(profile_key)
 
 
 def _rerank_profile() -> dict:
@@ -32,9 +47,11 @@ def _rerank_profile() -> dict:
     return rr["profiles"][pk]
 
 
-async def get_embedding(text: str) -> list[float]:
-    """Get embedding vector from the configured endpoint (models.json)."""
-    profile = _embedding_profile()
+async def get_embeddings(texts: list[str], profile_key: str | None = None) -> list[list[float]]:
+    """Get embedding vectors from the configured endpoint (models.json)."""
+    if not texts:
+        return []
+    profile = _embedding_profile(profile_key)
 
     watchdog_name = profile.get("watchdog")
     if watchdog_name:
@@ -47,19 +64,36 @@ async def get_embedding(text: str) -> list[float]:
     model = profile.get("model", "bge-m3")
     url = f"{server_url.rstrip('/')}/v1/embeddings"
 
-    async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
-        resp = await client.post(url, json={
-            "model": model,
-            "input": [text[:2048]],
-        })
-        resp.raise_for_status()
-        data = resp.json()
+    payload = {
+        "model": model,
+        "input": [str(text or "")[:2048] for text in texts],
+    }
+    if watchdog_name:
+        with use_model(str(watchdog_name)):
+            async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+    else:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
     # OpenAI-compatible response: {"data": [{"embedding": [...], "index": 0}], ...}
     emb_list = data.get("data", [])
     if not emb_list:
         raise RuntimeError(f"Empty embedding response from {url}: {data}")
-    return emb_list[0]["embedding"]
+    emb_list.sort(key=lambda item: int(item.get("index", 0)))
+    return [item["embedding"] for item in emb_list]
+
+
+async def get_embedding(text: str, profile_key: str | None = None) -> list[float]:
+    """Get one embedding vector from the configured endpoint (models.json)."""
+    embeddings = await get_embeddings([text], profile_key=profile_key)
+    if not embeddings:
+        raise RuntimeError("Empty embedding response")
+    return embeddings[0]
 
 
 async def rerank(
@@ -91,10 +125,17 @@ async def rerank(
     if top_k is not None:
         payload["top_k"] = top_k
 
-    async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    if watchdog_name:
+        with use_model(str(watchdog_name)):
+            async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+    else:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
     results = data.get("results", [])
     results.sort(key=lambda r: r.get("relevance_score", 0), reverse=True)

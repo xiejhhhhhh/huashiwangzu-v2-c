@@ -66,6 +66,10 @@
         "top_k": {
           "type": "integer",
           "description": "返回结果数（默认5）"
+        },
+        "embedding_profile": {
+          "type": "string",
+          "description": "可选向量模型 profile，例如 qwen3-embedding-8b"
         }
       },
       "min_role": "viewer"
@@ -457,6 +461,40 @@
         "conversation_excerpt": {
           "type": "string",
           "description": "检索之后的用户/助手对话片段"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "get_chunk_embedding_counts",
+      "description": "统计指定向量模型 profile 的块向量边车覆盖率",
+      "parameters": {
+        "embedding_profile": {
+          "type": "string",
+          "description": "向量模型 profile，默认 qwen3-embedding-8b"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
+      "action": "backfill_chunk_embeddings",
+      "description": "dry-run 或补跑版本化块向量到边车向量表",
+      "parameters": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "最多检查/补跑块数（默认1000）"
+        },
+        "batch_size": {
+          "type": "integer",
+          "description": "向量接口批量大小，默认8"
+        },
+        "embedding_profile": {
+          "type": "string",
+          "description": "向量模型 profile，默认 qwen3-embedding-8b"
         }
       },
       "min_role": "admin"

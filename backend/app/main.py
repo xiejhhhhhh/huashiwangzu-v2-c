@@ -97,7 +97,13 @@ async def lifespan(app: FastAPI):
     _retry_task = asyncio.create_task(_event_retry_loop())
     app.state._event_retry_task = _retry_task
 
+    from app.services.model_watchdog.watchdog import idle_reaper_loop
+    _model_idle_reaper_task = asyncio.create_task(idle_reaper_loop())
+    app.state._model_idle_reaper_task = _model_idle_reaper_task
+
     yield
+    if hasattr(app.state, "_model_idle_reaper_task"):
+        app.state._model_idle_reaper_task.cancel()
     if hasattr(app.state, "_event_retry_task"):
         app.state._event_retry_task.cancel()
     if task_worker_autostart not in {"0", "false", "no", "off"}:

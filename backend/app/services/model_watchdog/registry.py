@@ -1,6 +1,10 @@
 from typing import Literal
 
-from app.gateway.config import get_models_config_path, get_watchdog_model_configs
+from app.gateway.config import (
+    get_models_config,
+    get_models_config_path,
+    get_watchdog_model_configs,
+)
 
 ModelType = Literal["local", "cloud"]
 ModelPurpose = str  # "embedding" | "rerank" | "vision" | "text" (English, from models.json)
@@ -18,6 +22,8 @@ class ModelRecord:
         port: int = 0,
         description: str = "",
         launch: dict | None = None,
+        auto_unload: bool = False,
+        idle_timeout_seconds: int = 0,
     ):
         self.name = name
         self.purpose = purpose
@@ -28,6 +34,8 @@ class ModelRecord:
         self.port = port
         self.description = description
         self.launch = launch or {}
+        self.auto_unload = auto_unload
+        self.idle_timeout_seconds = idle_timeout_seconds
 
     def health_url(self) -> str:
         return f"{self.endpoint.rstrip('/')}/{self.health_path.lstrip('/')}"
@@ -43,6 +51,8 @@ class ModelRecord:
             "port": self.port,
             "description": self.description,
             "launch": self.launch,
+            "auto_unload": self.auto_unload,
+            "idle_timeout_seconds": self.idle_timeout_seconds,
         }
 
 
@@ -58,6 +68,8 @@ def _load_from_config() -> None:
             "Cannot initialize model registry."
         )
 
+    models_config = get_models_config()
+    watchdog_defaults = models_config.get("watchdog_defaults", {})
     watchdog_models = get_watchdog_model_configs()
     if not watchdog_models:
         raise ValueError(
@@ -66,6 +78,14 @@ def _load_from_config() -> None:
 
     _REGISTRY.clear()
     for name, info in watchdog_models.items():
+        auto_unload = bool(info.get("auto_unload", watchdog_defaults.get("auto_unload", False)))
+        idle_timeout_seconds = int(
+            info.get(
+                "idle_timeout_seconds",
+                watchdog_defaults.get("idle_timeout_seconds", 0),
+            )
+            or 0
+        )
         record = ModelRecord(
             name=name,
             purpose=info.get("purpose", ""),
@@ -76,6 +96,8 @@ def _load_from_config() -> None:
             port=info.get("port", 0),
             description=info.get("description", ""),
             launch=info.get("launch") or {},
+            auto_unload=auto_unload,
+            idle_timeout_seconds=idle_timeout_seconds,
         )
         _REGISTRY[name] = record
 

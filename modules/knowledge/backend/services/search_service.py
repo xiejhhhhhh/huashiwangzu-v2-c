@@ -8,7 +8,7 @@ import time
 from collections.abc import Sequence
 
 from app.models.file import File
-from app.services.model_services import get_embedding, rerank
+from app.services.model_services import get_embedding, get_embedding_profile_contract, rerank
 from sqlalchemy import and_, bindparam, or_, select
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -848,6 +848,7 @@ async def vector_search(
     owner_id: int,
     top_k: int = 20,
     diagnostics: _RetrievalDiagnostics | None = None,
+    embedding_profile: str | None = None,
 ) -> list[dict]:
     """向量检索：用 pgvector 在数据库侧召回 TopK，避免 Python 全量扫块。"""
     from .profile_vector_service import vector_literal
@@ -855,7 +856,8 @@ async def vector_search(
     # 获取 query 向量
     embedding_started_at = time.perf_counter()
     try:
-        query_emb = await get_embedding(query)
+        embedding_contract = get_embedding_profile_contract(embedding_profile)
+        query_emb = await get_embedding(query, profile_key=embedding_contract["profile_key"])
     except Exception as e:
         duration_ms = _elapsed_ms(embedding_started_at)
         if diagnostics is not None:
@@ -891,54 +893,211 @@ async def vector_search(
 
     limit = max(1, min(int(top_k or 20), VECTOR_SEARCH_MAX_CANDIDATES))
     query_vector = vector_literal(query_emb)
+    embedding_dim = len(query_emb)
+    embedding_model = str(embedding_contract.get("profile_key") or embedding_profile or "")
+    vector_store = str(embedding_contract.get("vector_store") or "")
+    configured_dim = int(embedding_contract.get("dimensions") or embedding_contract.get("embedding_dim") or 0)
+    if configured_dim and configured_dim != embedding_dim:
+        if diagnostics is not None:
+            diagnostics.stage(
+                "vector_sql",
+                status="skipped",
+                reason="embedding_dimension_contract_mismatch",
+                result_count=0,
+                vector_store=vector_store,
+                embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+                configured_dim=configured_dim,
+            )
+        return []
+    use_chunk_embedding_sidecar = vector_store == "kb_chunk_embeddings"
+    use_legacy_chunk_column = vector_store in {"", "kb_chunks"} and embedding_dim == 1024
+    if not use_chunk_embedding_sidecar and not use_legacy_chunk_column:
+        if diagnostics is not None:
+            diagnostics.stage(
+                "vector_sql",
+                status="skipped",
+                reason="unsupported_vector_store_for_embedding_dimension",
+                result_count=0,
+                vector_store=vector_store,
+                embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+            )
+        return []
     sql_started_at = time.perf_counter()
     await db.execute(sa_text(f"SET LOCAL hnsw.ef_search = {int(VECTOR_SEARCH_EF_SEARCH)}"))
-    result = await db.execute(
-        sa_text(
-            """
-            SELECT
-                c.id AS chunk_id,
-                c.document_id,
-                c.page,
-                c.block_type,
-                COALESCE(c.index_layer, 'base_parse') AS index_layer,
-                COALESCE(c.source_stage, '') AS source_stage,
-                left(COALESCE(c.text, ''), 500) AS text,
-                c.keywords,
-                1 - (c.embedding <=> CAST(:query_vector AS vector)) AS score
-            FROM kb_chunks c
-            JOIN kb_documents d ON d.id = c.document_id
-            JOIN framework_file_items f ON f.id = d.file_id
-            WHERE
-                c.owner_id = :owner_id
-                AND d.owner_id = :owner_id
-                AND d.deleted IS FALSE
-                AND f.deleted IS FALSE
-                AND c.embedding IS NOT NULL
-                AND (
-                    c.index_layer IS NULL
-                    OR c.index_layer != 'base_parse'
-                    OR NOT EXISTS (
-                        SELECT 1
-                        FROM kb_chunks fusion_chunk
-                        WHERE fusion_chunk.document_id = c.document_id
-                          AND fusion_chunk.owner_id = c.owner_id
-                          AND fusion_chunk.index_layer = 'fusion_verified'
+    if use_chunk_embedding_sidecar:
+        index_dim = int(embedding_contract.get("index_dimensions") or min(embedding_dim, 2000))
+        index_dim = max(1, min(index_dim, embedding_dim, 2000))
+        candidate_limit = max(limit, min(VECTOR_SEARCH_MAX_CANDIDATES * 4, limit * 8))
+        distance_expr = f"e.embedding::vector({embedding_dim}) <=> CAST(:query_vector AS vector({embedding_dim}))"
+        order_expr = distance_expr
+        sidecar_sql = f"""
+                SELECT
+                    c.id AS chunk_id,
+                    c.document_id,
+                    c.page,
+                    c.block_type,
+                    COALESCE(c.index_layer, 'base_parse') AS index_layer,
+                    COALESCE(c.source_stage, '') AS source_stage,
+                    left(COALESCE(c.text, ''), 500) AS text,
+                    c.keywords,
+                    1 - ({distance_expr}) AS score
+                FROM kb_chunk_embeddings e
+                JOIN kb_chunks c ON c.id = e.chunk_id
+                JOIN kb_documents d ON d.id = c.document_id
+                JOIN framework_file_items f ON f.id = d.file_id
+                WHERE
+                    e.owner_id = :owner_id
+                    AND c.owner_id = :owner_id
+                    AND d.owner_id = :owner_id
+                    AND d.deleted IS FALSE
+                    AND f.deleted IS FALSE
+                    AND e.embedding_model = :embedding_model
+                    AND e.embedding_version = :embedding_version
+                    AND e.embedding_dim = :embedding_dim
+                    AND e.status = 'active'
+                    AND (
+                        c.index_layer IS NULL
+                        OR c.index_layer != 'base_parse'
+                        OR NOT EXISTS (
+                            SELECT 1
+                            FROM kb_chunks fusion_chunk
+                            WHERE fusion_chunk.document_id = c.document_id
+                              AND fusion_chunk.owner_id = c.owner_id
+                              AND fusion_chunk.index_layer = 'fusion_verified'
+                        )
                     )
+                ORDER BY {order_expr}
+                LIMIT :limit
+        """
+        if embedding_dim > 2000 or bool(embedding_contract.get("rerank_full_vector")):
+            coarse_expr = (
+                f"subvector(e.embedding::vector({embedding_dim}), 1, {index_dim})::vector({index_dim}) "
+                f"<=> subvector(CAST(:query_vector AS vector({embedding_dim})), 1, {index_dim})::vector({index_dim})"
+            )
+            sidecar_sql = f"""
+                WITH coarse AS (
+                    SELECT
+                        c.id AS chunk_id,
+                        c.document_id,
+                        c.page,
+                        c.block_type,
+                        COALESCE(c.index_layer, 'base_parse') AS index_layer,
+                        COALESCE(c.source_stage, '') AS source_stage,
+                        left(COALESCE(c.text, ''), 500) AS text,
+                        c.keywords,
+                        e.embedding
+                    FROM kb_chunk_embeddings e
+                    JOIN kb_chunks c ON c.id = e.chunk_id
+                    JOIN kb_documents d ON d.id = c.document_id
+                    JOIN framework_file_items f ON f.id = d.file_id
+                    WHERE
+                        e.owner_id = :owner_id
+                        AND c.owner_id = :owner_id
+                        AND d.owner_id = :owner_id
+                        AND d.deleted IS FALSE
+                        AND f.deleted IS FALSE
+                        AND e.embedding_model = :embedding_model
+                        AND e.embedding_version = :embedding_version
+                        AND e.embedding_dim = :embedding_dim
+                        AND e.status = 'active'
+                        AND (
+                            c.index_layer IS NULL
+                            OR c.index_layer != 'base_parse'
+                            OR NOT EXISTS (
+                                SELECT 1
+                                FROM kb_chunks fusion_chunk
+                                WHERE fusion_chunk.document_id = c.document_id
+                                  AND fusion_chunk.owner_id = c.owner_id
+                                  AND fusion_chunk.index_layer = 'fusion_verified'
+                            )
+                        )
+                    ORDER BY {coarse_expr}
+                    LIMIT :candidate_limit
                 )
-            ORDER BY c.embedding <=> CAST(:query_vector AS vector)
-            LIMIT :limit
+                SELECT
+                    chunk_id,
+                    document_id,
+                    page,
+                    block_type,
+                    index_layer,
+                    source_stage,
+                    text,
+                    keywords,
+                    1 - (embedding::vector({embedding_dim}) <=> CAST(:query_vector AS vector({embedding_dim}))) AS score
+                FROM coarse
+                ORDER BY embedding::vector({embedding_dim}) <=> CAST(:query_vector AS vector({embedding_dim}))
+                LIMIT :limit
             """
-        ),
-        {
-            "owner_id": owner_id,
-            "query_vector": query_vector,
-            "limit": limit,
-        },
-    )
+        result = await db.execute(
+            sa_text(sidecar_sql),
+            {
+                "owner_id": owner_id,
+                "query_vector": query_vector,
+                "limit": limit,
+                "candidate_limit": candidate_limit,
+                "embedding_model": embedding_model,
+                "embedding_version": int(embedding_contract.get("embedding_version") or 1),
+                "embedding_dim": embedding_dim,
+            },
+        )
+        active_vector_store = "kb_chunk_embeddings"
+    else:
+        result = await db.execute(
+            sa_text(
+                """
+                SELECT
+                    c.id AS chunk_id,
+                    c.document_id,
+                    c.page,
+                    c.block_type,
+                    COALESCE(c.index_layer, 'base_parse') AS index_layer,
+                    COALESCE(c.source_stage, '') AS source_stage,
+                    left(COALESCE(c.text, ''), 500) AS text,
+                    c.keywords,
+                    1 - (c.embedding <=> CAST(:query_vector AS vector)) AS score
+                FROM kb_chunks c
+                JOIN kb_documents d ON d.id = c.document_id
+                JOIN framework_file_items f ON f.id = d.file_id
+                WHERE
+                    c.owner_id = :owner_id
+                    AND d.owner_id = :owner_id
+                    AND d.deleted IS FALSE
+                    AND f.deleted IS FALSE
+                    AND c.embedding IS NOT NULL
+                    AND (
+                        c.index_layer IS NULL
+                        OR c.index_layer != 'base_parse'
+                        OR NOT EXISTS (
+                            SELECT 1
+                            FROM kb_chunks fusion_chunk
+                            WHERE fusion_chunk.document_id = c.document_id
+                              AND fusion_chunk.owner_id = c.owner_id
+                              AND fusion_chunk.index_layer = 'fusion_verified'
+                        )
+                    )
+                ORDER BY c.embedding <=> CAST(:query_vector AS vector)
+                LIMIT :limit
+                """
+            ),
+            {
+                "owner_id": owner_id,
+                "query_vector": query_vector,
+                "limit": limit,
+            },
+        )
+        active_vector_store = "kb_chunks"
     rows = result.mappings().all()
     if diagnostics is not None:
-        diagnostics.stage("vector_sql", duration_ms=_elapsed_ms(sql_started_at), result_count=len(rows))
+        diagnostics.stage(
+            "vector_sql",
+            duration_ms=_elapsed_ms(sql_started_at),
+            result_count=len(rows),
+            vector_store=active_vector_store,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+        )
     scored: list[dict] = []
     for i, row in enumerate(rows):
         score = float(row["score"] or 0.0)
@@ -956,6 +1115,8 @@ async def vector_search(
             "score": round(score, 4),
             "rank": i + 1,
             "source": "vector",
+            "vector_store": active_vector_store,
+            "embedding_model": embedding_model,
             **_live_source_fields(),
         })
 
@@ -1748,6 +1909,7 @@ async def hybrid_search(
     owner_id: int,
     top_k: int = 10,
     use_rerank: bool = False,
+    embedding_profile: str | None = None,
 ) -> list[dict]:
     """混合检索：向量 + 关键词 → RRF 融合 → 可选 rerank。"""
     diagnostics = _RetrievalDiagnostics(query=query, top_k=top_k, use_rerank=use_rerank)
@@ -1802,7 +1964,14 @@ async def hybrid_search(
     vec_results = []
     if not fast_local_plan:
         stage_started_at = time.perf_counter()
-        vec_results = await vector_search(db, query, owner_id, top_k=top_k * 2, diagnostics=diagnostics)
+        vec_results = await vector_search(
+            db,
+            query,
+            owner_id,
+            top_k=top_k * 2,
+            diagnostics=diagnostics,
+            embedding_profile=embedding_profile,
+        )
         diagnostics.stage("vector_search", duration_ms=_elapsed_ms(stage_started_at), result_count=len(vec_results))
     else:
         diagnostics.skipped("vector_search", "fast_local_plan")
