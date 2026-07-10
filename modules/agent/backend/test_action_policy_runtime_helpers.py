@@ -7,8 +7,12 @@ from modules.agent.backend.services.action_policy import (
 )
 
 
-def test_terminal_exec_is_sensitive_action() -> None:
-    assert _match_sensitive("terminal-tools__exec") is True
+def test_terminal_exec_is_not_outbound_approval_action() -> None:
+    assert _match_sensitive("terminal-tools__exec") is False
+
+
+def test_im_send_is_outbound_approval_action() -> None:
+    assert _match_sensitive("im__send") is True
 
 
 def test_approval_args_are_serialized_and_redacted() -> None:

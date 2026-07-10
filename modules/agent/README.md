@@ -160,6 +160,13 @@ Use `db_schema()` for live database details. This module must not directly read 
 
 If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
+## Outbound Approval Policy
+
+- Approval is for Agent actions that represent the user outside the local reversible workspace: sending messages, notifying others, uploading, external publishing, webhooks, or payment-like irreversible external actions.
+- Local recoverable work is allowed by default and covered by logs, versions, workflow ledgers, and node review. This includes desktop file creation/replacement, Office/PDF generation, artifact publishing inside the desktop, terminal commands, temporary delete/recycle-bin flows, and versioned database writes.
+- The admin approval page is an audit/fallback surface for pending outbound confirmations, not a normal user workflow step.
+- `sensitive_action_policy` is kept for schema compatibility, but its product meaning is outbound authorization policy.
+
 ## Frontend / Backend Structure
 
 | Path | Status |

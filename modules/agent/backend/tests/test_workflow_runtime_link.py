@@ -151,18 +151,18 @@ async def test_policy_approval_links_workflow_payload_and_resume_target(
     sink = await _linked_sink(db, cleanup_runtime_records, owner_id=8804)
     call_id = await sink.workflow_record_tool_started(
         db,
-        {"name": "terminal-tools__exec", "tool_call_id": "call_approval", "args": {"command": "touch x"}},
+        {"name": "im__send", "tool_call_id": "call_approval", "args": {"text": "hello"}},
     )
     call = await db.get(AgentToolCall, call_id)
     assert call is not None
 
     result = await check_action_allowed(
         db,
-        "terminal-tools__exec",
+        "im__send",
         "workflow_runtime_test_agent",
         8804,
         conversation_id=sink.conversation_id,
-        tool_args={"command": "touch x"},
+        tool_args={"text": "hello"},
         workflow_run_id=sink.workflow_run_id,
         workflow_step_id=sink.workflow_step_id,
         workflow_tool_call_id=call.id,

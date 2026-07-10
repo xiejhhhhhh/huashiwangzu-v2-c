@@ -1,20 +1,20 @@
 <template>
   <div class="approval-panel">
     <header class="ap-header">
-      <h2 class="ap-title">敏感操作审批</h2>
-      <span class="ap-subtitle">待确认的敏感操作 · 仅管理员</span>
+      <h2 class="ap-title">对外操作授权</h2>
+      <span class="ap-subtitle">Agent 代表用户发送、上传、外部发布时才需要确认 · 仅管理员</span>
     </header>
 
     <div v-if="loading" class="ap-loading">加载中...</div>
     <div v-else-if="error" class="ap-error">{{ error }}</div>
     <template v-else>
       <div v-if="approvals.length === 0" class="ap-empty">
-        <p>暂无待审批的操作</p>
+        <p>暂无待确认的对外操作</p>
       </div>
 
       <div v-for="a in approvals" :key="a.id" class="ap-card">
         <div class="ap-card-header">
-          <span class="ap-badge-pending">待审批</span>
+          <span class="ap-badge-pending">待确认</span>
           <span class="ap-tool-name">{{ a.tool_name }}</span>
         </div>
         <div class="ap-card-meta">

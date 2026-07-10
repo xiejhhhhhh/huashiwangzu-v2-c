@@ -8,8 +8,23 @@ from modules.agent.backend.models import ApprovalQueue
 from modules.agent.backend.services.action_policy import _match_sensitive, check_action_allowed
 
 
-@pytest.mark.parametrize("tool_name", ["terminal-tools__exec", "terminal-tools__execute"])
-def test_terminal_execute_names_are_sensitive(tool_name: str) -> None:
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "terminal-tools__exec",
+        "terminal-tools__execute",
+        "desktop-tools__create_file",
+        "desktop-tools__replace_file",
+        "office-gen__docx",
+        "office-gen__generate_to_artifact",
+    ],
+)
+def test_recoverable_local_actions_do_not_require_approval(tool_name: str) -> None:
+    assert _match_sensitive(tool_name) is False
+
+
+@pytest.mark.parametrize("tool_name", ["im__send", "im__notify", "external__upload"])
+def test_outbound_actions_require_approval(tool_name: str) -> None:
     assert _match_sensitive(tool_name) is True
 
 
@@ -31,7 +46,7 @@ async def test_approval_queue_stores_redacted_tool_args() -> None:
         try:
             result = await check_action_allowed(
                 db,
-                "terminal-tools__exec",
+                "im__send",
                 agent_code,
                 user_id=42,
                 conversation_id=9001,

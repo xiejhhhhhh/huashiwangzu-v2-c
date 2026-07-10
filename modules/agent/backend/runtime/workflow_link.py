@@ -235,6 +235,7 @@ class WorkflowRuntimeLink:
         tool_name = _effective_tool_name(tool)
         target_module, action = _target_for_tool(tool_name)
         side_effect_level = classify_side_effect_level(tool_name)
+        approval_policy = "requires_confirmation" if side_effect_level in {"outbound", "admin_config"} else "auto"
         call = await workflow_svc.record_tool_call(
             db,
             run_id=self.run_id,
@@ -245,7 +246,7 @@ class WorkflowRuntimeLink:
             arguments=_tool_args(tool),
             caller=f"user:{self.owner_id}" if self.owner_id else "system:agent",
             side_effect_level=side_effect_level,
-            approval_policy="requires_confirmation" if side_effect_level != "readonly" else "auto",
+            approval_policy=approval_policy,
             status="running",
             agent_run_id=self.agent_run_id,
             extra_meta={

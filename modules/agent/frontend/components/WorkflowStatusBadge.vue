@@ -34,7 +34,7 @@ const STATUS_LABELS: Record<string, StatusInfo> = {
   debt: { label: '有债务', tone: 'partial' },
   not_applicable: { label: '不适用', tone: 'neutral' },
   planned: { label: '已计划', tone: 'waiting' },
-  waiting_approval: { label: '待审批', tone: 'confirmation' },
+  waiting_approval: { label: '待确认', tone: 'confirmation' },
   interrupted: { label: '已中断', tone: 'partial' },
   blocked: { label: '已阻断', tone: 'failed' },
   rejected: { label: '已拒绝', tone: 'failed' },

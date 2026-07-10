@@ -272,7 +272,7 @@ async def seed_demo_workflows(
         title="dangerous tool approval sample",
         intent="Demo workflow paused on a sensitive tool approval.",
     )
-    await workflow_svc.start_workflow(db, waiting.id, progress_summary="敏感操作等待确认")
+    await workflow_svc.start_workflow(db, waiting.id, progress_summary="对外操作等待确认")
     approval_step = await workflow_svc.create_step(
         db,
         run_id=waiting.id,

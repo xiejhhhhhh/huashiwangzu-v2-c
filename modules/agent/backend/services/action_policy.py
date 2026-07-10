@@ -1,12 +1,8 @@
-"""Sensitive action policy enforcement for agent tool calls.
+"""Outbound approval policy for agent tool calls.
 
-判定规则（多因素）：
-1. 能力本身的 min_role（admin 级能力自动敏感）
-2. Agent 配置的 sensitive_action_policy（allow/confirm/block）
-3. 能力是否在硬编码的敏感名单中
-
-确认流：confirm 策略下，工具不直接执行 → 插入 agent_approval_queue →
-返回等待确认 → admin 同意/拒绝后继续/取消。
+审批只用于 Agent 代表用户对外发送、上传、发布或发言的场景。
+本地可回退操作（文件生成/替换、Office 产物、本地命令、数据库有版本写入）
+默认放行，由日志、版本和节点回顾兜底。
 """
 import json
 import logging
@@ -37,62 +33,29 @@ _SENSITIVE_ARG_KEY_PARTS = (
     "token",
 )
 
-# Sensitive tool name patterns (module__action or prefix match)
-# module__action exact match, or module__* wildcard
-SENSITIVE_ACTION_PATTERNS: list[str] = [
-    "desktop-tools__write_file",
-    "desktop-tools__delete_file",
-    "desktop-tools__move_file",
-    "desktop-tools__copy_file",
-    "desktop-tools__create_file",
-    "desktop-tools__replace_file",
-    "desktop-tools__publish_artifact",
-    "desktop-tools__replace_file_from_artifact",
-    # Real runtime capability; keep terminal-tools__execute below as a legacy alias.
-    "terminal-tools__exec",
-    "terminal-tools__execute",
-    "agent__update_system_prompt",
-    "agent__update_enterprise_prompt",
-    "agent__spawn_subagent",
+# Actions that represent the user outside the local, reversible workspace.
+# Exact module__action match or module__* wildcard.  Local file/Office/terminal
+# operations are intentionally absent: those are recoverable in this product.
+OUTBOUND_APPROVAL_PATTERNS: list[str] = [
     "im__send",
     "im__notify",
-    "scheduler__create",
-    "scheduler__update",
-    "scheduler__delete",
-    "file-manager__*",
-    "git__*",
-    "admin__*",
-    # Office-gen physical file generation — blocked/approval for agent
-    "office-gen__docx",
-    "office-gen__xlsx",
-    "office-gen__pptx",
-    "office-gen__pdf",
-    "office-gen__replace_existing",
-    "office-gen__generate_to_artifact",
-    "office-gen__export_to_artifact",
-    "office-gen__convert",
+    "email__send",
+    "mail__send",
+    "wechat__send",
+    "wechat__publish",
+    "douyin__publish",
+    "douyin__upload",
+    "webhook__send",
+    "external__*",
+    "payment__*",
 ]
 
-# Actions that are always HARD BLOCKED for system:agent-engine principal
-# (no approval path, must be physically blocked at policy level)
-SYSTEM_HARD_BLOCKED_ACTIONS: set[str] = {
-    "office-gen__docx",
-    "office-gen__xlsx",
-    "office-gen__pptx",
-    "office-gen__pdf",
-    "office-gen__replace_existing",
-    "office-gen__generate_to_artifact",
-    "office-gen__export_to_artifact",
-    "office-gen__convert",
-    "desktop-tools__write_file",
-    "desktop-tools__replace_file",
-    "desktop-tools__create_file",
-    "desktop-tools__publish_artifact",
-    "desktop-tools__replace_file_from_artifact",
-}
+# The current product has no irreversible local tool exposed to Agent.  Keep the
+# set for future hard-block policy without blocking recoverable local work now.
+SYSTEM_HARD_BLOCKED_ACTIONS: set[str] = set()
 
-# Actions that are only for admins (min_role=admin from capability registry)
-# These are always treated as sensitive regardless of the pattern list
+# Admin-only configuration is still protected, but it is not normal user-file
+# workflow approval.  It follows the same queue only when an Agent tries it.
 ADMIN_ACTIONS: set[str] = {
     "agent__update_system_prompt",
     "agent__update_enterprise_prompt",
@@ -100,11 +63,11 @@ ADMIN_ACTIONS: set[str] = {
 
 
 def _match_sensitive(tool_name: str) -> bool:
-    """Check if a tool name matches any sensitive pattern.
+    """Check if a tool name requires approval.
 
     Exact match (module__action) or prefix+wildcard (module__*).
     """
-    for pattern in SENSITIVE_ACTION_PATTERNS:
+    for pattern in OUTBOUND_APPROVAL_PATTERNS:
         if pattern == tool_name:
             return True
         if pattern.endswith("__*"):
@@ -117,8 +80,10 @@ def _match_sensitive(tool_name: str) -> bool:
 def classify_side_effect_level(tool_name: str) -> str:
     """Return the workflow side-effect class for a tool name."""
     normalized = (tool_name or "").lower()
-    if _match_sensitive(tool_name) or tool_name in ADMIN_ACTIONS:
-        return "sensitive"
+    if _match_sensitive(tool_name):
+        return "outbound"
+    if tool_name in ADMIN_ACTIONS:
+        return "admin_config"
     write_terms = (
         "create",
         "delete",
@@ -222,9 +187,7 @@ async def check_action_allowed(
         {"allowed": False, "action": "confirm", "approval_id": int,
          "tool_name": str, "tool_args": str} — needs admin approval
     """
-    # System principal (user_id=0) → hard block on sensitive write actions
-    # system:agent-engine is not allowed to generate/replace physical files
-    # without explicit user context.
+    # System principal hard blocks are reserved for future irreversible tools.
     if user_id == 0 and tool_name in SYSTEM_HARD_BLOCKED_ACTIONS:
         return {
             "allowed": False,
@@ -232,7 +195,7 @@ async def check_action_allowed(
             "reason": f"Action '{tool_name}' is hard blocked for system principal (no user context)",
         }
 
-    # 1. Check if the action is sensitive
+    # 1. Check if the action requires approval. Local recoverable actions do not.
     is_sensitive = _match_sensitive(tool_name) or tool_name in ADMIN_ACTIONS
 
     # 2. If not sensitive, always allow

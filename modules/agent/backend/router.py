@@ -716,7 +716,7 @@ async def admin_snapshot_restore(
     return await handle_admin_snapshot_restore(snapshot_id, db, user)
 
 
-# ── 敏感操作审批 API ──
+# ── 对外操作授权 API ──
 
 @router.get("/admin/approvals/pending")
 async def list_approvals(

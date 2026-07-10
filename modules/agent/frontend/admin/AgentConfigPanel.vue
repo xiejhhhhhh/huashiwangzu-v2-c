@@ -24,9 +24,9 @@
             <label>模型档 <input v-model="form.model" placeholder="models.json profile key" class="acp-input" /></label>
             <label>provider <input v-model="form.provider" placeholder="models.json provider name" class="acp-input" /></label>
             <label>用途 <input v-model="form.purpose" placeholder="用途简述" class="acp-input" /></label>
-            <label>策略
+            <label>对外授权策略
               <select v-model="form.sensitive_action_policy" class="acp-input">
-                <option value="confirm">confirm（需确认）</option>
+                <option value="confirm">confirm（对外发送前确认）</option>
                 <option value="allow">allow（直接执行）</option>
                 <option value="block">block（禁止）</option>
               </select>
@@ -49,7 +49,7 @@
               <th>名称</th>
               <th>模型</th>
               <th>启用</th>
-              <th>策略</th>
+              <th>对外授权</th>
               <th>今日调用</th>
               <th>操作</th>
             </tr>
@@ -115,10 +115,10 @@
               <option value="json_object">json_object</option>
             </select>
           </label>
-          <label>敏感操作策略
+          <label>对外授权策略
             <select v-model="editForm.sensitive_action_policy" class="acp-input">
               <option value="allow">allow（直接执行）</option>
-              <option value="confirm">confirm（需人工确认）</option>
+              <option value="confirm">confirm（对外发送前确认）</option>
               <option value="block">block（禁止）</option>
             </select>
           </label>
@@ -243,7 +243,7 @@ function resetForm() {
 
 function policyLabel(p: string): string {
   if (p === 'allow') return '允许'
-  if (p === 'confirm') return '需确认'
+  if (p === 'confirm') return '对外确认'
   return '禁止'
 }
 

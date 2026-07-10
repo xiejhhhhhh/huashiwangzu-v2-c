@@ -39,12 +39,6 @@
         </svg>
         <span>Agent配置</span>
       </button>
-      <button v-if="isAdmin" class="btn-admin-panel" :class="{ active: adminActive === 'approvals' }" @click="$emit('admin', 'approvals')" title="敏感操作审批（仅管理员）">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
-          <path d="M8 2v12M2 8h12"/><circle cx="8" cy="8" r="3" fill="currentColor"/>
-        </svg>
-        <span>审批</span>
-      </button>
       <button class="btn-new-conv" @click="$emit('new')" :disabled="loading">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
           <path d="M8 3v10M3 8h10"/>

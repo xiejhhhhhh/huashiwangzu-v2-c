@@ -5,8 +5,8 @@ Contains handler functions for:
   - GET /admin/overview               — engine概览
   - GET /admin/snapshots/{conversation_id} — 快照列表与详情
   - GET /admin/snapshots/{snapshot_id}/restore — 快照恢复（只读审计）
-  - GET /admin/approvals/pending       — 待审批列表
-  - POST /admin/approvals/{id}/resolve — 审批决策
+  - GET /admin/approvals/pending       — 待确认对外操作列表
+  - POST /admin/approvals/{id}/resolve — 授权决策
 """
 
 from __future__ import annotations
@@ -403,7 +403,7 @@ async def handle_admin_compression_chain(
 
 
 async def handle_list_approvals(db: AsyncSession, user) -> ApiResponse:
-    """列出所有待审批的敏感操作请求。"""
+    """列出所有待确认的对外操作请求。"""
     items = await list_pending_approvals(db)
     return ApiResponse(data=items)
 
@@ -412,7 +412,7 @@ async def handle_resolve_approval(
     approval_id: int, decision: str, reason: str | None,
     db: AsyncSession, user, payload_hash: str | None = None,
 ) -> ApiResponse:
-    """审批（同意/拒绝）一个等待确认的敏感操作。"""
+    """授权（同意/拒绝）一个等待确认的对外操作。"""
     if decision not in ("approved", "rejected"):
         raise ValidationError("decision must be 'approved' or 'rejected'")
     result = await resolve_approval(db, approval_id, decision, user.id, reason, payload_hash)
