@@ -52,6 +52,29 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
 
   const FILE_PAGE_SIZE = 200
   const PROGRESS_BATCH_SIZE = 100
+  const RUNNING_STAGE_STATUSES = new Set(['running', 'collecting', 'parsing', 'fusing', 'queued', 'inflight'])
+  const FAILED_STAGE_STATUSES = new Set(['failed', 'error', 'source_unavailable'])
+  const DEGRADED_STAGE_STATUSES = new Set(['degraded', 'paused'])
+
+  function documentStageStatuses(doc: KnowledgeDocument): string[] {
+    return [
+      doc.raw_status || 'pending',
+      doc.fusion_status || 'pending',
+      doc.profile_status || 'pending',
+      doc.graph_status || 'pending',
+      doc.relation_status || 'pending',
+    ]
+  }
+
+  function deriveDocumentStatus(doc: KnowledgeDocument): string {
+    if (doc.source_available === false || doc.source_state === 'source_unavailable') return 'source_unavailable'
+    const statuses = documentStageStatuses(doc)
+    if (statuses.some(status => FAILED_STAGE_STATUSES.has(status))) return 'failed'
+    if (statuses.some(status => RUNNING_STAGE_STATUSES.has(status))) return 'running'
+    if (statuses.some(status => DEGRADED_STAGE_STATUSES.has(status))) return 'degraded'
+    if (statuses.every(status => status === 'done' || status === 'skipped')) return 'done'
+    return 'pending'
+  }
 
   // ── 树节点状态/百分比实时派生（从 liveProgressMap 现查，不存静态快照） ──
   function getNodeLiveStatus(node: FileTreeNode): string | undefined {
@@ -61,18 +84,15 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
       if (lp.overall_status === 'running') return 'running'
       if (lp.overall_status === 'done') return 'done'
       if (lp.overall_status === 'failed') return 'failed'
-      if (lp.overall_status === 'degraded') return 'failed'
+      if (lp.overall_status === 'degraded') return 'degraded'
+      if (lp.overall_status === 'paused') return 'degraded'
       if (lp.overall_status === 'source_unavailable') return 'failed'
       return 'pending'
     }
     // 兜底：liveProgressMap 无记录时用 doc 粗状态字段
     const doc = kbDocMap.value[node.id]
     if (!doc) return undefined
-    const statuses = [doc.fusion_status, doc.raw_status, doc.parse_status].filter(Boolean) as string[]
-    if (statuses.includes('failed')) return 'failed'
-    if (statuses.every(s => s === 'done')) return 'done'
-    if (statuses.some(s => s === 'running' || s === 'collecting' || s === 'parsing' || s === 'fusing')) return 'running'
-    return 'pending'
+    return deriveDocumentStatus(doc)
   }
 
   function getNodeLivePct(node: FileTreeNode): number | null {
@@ -198,8 +218,14 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
 
   const analyzing = computed(() => progress.value?.overall_status === 'running')
   const runningCount = computed(() => Object.values(liveProgressMap.value).filter(p => p.overall_status === 'running').length)
-  const hasResult = computed(() => progress.value?.overall_status === 'done' || fusions.value.length > 0)
+  const hasResult = computed(() => progress.value?.overall_status === 'done' || progress.value?.overall_status === 'degraded' || fusions.value.length > 0)
   const showProgress = computed(() => !!progress.value && progress.value.overall_status !== 'done')
+  const analyzeButtonText = computed(() => {
+    if (analyzing.value) return '分析中…'
+    if (progress.value?.overall_status === 'done') return '重新分析'
+    if (progress.value?.overall_status === 'degraded') return '补跑分析'
+    return '开始分析'
+  })
 	  const headStatusText = computed(() => { const p = progress.value; if (!p) return '尚未分析'; if (p.overall_status === 'done') return '分析完成'; if (p.overall_status === 'failed') return '分析出错'; if (p.overall_status === 'degraded') return '分析有缺损'; if (p.overall_status === 'paused') return '模型降级后已暂停'; if (p.overall_status === 'source_unavailable') return '源文件不可用'; if (p.overall_status === 'running') return p.current_stage + '…'; return '待分析' })
 	  const progressHeadline = computed(() => { const p = progress.value; if (!p) return ''; if (p.overall_status === 'done') return '全部完成'; if (p.overall_status === 'failed') return '分析出错,可重新分析'; if (p.overall_status === 'degraded') return '分析有缺损,可重新分析'; if (p.overall_status === 'paused') return 'GPT5.5 降级后已按规则暂停，可检查后再继续'; if (p.overall_status === 'source_unavailable') return '源文件已删除或不可用'; return '正在「' + p.current_stage + '」' })
 	  const progressHint = computed(() => { const p = progress.value; if (!p) return ''; if (p.overall_status === 'running') return '正在处理,可关闭页面,稍后回来会自动接着显示进度'; if (p.overall_status === 'paused') return '已保存当前阶段结果,后续可从断点继续或重跑深层分析'; if (p.overall_status === 'failed') return '已记录失败原因,可查看状态后重新分析'; if (p.overall_status === 'degraded') return '已保留可用结果,建议后续补跑缺损阶段'; if (p.overall_status === 'source_unavailable') return '源文件不可用,请恢复或重新上传后再继续'; if (p.overall_status === 'done') return '分析完成,下方查看结果'; return '等待进入分析队列' })
@@ -257,7 +283,7 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
 
   function fileIcon(ext?: string): string { const e = (ext || '').toLowerCase(); if (e === 'pdf') return '📕'; if (['doc','docx'].includes(e)) return '📘'; if (['xls','xlsx'].includes(e)) return '📗'; if (['ppt','pptx'].includes(e)) return '📙'; if (['png','jpg','jpeg','gif','webp'].includes(e)) return '🖼'; return '📄' }
   function docName(id: number): string { return documents.value.find(d => d.id === id)?.filename || ('资料 #'+id) }
-  function statusDotClass(status?: string): string { if (status === 'done') return 'ok'; if (status === 'running' || status === 'collecting' || status === 'parsing' || status === 'fusing') return 'busy'; if (status === 'failed' || status === 'source_unavailable') return 'failed'; if (status === 'paused') return 'warn'; return 'idle' }
+  function statusDotClass(status?: string): string { if (status === 'done') return 'ok'; if (status && RUNNING_STAGE_STATUSES.has(status)) return 'busy'; if (status && FAILED_STAGE_STATUSES.has(status)) return 'failed'; if (status && DEGRADED_STAGE_STATUSES.has(status)) return 'warn'; return 'idle' }
   function stageLabel(stage: string): string { const labels: Record<string, string> = { source: '源文件', parse: '解析', vector: '索引', raw: '原始采集', fusion: '页级融合', profile: '画像', graph: '图谱', relation: '关联', complete: '完成' }; return labels[stage] || stage }
   function sourceStateText(state: string): string { const labels: Record<string, string> = { source_file_deleted: '原始文件已删除或进入回收站。', source_file_missing: '原始文件路径不可用。', permission_denied: '当前账号没有访问原始文件的权限。', source_unavailable: '原始文件不可用。' }; return labels[state] || '原始文件不可用。' }
   function readableFailure(message: string): string { return message.replace(/^Document source file unavailable:\s*/i, '源文件不可用：') }
@@ -268,7 +294,7 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
   const analyzedDocCount = computed(() => {
     return documents.value.filter(d => {
       const lp = liveProgressMap.value[d.id]
-      return lp?.overall_status === 'done' || (!lp && d.parse_status === 'done')
+      return lp?.overall_status === 'done' || (!lp && deriveDocumentStatus(d) === 'done')
     }).length
   })
   const pendingPageRef = ref<number | undefined>(undefined)
@@ -722,6 +748,7 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     exportFormat,
     exporting,
     analyzing,
+    analyzeButtonText,
     runningCount,
     hasResult,
     showProgress,

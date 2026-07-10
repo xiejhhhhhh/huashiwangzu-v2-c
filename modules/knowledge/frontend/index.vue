@@ -78,7 +78,7 @@
               <option value="json">JSON</option>
             </select>
             <button class="ghost-btn" :disabled="exporting" @click="handleExport">{{ exporting ? '导出中…' : '导出' }}</button>
-            <button class="primary-btn" :disabled="analyzing || sourceUnavailable" @click="startAnalyze">{{ analyzing ? '分析中…' : (progress?.overall_status === 'done' ? '重新分析' : '开始分析') }}</button>
+            <button class="primary-btn" :disabled="analyzing || sourceUnavailable" @click="startAnalyze">{{ analyzeButtonText }}</button>
             <button class="ghost-btn danger" @click="removeDocument">删除</button>
           </div>
           <div v-if="analyzing" class="head-progress">
@@ -269,6 +269,7 @@ const {
   exportFormat,
   exporting,
   analyzing,
+  analyzeButtonText,
   runningCount,
   hasResult,
   showProgress,
