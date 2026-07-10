@@ -158,6 +158,7 @@ Use `db_schema()` for live database details. This module must not directly read 
 - `kb_analysis_artifacts` is an append-only stage ledger for pipeline traceability and dry-run rerun planning.
 - Evidence rows may carry lineage back to raw data, page fusion, artifacts, prompt hash, model used, and diagnostics.
 - `page_render` materializes reusable visual page assets before OCR/VLM stages. Page images are rendered, compressed, stored on disk, and recorded in `kb_image_assets`; `raw_ocr` and `raw_vision` consume those assets instead of rendering the source document again.
+- Pipeline workers use resource-pool lanes instead of one global queue: `local_preprocess` is local CPU/disk/conversion work, `vision_analysis` is OCR/VLM cloud vision work, `llm_analysis` is LLM fusion/profile/graph work, `derived_index` and `relation_build` are downstream DB work. Local lanes are sized for machine resources; cloud lanes are balanced by thread budget.
 - Image similarity is a sidecar stage for PDF page renders and image files. It stores perceptual hashes, suspected/high pairs, and groups, but it does not skip VLM analysis or reuse representative-image VLM output.
 - Chaotic model-returned tags, entity types, and relation types are preserved as raw business signals until a later governance phase.
 

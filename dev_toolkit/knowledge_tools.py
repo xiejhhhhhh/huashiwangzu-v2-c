@@ -300,7 +300,7 @@ NAMES = {
     "parse_index": "基础解析/索引",
     "page_render": "页面截图/压缩资产",
     "raw_text": "原始文本采集",
-    "raw_ocr": "本地 OCR",
+    "raw_ocr": "视觉 OCR",
     "raw_vision": "VLM 看图理解",
     "fusion": "LLM 融合交叉印证",
     "profile": "文档画像/标签",

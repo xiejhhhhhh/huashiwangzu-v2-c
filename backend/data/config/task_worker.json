@@ -22,10 +22,10 @@
       "page_render": 160,
       "raw_ocr": 200,
       "raw_vision": 200,
-      "fusion": 10,
-      "profile": 10,
+      "fusion": 40,
+      "profile": 40,
       "cognitive_index": 1,
-      "graph": 10,
+      "graph": 40,
       "relations": 2
     }
   },
@@ -56,12 +56,13 @@
   "lane_concurrency": {
     "kb_pipeline_stage": {
       "local_preprocess": 240,
-      "model_analysis": 10,
+      "vision_analysis": 40,
+      "llm_analysis": 40,
       "derived_index": 2,
       "relation_build": 2
     }
   },
-  "config_note": "Knowledge tasks dispatch by explicit stage_key columns. Uvicorn web processes run with TASK_WORKER_AUTOSTART=0, and scripts/backend_watchdog.sh starts standalone task_worker_main processes. worker_process_slots caps the standalone worker process count unless TASK_WORKER_PROCESSES overrides it; each process hot-reloads this JSON every 5s. worker_lanes_per_process=10 with 20 slots gives 200 knowledge execution entrances, a balanced Mac Studio profile after the 24-process profile pushed CPU too high. worker_total_memory_limit_mb=73728 lets the worker group use up to about 72GB RSS before watchdog restart, aligning with a 96GB machine target of roughly 75% memory pressure while relying on DB-backed queue recovery. claim_lock_scope=database serializes only the short DB claim section across worker processes; task execution remains concurrent, but idle lanes no longer stampede the queue table or overshoot global lane limits. PostgreSQL row locks plus optional per-stage advisory xact locks still prevent duplicate hot-claim pressure. stage_concurrency provides per-stage upper bounds; lane_concurrency caps resource groups such as local_preprocess, model_analysis, and relation_build; dynamic_stage_concurrency can redistribute a lane budget across only the active stages in that lane by fair share plus backlog weight, so a single remaining model node can use the full model_analysis budget while multiple nodes do not starve each other. stage_dispatch_order chooses which node queue to drain first inside those resource constraints, so source_validate can act as the fast root gate without flattening everything into one global priority. Changing TASK_WORKER_PROCESSES, worker_process_slots, worker_total_memory_limit_mb, or DB pool env values requires backend restart.",
+  "config_note": "Knowledge tasks dispatch by explicit stage_key columns. Uvicorn web processes run with TASK_WORKER_AUTOSTART=0, and scripts/backend_watchdog.sh starts standalone task_worker_main processes. worker_process_slots caps the standalone worker process count unless TASK_WORKER_PROCESSES overrides it; each process hot-reloads this JSON every 5s. worker_lanes_per_process=10 with 20 slots gives 200 knowledge execution entrances. worker_total_memory_limit_mb=73728 lets the worker group use up to about 72GB RSS before watchdog restart. claim_lock_scope=database serializes only the short DB claim section across worker processes; task execution remains concurrent. lane_concurrency is the resource-pool budget: local_preprocess is local CPU/disk/conversion work, vision_analysis is VLM/OCR cloud vision work, llm_analysis is LLM fusion/profile/graph work, derived_index and relation_build are downstream DB work. dynamic_stage_concurrency redistributes a lane budget across only the active stages in that lane by fair share plus backlog weight. stage_dispatch_order chooses which node queue to drain first inside those resource constraints. Changing TASK_WORKER_PROCESSES, worker_process_slots, worker_total_memory_limit_mb, or DB pool env values requires backend restart.",
   "model_auto_pause": {
     "enabled": false,
     "stage": "graph",
@@ -73,10 +74,16 @@
   },
   "dynamic_stage_concurrency": {
     "kb_pipeline_stage": {
-      "model_analysis": {
+      "vision_analysis": {
         "enabled": true,
         "min_per_stage": 1,
-        "max_per_stage": 10,
+        "max_per_stage": 40,
+        "fair_share_ratio": 0.6
+      },
+      "llm_analysis": {
+        "enabled": true,
+        "min_per_stage": 1,
+        "max_per_stage": 40,
         "fair_share_ratio": 0.6
       }
     }

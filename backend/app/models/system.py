@@ -264,11 +264,11 @@ async def ensure_framework_scheduling_columns() -> None:
                                 WHEN 'source_validate' THEN 'local_preprocess'
                                 WHEN 'parse_index' THEN 'local_preprocess'
                                 WHEN 'raw_text' THEN 'local_preprocess'
-                                WHEN 'raw_ocr' THEN 'model_analysis'
-                                WHEN 'raw_vision' THEN 'model_analysis'
-                                WHEN 'fusion' THEN 'model_analysis'
-                                WHEN 'profile' THEN 'model_analysis'
-                                WHEN 'graph' THEN 'model_analysis'
+                                WHEN 'raw_ocr' THEN 'vision_analysis'
+                                WHEN 'raw_vision' THEN 'vision_analysis'
+                                WHEN 'fusion' THEN 'llm_analysis'
+                                WHEN 'profile' THEN 'llm_analysis'
+                                WHEN 'graph' THEN 'llm_analysis'
                                 WHEN 'relations' THEN 'relation_build'
                                 ELSE lane_key
                             END

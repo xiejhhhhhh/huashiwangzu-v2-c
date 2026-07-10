@@ -30,7 +30,7 @@ def test_pending_paused_task_is_paused():
         id=10,
         status="pending",
         stage_key="graph",
-        lane_key="model_analysis",
+        lane_key="llm_analysis",
         ready_status="ready",
     )
     task_status = _task_display_status(task, {"graph"}, set())

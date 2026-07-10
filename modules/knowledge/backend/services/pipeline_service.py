@@ -90,12 +90,12 @@ STAGE_LANE_KEYS = {
     "parse_index": "local_preprocess",
     "raw_text": "local_preprocess",
     "page_render": "local_preprocess",
-    "raw_ocr": "model_analysis",
-    "raw_vision": "model_analysis",
-    "fusion": "model_analysis",
-    "profile": "model_analysis",
+    "raw_ocr": "vision_analysis",
+    "raw_vision": "vision_analysis",
+    "fusion": "llm_analysis",
+    "profile": "llm_analysis",
     "cognitive_index": "derived_index",
-    "graph": "model_analysis",
+    "graph": "llm_analysis",
     "relations": "relation_build",
 }
 

@@ -460,6 +460,78 @@ async def test_task_worker_stage_dispatch_order_claims_fast_root_first() -> None
 
 
 @pytest.mark.asyncio
+async def test_task_worker_stage_dispatch_order_beats_empty_slot_ratio() -> None:
+    task_type = f"test_stage_dispatch_ratio_{uuid4().hex}"
+    model_stage = "fusion"
+    local_stage = "source_validate"
+    config = task_worker._parse_worker_config({
+        "claim_lock_scope": "process",
+        "paused_task_types": ["kb_pipeline_stage"],
+        "stage_concurrency": {
+            task_type: {
+                model_stage: 40,
+                local_stage: 160,
+            },
+        },
+        "lane_concurrency": {
+            task_type: {
+                "llm_analysis": 40,
+                "local_preprocess": 240,
+            },
+        },
+        "stage_dispatch_order": {
+            task_type: [model_stage, local_stage],
+        },
+    })
+
+    async with AsyncSessionLocal() as db:
+        try:
+            for _ in range(10):
+                db.add(SystemTaskQueue(
+                    task_type=task_type,
+                    module="test",
+                    status="running",
+                    priority=1,
+                    parameters=json.dumps({"stage": model_stage}),
+                    stage_key=model_stage,
+                    lane_key="llm_analysis",
+                    ready_status="ready",
+                    started_at=datetime.now(timezone.utc),
+                ))
+            expected = SystemTaskQueue(
+                task_type=task_type,
+                module="test",
+                status="pending",
+                priority=1,
+                parameters=json.dumps({"stage": model_stage}),
+                stage_key=model_stage,
+                lane_key="llm_analysis",
+                ready_status="ready",
+            )
+            local_task = SystemTaskQueue(
+                task_type=task_type,
+                module="test",
+                status="pending",
+                priority=99,
+                parameters=json.dumps({"stage": local_stage}),
+                stage_key=local_stage,
+                lane_key="local_preprocess",
+                ready_status="ready",
+            )
+            db.add_all([expected, local_task])
+            await db.commit()
+
+            claimed = await task_worker._claim_one_task(db, config)
+
+            assert claimed is not None
+            assert claimed.stage_key == model_stage
+            assert claimed.id == expected.id
+        finally:
+            await db.execute(delete(SystemTaskQueue).where(SystemTaskQueue.task_type == task_type))
+            await db.commit()
+
+
+@pytest.mark.asyncio
 async def test_task_worker_dynamic_stage_concurrency_lets_single_active_stage_use_lane_budget() -> None:
     task_type = f"test_dynamic_single_{uuid4().hex}"
     config = task_worker._parse_worker_config({
@@ -756,7 +828,7 @@ def test_task_worker_handler_uses_explicit_queue_fields_over_parameters() -> Non
             }),
             document_id=222,
             stage_key="raw_vision",
-            lane_key="model_analysis",
+            lane_key="vision_analysis",
             dependency_key="knowledge:222:raw_vision",
         )
 
@@ -768,7 +840,7 @@ def test_task_worker_handler_uses_explicit_queue_fields_over_parameters() -> Non
         assert seen["document_id"] == 222
         assert seen["stage"] == "raw_vision"
         assert seen["task_id"] == 9001
-        assert seen["lane"] == "model_analysis"
+        assert seen["lane"] == "vision_analysis"
         assert seen["dependency_key"] == "knowledge:222:raw_vision"
     finally:
         task_worker._HANDLERS.clear()

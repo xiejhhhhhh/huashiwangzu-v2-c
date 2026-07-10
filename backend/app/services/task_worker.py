@@ -870,7 +870,7 @@ def _choose_stage_fair_candidate(candidates: list[_ClaimCandidate]) -> _ClaimCan
             available_slots = min(available_slots, lane_available_slots)
         created_at = candidate.created_at
         created_ts = created_at.timestamp() if created_at is not None else 0.0
-        return (available_ratio, -int(candidate.dispatch_rank), available_slots, -created_ts, -candidate.id)
+        return (-int(candidate.dispatch_rank), available_ratio, available_slots, -created_ts, -candidate.id)
 
     return max(candidates, key=score)
 

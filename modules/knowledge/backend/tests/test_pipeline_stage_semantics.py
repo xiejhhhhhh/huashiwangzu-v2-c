@@ -55,6 +55,18 @@ summarize_raw_content_quality = raw_collection_service.summarize_raw_content_qua
 TEST_STORAGE_PATH = "_knowledge_tests/stage-semantics-source.txt"
 
 
+def test_pipeline_stage_lane_keys_match_resource_pools():
+    assert pipeline_service.STAGE_LANE_KEYS["source_validate"] == "local_preprocess"
+    assert pipeline_service.STAGE_LANE_KEYS["parse_index"] == "local_preprocess"
+    assert pipeline_service.STAGE_LANE_KEYS["raw_text"] == "local_preprocess"
+    assert pipeline_service.STAGE_LANE_KEYS["page_render"] == "local_preprocess"
+    assert pipeline_service.STAGE_LANE_KEYS["raw_ocr"] == "vision_analysis"
+    assert pipeline_service.STAGE_LANE_KEYS["raw_vision"] == "vision_analysis"
+    assert pipeline_service.STAGE_LANE_KEYS["fusion"] == "llm_analysis"
+    assert pipeline_service.STAGE_LANE_KEYS["profile"] == "llm_analysis"
+    assert pipeline_service.STAGE_LANE_KEYS["graph"] == "llm_analysis"
+
+
 @pytest.fixture(autouse=True)
 def _live_upload_fixture():
     marker = REPO_ROOT / "data" / "uploads" / TEST_STORAGE_PATH
