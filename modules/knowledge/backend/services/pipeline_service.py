@@ -525,6 +525,8 @@ async def _run_stage(
             mark_document_source_unavailable(doc, source_state.reason)
             await db.commit()
             return {"document_id": int(doc.id), "status": "skipped", "reason": source_state.reason}
+        if (doc.parse_error or "") in SOURCE_UNAVAILABLE_REASONS:
+            doc.parse_error = None
         non_content_reason = classify_non_content_file(doc, source_state.physical_path)
         if non_content_reason:
             mark_document_non_content_skipped(doc, non_content_reason)

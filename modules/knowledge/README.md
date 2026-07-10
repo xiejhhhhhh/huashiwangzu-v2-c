@@ -58,9 +58,12 @@ Queue status and document readiness are different contracts.
 - User-facing readiness must use document stage fields:
   `raw_status`, `fusion_status`, `profile_status`, `graph_status`, `relation_status`.
 - Deep analysis is complete only when all five stage fields are `done`.
-- `degraded` / `paused` is partial completion and must be shown as warning, not success.
+- `pending` work is normal waiting work, not skipped work.
+- Active queue rows are surfaced as `queued` / `running`; stages blocked by worker pause config are surfaced as `paused`.
+- `degraded` is partial completion and must be shown as warning, not success.
 - Dashboard stats expose `completed_documents` for deep completion and
-  `partial_documents` for degraded or paused documents.
+  separate `queued_documents`, `paused_documents`, `waiting_documents`,
+  `partial_documents`, and `failed_documents` counts.
 
 ## Public Actions / Capability Contract
 

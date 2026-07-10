@@ -10,6 +10,9 @@
       <div class="db-card ok"><span class="db-num">{{ s.completed_documents }}</span><span class="db-label">深度完成</span></div>
       <div class="db-card warn"><span class="db-num">{{ s.partial_documents || 0 }}</span><span class="db-label">部分完成</span></div>
       <div class="db-card busy"><span class="db-num">{{ s.running_documents }}</span><span class="db-label">分析中</span></div>
+      <div class="db-card queue"><span class="db-num">{{ s.queued_documents || 0 }}</span><span class="db-label">已入队</span></div>
+      <div class="db-card pause"><span class="db-num">{{ s.paused_documents || 0 }}</span><span class="db-label">暂停中</span></div>
+      <div class="db-card wait"><span class="db-num">{{ s.waiting_documents || 0 }}</span><span class="db-label">等待调度</span></div>
       <div class="db-card err"><span class="db-num">{{ s.failed_documents }}</span><span class="db-label">失败/卡住</span></div>
       <div class="db-card source"><span class="db-num">{{ s.source_unavailable_documents || 0 }}</span><span class="db-label">源文件不可用</span></div>
       <button class="db-card action-card" type="button" @click="showGovernance = !showGovernance">
@@ -127,7 +130,7 @@ const props = defineProps<{
 
 const s = ref<DashboardStats>({
   total_documents: 0, completed_documents: 0, partial_documents: 0, running_documents: 0, failed_documents: 0,
-  source_unavailable_documents: 0,
+  queued_documents: 0, paused_documents: 0, waiting_documents: 0, source_unavailable_documents: 0,
   total_entities: 0, total_graph_relations: 0, total_file_relations: 0,
   duplicate_entity_count: 0, duplicate_entity_groups: [],
   entity_category_distribution: {}, document_progresses: [], stuck_documents: [],
@@ -147,20 +150,25 @@ const hasCategories = computed(() => Object.keys(s.value.entity_category_distrib
 function statusClass(st: string): string {
   if (st === 'done') return 'ok'
   if (st === 'running' || st === 'collecting' || st === 'parsing' || st === 'fusing') return 'busy'
+  if (st === 'queued') return 'queue'
+  if (st === 'waiting' || st === 'pending') return 'wait'
   if (st === 'failed' || st === 'error') return 'err'
   if (st === 'source_unavailable') return 'source'
-  if (st === 'degraded' || st === 'paused') return 'warn'
+  if (st === 'paused') return 'pause'
+  if (st === 'degraded') return 'warn'
   return ''
 }
 function statusText(st: string): string {
   if (st === 'done') return '✓ 完成'
   if (st === 'running' || st === 'collecting' || st === 'parsing' || st === 'fusing') return '进行中'
+  if (st === 'queued') return '已入队'
+  if (st === 'waiting' || st === 'pending') return '等待中'
   if (st === 'failed' || st === 'error') return '✗ 失败'
   if (st === 'source_unavailable') return '源文件不可用'
   if (st === 'degraded') return '部分完成'
-  if (st === 'paused') return '已暂停'
-  if (st === 'skipped') return '跳过'
-  return '待处理'
+  if (st === 'paused') return '暂停中'
+  if (st === 'skipped') return '已忽略'
+  return '等待中'
 }
 function displayStatus(d: DocProgressEntry, fallback: string): string {
   return d.source_available === false ? 'source_unavailable' : fallback
@@ -169,7 +177,9 @@ function rowClass(d: DocProgressEntry): string {
   if (d.source_available === false) return 'row-source'
   const statuses = stageStatuses(d)
   if (statuses.some(st => st === 'failed' || st === 'error')) return 'row-err'
-  if (statuses.some(st => st === 'degraded' || st === 'paused')) return 'row-warn'
+  if (statuses.some(st => st === 'paused')) return 'row-paused'
+  if (statuses.some(st => st === 'queued' || st === 'waiting' || st === 'pending' || st === 'running')) return 'row-busy'
+  if (statuses.some(st => st === 'degraded')) return 'row-warn'
   if (statuses.every(st => st === 'done' || st === 'skipped')) return 'row-ok'
   return ''
 }
@@ -287,6 +297,9 @@ onMounted(async () => {
 .db-card { border: 1px solid #e3e9f2; border-radius: 12px; background: #fff; padding: 16px; text-align: center; }
 .db-card.ok { border-color: #b8e6d0; background: #f0faf5; }
 .db-card.busy { border-color: #f0d78c; background: #fef7e0; }
+.db-card.queue { border-color: #b8d8ff; background: #f1f7ff; }
+.db-card.pause { border-color: #d4c8ff; background: #f6f3ff; }
+.db-card.wait { border-color: #d7dee8; background: #f7f9fc; }
 .db-card.err { border-color: #f5c6c2; background: #fef0ee; }
 .db-card.warn { border-color: #ffd0a6; background: #fff7ed; }
 .db-card.source { border-color: #ffd0a6; background: #fff7ed; }
@@ -295,6 +308,9 @@ onMounted(async () => {
 .db-num { display: block; font-size: 28px; font-weight: 800; color: #1c3a4a; line-height: 1.2; }
 .db-card.ok .db-num { color: #1f9d5b; }
 .db-card.busy .db-num { color: #c5851a; }
+.db-card.queue .db-num { color: #2563eb; }
+.db-card.pause .db-num { color: #6d55c7; }
+.db-card.wait .db-num { color: #64748b; }
 .db-card.err .db-num { color: #d4544b; }
 .db-card.warn .db-num { color: #b45309; }
 .db-card.source .db-num { color: #b45309; }
@@ -309,6 +325,8 @@ onMounted(async () => {
 .db-table tr:last-child td { border-bottom: none; }
 .db-table tr:hover td { background: #f7fbfe; }
 .db-table tr.row-ok td { color: #1f9d5b; }
+.db-table tr.row-busy td { color: #46586b; background: #f7f9fc; }
+.db-table tr.row-paused td { color: #5b4bb2; background: #f6f3ff; }
 .db-table tr.row-warn td { color: #9a5b12; background: #fff7ed; }
 .db-table tr.row-err td { color: #d4544b; background: #fef0ee; }
 .db-table tr.row-source td { color: #9a5b12; background: #fff7ed; }
@@ -317,6 +335,9 @@ onMounted(async () => {
 .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .tag.ok { background: #e3f6ec; color: #1f9d5b; }
 .tag.busy { background: #fdf2dd; color: #c5851a; }
+.tag.queue { background: #e7f0ff; color: #2563eb; }
+.tag.pause { background: #eee9ff; color: #5b4bb2; }
+.tag.wait { background: #eef2f7; color: #64748b; }
 .tag.err { background: #fbe9e7; color: #d4544b; }
 .tag.source { background: #fff0d9; color: #b45309; }
 .tag.warn { background: #fff0d9; color: #b45309; }

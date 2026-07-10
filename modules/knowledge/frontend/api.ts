@@ -435,6 +435,9 @@ export interface DocProgressEntry {
   created_at: string
   source_available?: boolean
   source_state?: string
+  pipeline_status?: string
+  task_status?: string | null
+  task_stage?: string | null
 }
 
 export interface DashboardStats {
@@ -442,6 +445,9 @@ export interface DashboardStats {
   completed_documents: number
   partial_documents?: number
   running_documents: number
+  queued_documents?: number
+  paused_documents?: number
+  waiting_documents?: number
   failed_documents: number
   source_unavailable_documents?: number
   total_entities: number
