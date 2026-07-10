@@ -1,123 +1,85 @@
 # Project Toolkit MCP
 
-The project toolkit is the standard MCP entry for Agent development.
-
-## Entry
-
-The repository root `.mcp.json` starts:
+项目工具台是 Agent 开发本项目时的标准 MCP。入口在仓库根目录 `.mcp.json`：
 
 ```text
 python3.14 dev_toolkit/server.py
 ```
 
-`server.py` only starts MCP, builds the tool list, and routes calls to component modules.
+`server.py` 只负责启动、注册和路由；具体工具放在 `dev_toolkit/*_tools.py`。
 
-## Standard Workflow
-
-```text
-brief -> plan_task -> worktree_guard -> evidence -> edit -> verify -> docs_audit -> finish_task
-```
-
-| Stage | Tools |
-|---|---|
-| Overview | `brief`, `plan_task`, `worktree_guard` |
-| Code facts | `code_explore`, `code_node`, `code_impact` |
-| Contracts | `routes`, `capabilities`, `db_schema`, `capability_contract_diff` |
-| Edits | `quick_fix_preview`, `quick_fix_patch`, batch/edit recipes |
-| Verification | `lint`, `run_test`, `probe`, `call_capability`, `tail_log` |
-| Runtime restart | `restart_backend` |
-| Docs guard | `docs_snapshot`, `docs_audit`, `docs_sync` |
-| Release | `smoke_all`, `release_gate`, `module_sandbox_matrix` |
-| Git workflow | `git_sync_plan`, `git_sync_workflow` |
-| Finish | `finish_task` |
-
-## Docs Guard
-
-| Tool | Purpose |
-|---|---|
-| `docs_snapshot` | Return code-derived facts from manifests, capabilities, sandbox metadata, and docs. |
-| `docs_audit` | Report docs drift, deleted-doc references, stale public action counts, and historical garbage in long-lived docs. |
-| `docs_sync` | Refresh generated sections such as `CURRENT_STATE.md`, `MODULE_MAP.md`, and module README sync blocks. |
-
-Run docs guard after changing manifests, registered capabilities, routers, models, sandbox tests, release gate, or toolkit tools.
-
-Operating sequence:
-
-1. Run `docs_audit` before finishing the task.
-2. If generated facts drift, run `docs_sync` with the smallest useful scope.
-3. If policy/contract prose changed, update the owning README or `agent_handoff` document manually.
-4. Run `docs_audit` again.
-5. Do not handwrite long manifest/routes/capabilities/schema-derived facts when toolkit tools can derive them.
-
-Supported `docs_sync` scopes:
-
-| Scope | Writes |
-|---|---|
-| `current_state` | `开发文档/agent_handoff/CURRENT_STATE.md` |
-| `module_map` | `开发文档/agent_handoff/MODULE_MAP.md` |
-| `module_readmes` | Existing `DOCS-SYNC` blocks in module README files |
-| `all` | All generated docs/blocks above |
-
-## Memory and Feedback Records
-
-`memory_write`, `memory_recent`, `memory_search`, `mcp_feedback`, and `mcp_feedback_summary` use the configured `memory_dir`. The default is:
+## 常用流程
 
 ```text
-backend/logs/project_memory
+brief -> plan_task -> worktree_guard -> 查证据 -> edit -> verify -> docs_audit -> finish_task
 ```
 
-These files are local runtime/tooling records, not canonical user-facing documentation. Do not copy them into `开发文档/`. If a memory or feedback item contains a durable rule, distill that rule into `AGENTS.md`, `README.md`, `开发文档/agent_handoff/`, or the owning module README, then leave the raw record in runtime storage.
+| 场景 | 工具 |
+|---|---|
+| 项目概览 | `brief`, `plan_task`, `worktree_guard` |
+| 找代码 | `code_explore`, `code_node`, `code_impact` |
+| 查契约 | `routes`, `capabilities`, `db_schema`, `capability_contract_diff` |
+| 改代码 | `quick_fix_preview`, `quick_fix_patch`, `batch_quick_fix_apply` |
+| 查 bug | `bug_logs`, `bug_log_files`, `tail_log` |
+| 验证 | `lint`, `run_test`, `probe`, `call_capability` |
+| 重启 | `restart_backend` |
+| 文档同步 | `docs_audit`, `docs_sync` |
+| 发布检查 | `release_gate`, `smoke_all`, `module_sandbox_matrix` |
+| Git | `git_sync_plan`, `git_sync_workflow` |
 
-`user_profile_get`, `user_profile_suggest`, `user_profile_update`, and `user_profile_audit` use the configured `user_profile_path`, default `backend/logs/user_profile/profile.json`. User profile records are runtime personalization state; candidates require explicit confirmation before becoming active preferences, and profile entries never override current user instructions or project rules.
+## 日志排障
 
-## Component Rule
+- `bug_logs`：先用它。汇总最近错误、异常、Traceback、前端网络异常、任务失败。
+- `bug_log_files`：列出日志文件、来源、大小、更新时间。
+- `tail_log`：只看某个模块原始尾部。
+- `clear_log`：会清空日志，只在明确需要时使用。
 
-New tools must live in a component file:
+示例：
+
+```text
+bug_logs(query="/api/desktop/state", severity="error", sources="all", limit=20)
+bug_logs(module="knowledge", severity="warning", lines=1000)
+bug_log_files(sources="modules")
+tail_log(module="knowledge", lines=80)
+```
+
+## 重启和验证
+
+- 改后端、路由、能力注册、工具台后，先用 `restart_backend()`。
+- 重启后用 `probe(method="GET", path="/api/health")` 或目标接口验证。
+- 前端改动优先跑对应 build/UI 检查；后端改动优先跑聚焦 pytest。
+
+## 文档守卫
+
+- 改 manifest、能力注册、router、model、sandbox、release gate、工具台后跑 `docs_audit`。
+- 只有生成区块或生成事实漂移时用 `docs_sync`。
+- 规则和契约文字手动写到所属 README 或 `开发文档/agent_handoff/`。
+- 不把运行记忆、反馈记录、临时审计流水账搬进长期文档。
+
+## 组件规则
+
+新增工具放在独立组件：
 
 ```text
 dev_toolkit/{domain}_tools.py
   tool_definitions()
   handles_tool(name)
-  handle_tool(repo_root, name, arguments)
+  handle_tool(...)
 ```
 
-Do not add large schemas or business implementation blocks directly to `server.py`.
+不要把大段工具 schema 或业务逻辑直接写进 `server.py`。
 
-## High-Risk Tools
+## 高风险工具
 
-- `workspace_reset` deletes workspace data and requires explicit confirmation.
-- `clear_log` truncates logs.
-- `sql` is read-only by design.
-- `probe` and `call_capability` hit the live backend.
-- `restart_backend` runs `zsh scripts/start_backend.sh --restart`, waits for health, and reports the active port. Run it after backend Python, router, capability, or toolkit-server changes before live verification.
-- `docs_sync` writes Markdown generated sections.
-- `git_sync_workflow` stages local changes, commits, pushes a branch, fast-forwards the target branch, and pushes the target branch. It never force-pushes, rebases, or resets; use `git_sync_plan` first when unsure.
+- `workspace_reset` 删除工作区数据。
+- `clear_log` 截断日志。
+- `docs_sync` 写 Markdown。
+- `git_sync_workflow` 会 stage、commit、push、合并目标分支；不会 force push、rebase、reset。
+- `probe`、`call_capability` 会打当前 live backend。
 
-## Release Gate Modes
-
-Fast preflight:
+## 本地验证
 
 ```bash
+python3.14 -m pytest dev_toolkit/test_log_tools.py dev_toolkit/test_insight_tools.py dev_toolkit/test_server_helpers.py -q
 python3.14 dev_toolkit/release_gate.py --preflight --skip-ui
-```
-
-Backend/sandbox full gate without UI:
-
-```bash
-python3.14 dev_toolkit/release_gate.py --skip-ui
-```
-
-Full release gate with UI:
-
-```bash
-python3.14 dev_toolkit/release_gate.py
-```
-
-`--preflight` skips full smoke/model fallback/sandbox execution. `--skip-ui` skips Playwright UI validation. Skipped checks must be reported as debt, not pass.
-
-## Validation
-
-```bash
-python3.14 dev_toolkit/release_gate.py --preflight --skip-ui
-python3.14 dev_toolkit/module_sandbox_matrix.py --json
 ```

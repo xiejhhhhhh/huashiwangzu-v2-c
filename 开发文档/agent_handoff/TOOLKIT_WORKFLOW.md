@@ -12,7 +12,9 @@
 - `routes(filter)`: backend endpoint contracts.
 - `capabilities(module)`: module action parameters and roles.
 - `db_schema(table)`: table structure.
-- `tail_log(module)`: live errors.
+- `bug_logs(query, severity, sources, module)`: first pass for live bug clues across backend, module, frontend, worker, and toolkit logs.
+- `bug_log_files(sources, module)`: list available logs before choosing a target.
+- `tail_log(module)`: raw log tail for one module.
 
 ## Edit
 
