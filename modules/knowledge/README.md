@@ -173,6 +173,13 @@ Use `db_schema()` for live database details. This module must not directly read 
 
 If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
 
+## Frontend File Tree Loading Contract
+
+- The Knowledge file tree loads by folder scope. Opening the app loads only the root folder via `/files/list`; expanding a folder loads only that folder's direct children.
+- Knowledge status is joined only for the visible folder children through `/knowledge/documents/by-files`, capped at 200 file ids per request.
+- Opening the Knowledge app must not scan the full desktop tree, load every knowledge document, auto-register every supported file, or enqueue analysis for files the user has not opened.
+- Registering a file into Knowledge is a user-driven action from opening that file node; search and relation jumps may fetch a single document by `document_id` without loading the full library.
+
 ## Frontend / Backend Structure
 
 | Path | Status |

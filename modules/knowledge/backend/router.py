@@ -39,6 +39,7 @@ from .services.document_service import (
     enqueue_incomplete_documents,
     enqueue_pipeline_task,
     get_document,
+    list_documents_by_file_ids,
     list_documents,
     parse_and_index_document,
     register_document,
@@ -250,6 +251,8 @@ async def _enrich_search_results(
 class RegisterDocumentRequest(BaseModel):
     file_id: int
     catalog_id: int | None = None
+class DocumentsByFilesRequest(BaseModel):
+    file_ids: list[int] = Field(default_factory=list, max_length=200)
 class ParseDocumentRequest(BaseModel):
     document_id: int
     extract_graph: bool = True
@@ -388,6 +391,15 @@ async def api_get_document(
 ):
     result = await get_document(db, document_id, user.id)
     return ApiResponse(data=result)
+
+@router.post("/documents/by-files")
+async def api_documents_by_files(
+    payload: DocumentsByFilesRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    result = await list_documents_by_file_ids(db, user.id, payload.file_ids[:200])
+    return ApiResponse(data={"items": result})
 
 @router.delete("/documents/{document_id}")
 async def api_delete_document(

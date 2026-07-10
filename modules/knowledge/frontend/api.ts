@@ -50,6 +50,10 @@ export interface PaginatedResult<T> {
   page_size: number
 }
 
+export interface KnowledgeDocumentList {
+  items: KnowledgeDocument[]
+}
+
 export interface FileTreeNode {
   id: number
   node_key: string
@@ -274,6 +278,10 @@ export function getIngestStatus(documentId: number): Promise<KnowledgeIngestStat
   return apiGet(`/knowledge/documents/${documentId}/ingest-status`)
 }
 
+export function getKnowledgeDocument(documentId: number): Promise<KnowledgeDocument> {
+  return apiGet<KnowledgeDocument>(`/knowledge/documents/${documentId}`)
+}
+
 export function getProgressBatch(documentIds: number[]): Promise<Record<string, DocumentProgress>> {
   return apiPost('/knowledge/documents/progress-batch', { document_ids: documentIds })
 }
@@ -322,6 +330,13 @@ export function getFileTree(): Promise<FrameworkFolder[]> {
 
 export function listKnowledgeDocuments(page = 1, pageSize = 100): Promise<PaginatedResult<KnowledgeDocument>> {
   return apiGet<PaginatedResult<KnowledgeDocument>>(`/knowledge/documents?page=${page}&page_size=${pageSize}`)
+}
+
+export async function listKnowledgeDocumentsByFileIds(fileIds: number[]): Promise<KnowledgeDocument[]> {
+  const uniqueIds = Array.from(new Set(fileIds.filter((id) => Number.isFinite(id) && id > 0)))
+  if (!uniqueIds.length) return []
+  const data = await apiPost<KnowledgeDocumentList>('/knowledge/documents/by-files', { file_ids: uniqueIds.slice(0, 200) })
+  return data.items || []
 }
 
 export function getFileList(folderId: number, page = 1, pageSize = 200): Promise<PaginatedResult<FrameworkFile>> {

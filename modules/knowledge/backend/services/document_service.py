@@ -896,6 +896,37 @@ async def list_documents(
     }
 
 
+async def list_documents_by_file_ids(
+    db: AsyncSession,
+    owner_id: int,
+    file_ids: list[int],
+) -> list[dict]:
+    """Return active knowledge documents for a bounded set of framework file ids."""
+    from ..models import KbDocument
+    from .source_file_state import accessible_document_clause
+
+    normalized_ids = sorted({
+        int(file_id)
+        for file_id in file_ids
+        if int(file_id or 0) > 0
+    })
+    if not normalized_ids:
+        return []
+
+    r = await db.execute(
+        select(KbDocument)
+        .join(File, File.id == KbDocument.file_id)
+        .where(
+            accessible_document_clause(owner_id),
+            KbDocument.deleted.is_(False),
+            File.deleted.is_(False),
+            KbDocument.file_id.in_(normalized_ids),
+        )
+        .order_by(KbDocument.updated_at.desc(), KbDocument.id.desc())
+    )
+    return [document_payload(doc) for doc in r.scalars().all()]
+
+
 async def get_document(db: AsyncSession, document_id: int, owner_id: int) -> dict:
     """获取文档详情。"""
     from .source_file_state import get_accessible_document_orm, get_source_file_availability
