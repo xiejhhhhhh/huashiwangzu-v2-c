@@ -18,6 +18,9 @@ export interface KnowledgeDocument {
   vector_status: string
   raw_status?: string
   fusion_status?: string
+  profile_status?: string
+  graph_status?: string
+  relation_status?: string
   total_chunks: number
   total_pages: number
   parse_error: string | null
@@ -425,6 +428,9 @@ export interface DocProgressEntry {
   total_pages: number
   raw_status: string
   fusion_status: string
+  profile_status: string
+  graph_status: string
+  relation_status: string
   parse_status: string
   created_at: string
   source_available?: boolean
@@ -434,6 +440,7 @@ export interface DocProgressEntry {
 export interface DashboardStats {
   total_documents: number
   completed_documents: number
+  partial_documents?: number
   running_documents: number
   failed_documents: number
   source_unavailable_documents?: number

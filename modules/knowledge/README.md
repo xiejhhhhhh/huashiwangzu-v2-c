@@ -50,6 +50,18 @@ Backend HTTP prefix: `/api/knowledge`
 | `relation-graph` | GET | Endpoint family under `/api/knowledge` |
 | `search` | POST | Endpoint family under `/api/knowledge` |
 
+## Status Contract
+
+Queue status and document readiness are different contracts.
+
+- `framework_system_task_queues.status=completed` only means one worker task exited.
+- User-facing readiness must use document stage fields:
+  `raw_status`, `fusion_status`, `profile_status`, `graph_status`, `relation_status`.
+- Deep analysis is complete only when all five stage fields are `done`.
+- `degraded` / `paused` is partial completion and must be shown as warning, not success.
+- Dashboard stats expose `completed_documents` for deep completion and
+  `partial_documents` for degraded or paused documents.
+
 ## Public Actions / Capability Contract
 
 <!-- DOCS-SYNC: section=public_actions -->

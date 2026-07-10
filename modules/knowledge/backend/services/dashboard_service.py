@@ -6,18 +6,25 @@ Router layer is responsible for ApiResponse wrapping and auth.
 import logging
 
 from app.models.file import File
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     KbDocument,
-    KbDocumentProfile,
     KbEntityDictionary,
     KbFileRelation,
     KbGraphEdge,
 )
 
 logger = logging.getLogger("v2.knowledge").getChild("dashboard_service")
+
+DEEP_STAGE_FIELDS = (
+    KbDocument.raw_status,
+    KbDocument.fusion_status,
+    KbDocument.profile_status,
+    KbDocument.graph_status,
+    KbDocument.relation_status,
+)
 
 
 async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
@@ -37,12 +44,11 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
         select(func.count(KbDocument.id)).where(
             KbDocument.deleted.is_(False), KbDocument.owner_id == user_id,
             live_source_clause,
+            KbDocument.raw_status == "done",
             KbDocument.fusion_status == "done",
-            exists(
-                select(KbDocumentProfile.id).where(
-                    KbDocumentProfile.document_id == KbDocument.id
-                )
-            ),
+            KbDocument.profile_status == "done",
+            KbDocument.graph_status == "done",
+            KbDocument.relation_status == "done",
         )
     )).scalar() or 0
 
@@ -50,7 +56,16 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
         select(func.count(KbDocument.id)).where(
             KbDocument.deleted.is_(False), KbDocument.owner_id == user_id,
             live_source_clause,
-            or_(KbDocument.raw_status == "failed", KbDocument.fusion_status == "failed"),
+            or_(*(field.in_(("failed", "error")) for field in DEEP_STAGE_FIELDS)),
+        )
+    )).scalar() or 0
+
+    partial = (await db.execute(
+        select(func.count(KbDocument.id)).where(
+            KbDocument.deleted.is_(False), KbDocument.owner_id == user_id,
+            live_source_clause,
+            or_(*(field.in_(("degraded", "paused")) for field in DEEP_STAGE_FIELDS)),
+            ~or_(*(field.in_(("failed", "error")) for field in DEEP_STAGE_FIELDS)),
         )
     )).scalar() or 0
 
@@ -58,7 +73,7 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
         select(func.count(KbDocument.id)).where(
             KbDocument.deleted.is_(False), KbDocument.owner_id == user_id,
             live_source_clause,
-            KbDocument.raw_status == "pending", KbDocument.fusion_status == "pending",
+            and_(*(field == "pending" for field in DEEP_STAGE_FIELDS)),
         )
     )).scalar() or 0
 
@@ -69,7 +84,7 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
         )
     )).scalar() or 0
 
-    running = total - completed - failed - pending
+    running = max(0, total - completed - failed - partial - pending - source_unavailable)
 
     entity_count = (await db.execute(
         select(func.count(KbEntityDictionary.id)).where(KbEntityDictionary.owner_id == user_id)
@@ -124,23 +139,28 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
         entry = {
             "id": d.id, "filename": d.filename, "total_pages": d.total_pages,
             "raw_status": d.raw_status, "fusion_status": d.fusion_status,
+            "profile_status": getattr(d, "profile_status", "pending"),
+            "graph_status": getattr(d, "graph_status", "pending"),
+            "relation_status": getattr(d, "relation_status", "pending"),
             "parse_status": d.parse_status, "created_at": str(d.created_at or ""),
             "source_available": bool(source_available), "source_state": source_state,
         }
         doc_progresses.append(entry)
-        if source_available and (d.raw_status == "failed" or d.fusion_status == "failed"):
+        if source_available and any(
+            (getattr(d, attr, "pending") or "pending") in {"failed", "error"}
+            for attr in ("raw_status", "fusion_status", "profile_status", "graph_status", "relation_status")
+        ):
             stuck_docs.append(entry)
 
     recent = (await db.execute(
         select(KbDocument).where(
             KbDocument.deleted.is_(False), KbDocument.owner_id == user_id,
             live_source_clause,
+            KbDocument.raw_status == "done",
             KbDocument.fusion_status == "done",
-            exists(
-                select(KbDocumentProfile.id).where(
-                    KbDocumentProfile.document_id == KbDocument.id
-                )
-            ),
+            KbDocument.profile_status == "done",
+            KbDocument.graph_status == "done",
+            KbDocument.relation_status == "done",
         )
         .order_by(KbDocument.updated_at.desc().nullslast())
         .limit(10)
@@ -153,6 +173,7 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
     return {
         "total_documents": total,
         "completed_documents": completed,
+        "partial_documents": partial,
         "running_documents": running,
         "failed_documents": failed,
         "source_unavailable_documents": source_unavailable,

@@ -7,7 +7,8 @@
     </div>
     <div class="db-cards">
       <div class="db-card"><span class="db-num">{{ s.total_documents }}</span><span class="db-label">总文件数</span></div>
-      <div class="db-card ok"><span class="db-num">{{ s.completed_documents }}</span><span class="db-label">分析完成</span></div>
+      <div class="db-card ok"><span class="db-num">{{ s.completed_documents }}</span><span class="db-label">深度完成</span></div>
+      <div class="db-card warn"><span class="db-num">{{ s.partial_documents || 0 }}</span><span class="db-label">部分完成</span></div>
       <div class="db-card busy"><span class="db-num">{{ s.running_documents }}</span><span class="db-label">分析中</span></div>
       <div class="db-card err"><span class="db-num">{{ s.failed_documents }}</span><span class="db-label">失败/卡住</span></div>
       <div class="db-card source"><span class="db-num">{{ s.source_unavailable_documents || 0 }}</span><span class="db-label">源文件不可用</span></div>
@@ -24,13 +25,15 @@
       <h3>各文件分析进度</h3>
       <div class="db-table-wrap">
         <table class="db-table">
-          <thead><tr><th>文件名</th><th>原始采集</th><th>页级融合</th><th>解析</th><th>页数</th><th>创建时间</th><th></th></tr></thead>
+          <thead><tr><th>文件名</th><th>原始采集</th><th>页级融合</th><th>画像</th><th>图谱</th><th>关联</th><th>页数</th><th>创建时间</th><th></th></tr></thead>
           <tbody>
             <tr v-for="d in s.document_progresses" :key="d.id" :class="rowClass(d)">
               <td class="cell-name">{{ d.filename }}</td>
               <td><span class="tag" :class="statusClass(displayStatus(d, d.raw_status))">{{ statusText(displayStatus(d, d.raw_status)) }}</span></td>
               <td><span class="tag" :class="statusClass(displayStatus(d, d.fusion_status))">{{ statusText(displayStatus(d, d.fusion_status)) }}</span></td>
-              <td><span class="tag" :class="statusClass(displayStatus(d, d.parse_status))">{{ statusText(displayStatus(d, d.parse_status)) }}</span></td>
+              <td><span class="tag" :class="statusClass(displayStatus(d, d.profile_status))">{{ statusText(displayStatus(d, d.profile_status)) }}</span></td>
+              <td><span class="tag" :class="statusClass(displayStatus(d, d.graph_status))">{{ statusText(displayStatus(d, d.graph_status)) }}</span></td>
+              <td><span class="tag" :class="statusClass(displayStatus(d, d.relation_status))">{{ statusText(displayStatus(d, d.relation_status)) }}</span></td>
               <td>{{ d.total_pages || '-' }}</td>
               <td class="cell-date">{{ fmtDate(d.created_at) }}</td>
               <td v-if="isFailed(d)">
@@ -123,7 +126,7 @@ const props = defineProps<{
 }>()
 
 const s = ref<DashboardStats>({
-  total_documents: 0, completed_documents: 0, running_documents: 0, failed_documents: 0,
+  total_documents: 0, completed_documents: 0, partial_documents: 0, running_documents: 0, failed_documents: 0,
   source_unavailable_documents: 0,
   total_entities: 0, total_graph_relations: 0, total_file_relations: 0,
   duplicate_entity_count: 0, duplicate_entity_groups: [],
@@ -146,6 +149,7 @@ function statusClass(st: string): string {
   if (st === 'running' || st === 'collecting' || st === 'parsing' || st === 'fusing') return 'busy'
   if (st === 'failed' || st === 'error') return 'err'
   if (st === 'source_unavailable') return 'source'
+  if (st === 'degraded' || st === 'paused') return 'warn'
   return ''
 }
 function statusText(st: string): string {
@@ -153,6 +157,9 @@ function statusText(st: string): string {
   if (st === 'running' || st === 'collecting' || st === 'parsing' || st === 'fusing') return '进行中'
   if (st === 'failed' || st === 'error') return '✗ 失败'
   if (st === 'source_unavailable') return '源文件不可用'
+  if (st === 'degraded') return '部分完成'
+  if (st === 'paused') return '已暂停'
+  if (st === 'skipped') return '跳过'
   return '待处理'
 }
 function displayStatus(d: DocProgressEntry, fallback: string): string {
@@ -160,12 +167,17 @@ function displayStatus(d: DocProgressEntry, fallback: string): string {
 }
 function rowClass(d: DocProgressEntry): string {
   if (d.source_available === false) return 'row-source'
-  if (d.raw_status === 'failed' || d.fusion_status === 'failed') return 'row-err'
-  if (d.raw_status === 'done' && d.fusion_status === 'done') return 'row-ok'
+  const statuses = stageStatuses(d)
+  if (statuses.some(st => st === 'failed' || st === 'error')) return 'row-err'
+  if (statuses.some(st => st === 'degraded' || st === 'paused')) return 'row-warn'
+  if (statuses.every(st => st === 'done' || st === 'skipped')) return 'row-ok'
   return ''
 }
 function isFailed(d: DocProgressEntry): boolean {
-  return d.source_available !== false && (d.raw_status === 'failed' || d.fusion_status === 'failed')
+  return d.source_available !== false && stageStatuses(d).some(st => st === 'failed' || st === 'error')
+}
+function stageStatuses(d: DocProgressEntry): string[] {
+  return [d.raw_status, d.fusion_status, d.profile_status, d.graph_status, d.relation_status]
 }
 function barPct(cnt: number): number {
   const values = Object.values(s.value.entity_category_distribution) as number[]
@@ -276,14 +288,15 @@ onMounted(async () => {
 .db-card.ok { border-color: #b8e6d0; background: #f0faf5; }
 .db-card.busy { border-color: #f0d78c; background: #fef7e0; }
 .db-card.err { border-color: #f5c6c2; background: #fef0ee; }
-.db-card.warn { border-color: #f5c6c2; background: #fef0ee; }
+.db-card.warn { border-color: #ffd0a6; background: #fff7ed; }
 .db-card.source { border-color: #ffd0a6; background: #fff7ed; }
 .action-card { cursor: pointer; font: inherit; }
 .action-card:hover { border-color: #2395bc; background: #f0f9fd; }
 .db-num { display: block; font-size: 28px; font-weight: 800; color: #1c3a4a; line-height: 1.2; }
 .db-card.ok .db-num { color: #1f9d5b; }
 .db-card.busy .db-num { color: #c5851a; }
-.db-card.err .db-num, .db-card.warn .db-num { color: #d4544b; }
+.db-card.err .db-num { color: #d4544b; }
+.db-card.warn .db-num { color: #b45309; }
 .db-card.source .db-num { color: #b45309; }
 .db-label { font-size: 12px; color: #7c8da0; margin-top: 4px; display: block; }
 .db-section { margin-bottom: 20px; }
@@ -296,6 +309,7 @@ onMounted(async () => {
 .db-table tr:last-child td { border-bottom: none; }
 .db-table tr:hover td { background: #f7fbfe; }
 .db-table tr.row-ok td { color: #1f9d5b; }
+.db-table tr.row-warn td { color: #9a5b12; background: #fff7ed; }
 .db-table tr.row-err td { color: #d4544b; background: #fef0ee; }
 .db-table tr.row-source td { color: #9a5b12; background: #fff7ed; }
 .cell-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -305,6 +319,7 @@ onMounted(async () => {
 .tag.busy { background: #fdf2dd; color: #c5851a; }
 .tag.err { background: #fbe9e7; color: #d4544b; }
 .tag.source { background: #fff0d9; color: #b45309; }
+.tag.warn { background: #fff0d9; color: #b45309; }
 .db-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .stuck-list, .dup-list, .recent-list { border: 1px solid #e3e9f2; border-radius: 10px; background: #fff; overflow: hidden; }
 .stuck-item, .dup-item, .recent-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid #f0f3f7; font-size: 13px; }
