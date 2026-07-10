@@ -4,17 +4,16 @@ import {
   apiDelete,
   apiGet,
   apiPost,
-  buildFolderTree,
   exportDocument,
   getFileList,
-  getFileTree,
   getFusions,
   getIngestStatus,
+  getKnowledgeDocument,
   getProfile,
   getProgress,
   getProgressBatch,
   getRelations,
-  listKnowledgeDocuments,
+  listKnowledgeDocumentsByFileIds,
   parseJsonField,
   type DocumentProfile,
   type DocumentProgress,
@@ -47,11 +46,10 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
   const treeLoading = ref(false)
   const treeError = ref('')
   const folderOpenState = ref<Record<number, boolean>>({})
-  const folderFiles = ref<Record<number, FileTreeNode[]>>({})  // folder_id → 文件节点列表
+  const folderFiles = ref<Record<number, FileTreeNode[]>>({})  // folder_id -> loaded child folders and files
   const kbDocMap = ref<Record<number, KnowledgeDocument>>({})
   const liveProgressMap = ref<Record<number, DocumentProgress>>({})
 
-  const DOCUMENT_PAGE_SIZE = 100
   const FILE_PAGE_SIZE = 200
   const PROGRESS_BATCH_SIZE = 100
 
@@ -88,25 +86,11 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     const key = node.id
     const wasOpen = folderOpenState.value[key]
     folderOpenState.value[key] = !wasOpen
-    // 展开时加载文件夹内文件（仅一次）
+    // 展开时只加载当前文件夹的直接子节点。
     if (!wasOpen && !folderFiles.value[key]) {
       try {
-        const items = await loadAllFilesInFolder(key)
-        const children: FileTreeNode[] = items.filter((f) => !f.is_folder).map((f) => {
-          const doc = kbDocMap.value[f.id]
-          const node: FileTreeNode = {
-            id: f.id, name: f.name, parent_id: key, is_folder: f.is_folder,
-            node_key: `${f.is_folder ? 'folder' : 'file'}:${f.id}`,
-            children: [], _depth: 0, _open: false, _ext: f.extension || '',
-            _pct: null, _created_at: f.created_at || '',
-          }
-          if (doc) {
-            node.kb_doc_id = doc.id
-            // kb_status / _pct 由 visibleTree 透过 liveProgressMap 实时派生
-          }
-          return node
-        })
-        folderFiles.value[key] = children
+        folderFiles.value[key] = await loadFolderChildren(key)
+        await handshakeLoaded()
       } catch { folderFiles.value[key] = [] }
     }
   }
@@ -178,10 +162,9 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
   }
 
   /** Handle node selection from 3D graph */
-  function handleGraphSelect(node: GraphNode) {
+  async function handleGraphSelect(node: GraphNode) {
     const nodeId = node.id
-    // Try document lookup first (relation-graph nodes use document ids)
-    const doc = documents.value.find(d => d.id === nodeId)
+    const doc = await ensureDocument(nodeId)
     if (doc) {
       openDocument(doc)
       return
@@ -363,20 +346,10 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     }, null, 2)
   }
   async function jumpToSearchResult(item: SearchResult) {
-    const doc = documents.value.find(d => d.id === item.document_id)
+    const doc = await ensureDocument(item.document_id)
     if (!doc) return
     pendingPageRef.value = item.page ?? undefined
     await openDocument(doc)
-  }
-
-  async function loadAllKnowledgeDocuments(): Promise<KnowledgeDocument[]> {
-    const all: KnowledgeDocument[] = []
-    for (let page = 1; page <= 100; page += 1) {
-      const data = await listKnowledgeDocuments(page, DOCUMENT_PAGE_SIZE)
-      all.push(...(data.items || []))
-      if (all.length >= data.total || (data.items || []).length < DOCUMENT_PAGE_SIZE) break
-    }
-    return all
   }
 
   async function loadAllFilesInFolder(folderId: number): Promise<Awaited<ReturnType<typeof getFileList>>['items']> {
@@ -389,66 +362,64 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     return all
   }
 
+  function mergeKnowledgeDocuments(nextDocs: KnowledgeDocument[]) {
+    if (!nextDocs.length) return
+    const docByFileId: Record<number, KnowledgeDocument> = { ...kbDocMap.value }
+    const docById = new Map<number, KnowledgeDocument>()
+    for (const doc of documents.value) docById.set(doc.id, doc)
+    for (const doc of nextDocs) {
+      docByFileId[doc.file_id] = doc
+      docById.set(doc.id, doc)
+    }
+    kbDocMap.value = docByFileId
+    documents.value = Array.from(docById.values())
+  }
+
+  async function attachKnowledgeStatus(nodes: FileTreeNode[]) {
+    const fileIds = nodes.filter((node) => !node.is_folder).map((node) => node.id)
+    const docs = await listKnowledgeDocumentsByFileIds(fileIds)
+    mergeKnowledgeDocuments(docs)
+    for (const node of nodes) {
+      const doc = kbDocMap.value[node.id]
+      if (doc) {
+        node.kb_doc_id = doc.id
+        node._ext = doc.extension || node._ext || ''
+      }
+    }
+  }
+
+  async function loadFolderChildren(folderId: number): Promise<FileTreeNode[]> {
+    const items = await loadAllFilesInFolder(folderId)
+    const children: FileTreeNode[] = items.map((f) => ({
+      id: f.id,
+      name: f.name,
+      parent_id: folderId === 0 ? null : folderId,
+      is_folder: f.is_folder,
+      node_key: `${f.is_folder ? 'folder' : 'file'}:${f.id}`,
+      children: [],
+      _depth: 0,
+      _open: false,
+      _ext: f.extension || '',
+      _pct: null,
+      _created_at: f.created_at || '',
+    }))
+    await attachKnowledgeStatus(children)
+    children.sort((a, b) => {
+      if (a.is_folder !== b.is_folder) return a.is_folder ? -1 : 1
+      if (!a.is_folder) return (b._created_at || '').localeCompare(a._created_at || '')
+      return a.name.localeCompare(b.name)
+    })
+    return children
+  }
+
   async function loadFileTree() {
     treeLoading.value = true
     treeError.value = ''
     try {
-      const [folders, docs] = await Promise.all([
-        getFileTree(),
-        loadAllKnowledgeDocuments(),
-      ])
-      documents.value = docs
-      const tree = buildFolderTree(folders)
-      const docByFileId: Record<number, KnowledgeDocument> = {}
-      for (const d of docs) docByFileId[d.file_id] = d
-      kbDocMap.value = docByFileId
-
-      function attachDocs(nodes: FileTreeNode[]) {
-        for (const n of nodes) {
-          n._depth = 0; n._open = false; n._ext = ''; n._pct = null
-          const doc = docByFileId[n.id]
-          if (doc) {
-            n.kb_doc_id = doc.id
-            // kb_status / _pct 由 visibleTree 透过 liveProgressMap 实时派生
-          }
-          n._ext = (doc?.extension) || ''
-          if (n.children.length) attachDocs(n.children)
-        }
-      }
-      attachDocs(tree)
-      // 文件夹排前，文件排后
-      tree.sort((a, b) => {
-        if (a.is_folder !== b.is_folder) return a.is_folder ? -1 : 1
-        return a.name.localeCompare(b.name)
-      })
-      fileTree.value = tree
-
-      // 加载根目录文件（folder_id=0 的文件和文件夹混合）
-      try {
-        const rootItems = await loadAllFilesInFolder(0)
-        const rootFiles: FileTreeNode[] = []
-        for (const f of rootItems) {
-          if (f.is_folder) continue  // 文件夹已在 tree 中
-          const doc = kbDocMap.value[f.id]
-          const fn: FileTreeNode = {
-            id: f.id, name: f.name, parent_id: null, is_folder: false,
-            node_key: `file:${f.id}`,
-            children: [], _depth: 0, _open: false, _ext: f.extension || '', _pct: null,
-            _created_at: f.created_at || '',
-          }
-          if (doc) {
-            fn.kb_doc_id = doc.id
-            // kb_status / _pct 由 visibleTree 透过 liveProgressMap 实时派生
-          }
-          rootFiles.push(fn)
-        }
-        rootFiles.sort((a, b) => (b._created_at || '').localeCompare(a._created_at || ''))
-        if (rootFiles.length) fileTree.value = [...tree, ...rootFiles]
-      } catch { /* ignore */ }
-      await handshakeAll()
-
-      // ── 自动登记未入库的已支持格式文件（上传即分析零点击） ──
-      await autoRegisterUnregistered()
+      fileTree.value = await loadFolderChildren(0)
+      folderFiles.value = {}
+      folderOpenState.value = {}
+      await handshakeLoaded()
     } catch (e: unknown) {
       console.error('[kb] loadFileTree:', e)
       treeError.value = '知识库文件树加载失败：' + String((e as Error).message || e)
@@ -459,7 +430,7 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
 
   async function applyOpenPayload() {
     if (typeof props.documentId === 'number' && props.documentId > 0) {
-      const doc = documents.value.find(d => d.id === props.documentId)
+      const doc = await ensureDocument(props.documentId)
       if (doc) {
         await openDocument(doc)
         return
@@ -480,135 +451,40 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg',
   ])
 
-  /**
-   * 遍历文件树,自动登记支持格式但尚未入库的文件。
-   * 同时补齐已登记但未完成（raw_status≠done 或 fusion_status≠done）的文档。
-   * 分批串行(Promise.allSettled),每批最多3个,避免塞爆任务队列。
-   */
-  async function autoRegisterUnregistered() {
-    const toRegister: FileTreeNode[] = []
-    function collect(nodes: FileTreeNode[]) {
-      for (const n of nodes) {
-        if (!n.is_folder) {
-          const ext = ((n._ext || n.name.split('.').pop() || '')).toLowerCase()
-          if (KB_SUPPORTED_EXTS.has(ext) && !kbDocMap.value[n.id]) {
-            toRegister.push(n)
-          }
-        }
-        if (n.children.length) collect(n.children)
-      }
-    }
-    collect(fileTree.value)
-
-    if (!toRegister.length) return
-    console.log(`[kb] Auto-registering ${toRegister.length} supported files...`)
-
-    // 分批,每批最多3个
-    const BATCH_SIZE = 3
-    for (let i = 0; i < toRegister.length; i += BATCH_SIZE) {
-      const batch = toRegister.slice(i, i + BATCH_SIZE)
-      const results = await Promise.allSettled(
-        batch.map(n =>
-          apiPost<KnowledgeDocument>('/knowledge/documents', { file_id: n.id })
-            .then((doc: KnowledgeDocument) => ({ node: n, doc }))
-        )
-      )
-      for (const r of results) {
-        if (r.status === 'fulfilled') {
-          const { node, doc } = r.value
-          node.kb_doc_id = doc.id
-          node.kb_status = 'pending'
-          kbDocMap.value[node.id] = doc
-          documents.value.push(doc)
-          console.log(`[kb] Registered: ${node.name} → doc_id=${doc.id}`)
-        } else {
-          console.warn('[kb] Register failed:', r.reason)
-        }
-      }
-      // 每批之间等一小会儿,别打太快
-      if (i + BATCH_SIZE < toRegister.length) {
-        await new Promise(r => setTimeout(r, 500))
-      }
-    }
-
-    // 登记完握手一次进度；已登记文档由后端断点队列接管，不在前端打开时批量补跑。
-    await handshakeAll()
-  }
-
-  /**
-   * 补齐已登记但未完成分析（非终态、且未在运行中）的文档。
-   * 幂等：正在跑的文档不重复入队。
-   * 双重保护：liveProgressMap（实时进度）+ 文档自身 status 字段（持久化）。
-   * 当 progress-batch 因网络/auth 问题失败时，liveProgressMap 可能为空，
-   * 此时 fallback 到文档自身的 raw_status/fusion_status 判断状态，避免
-   * 每次打开知识库都重新触发全部分析。
-   */
-  async function retryPendingDocuments() {
-    const toRetry: number[] = []
-    for (const d of documents.value) {
-      // 文档自身持久化状态（不受 liveProgressMap 空影响）
-      const rs = (d.raw_status || d.parse_status || '').toLowerCase()
-      const fs = (d.fusion_status || '').toLowerCase()
-      const docStatusFailed = rs === 'failed' || fs === 'failed'
-      const docStatusDone = rs === 'done' || fs === 'done' || (rs === 'done' && fs === 'done')
-      const docStatusRunning = rs === 'running' || rs === 'collecting' || rs === 'parsing' || fs === 'running' || fs === 'fusing'
-      const docStatusPending = !rs || (!docStatusDone && !docStatusFailed && !docStatusRunning)
-
-      // liveProgressMap 实时进度
-      const lp = liveProgressMap.value[d.id]
-      const lpRunning = lp?.overall_status === 'running'
-      const lpFailed = lp?.overall_status === 'failed'
-      const lpDegraded = lp?.overall_status === 'degraded'
-      const lpUnavailable = lp?.overall_status === 'source_unavailable'
-      const lpDone = lp?.overall_status === 'done'
-      const lpPending = !lp || (!lpDone && !lpFailed && !lpDegraded && !lpUnavailable && !lpRunning)
-
-      // 综合判断：两个维度都认为 pending 才 retry（防误判）
-      if (!docStatusPending && !lpPending) continue
-      // 任一维度认为是 running/failed/done 的不处理
-      if (docStatusRunning || lpRunning || docStatusDone || lpDone || docStatusFailed || lpFailed || lpDegraded || lpUnavailable) continue
-
-      toRetry.push(d.id)
-    }
-    if (!toRetry.length) return
-    console.log(`[kb] Retrying ${toRetry.length} stuck documents...`)
-
-    const BATCH_SIZE = 3
-    for (let i = 0; i < toRetry.length; i += BATCH_SIZE) {
-      const batch = toRetry.slice(i, i + BATCH_SIZE)
-      await Promise.allSettled(
-        batch.map(docId =>
-          apiPost('/knowledge/documents/full-pipeline', { document_id: docId })
-            .catch((e: unknown) => console.warn(`[kb] Retry failed for doc_id=${docId}:`, e))
-        )
-      )
-      if (i + BATCH_SIZE < toRetry.length) {
-        await new Promise(r => setTimeout(r, 500))
-      }
-    }
-
-    // 重新握手一次
-    await handshakeAll()
-  }
-
   async function openDocByNode(node: FileTreeNode) {
     if (!node.kb_doc_id) {
+      const ext = ((node._ext || node.name.split('.').pop() || '')).toLowerCase()
+      if (!KB_SUPPORTED_EXTS.has(ext)) {
+        window.alert(`暂不支持分析 .${ext || 'unknown'} 文件`)
+        return
+      }
       try {
         const doc = await apiPost<KnowledgeDocument>('/knowledge/documents', { file_id: node.id })
-        documents.value.push(doc)
+        mergeKnowledgeDocuments([doc])
         node.kb_doc_id = doc.id; node.kb_status = 'pending'; node._ext = doc.extension
-        kbDocMap.value[node.id] = doc
       } catch (e) { console.error('[kb] create doc failed:', e); return }
     }
     const doc = documents.value.find(d => d.id === node.kb_doc_id)
     if (doc) openDocument(doc)
   }
 
-  async function handshakeAll() {
+  async function ensureDocument(documentId: number): Promise<KnowledgeDocument | null> {
+    const existing = documents.value.find(d => d.id === documentId)
+    if (existing) return existing
+    try {
+      const doc = await getKnowledgeDocument(documentId)
+      mergeKnowledgeDocuments([doc])
+      return doc
+    } catch {
+      return null
+    }
+  }
+
+  async function handshakeLoaded() {
     const ids = documents.value.map(d => d.id)
     if (!ids.length) return
     try {
-      const norm: Record<number, DocumentProgress> = {}
+      const norm: Record<number, DocumentProgress> = { ...liveProgressMap.value }
       for (let i = 0; i < ids.length; i += PROGRESS_BATCH_SIZE) {
         const batch = ids.slice(i, i + PROGRESS_BATCH_SIZE)
         const map = await getProgressBatch(batch)
@@ -785,7 +661,7 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
   const pageRefs = ref<Record<number, HTMLElement>>({})
   function setPageRef(page: number, el: unknown) { if (el) pageRefs.value[page] = el as HTMLElement }
   async function gotoPage(page?: number) { if (!page) return; tab.value = 'reader'; await nextTick(); pageRefs.value[page]?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
-  async function jumpDoc(docId: number) { const doc = documents.value.find(d => d.id === docId); if (doc) openDocument(doc) }
+  async function jumpDoc(docId: number) { const doc = await ensureDocument(docId); if (doc) openDocument(doc) }
 
   function askAI() {
     const ctx: Record<string, unknown> = {}
