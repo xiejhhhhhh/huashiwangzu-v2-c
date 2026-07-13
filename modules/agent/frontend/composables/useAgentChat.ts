@@ -217,9 +217,9 @@ export function useAgentChat(props: AgentEntryProps) {
         }
       }
 
-      // 恢复时折叠所有思考/工具条目
+      // 恢复后保留思维内容可见，工具条目仍按工作组展示
       for (const item of items) {
-        if (item.eventType === 'thinking') { item.running = false; item.collapsed = true }
+        if (item.eventType === 'thinking') { item.running = false; item.collapsed = false }
       }
 
       const hasImageResult = items.some(item => hasImageToolResult(item.toolResult))
@@ -295,7 +295,7 @@ export function useAgentChat(props: AgentEntryProps) {
 
   // ── 共享事件处理器（流式 + 恢复 共用，防两条路径逻辑漂移） ──
 
-  /** 处理 thinking 事件：合并到上一张卡，或新建。isRestore 控制初始折叠。 */
+  /** 处理 thinking 事件：合并到上一张卡，或新建。 */
   /** 关闭上一张思考卡并设置耗时，新建时记录开始时间 */
   let _lastThinkingStart = 0
   let _lastRoundUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null
@@ -317,7 +317,7 @@ export function useAgentChat(props: AgentEntryProps) {
           if (!messages[i].durationMs && _lastThinkingStart) {
             messages[i].durationMs = Date.now() - _lastThinkingStart
           }
-          messages[i] = { ...messages[i], collapsed: true, running: false }
+          messages[i] = { ...messages[i], collapsed: false, running: false }
           break
         }
       }
@@ -326,7 +326,7 @@ export function useAgentChat(props: AgentEntryProps) {
       messages.push({
         id: 0, role: '', content: c,
         eventType: 'thinking',
-        collapsed: isRestore,
+        collapsed: false,
         running: !isRestore,
         durationMs: opts?.durationMs ?? (isRestore ? 0 : undefined),
       } as MsgItem)
@@ -597,14 +597,14 @@ export function useAgentChat(props: AgentEntryProps) {
           closeLastThinking()
           const wg = currentWorkGroup.value
           if (wg) { wg.running = false; wg.collapsed = false }
-          // 也折叠工作组内的思考和工具条目
+          // 结束工作组内的思维计时，保留思维内容可见
           if (wg?.items) {
             for (const item of wg.items) {
-              if (item.eventType === 'thinking') { item.collapsed = true; item.running = false }
+              if (item.eventType === 'thinking') { item.collapsed = false; item.running = false }
             }
           }
           for (const m of messages.value) {
-            if (m.eventType === 'thinking') { m.collapsed = true; m.running = false }
+            if (m.eventType === 'thinking') { m.collapsed = false; m.running = false }
           }
           const finalText = streamingText.value.trim()
                     streamingText.value = ''
@@ -678,7 +678,7 @@ export function useAgentChat(props: AgentEntryProps) {
               items[i].durationMs = Date.now() - _lastThinkingStart
             }
             items[i].running = false
-            items[i].collapsed = true
+            items[i].collapsed = false
             break
           }
         }

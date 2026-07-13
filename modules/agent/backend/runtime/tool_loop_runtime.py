@@ -386,7 +386,9 @@ class ToolLoopRuntime:
                     "role": "user",
                     "content": self._completion_prompt(action_result.checkpoint),
                 })
-                async for event in self._generate_final_summary(messages, tool_events, timeline, full):
+                async for event in self._generate_final_summary(
+                    messages, tool_events, timeline, full, thinking_parts,
+                ):
                     yield event
             else:
                 message = action_result.failure_reason or "Action graph could not complete safely."
@@ -554,6 +556,7 @@ class ToolLoopRuntime:
         tool_events: list[dict],
         timeline: list[dict],
         full: list[str],
+        thinking_parts: list[str],
     ):
         content_parts: list[str] = []
         async for event in chat_stream_with_degradation_chain(
@@ -568,6 +571,8 @@ class ToolLoopRuntime:
                 content_parts.append(content)
                 yield self._sse("token", content)
             elif event_type == "thinking" and content and not self.suppress_thinking:
+                thinking_parts.append(content)
+                timeline.append({"type": "thinking", "content": content, "started_at": time.time()})
                 yield self._sse("thinking", content)
             elif event_type == "error" and content:
                 yield self._sse("error", user_safe_error_message(content))
