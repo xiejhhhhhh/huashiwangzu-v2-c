@@ -83,6 +83,13 @@ def test_registered_capabilities() -> None:
         if cap["module"] == "desktop-tools"
     }
     assert actions == EXPECTED_ACTIONS, actions
+    for cap in capabilities:
+        if cap["module"] != "desktop-tools":
+            continue
+        contract = cap["execution_contract"]
+        assert contract["contract_declared"] is True
+        assert contract["risk_declared"] is True
+        assert contract["side_effect_level"] in {"none", "workspace_write"}
     print(f"  [CAPABILITIES] {len(actions)} desktop-tools actions registered: OK")
 
 

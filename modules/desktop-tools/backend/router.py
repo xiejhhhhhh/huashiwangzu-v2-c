@@ -57,6 +57,23 @@ _truncate_text = file_contract.truncate_text
 router = APIRouter(prefix="/api/desktop-tools", tags=["desktop-tools"])
 logger = logging.getLogger("v2.desktop-tools.router")
 
+_READ_EXECUTION_CONTRACT = {
+    "side_effect_level": "none",
+    "resource_class": "fast",
+    "timeout_seconds": 30,
+    "parallel_safe": True,
+}
+_FILE_READ_EXECUTION_CONTRACT = {
+    **_READ_EXECUTION_CONTRACT,
+    "output_reference_types": ["file"],
+}
+_WRITE_EXECUTION_CONTRACT = {
+    "side_effect_level": "workspace_write",
+    "resource_class": "fast",
+    "timeout_seconds": 60,
+    "idempotency": "supported",
+}
+
 
 # ── Framework model imports (used inside handler functions) ──────────
 # These are imported lazily inside handlers to avoid circular imports
@@ -75,9 +92,11 @@ async def _list_files(params: dict, caller: str) -> dict:
 
     async with AsyncSessionLocal() as db:
         result = await get_file_list(db, folder_id, owner_id, page, page_size)
+    items = [_desktop_item(item) for item in result.get("items", [])]
     return {
         **result,
-        "items": [_desktop_item(item) for item in result.get("items", [])],
+        "items": items,
+        "resource_refs": _file_resource_refs(items),
         "folder_id": folder_id,
     }
 
@@ -119,6 +138,7 @@ async def _search_files(params: dict, caller: str) -> dict:
 
     return {
         "items": items,
+        "resource_refs": _file_resource_refs(items),
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -146,6 +166,19 @@ def _desktop_item(item: dict) -> dict:
         "updated_at": str(item.get("updated_at")) if item.get("updated_at") else None,
         "is_folder": bool(item.get("is_folder")),
     }
+
+
+def _file_resource_refs(items: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": "file",
+            "id": item["id"],
+            "label": item.get("name") or f"file-{item['id']}",
+            "access_scope": "user",
+        }
+        for item in items
+        if item.get("id") is not None
+    ]
 
 # =====================================================================
 # Capability: desktop:read_file
@@ -646,6 +679,7 @@ register_capability(
         },
     },
     min_role="viewer",
+    execution_contract=_FILE_READ_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -666,6 +700,7 @@ register_capability(
         },
     },
     min_role="viewer",
+    execution_contract=_FILE_READ_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -683,6 +718,7 @@ register_capability(
         "required": ["file_id"],
     },
     min_role="viewer",
+    execution_contract=_READ_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -694,6 +730,7 @@ register_capability(
         "properties": {},
     },
     min_role="viewer",
+    execution_contract=_READ_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -708,6 +745,7 @@ register_capability(
         "required": ["file_id"],
     },
     min_role="viewer",
+    execution_contract=_READ_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -727,6 +765,7 @@ register_capability(
         "required": ["file_id"],
     },
     min_role="viewer",
+    execution_contract=_READ_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -744,6 +783,7 @@ register_capability(
         "required": ["name", "extension"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -762,6 +802,7 @@ register_capability(
         "required": ["old_file_id"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -776,6 +817,7 @@ register_capability(
         "required": ["file_id"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -791,6 +833,7 @@ register_capability(
         "required": ["file_id", "new_name"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -806,6 +849,7 @@ register_capability(
         "required": ["file_id"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -820,6 +864,7 @@ register_capability(
         "required": ["artifact_id"],
     },
     min_role="viewer",
+    execution_contract=_READ_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -835,6 +880,7 @@ register_capability(
         "required": ["artifact_id", "version_id"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -850,6 +896,7 @@ register_capability(
         "required": ["target_file_id", "source_artifact_id"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -865,6 +912,7 @@ register_capability(
         "required": ["artifact_id"],
     },
     min_role="editor",
+    execution_contract=_WRITE_EXECUTION_CONTRACT,
 )
 
 register_capability(
@@ -876,6 +924,7 @@ register_capability(
         "properties": {},
     },
     min_role="viewer",
+    execution_contract=_READ_EXECUTION_CONTRACT,
 )
 
 
