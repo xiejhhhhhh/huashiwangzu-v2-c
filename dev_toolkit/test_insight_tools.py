@@ -22,20 +22,26 @@ def test_mcp_self_check_discovers_components_and_wiring() -> None:
     assert result["direct_tool_count"] == 0
     assert "brief" in result["tools"]
     assert "batch_quick_fix_apply" in result["tools"]
+    assert "docs_audit" in result["tools"]
+    assert "docs_sync" in result["tools"]
     assert "mcp_self_check" in result["tools"]
     assert any(component["file"] == "dev_toolkit/core_tools.py" for component in result["components"])
+    assert any(component["file"] == "dev_toolkit/docs_sync.py" for component in result["components"])
     assert any(component["file"] == "dev_toolkit/edit_tools.py" for component in result["components"])
     assert any(component["file"] == "dev_toolkit/insight_tools.py" for component in result["components"])
 
     wired = result["wired_components"]
     assert any(w["component"] == "core_tools" and w["wired"] for w in wired)
+    assert any(w["component"] == "docs_sync" and w["wired"] for w in wired)
     assert any(w["component"] == "opencode_tools" and w["wired"] for w in wired)
     assert any(w["component"] == "insight_tools" and w["wired"] for w in wired)
 
 
 def test_every_tool_component_exposes_contract() -> None:
     helper_only = {"process_tools.py", "timing_tools.py"}
-    for path in sorted((REPO_ROOT / "dev_toolkit").glob("*_tools.py")):
+    component_paths = set((REPO_ROOT / "dev_toolkit").glob("*_tools.py"))
+    component_paths.add(REPO_ROOT / "dev_toolkit" / "docs_sync.py")
+    for path in sorted(component_paths):
         if path.name.startswith("test_") or path.name in helper_only:
             continue
         module = importlib.import_module(f"dev_toolkit.{path.stem}")

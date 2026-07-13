@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "项目工具台": {
+    "project_toolkit": {
       "command": "python3.14",
       "args": ["dev_toolkit/server.py"],
       "cwd": "/Users/hekunhua/Documents/Agent/PHP/华世王镞_v2",

@@ -6,6 +6,9 @@
 python3.14 dev_toolkit/server.py
 ```
 
+MCP server id 固定为 `project_toolkit`，以便 Codex 稳定暴露 `mcp__project_toolkit.*`
+可点工具名；中文“项目工具台”仅作为文档显示名。
+
 `server.py` 只负责启动、注册和路由；具体工具放在 `dev_toolkit/*_tools.py`。
 
 ## 常用流程

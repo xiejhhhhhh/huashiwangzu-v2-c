@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-SERVER_NAME = "项目工具台"
+SERVER_NAME = "project_toolkit"
+SERVER_DISPLAY_NAME = "项目工具台"
 SERVER_VERSION = "1.0.0"
 DEFAULT_COMMAND = "python3.14"
 SERVER_SCRIPT = Path("dev_toolkit") / "server.py"
@@ -47,6 +48,7 @@ def validate_declared_server_config(repo_root: Path) -> dict[str, Any]:
     payload = {
         "success": not mismatches and script_path.is_file(),
         "server_name": SERVER_NAME,
+        "server_display_name": SERVER_DISPLAY_NAME,
         "server_version": SERVER_VERSION,
         "config_path": str(repo_root / ".mcp.json"),
         "expected": expected,

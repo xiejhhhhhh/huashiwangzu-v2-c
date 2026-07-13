@@ -18,6 +18,7 @@ except ModuleNotFoundError:
 
 TOOL_NAMES = {"mcp_self_check", "dev_toolkit_architecture_audit", "agent_activity_report"}
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+NONSTANDARD_COMPONENT_FILES = ("docs_sync.py",)
 
 
 def _repo_rel(repo_root: Path, path: Path) -> str:
@@ -97,7 +98,11 @@ def _component_tool_names(module_name: str) -> list[str]:
 
 def _discover_components(repo_root: Path) -> list[dict[str, Any]]:
     components = []
-    for path in sorted((repo_root / "dev_toolkit").glob("*_tools.py")):
+    component_paths = set((repo_root / "dev_toolkit").glob("*_tools.py"))
+    component_paths.update(repo_root / "dev_toolkit" / name for name in NONSTANDARD_COMPONENT_FILES)
+    for path in sorted(component_paths):
+        if not path.is_file():
+            continue
         if path.name.startswith("test_"):
             continue
         module_stem = path.stem

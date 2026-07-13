@@ -6,7 +6,7 @@ from pathlib import Path
 import anyio
 import pytest
 
-from dev_toolkit.mcp_entry import expected_server_config, validate_declared_server_config
+from dev_toolkit.mcp_entry import SERVER_NAME, expected_server_config, validate_declared_server_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 pytest.importorskip("mcp")
@@ -52,11 +52,11 @@ def test_stdio_entrypoints_list_required_tools() -> None:
             async with ClientSession(read_stream, write_stream) as session:
                 init = await session.initialize()
                 tools = await session.list_tools()
-        assert init.serverInfo.name == "项目工具台"
+        assert init.serverInfo.name == SERVER_NAME
         assert init.serverInfo.version == "1.0.0"
         return tools.tools
 
-    declared = json.loads((REPO_ROOT / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["项目工具台"]
+    declared = json.loads((REPO_ROOT / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"][SERVER_NAME]
 
     async def run() -> None:
         declared_tools = await list_tools(
