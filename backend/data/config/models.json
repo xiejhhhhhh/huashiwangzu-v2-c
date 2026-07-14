@@ -310,6 +310,10 @@
     }
   },
   "module_routing": {
+    "agent": {
+      "default_profile": "deepseek-v4-flash",
+      "planning_profile": "deepseek-v4-flash"
+    },
     "knowledge": {
       "default_profile": "gpt-5.5-knowledge",
       "default_vision_profile": "gpt-5.5-vision",

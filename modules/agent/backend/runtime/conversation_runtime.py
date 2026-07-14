@@ -37,6 +37,18 @@ from .workflow_link import WorkflowRuntimeLink, should_open_workflow_from_prefli
 
 logger = logging.getLogger("v2.agent").getChild("runtime.conversation")
 
+_FALLBACK_PROFILE = "deepseek-v4-flash"
+
+
+def _default_agent_profile() -> str:
+    """从 models.json module_routing.agent.default_profile 读取，fallback 硬编码。"""
+    try:
+        from app.gateway.config import get_models_config
+        routing = get_models_config().get("module_routing", {}).get("agent", {})
+        return str(routing.get("default_profile") or _FALLBACK_PROFILE)
+    except Exception:
+        return _FALLBACK_PROFILE
+
 
 class ConversationRuntime:
     """Orchestrates a single conversation turn end-to-end.
@@ -110,7 +122,7 @@ class ConversationRuntime:
             raise HTTPException(status_code=404, detail="Conversation not found")
         _exec_t0 = time.monotonic()
 
-        profile_key = payload.profile_key or "deepseek-v4-flash"
+        profile_key = payload.profile_key or _default_agent_profile()
         agent_code = payload.agent_code or "erp_chat"
         user_message_id: int | None = None
         engine_diag: dict = {}
@@ -378,7 +390,7 @@ class ConversationRuntime:
         deletes stale events, then runs the tool loop with the edited
         content as the current turn input.
         """
-        profile_key = profile_key or "deepseek-v4-flash"
+        profile_key = profile_key or _default_agent_profile()
         agent_code = agent_code or "erp_chat"
 
         # Edit message + archive tail + delete stale events

@@ -67,8 +67,8 @@ _BACKUPS_DIR = _BACKEND_DIR / "backups"
 # 帮管理员发现 JSON 配置和代码硬编码之间的落差，PUT 写入仍然落到
 # model_types.llm.primary，不会去改 Python 代码。
 NODE_DEFINITIONS: list[dict[str, Any]] = [
-    {"id": "agent_chat", "name": "Agent 对话", "model_type": "llm", "config_path": "model_types.llm", "profile_source": "deepseek-v4-flash", "group": "agent"},
-    {"id": "agent_planning", "name": "Agent 规划", "model_type": "llm", "config_path": "model_types.llm", "profile_source": "deepseek-v4-flash", "group": "agent"},
+    {"id": "agent_chat", "name": "Agent 对话", "model_type": "llm", "config_path": "module_routing.agent.default_profile", "group": "agent"},
+    {"id": "agent_planning", "name": "Agent 规划", "model_type": "llm", "config_path": "module_routing.agent.planning_profile", "group": "agent"},
     {"id": "knowledge_text", "name": "知识库-文本分析", "model_type": "llm", "config_path": "module_routing.knowledge.default_profile", "group": "knowledge"},
     {"id": "knowledge_vision", "name": "知识库-视觉分析", "model_type": "vision", "config_path": "module_routing.knowledge.default_vision_profile", "group": "knowledge"},
     {"id": "knowledge_ocr", "name": "知识库-OCR", "model_type": "vision", "config_path": "module_routing.knowledge.stages.raw_ocr", "group": "knowledge"},
