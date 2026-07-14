@@ -325,7 +325,7 @@ READ_MEDIA_CONTRACT = {
     "max_attempts": 1,
     "idempotency": "supported",
     "side_effect_level": "none",
-    "output_reference_types": ["file", "record"],
+    "output_reference_types": ["file"],
     "parallel_safe": True,
 }
 
@@ -336,7 +336,7 @@ VLM_CONTRACT = {
     "max_attempts": 1,
     "idempotency": "supported",
     "side_effect_level": "none",
-    "output_reference_types": ["file", "record"],
+    "output_reference_types": ["file"],
     "parallel_safe": False,
 }
 

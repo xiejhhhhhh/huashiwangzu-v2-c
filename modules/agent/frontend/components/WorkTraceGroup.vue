@@ -15,6 +15,23 @@
           <span>{{ item.label || '响应等待' }}</span>
           <span class="work-overhead-time">{{ formatDuration(item.durationMs || 0) }}</span>
         </div>
+        <div v-else-if="item.eventType === 'planner_status'" class="work-planner-status-row">
+          <span class="work-plan-dot"></span>
+          <span>{{ item.plannerMessage || '正在分析任务并制定执行步骤…' }}</span>
+          <span v-if="item.planRound && item.planRound > 1">（第{{ item.planRound }}轮）</span>
+        </div>
+        <div v-else-if="item.eventType === 'action_plan'" class="work-plan-row">
+          <div class="work-plan-label">
+            <span class="work-plan-dot"></span>
+            <span>{{ item.plannerMessage || '已制定执行步骤，准备开始执行' }}<span v-if="item.planRound && item.planRound > 1">（第{{ item.planRound }}轮）</span></span>
+          </div>
+          <div v-if="item.planGoal" class="work-plan-goal">{{ item.planGoal }}</div>
+          <div v-if="item.planActions?.length" class="work-plan-actions">
+            <div v-for="action in item.planActions" :key="action.id || action.capability" class="work-plan-action">
+              {{ displayCapability(action.capability || '') }}
+            </div>
+          </div>
+        </div>
         <ThinkingCard
           v-else-if="item.eventType === 'thinking'"
           :content="item.content"
@@ -53,6 +70,11 @@ import ToolProgressCard from './ToolProgressCard.vue'
 
 interface TraceItem {
   eventType?: string
+  plannerPhase?: string
+  plannerMessage?: string
+  planRound?: number
+  planGoal?: string
+  planActions?: Array<{ id?: string; capability?: string }>
   role: string
   content: string
   running?: boolean
@@ -113,6 +135,17 @@ function draftReasonText(reason: string): string {
   if (reason === 'rollback') return '回退前草稿'
   if (reason === 'replace') return '被后续回复替换'
   return reason
+}
+
+function displayCapability(capability: string): string {
+  const [, action = capability] = capability.split('__', 2)
+  const labels: Record<string, string> = {
+    list_files: '列出文件',
+    get_file_content: '读取文件',
+    search: '搜索内容',
+    generate: '生成内容',
+  }
+  return labels[action] || action.replace(/_/g, ' ') || '执行操作'
 }
 </script>
 
@@ -185,6 +218,47 @@ function draftReasonText(reason: string): string {
   opacity: 0.5;
 }
 .work-overhead-time { margin-left: auto; font-size: 11px; }
+
+.work-planner-status-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-font-size-sm);
+}
+
+.work-plan-row {
+  display: grid;
+  gap: var(--ag-space-xs);
+  padding: var(--ag-space-xs) 0 var(--ag-space-sm);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-font-size-sm);
+}
+.work-plan-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ag-text-secondary);
+}
+.work-plan-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ag-radius-full);
+  background: var(--ag-primary);
+  flex-shrink: 0;
+}
+.work-plan-goal {
+  color: var(--ag-text-tertiary);
+  line-height: var(--ag-line-height-base);
+}
+.work-plan-actions {
+  display: grid;
+  gap: 2px;
+  color: var(--ag-text-disabled);
+  font-size: var(--ag-font-size-xs);
+}
+.work-plan-action::before { content: '·'; margin-right: 5px; }
 
 .work-draft-row {
   display: grid;

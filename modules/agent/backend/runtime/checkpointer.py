@@ -100,12 +100,15 @@ class PostgresCheckpointSaver:
         db: AsyncSession,
         conversation_id: int,
         checkpoint_id: str | None = None,
+        owner_id: int | None = None,
     ) -> dict | None:
         """Return the checkpoint dict, or None.
 
         If *checkpoint_id* is given, returns that exact checkpoint.
         Otherwise returns the latest (highest step) for the conversation.
         """
+        owner_clause = " AND owner_id = :owner_id" if owner_id is not None else ""
+        params = {"conv_id": conversation_id, "owner_id": owner_id}
         if checkpoint_id:
             result = await db.execute(text(
                 "SELECT checkpoint_id, parent_checkpoint_id, step, "
@@ -114,7 +117,8 @@ class PostgresCheckpointSaver:
                 "       checkpoint_type, resume_cursor "
                 "FROM agent_checkpoints "
                 "WHERE conversation_id = :conv_id AND checkpoint_id = :cp_id"
-            ), {"conv_id": conversation_id, "cp_id": checkpoint_id})
+                + owner_clause
+            ), {**params, "cp_id": checkpoint_id})
         else:
             result = await db.execute(text(
                 "SELECT checkpoint_id, parent_checkpoint_id, step, "
@@ -123,8 +127,9 @@ class PostgresCheckpointSaver:
                 "       checkpoint_type, resume_cursor "
                 "FROM agent_checkpoints "
                 "WHERE conversation_id = :conv_id "
-                "ORDER BY step DESC LIMIT 1"
-            ), {"conv_id": conversation_id})
+                + owner_clause
+                + " ORDER BY step DESC LIMIT 1"
+            ), params)
         row = result.fetchone()
         if not row:
             return None

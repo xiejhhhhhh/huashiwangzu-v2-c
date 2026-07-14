@@ -58,6 +58,7 @@ class ToolLoopRuntime:
         initial_usage: dict | None = None,
         capability_catalog: dict | None = None,
         planner: ActionPlanner | None = None,
+        agent_code: str = "erp_chat",
     ) -> None:
         self.conversation_id = conversation_id
         self.owner_id = owner_id
@@ -68,6 +69,7 @@ class ToolLoopRuntime:
         self.initial_usage = initial_usage or {}
         self.capability_catalog = capability_catalog or {}
         self.planner = planner
+        self.agent_code = agent_code or "erp_chat"
 
     async def run(
         self,
@@ -158,6 +160,20 @@ class ToolLoopRuntime:
 
         event_queue: asyncio.Queue[bytes] = asyncio.Queue()
         workflow_calls: dict[str, int | None] = {}
+
+        async def on_planning(planning_round: int) -> None:
+            event = {
+                "type": "planner_status",
+                "phase": "planning",
+                "planning_round": planning_round,
+                "message": (
+                    "正在分析任务并制定执行步骤…"
+                    if planning_round == 1
+                    else "正在根据执行结果调整方案…"
+                ),
+            }
+            timeline.append(event)
+            await event_queue.put(self._j_sse(event))
 
         async def on_plan(checkpoint: ActionPlanCheckpoint) -> None:
             nonlocal action_checkpoint
@@ -283,7 +299,7 @@ class ToolLoopRuntime:
                 policy = await check_action_allowed(
                     db,
                     tool_name=action.capability,
-                    agent_code="erp_chat",
+                    agent_code=self.agent_code,
                     user_id=self.owner_id,
                     conversation_id=self.conversation_id,
                     tool_args=arguments,
@@ -338,6 +354,18 @@ class ToolLoopRuntime:
                 conversation_id=self.conversation_id,
                 limit=8,
             )
+            logger.info(
+                "Capability catalog refreshed: conv=%s query=%s candidates=%s low_confidence=%s signal=%s",
+                self.conversation_id,
+                goal[:120],
+                [
+                    f"{item.get('module')}__{item.get('action')}"
+                    for item in self.capability_catalog.get("candidates") or []
+                    if isinstance(item, dict)
+                ],
+                bool(self.capability_catalog.get("low_confidence")),
+                self.capability_catalog.get("strongest_retrieval_signal"),
+            )
             return self.capability_catalog
 
         runtime = StructuredActionRuntime(
@@ -348,6 +376,7 @@ class ToolLoopRuntime:
             max_planning_rounds=min(self.policy.max_tool_rounds, 10),
             refresh_catalog=refresh_catalog,
             on_plan=on_plan,
+            on_planning=on_planning,
             on_observation=on_observation,
             planner=self.planner,
         )
@@ -368,6 +397,13 @@ class ToolLoopRuntime:
             while not event_queue.empty():
                 yield event_queue.get_nowait()
             _merge_usage(accumulated_usage, action_result.usage)
+            logger.info(
+                "Structured runtime completed: conv=%s status=%s planning_rounds=%d tool_events=%d",
+                self.conversation_id,
+                action_result.status,
+                action_result.planning_rounds,
+                len(tool_events),
+            )
 
             if action_result.status in {
                 ActionRuntimeStatus.DIRECT_ANSWER,
@@ -507,7 +543,11 @@ class ToolLoopRuntime:
                         "payload": {"content": final_clean_content(text), "usage": usage},
                         "llm_response_id": None,
                     })
-                await sink.persist_pending_events(db, pending_events, persisted_event_count)
+                persisted_event_count = await sink.persist_pending_events(
+                    db,
+                    pending_events,
+                    persisted_event_count,
+                )
                 await sink.record_assets(resource_refs)
 
                 evidence = await sink.generate_completion_evidence(action_checkpoint)
@@ -539,9 +579,12 @@ class ToolLoopRuntime:
                     token_count=int(usage.get("prompt_tokens", 0) or 0)
                     + int(usage.get("completion_tokens", 0) or 0),
                 )
+                hook_messages = [*messages]
+                if text:
+                    hook_messages.append({"role": "assistant", "content": text})
                 await sink.run_post_turn_hooks(
                     db,
-                    messages,
+                    hook_messages,
                     tool_events,
                     timeline,
                     trajectory_id=trajectory.get("id") if trajectory.get("recorded") else None,

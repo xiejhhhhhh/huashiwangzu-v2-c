@@ -179,6 +179,59 @@ def test_parameter_schema_normalizes_dict_type_aliases_recursively() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_list_query_prefers_read_only_capability(monkeypatch) -> None:
+    async def fake_snapshot(*, user_id: int, caller=None):
+        return {
+            "catalog_hash": "a" * 64,
+            "principal": {"user_id": user_id, "profile_version": "b" * 20},
+            "capabilities": [
+                {
+                    "capability_id": 13,
+                    "module": "agent",
+                    "action": "list_skills",
+                    "brief": "读取技能列表",
+                    "description": "读取当前注册的技能列表和治理状态",
+                    "parameters": {"limit": {"type": "integer"}},
+                    "retrieval": {
+                        "aliases": ["所有技能", "技能列表", "可用技能"],
+                        "when_to_use": "用户要求查看当前注册的技能",
+                    },
+                    "execution_contract": {"side_effect_level": "none"},
+                },
+                {
+                    "capability_id": 14,
+                    "module": "agent",
+                    "action": "skill_manage",
+                    "brief": "管理技能",
+                    "description": "创建、更新、删除和审批技能",
+                    "parameters": {"action": {"type": "string"}},
+                    "retrieval": {"when_to_use": "管理技能治理状态"},
+                    "execution_contract": {
+                        "side_effect_level": "admin_config",
+                        "approval_policy": "requires_confirmation",
+                    },
+                },
+            ],
+        }
+
+    async def no_experiences(**_kwargs):
+        return []
+
+    monkeypatch.setattr(capability_catalog, "authorized_capability_snapshot", fake_snapshot)
+    monkeypatch.setattr(capability_catalog, "_visible_experience_patterns", no_experiences)
+    result = await capability_catalog.retrieve_capabilities(
+        user_id=4,
+        query="那你试试直接用技能读取一下你所有的技能列表",
+        limit=2,
+        embedding_fn=None,
+    )
+
+    names = [f"{item['module']}__{item['action']}" for item in result["candidates"]]
+    assert names[0] == "agent__list_skills"
+    assert result["candidates"][0]["execution_contract"]["side_effect_level"] == "none"
+
+
+@pytest.mark.asyncio
 async def test_fixed_agent_regression_corpus_meets_recall_and_mrr(monkeypatch) -> None:
     async def fake_snapshot(*, user_id: int, caller=None):
         return {

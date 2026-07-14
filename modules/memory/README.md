@@ -1,132 +1,59 @@
 # memory — 记忆
 
-## Responsibility
-
 Long-term memory module for facts, semantic recall, memory links, experience records, stable rules, and dream/rethink maintenance.
 
-## Manifest Contract
+## 对外能力
 
-<!-- DOCS-SYNC: section=manifest -->
-| Field | Value |
-|---|---|
-| key | `"memory"` |
-| name | `"记忆"` |
-| category | `"tools"` |
-| module_type | `"service"` |
-| module_family | `"agent"` |
-| product_status | `"background"` |
-| window_type | `"normal"` |
-| singleton | `true` |
-| allow_multiple | `false` |
-| show_in_launcher | `false` |
-| show_on_desktop | `false` |
-| route_prefix | `"/api/memory"` |
-| contract_version | `"2.0"` |
-| module_version | `"1.0.0"` |
-| backend.enabled | `true` |
-| backend.router | `"backend/router.py"` |
-| actual backend prefix | `/api/memory` |
-<!-- /DOCS-SYNC -->
+| 能力 | 说明 |
+|------|------|
+| `backfill_chunk_embeddings` | Admin governance: safely backfill missing memory_chunk embeddings with dry-run support |
+| `backfill_embeddings` | Admin governance: safely backfill missing memory record embeddings with dry-run, owner, limit, and optional dream linking |
+| `backfill_links` | Admin governance: backfill missing memory_links between existing memory records using vector similarity. Dry-run safe. |
+| `delete` | 删除一条记忆 |
+| `dream` | 触发记忆自优化（去重合并 + 建链 + 衰减），后台运行不阻塞 |
+| `experience_feedback` | 反馈经验执行结果：成功则权重 +1，失败则失败次数 +1 并记录注释 |
+| `fuse` | 将多条记忆融合成贴合查询的一段简报（即时融合，on-demand） |
+| `insert` | 向已有记忆追加内容 |
+| `list` | 列出自己所有的记忆 |
+| `match_experience` | 在 SQL principal 可见并集内召回 contract 仍兼容的结构化成功经验 |
+| `overview_stats` | Admin overview: aggregated memory & experience statistics (total_count, with_embedding, avg_confidence, link_count, experience counts, etc.) |
+| `recall` | 语义检索自己的记忆（向量语义召回 + 重排 + 可选顺链扩展），不再仅靠关键词 |
+| `recall_chunk` | 语义检索 chunk 级记忆（带 provenance 溯源信息），返回最小粒度段落 |
+| `recall_stable_rules` | 获取当前用户所有活跃的稳定规则记忆（项目边界、用户偏好、硬约束等），按优先级降序返回 |
+| `replace` | 替换记忆中的某段文本（精确片段替换） |
+| `rethink` | 整条重写一条记忆（自编辑工具，如用户纠正错误时） |
+| `save` | 保存一段记忆（事实/偏好/约定），自动提取摘要和向量用于语义检索 |
+| `review_experience` | 审核达到晋升门槛的高风险共享经验候选；批准后才可进入召回 |
+| `save_experience` | 保存结构化成功经验；自动脱敏、绑定 capability contract，并按 principal 生成分层候选 |
+| `save_stable_rule` | 保存一条稳定规则记忆（项目边界/用户偏好/硬约束/长期规则），不参与向量衰减 |
 
-## Current Capabilities
+## 接口
 
-- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
-- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
-- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
-- Success experience uses one structured `memory_experiences` projection. Visibility is the SQL union of `global/organization/department/position/user/conversation`, derived from the server-side principal; revoked capability IDs and stale contract hashes are removed before results leave the module.
-- Shared projections contain only sanitized capability identities and dependencies. Personal preferences stay user-scoped, shared promotion uses configurable distinct-user/success thresholds, and high-risk candidates require an admin review.
+后端前缀：`/api/memory`
 
-## HTTP API / Endpoint Families
+| 路径族 | 方法 |
+|------|------|
+| /delete | POST |
+| /dream | POST |
+| /fuse | POST |
+| /insert | POST |
+| /list | GET |
+| /recall | POST |
+| /replace | POST |
+| /rethink | POST |
+| /save | POST |
 
-Backend HTTP prefix: `/api/memory`
+## 数据表
 
-| Family | Methods | Purpose |
-|---|---|---|
-| `delete` | POST | Endpoint family under `/api/memory` |
-| `dream` | POST | Endpoint family under `/api/memory` |
-| `fuse` | POST | Endpoint family under `/api/memory` |
-| `insert` | POST | Endpoint family under `/api/memory` |
-| `list` | GET | Endpoint family under `/api/memory` |
-| `recall` | POST | Endpoint family under `/api/memory` |
-| `replace` | POST | Endpoint family under `/api/memory` |
-| `rethink` | POST | Endpoint family under `/api/memory` |
-| `save` | POST | Endpoint family under `/api/memory` |
+| 表名 |
+|------|
+| `memory_chunks` |
+| `memory_experiences` |
+| `memory_links` |
+| `memory_records` |
+| `memory_stable_rules` |
 
-## Public Actions / Capability Contract
-
-<!-- DOCS-SYNC: section=public_actions -->
-Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
-
-Total public actions: 20
-
-| Action | min_role | Parameters | Purpose |
-|---|---|---|---|
-| `backfill_chunk_embeddings` | `admin` | `dry_run`, `limit`, `owner_id` | Admin governance: safely backfill missing memory_chunk embeddings with dry-run support |
-| `backfill_embeddings` | `admin` | `dry_run`, `limit`, `owner`, `owner_id`, `run_dream` | Admin governance: safely backfill missing memory record embeddings with dry-run, owner, limit, and optional dream linking |
-| `backfill_links` | `admin` | `dry_run`, `limit`, `owner_id` | Admin governance: backfill missing memory_links between existing memory records using vector similarity. Dry-run safe. |
-| `delete` | `viewer` | `id` | 删除一条记忆 |
-| `dream` | `editor` | none | 触发记忆自优化（去重合并 + 建链 + 衰减），后台运行不阻塞 |
-| `experience_feedback` | `viewer` | `conversation_id`, `experience_id`, `note`, `success`, `team_owner_ids` | 反馈经验执行结果：成功则权重 +1，失败则失败次数 +1 并记录注释 |
-| `fuse` | `viewer` | `ids`, `query` | 将多条记忆融合成贴合查询的一段简报（即时融合，on-demand） |
-| `insert` | `viewer` | `id`, `text` | 向已有记忆追加内容 |
-| `list` | `viewer` | `limit`, `offset` | 列出自己所有的记忆 |
-| `match_experience` | `viewer` | `conversation_id`, `limit`, `query`, `team_owner_ids` | 在 SQL principal 可见并集内召回 contract 仍兼容的结构化成功经验 |
-| `overview_stats` | `admin` | none | Admin overview: aggregated memory & experience statistics (total_count, with_embedding, avg_confidence, link_count, experience counts, etc.) |
-| `recall` | `viewer` | `expand_chain`, `limit`, `query` | 语义检索自己的记忆（向量语义召回 + 重排 + 可选顺链扩展），不再仅靠关键词 |
-| `recall_chunk` | `viewer` | `limit`, `query` | 语义检索 chunk 级记忆（带 provenance 溯源信息），返回最小粒度段落 |
-| `recall_stable_rules` | `viewer` | `rule_types` | 获取当前用户所有活跃的稳定规则记忆（项目边界、用户偏好、硬约束等），按优先级降序返回 |
-| `replace` | `viewer` | `id`, `new_text`, `old_text` | 替换记忆中的某段文本（精确片段替换） |
-| `rethink` | `viewer` | `id`, `tags`, `text` | 整条重写一条记忆（自编辑工具，如用户纠正错误时） |
-| `save` | `viewer` | `source`, `tags`, `text` | 保存一段记忆（事实/偏好/约定），自动提取摘要和向量用于语义检索 |
-| `review_experience` | `admin` | `decision`, `experience_id`, `note` | 审核达到晋升门槛的高风险共享经验候选；批准后才可进入召回 |
-| `save_experience` | `viewer` | `action_pattern`, `completion_evidence`, `goal_signature`, `preconditions`, `scope`, `scope_id`, `scope_type`, `source_conversation_id`, `steps`, `tools_used`, `trigger_condition` | 保存结构化成功经验；自动脱敏、绑定 capability contract，并按 principal 生成分层候选 |
-| `save_stable_rule` | `viewer` | `content`, `priority`, `rule_type`, `source` | 保存一条稳定规则记忆（项目边界/用户偏好/硬约束/长期规则），不参与向量衰减 |
-<!-- /DOCS-SYNC -->
-
-## Data Ownership
-
-| Table / Prefix | Purpose |
-|---|---|
-| `memory_chunks` | Owned by `memory` module |
-| `memory_experiences` | Owned by `memory` module |
-| `memory_links` | Owned by `memory` module |
-| `memory_records` | Owned by `memory` module |
-| `memory_stable_rules` | Owned by `memory` module |
-
-Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
-
-## Cross-Module Dependencies
-
-- Manifest dependencies are declared in `manifest.json` when needed.
-- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
-
-## File Access / Permission Boundary
-
-If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
-
-## Frontend / Backend Structure
-
-| Path | Status |
-|---|---|
-| `frontend/index.vue` | present |
-| `runtime/index.ts` | present |
-| `backend/router.py` | present |
-| `sandbox/test_module.py` | present |
-| `sandbox/package.json` | not present |
-
-## Acceptance
-
-<!-- DOCS-SYNC: section=sandbox -->
-| Area | Status | Verification |
-|---|---|---|
-| README | PASS | `modules/memory/README.md` |
-| Acceptance matrix | PASS | present |
-| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/memory/sandbox/test_module.py` |
-| Frontend sandbox | SKIP | `N/A` |
-| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module memory --check` |
-<!-- /DOCS-SYNC -->
-
-## Reproducible Checks
+## 验证
 
 ```bash
 backend/.venv/bin/python scripts/check-capability-drift.py
@@ -134,10 +61,3 @@ PYTHONPATH=backend backend/.venv/bin/python modules/memory/sandbox/test_module.p
 # No frontend sandbox build for this module
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module memory --check
 ```
-
-## Boundaries
-
-- Keep module business code and data inside `modules/memory/`.
-- Do not import other modules' internal code.
-- Do not directly read or write other modules' tables.
-- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

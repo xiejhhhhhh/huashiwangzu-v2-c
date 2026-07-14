@@ -330,8 +330,19 @@ async def test_checkpoint_persists_workflow_resume_context(
         checkpoint_type="tool_round",
         resume_cursor={"round": 3, "llm_to_ledger_call": {"abc": 12}},
     )
-    restored = await saver.get_tuple(db, sink.conversation_id, checkpoint_id)
+    restored = await saver.get_tuple(
+        db,
+        sink.conversation_id,
+        checkpoint_id,
+        owner_id=sink.owner_id,
+    )
     assert restored is not None
+    assert await saver.get_tuple(
+        db,
+        sink.conversation_id,
+        checkpoint_id,
+        owner_id=sink.owner_id + 1,
+    ) is None
     assert restored["workflow_run_id"] == sink.workflow_run_id
     assert restored["workflow_step_id"] == sink.workflow_step_id
     assert restored["agent_run_id"] == sink.agent_run_id

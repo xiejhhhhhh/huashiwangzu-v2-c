@@ -20,9 +20,18 @@
       "api_url": "https://opencode.ai/zen/go/v1/chat/completions",
       "api_key_env": "DEEPSEEK_API_KEY"
     },
-    "gptstore-text": {
+    "gptstore-local": {
       "type": "openai_compat",
       "api_url": "http://127.0.0.1:50936/v1/responses",
+      "api_protocol": "responses",
+      "api_key_env": "GPTSTORE_LOCAL_API_KEY",
+      "provider_name": "gptstore-local",
+      "timeout_seconds": 120,
+      "description": "本地 Claude Code 内置 GPT-5.5 代理（50936 端口），知识库分析专用，零云费用"
+    },
+    "gptstore-text": {
+      "type": "openai_compat",
+      "api_url": "https://jayce.sky1818.com/v1/responses",
       "api_protocol": "responses",
       "api_key_env": "GPTSTORE_API_KEY",
       "provider_name": "gptstore-text",
@@ -56,7 +65,7 @@
         ],
         "timeout_seconds": 90
       },
-      "description": "Local GPTStore relay for enterprise knowledge text analysis"
+      "description": "Cloud OpenAI-compatible endpoint for vision and text analysis (via jayce.sky1818.com)"
     },
     "llama": {
       "type": "openai_compat",
@@ -90,12 +99,12 @@
   },
   "fallback_policies": {
     "knowledge_text_primary": {
-      "description": "Knowledge text analysis: GPTStore first, direct cloud fallback for high-throughput batch ingestion.",
-      "chain": []
+      "description": "Knowledge text analysis: 本地 GPT-5.5 优先，失败降到 gemma-4 本地，最后 ollama",
+      "chain": ["gemma-4", "ollama-local"]
     },
     "knowledge_vision_primary": {
-      "description": "Knowledge vision analysis: GPTStore VLM first; failed relay/account attempts should remain retryable instead of falling back to lower-priority providers.",
-      "chain": []
+      "description": "Knowledge vision analysis: jayce GPT-5.5 优先，失败降到本地 qwen3-vl",
+      "chain": ["qwen3-vl"]
     }
   },
   "model_types": {
@@ -108,13 +117,13 @@
       ],
       "profiles": {
         "gpt-5.5-knowledge": {
-          "provider": "gptstore-text",
+          "provider": "gptstore-local",
           "model": "gpt-5.5",
           "temperature": 0.2,
           "max_tokens": 16000,
           "system_prompt": "You are a precise enterprise knowledge analysis model.",
           "response_adapter": "openai_compat",
-          "context_budget": 128000,
+          "context_budget": 1050000,
           "retry_max_attempts": 3,
           "retry_delay_seconds": 30,
           "retry_strategy": "fixed",
@@ -130,7 +139,7 @@
           "system_prompt": "You are a helpful AI assistant.",
           "response_adapter": "deepseek",
           "structured_output_mode": "json_object",
-          "context_budget": null,
+          "context_budget": 1000000,
           "price_input": 2.0,
           "price_output": 8.0
         },
@@ -141,7 +150,7 @@
           "max_tokens": 8192,
           "system_prompt": "You are a helpful AI assistant.",
           "response_adapter": "deepseek",
-          "context_budget": null,
+          "context_budget": 1000000,
           "price_input": 8.0,
           "price_output": 24.0
         },
@@ -182,7 +191,7 @@
       }
     },
     "embedding": {
-      "primary": "bge-m3",
+      "primary": "qwen3-embedding-8b",
       "knowledge_sidecar_primary": "qwen3-embedding-8b",
       "fallback_chain": [],
       "vector_stores": {
@@ -207,7 +216,7 @@
           "table": "kb_chunks",
           "vector_column": "embedding",
           "dimensions": 1024,
-          "migration_status": "compatibility_only"
+          "migration_status": "deprecated_read_only"
         }
       },
       "profiles": {
@@ -219,7 +228,9 @@
           "response_adapter": "openai_compat",
           "dimensions": 1024,
           "embedding_version": 1,
-          "vector_store": "kb_chunks"
+          "vector_store": "kb_chunks",
+          "deprecated": true,
+          "migration_note": "已被 qwen3-embedding-8b 替代，仅保留兼容性读取"
         },
         "qwen3-embedding-8b": {
           "provider": "local-openai-compatible",
@@ -256,7 +267,7 @@
       "fallback_chain": [],
       "profiles": {
         "gptstore": {
-          "provider": "opencode",
+          "provider": "gptstore-text",
           "model": "gpt-5.5",
           "response_adapter": "openai_compat",
           "price_input": 10.0,
@@ -328,7 +339,7 @@
         "relation_entity_candidates": 1000,
         "relation_write_batch": 100,
         "graph_write_batch": 10,
-    "model_call_global": 200
+        "model_call_global": 200
       },
       "image_preprocess": {
         "raw_ocr_max_side": 1600,

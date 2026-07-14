@@ -176,29 +176,17 @@ async def health_check():
                 GROUP BY status
             """))
             task_counts = {row[0]: int(row[1]) for row in task_rows.fetchall()}
-            completed_results_24h = await conn.execute(text("""
-                SELECT result
-                FROM framework_system_task_queues
+            # 语义失败检测：只扫最近24h（避免全表扫描29万行）
+            semantic_failed_24h_row = await conn.execute(text("""
+                SELECT count(*) FROM framework_system_task_queues
                 WHERE status = 'completed'
                   AND completed_at >= NOW() - INTERVAL '24 hours'
                   AND result IS NOT NULL
+                  AND (result::text LIKE '%"semantic_status": "failed"%'
+                       OR result::text LIKE '%"success": false%')
             """))
-            completed_results_total = await conn.execute(text("""
-                SELECT result
-                FROM framework_system_task_queues
-                WHERE status = 'completed'
-                  AND result IS NOT NULL
-            """))
-            semantic_failed_completed_24h = sum(
-                1
-                for row in completed_results_24h.fetchall()
-                if semantic_failure_reason(row[0])
-            )
-            semantic_failed_completed_total = sum(
-                1
-                for row in completed_results_total.fetchall()
-                if semantic_failure_reason(row[0])
-            )
+            semantic_failed_completed_24h = int(semantic_failed_24h_row.scalar() or 0)
+            semantic_failed_completed_total = semantic_failed_completed_24h  # 全量扫描太慢，用24h近似
             task_queue_summary = {
                 "pending": task_counts.get("pending", 0),
                 "running": task_counts.get("running", 0),

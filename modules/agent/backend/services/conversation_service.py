@@ -53,6 +53,21 @@ async def create_conversation(db: AsyncSession, owner_id: int, title: str = "新
     return conv
 
 
+async def get_owned_conversation(
+    db: AsyncSession,
+    owner_id: int,
+    conversation_id: int,
+    *,
+    active_only: bool = True,
+) -> AgentConversation | None:
+    conv = await db.get(AgentConversation, conversation_id)
+    if not conv or conv.owner_id != owner_id:
+        return None
+    if active_only and conv.status != "active":
+        return None
+    return conv
+
+
 async def rename_conversation(db: AsyncSession, owner_id: int, conversation_id: int, title: str) -> AgentConversation | None:
     conv = await db.get(AgentConversation, conversation_id)
     if not conv or conv.owner_id != owner_id or conv.status != "active":

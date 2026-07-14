@@ -29,7 +29,7 @@ def _reset_embedding_breaker() -> None:
 async def test_chunk_and_embed_batches_embedding_requests(monkeypatch) -> None:
     calls: list[list[str]] = []
 
-    async def fake_get_embeddings(texts: list[str]) -> list[list[float]]:
+    async def fake_get_embeddings(texts: list[str], profile_key: str | None = None) -> list[list[float]]:
         calls.append(texts)
         return [[float(index)] * 1024 for index, _ in enumerate(texts)]
 
@@ -51,7 +51,7 @@ async def test_chunk_and_embed_batches_embedding_requests(monkeypatch) -> None:
 async def test_chunk_and_embed_stops_after_embedding_service_unavailable(monkeypatch) -> None:
     calls = 0
 
-    async def unavailable_get_embeddings(texts: list[str]) -> list[list[float]]:
+    async def unavailable_get_embeddings(texts: list[str], profile_key: str | None = None) -> list[list[float]]:
         nonlocal calls
         calls += 1
         raise FileNotFoundError(
@@ -76,7 +76,7 @@ async def test_chunk_and_embed_stops_after_embedding_service_unavailable(monkeyp
 async def test_chunk_and_embed_uses_cached_unavailable_state(monkeypatch) -> None:
     calls = 0
 
-    async def fake_get_embeddings(texts: list[str]) -> list[list[float]]:
+    async def fake_get_embeddings(texts: list[str], profile_key: str | None = None) -> list[list[float]]:
         nonlocal calls
         calls += 1
         return [[1.0] * 1024 for _ in texts]

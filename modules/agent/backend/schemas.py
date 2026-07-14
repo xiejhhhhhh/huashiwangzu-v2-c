@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     profile_key: str | None = None
     resume_checkpoint_id: str | None = None
     enable_checkpointer: bool | None = None
+    agent_code: str = "erp_chat"
 
 
 class EditResubmitRequest(BaseModel):

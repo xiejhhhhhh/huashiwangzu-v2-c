@@ -17,7 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import KbDocument, KbDocumentProfile, KbPageFusion
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_profile
-from .profile_vector_service import normalize_profile_embedding, upsert_profile_vector
+from .profile_vector_service import (
+    PROFILE_VECTOR_MODEL,
+    normalize_profile_embedding,
+    upsert_profile_vector,
+)
 from .prompt_utils import TPROFILE, load_prompt_detached
 
 logger = logging.getLogger("v2.knowledge").getChild("profile")
@@ -111,7 +115,9 @@ async def generate_document_profile(
     profile_embedding = None
     try:
         embedding_started = perf_counter()
-        profile_embedding = await get_embedding(profile_text_for_embed[:2000])
+        # kb_document_profile_vectors.embedding 是 Vector(1024) 硬约束列，固定用 bge-m3，
+        # 不随 model_types.embedding.primary 切换（primary 现为 qwen3-embedding-8b/4096维）。
+        profile_embedding = await get_embedding(profile_text_for_embed[:2000], profile_key=PROFILE_VECTOR_MODEL)
         embedding_duration_ms = round((perf_counter() - embedding_started) * 1000)
     except Exception as e:
         if embedding_duration_ms == 0:

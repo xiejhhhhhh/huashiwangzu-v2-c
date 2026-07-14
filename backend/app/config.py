@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     DB_NAME: str = "华世王镞_v2"
     DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 60000
     DB_USE_NULL_POOL: bool = False
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 1
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 120
     DB_POOL_RECYCLE_SECONDS: int = 1800
 
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # Server（仅监听本机，不暴露给局域网）
     APP_HOST: str = "127.0.0.1"
-    APP_PORT: int = 30004
+    APP_PORT: int = 33000
     APP_DEBUG: bool = False
 
     # CORS

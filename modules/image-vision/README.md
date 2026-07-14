@@ -1,101 +1,23 @@
 # image-vision — Image Vision
 
-## Responsibility
+图片理解：本地特征分析优先，需要语义细节时才调用视觉模型。
 
-Image Vision
+## 对外能力
 
-## Manifest Contract
+| 能力 | 说明 |
+|------|------|
+| `describe` | Analyze image locally first, then use the vision model only when semantic detail is needed |
 
-<!-- DOCS-SYNC: section=manifest -->
-| Field | Value |
-|---|---|
-| key | `"image-vision"` |
-| name | `"Image Vision"` |
-| category | `"tools"` |
-| module_type | `"provider"` |
-| module_family | `"media"` |
-| product_status | `"background"` |
-| window_type | `"normal"` |
-| singleton | `false` |
-| allow_multiple | `false` |
-| show_in_launcher | `false` |
-| show_on_desktop | `false` |
-| route_prefix | `"/api/image-vision"` |
-| contract_version | `"2.0"` |
-| module_version | `"1.0.0"` |
-| backend.enabled | `true` |
-| backend.router | `"backend/router.py"` |
-| actual backend prefix | `/api/image-vision` |
-<!-- /DOCS-SYNC -->
+## 接口
 
-## Current Capabilities
+后端前缀：`/api/image-vision`
 
-- Desktop behavior, format binding, window behavior, and permissions are declared in `manifest.json`.
-- Backend HTTP behavior, if present, is implemented in `backend/router.py`.
-- Runtime module calls, if present, are declared in `manifest.public_actions` and registered by backend capability code.
-- `image-vision.describe` remains available for legacy content/knowledge image parsing. It declares `retrieval.expose_to_agent=false`, so Agent user-facing image understanding should use `media-intelligence` instead.
+| 路径族 | 方法 |
+|------|------|
+| /describe | POST |
+| /health | GET |
 
-## HTTP API / Endpoint Families
-
-Backend HTTP prefix: `/api/image-vision`
-
-| Family | Methods | Purpose |
-|---|---|---|
-| `describe` | POST | Endpoint family under `/api/image-vision` |
-| `health` | GET | Endpoint family under `/api/image-vision` |
-
-## Public Actions / Capability Contract
-
-<!-- DOCS-SYNC: section=public_actions -->
-Runtime authority: backend `register_capability(...)`. Discovery metadata: `manifest.public_actions`.
-
-Total public actions: 1
-
-| Action | min_role | Parameters | Purpose |
-|---|---|---|---|
-| `describe` | `viewer` | `analysis_mode`, `file_id`, `prompt` | Analyze image locally first, then use the vision model only when semantic detail is needed |
-<!-- /DOCS-SYNC -->
-
-## Data Ownership
-
-| Table / Prefix | Purpose |
-|---|---|
-| `image_vision_*` | No SQLAlchemy table detected in module backend, or UI-only/stateless module |
-
-Use `db_schema()` for live database details. This module must not directly read or write other modules' tables.
-
-## Cross-Module Dependencies
-
-- Manifest dependencies are declared in `manifest.json` when needed.
-- Runtime calls to other modules must use framework capability calls, not imports or direct DB reads.
-
-## File Access / Permission Boundary
-
-If this module consumes `file_id`, it must validate file access through framework file access helpers or an approved public capability before reading disk.
-
-## Frontend / Backend Structure
-
-| Path | Status |
-|---|---|
-| `frontend/index.vue` | present |
-| `runtime/index.ts` | present |
-| `backend/router.py` | present |
-| `sandbox/test_module.py` | present |
-| `sandbox/package.json` | present |
-
-## Acceptance
-
-<!-- DOCS-SYNC: section=sandbox -->
-| Area | Status | Verification |
-|---|---|---|
-| README | PASS | `modules/image-vision/README.md` |
-| Acceptance matrix | PASS | present |
-| Backend sandbox | PASS | `PYTHONPATH=backend /Users/hekunhua/Documents/Agent/PHP/华世王镞_v2/backend/.venv/bin/python modules/image-vision/sandbox/test_module.py` |
-| Frontend sandbox | PASS | `cd modules/image-vision/sandbox && npm run build` |
-| Matrix check | PASS | `backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-vision --check` |
-<!-- /DOCS-SYNC -->
-
-## Reproducible Checks
+## 验证
 
 ```bash
 backend/.venv/bin/python scripts/check-capability-drift.py
@@ -103,10 +25,3 @@ PYTHONPATH=backend backend/.venv/bin/python modules/image-vision/sandbox/test_mo
 cd modules/image-vision/sandbox && npm run build
 backend/.venv/bin/python dev_toolkit/module_sandbox_matrix.py --module image-vision --check
 ```
-
-## Boundaries
-
-- Keep module business code and data inside `modules/image-vision/`.
-- Do not import other modules' internal code.
-- Do not directly read or write other modules' tables.
-- Promote common needs to framework tasks only when multiple modules need the same long-term public capability.

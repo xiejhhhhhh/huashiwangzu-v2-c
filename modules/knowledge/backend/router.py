@@ -65,6 +65,7 @@ from .services.lifecycle_debt_service import (
     archive_source_unavailable_documents,
     audit_lifecycle_debt,
 )
+from .services.pipeline_batch_service import enqueue_pipeline_stage_batch
 from .services.pipeline_debt_api import (
     cap_apply_pipeline_debt,
     cap_classify_pipeline_debt,
@@ -1469,7 +1470,8 @@ async def _cap_backfill_chunk_embeddings(params: dict, caller: str) -> dict:
 
 
 async def _cap_enqueue_chunk_embedding_backfill(params: dict, caller: str) -> dict:
-    owner_id = resolve_user_id(caller)
+    actor_id = resolve_user_id(caller)
+    owner_id = int(params.get("owner_id") or actor_id)
     embedding_profile = str(
         params.get("embedding_profile") or DEFAULT_CHUNK_EMBEDDING_PROFILE
     ).strip()
@@ -1490,6 +1492,48 @@ async def _cap_enqueue_chunk_embedding_backfill(params: dict, caller: str) -> di
         )
         await db.commit()
         return result
+
+
+async def _cap_enqueue_pipeline_stage_batch(params: dict, caller: str) -> dict:
+    actor_id = resolve_user_id(caller)
+    owner_id = int(params.get("owner_id") or actor_id)
+    stage = str(params.get("stage") or "").strip()
+    dry_run = bool(params.get("dry_run", True))
+    limit = int(params.get("limit", 20) or 20)
+    priority = int(params.get("priority", 5) or 5)
+    confirm = str(params.get("confirm", "") or "")
+    audit_reason = str(params.get("audit_reason", "") or "")
+    filename_contains = str(params.get("filename_contains", "") or "")
+    document_ids_param = params.get("document_ids") or []
+    document_ids = (
+        [int(item) for item in document_ids_param]
+        if isinstance(document_ids_param, list)
+        else []
+    )
+    extensions_param = params.get("extensions") or []
+    if isinstance(extensions_param, str):
+        extensions = [part.strip() for part in extensions_param.split(",") if part.strip()]
+    elif isinstance(extensions_param, list):
+        extensions = [str(part).strip() for part in extensions_param if str(part).strip()]
+    else:
+        extensions = []
+    async with AsyncSessionLocal() as db:
+        if not dry_run:
+            await ensure_accepting_new_work(db, "knowledge single-stage batch")
+        return await enqueue_pipeline_stage_batch(
+            db,
+            actor_id=actor_id,
+            owner_id=owner_id,
+            stage=stage,
+            dry_run=dry_run,
+            confirm=confirm,
+            audit_reason=audit_reason,
+            limit=limit,
+            document_ids=document_ids,
+            extensions=extensions,
+            filename_contains=filename_contains,
+            priority=priority,
+        )
 
 
 async def _cap_enqueue_incomplete_documents(params: dict, caller: str) -> dict:
@@ -1944,6 +1988,24 @@ register_capability(
             "type": "string",
             "description": "Embedding profile key, default qwen3-embedding-8b",
         },
+    },
+    min_role="admin",
+)
+register_capability(
+    "knowledge", "enqueue_pipeline_stage_batch", _cap_enqueue_pipeline_stage_batch,
+    description="Preview or enqueue one bounded Knowledge cloud stage for a target owner without publishing downstream stages",
+    brief="受控投递单阶段知识分析",
+    parameters={
+        "owner_id": {"type": "integer", "description": "Target Knowledge owner ID; defaults to caller"},
+        "stage": {"type": "string", "description": "Allowed stage: raw_ocr, raw_vision, or fusion"},
+        "dry_run": {"type": "boolean", "description": "Preview only when true, default true"},
+        "confirm": {"type": "string", "description": "ENQUEUE_KNOWLEDGE_STAGE_BATCH required for apply"},
+        "audit_reason": {"type": "string", "description": "Operator reason recorded with queued work"},
+        "limit": {"type": "integer", "description": "Maximum documents to select, default 20, capped at 500"},
+        "document_ids": {"type": "array", "description": "Optional exact document IDs within target owner"},
+        "extensions": {"type": "array", "description": "Optional extension filter, e.g. [pdf]"},
+        "filename_contains": {"type": "string", "description": "Optional case-insensitive filename filter"},
+        "priority": {"type": "integer", "description": "Queue priority, default 5"},
     },
     min_role="admin",
 )

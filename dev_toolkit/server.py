@@ -55,6 +55,12 @@ try:
     from dev_toolkit.db_reverse_tools import handle_tool as db_reverse_handle_tool
     from dev_toolkit.db_reverse_tools import handles_tool as db_reverse_handles_tool
     from dev_toolkit.db_reverse_tools import tool_definitions as db_reverse_tool_definitions
+    from dev_toolkit.context_load_tools import handle_tool as context_load_handle_tool
+    from dev_toolkit.context_load_tools import handles_tool as context_load_handles_tool
+    from dev_toolkit.context_load_tools import tool_definitions as context_load_tool_definitions
+    from dev_toolkit.diagnose_tools import handle_tool as diagnose_handle_tool
+    from dev_toolkit.diagnose_tools import handles_tool as diagnose_handles_tool
+    from dev_toolkit.diagnose_tools import tool_definitions as diagnose_tool_definitions
     from dev_toolkit.docs_sync import handle_tool as docs_sync_handle_tool
     from dev_toolkit.docs_sync import handles_tool as docs_sync_handles_tool
     from dev_toolkit.docs_sync import tool_definitions as docs_sync_tool_definitions
@@ -1545,12 +1551,33 @@ async def _plan_task(description: str, task_type: str = "code_change", module_ke
     pre_gather: dict[str, Any] = {}
     if module_key:
         try:
-            capabilities_raw, db_schema_raw = await asyncio.gather(
-                _capabilities(module_key),
-                _db_schema(),
+            # 并发预采：能力清单 + 表结构 + codegraph代码定位
+            codegraph_query = f"{module_key} {description}"
+            capabilities_task = _capabilities(module_key)
+            db_schema_task = _db_schema()
+            codegraph_task = asyncio.create_subprocess_exec(
+                "codegraph", "explore", codegraph_query,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(REPO_ROOT),
+            )
+
+            capabilities_raw, db_schema_raw, cg_proc = await asyncio.gather(
+                capabilities_task, db_schema_task, codegraph_task,
             )
             pre_gather["capabilities"] = json.loads(capabilities_raw) if isinstance(capabilities_raw, str) else capabilities_raw
             pre_gather["db_schema_all"] = json.loads(db_schema_raw) if isinstance(db_schema_raw, str) else db_schema_raw
+
+            # codegraph 定位结果——最关键的精度提升
+            try:
+                cg_stdout, _ = await asyncio.wait_for(cg_proc.communicate(), timeout=10)
+                cg_output = cg_stdout.decode()
+                if len(cg_output) > 20000:
+                    cg_output = cg_output[:20000] + "\n...(截断)"
+                pre_gather["code_location"] = cg_output
+            except Exception:
+                pre_gather["code_location"] = "(codegraph 超时)"
+
         except Exception as exc:
             pre_gather["error"] = str(exc)[:200]
 
@@ -1695,6 +1722,7 @@ async def _probe(
     json_path: str | None = None,
 ) -> str:
     """打后端任意接口, 自动登录."""
+    _started = time.monotonic()
     auth = await _ensure_live_auth(role)
     token = str(auth["token"])
     headers = {"Authorization": f"Bearer {token}"}
@@ -1711,9 +1739,11 @@ async def _probe(
             data = resp.json()
         except Exception:
             data = resp.text
+        elapsed = round((time.monotonic() - _started) * 1000)
         result = {
             "status_code": resp.status_code,
             "data": data,
+            "duration_ms": elapsed,
             "_toolkit_auth": _auth_context_payload(auth),
         }
         options = ResponseShapeOptions(
@@ -1736,6 +1766,7 @@ async def _call_capability(
     json_path: str | None = None,
 ) -> str:
     """调模块能力(跨模块调用入口)."""
+    _started = time.monotonic()
     auth = await _ensure_live_auth(role)
     token = str(auth["token"])
     body = {
@@ -1760,9 +1791,11 @@ async def _call_capability(
         data = resp.json()
     except Exception:
         data = resp.text
+    elapsed = round((time.monotonic() - _started) * 1000)
     result = {
         "status_code": resp.status_code,
         "data": data,
+        "duration_ms": elapsed,
         "target": {"module": module, "action": action, "role": role},
         "_toolkit_auth": _auth_context_payload(auth),
     }
@@ -1882,11 +1915,89 @@ CORE_TOOL_CONTEXT = CoreToolContext(
     snap_diff=_snap_diff,
 )
 
-# ── 注册工具 ─────────────────────────────────────────────────────────
+# ── 工具分层（TOOL_PROFILE 环境变量控制暴露哪些工具）──────────────────
+#
+# strategy  = Claude Code 策划+高端实现（默认）：~40 个核心工具
+# executor  = OpenCode/Codex 执行层：~30 个实施工具
+# full      = 全部工具（调试/开发工具台自身时用）
+#
+# 通过 .mcp.json 或 .codex/config.toml 里的 env.TOOL_PROFILE 控制
+
+_TOOL_PROFILE = os.environ.get("TOOL_PROFILE", "strategy").lower()
+
+# 执行层不需要的工具（调度/自检/治理类）
+_EXECUTOR_EXCLUDE = {
+    "mailbox_write_letter", "mailbox_create_delivery_bundle", "mailbox_check_delivery_bundle",
+    "opencode_gateway_start", "opencode_gateway_status", "opencode_list_letters",
+    "opencode_dispatch_letter", "opencode_sdk_smoke", "opencode_sdk_prompt",
+    "opencode_sdk_dispatch_letter", "opencode_sdk_messages",
+    "opencode_sdk_job_submit", "opencode_sdk_job_dispatch_letter",
+    "opencode_sdk_job_status", "opencode_sdk_job_list",
+    "opencode_sdk_job_continue", "opencode_sdk_job_notifications",
+    "opencode_pty_start", "opencode_pty_stop", "opencode_pty_read", "opencode_pty_write",
+    "mcp_self_check", "dev_toolkit_architecture_audit", "agent_activity_report",
+    "agent_runtime_snapshot", "tool_usage_stats",
+    "mcp_feedback", "mcp_feedback_summary",
+    "workspace_reset", "knowledge_cleanup_noise",
+    "test_data_pollution_cleanup",
+}
+
+# 策划层不需要的工具（底层实施/批量编辑/从未使用的冷工具）
+_STRATEGY_EXCLUDE = {
+    # 批量编辑工具（策划Agent用子代理做，不需要亲自调）
+    "batch_quick_fix_apply", "batch_quick_fix_preview",
+    "edit_recipe_apply", "edit_recipe_preview", "edit_recipe_catalog",
+    "quick_fix_preview", "quick_fix_patch",
+    # 内部调试工具
+    "_restart_backend", "_verify_tool_args", "_snap_diff",
+    # OpenCode PTY（策划层用dispatch，不用PTY交互）
+    "opencode_pty_start", "opencode_pty_stop", "opencode_pty_read", "opencode_pty_write",
+    # OpenCode 网关管理（自动化即可）
+    "opencode_gateway_start", "opencode_gateway_status",
+    "opencode_sdk_smoke",
+    # Agent Board（执行Agent heartbeat，策划层只需snapshot）
+    "agent_board_claim", "agent_board_heartbeat", "agent_board_complete", "agent_board_block",
+    # 自检/治理（极低频，按需手动调）
+    "mcp_self_check", "dev_toolkit_architecture_audit",
+    "workspace_reset", "knowledge_cleanup_noise",
+    "test_data_pollution_cleanup", "test_data_pollution_audit",
+    "start_frontend",
+    # 知识库源管理（专项任务时才用，日常不暴露）
+    "knowledge_source_manifest_scan", "knowledge_source_manifest_summary",
+    "knowledge_source_manifest_audit", "knowledge_source_manifest_enqueue",
+    "knowledge_source_gap_snapshot", "knowledge_noise_report",
+    # 用户画像（Agent引擎自动调，策划层不需要）
+    "user_profile_suggest", "user_profile_audit",
+    # 发布门禁（按需调，不常驻）
+    "release_gate", "module_sandbox_matrix", "smoke_all",
+    # 记忆/反馈（低频）
+    "mcp_feedback", "mcp_feedback_summary", "memory_recent",
+    # 资产生命周期（未实现）
+    "asset_lifecycle_tools",
+    # web读取（codegraph和shell能做）
+    "web_read",
+    # 清日志（极低频）
+    "clear_log",
+    # workspace审计
+    "workspace_audit",
+    # docs系列（context_load替代了大部分）
+    "docs_snapshot",
+}
+
+
+def _filter_tools(tools: list) -> list:
+    """按 TOOL_PROFILE 过滤工具列表。"""
+    if _TOOL_PROFILE == "full":
+        return tools
+    if _TOOL_PROFILE == "executor":
+        return [t for t in tools if t.name not in _EXECUTOR_EXCLUDE]
+    # strategy (default)
+    return [t for t in tools if t.name not in _STRATEGY_EXCLUDE]
+
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    return [
+    all_tools = [
         *core_tool_definitions(),
         *mailbox_tool_definitions(),
         *memory_tool_definitions(),
@@ -1896,6 +2007,8 @@ async def list_tools() -> list[Tool]:
         *edit_tool_definitions(),
         *git_workflow_tool_definitions(),
         *db_reverse_tool_definitions(),
+        *diagnose_tool_definitions(),
+        *context_load_tool_definitions(),
         *insight_tool_definitions(),
         *knowledge_tool_definitions(),
         *log_tool_definitions(),
@@ -1910,6 +2023,7 @@ async def list_tools() -> list[Tool]:
         *opencode_tool_definitions(),
         *opencode_pty_tool_definitions(),
     ]
+    return _filter_tools(all_tools)
 
 # ── 工具执行 ──────────────────────────────────────────────────────────
 
@@ -1917,12 +2031,17 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     started = time.time()
     success = False
+    category = "other"
+    error_message = ""
     try:
         if core_handles_tool(name):
+            category = "core"
             result = await core_handle_tool(CORE_TOOL_CONTEXT, name, arguments)
         elif mailbox_handles_tool(name):
+            category = "mailbox"
             result = await mailbox_handle_tool(REPO_ROOT, name, arguments)
         elif memory_handles_tool(name):
+            category = "memory"
             result = await memory_handle_tool(
                 REPO_ROOT,
                 MEMORY_DIR,
@@ -1933,55 +2052,84 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments,
             )
         elif contract_handles_tool(name):
+            category = "contract"
             result = await contract_handle_tool(REPO_ROOT, name, arguments)
         elif docs_sync_handles_tool(name):
+            category = "docs"
             result = await docs_sync_handle_tool(REPO_ROOT, name, arguments)
         elif code_handles_tool(name):
+            category = "code"
             result = await code_handle_tool(_run_command_json, REPO_ROOT, _CODEGRAPH_CLI, _RUFF_CLI, name, arguments)
         elif edit_handles_tool(name):
+            category = "edit"
             result = await edit_handle_tool(_run_command_json, REPO_ROOT, _RUFF_CLI, name, arguments)
         elif git_workflow_handles_tool(name):
+            category = "git"
             result = await git_workflow_handle_tool(_run_command_json, REPO_ROOT, name, arguments)
         elif db_reverse_handles_tool(name):
+            category = "db"
             result = await db_reverse_handle_tool(REPO_ROOT, name, arguments)
+        elif diagnose_handles_tool(name):
+            category = "diagnose"
+            result = await diagnose_handle_tool(REPO_ROOT, name, arguments)
+        elif context_load_handles_tool(name):
+            category = "context"
+            result = await context_load_handle_tool(REPO_ROOT, name, arguments)
         elif insight_handles_tool(name):
+            category = "insight"
             result = await insight_handle_tool(REPO_ROOT, TOOL_USAGE_PATH, name, arguments)
         elif knowledge_handles_tool(name):
+            category = "knowledge"
             result = await knowledge_handle_tool(REPO_ROOT, name, arguments)
         elif log_handles_tool(name):
+            category = "log"
             result = await log_handle_tool(REPO_ROOT, name, arguments)
         elif system_handles_tool(name):
+            category = "system"
             result = await system_handle_tool(REPO_ROOT, name, arguments)
         elif worktree_handles_tool(name):
+            category = "worktree"
             result = await worktree_handle_tool(_run_command_json, REPO_ROOT, name, arguments)
         elif tool_usage_handles_tool(name):
+            category = "telemetry"
             result = await tool_usage_handle_tool(REPO_ROOT, TOOL_USAGE_PATH, name, arguments)
         elif user_profile_handles_tool(name):
+            category = "user_profile"
             result = await user_profile_handle_tool(REPO_ROOT, USER_PROFILE_PATH, name, arguments)
         elif tool_job_handles_tool(name):
+            category = "tool_job"
             result = await tool_job_handle_tool(REPO_ROOT, name, arguments)
         elif agent_runtime_handles_tool(name):
+            category = "agent"
             result = await agent_runtime_handle_tool(REPO_ROOT, name, arguments)
         elif agent_board_handles_tool(name):
+            category = "agent_board"
             result = await agent_board_handle_tool(REPO_ROOT, name, arguments)
         elif asset_lifecycle_handles_tool(name):
+            category = "asset"
             result = await asset_lifecycle_handle_tool(REPO_ROOT, name, arguments)
         elif opencode_handles_tool(name):
+            category = "opencode"
             result = await opencode_handle_tool(REPO_ROOT, name, arguments)
         elif opencode_pty_handles_tool(name):
+            category = "opencode_pty"
             result = await opencode_pty_handle_tool(REPO_ROOT, name, arguments)
         else:
+            category = "unknown"
             result = json.dumps({"error": f"未知工具: {name}"})
             success = False
+            error_message = f"未知工具: {name}"
             return [TextContent(type="text", text=result)]
         success = True
         return [TextContent(type="text", text=result)]
     except QuickFixError as e:
+        error_message = str(e)
         return [TextContent(type="text", text=json.dumps({"error": str(e), "rejected": True}, ensure_ascii=False))]
     except Exception as e:
+        error_message = str(e)
         return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False))]
     finally:
-        record_tool_usage(TOOL_USAGE_PATH, name, success, time.time() - started, arguments)
+        record_tool_usage(TOOL_USAGE_PATH, name, success, time.time() - started, arguments, category=category, error_message=error_message)
 
 # ── 入口 ─────────────────────────────────────────────────────────────
 

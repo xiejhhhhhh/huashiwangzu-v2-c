@@ -128,3 +128,22 @@ def list_routing_policies() -> list[dict]:
         {"name": policy.name, "primary_profile": policy.primary_profile, "description": policy.description}
         for policy in ROUTING_POLICIES.values()
     ]
+
+
+def reload_config() -> dict:
+    """热重载 models.json 配置，清除缓存并刷新全局变量。
+
+    供 model-router 管理模块在写完配置文件后调用，避免重启后端进程。
+    注意：``gateway_router`` (ModelGatewayRouter 单例) 内部的 provider 实例
+    是在 __init__ 时基于 providers 配置构建的，改 provider 配置后仍需调用方
+    自行重建 provider 缓存（见 app.gateway.router.gateway_router._providers）。
+    """
+    global _CONFIG, MODEL_PROFILES, DEFAULT_MODEL
+    _CONFIG = None
+    config = _load_models_config()
+    MODEL_PROFILES = config.get("model_types", {}).get("llm", {}).get("profiles", {})
+    DEFAULT_MODEL = str(
+        config.get("model_types", {}).get("llm", {}).get("primary")
+        or next(iter(MODEL_PROFILES), "")
+    )
+    return {"status": "reloaded", "profiles": list(MODEL_PROFILES.keys()), "default": DEFAULT_MODEL}

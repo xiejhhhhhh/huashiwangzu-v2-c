@@ -259,11 +259,29 @@ async def _cap_spawn_subagent(params: dict, caller: str) -> dict:
 
 # ── Register capabilities ──
 
+# ── Capability: agent:list_skills ──
+
+async def _cap_list_skills(params: dict, caller: str) -> dict:
+    """List registered skills without changing governance state."""
+    from app.database import AsyncSessionLocal
+
+    from ..services import skill_governance_service as sgs
+
+    async with AsyncSessionLocal() as db:
+        skills = await sgs.list_skills(
+            db,
+            scope=params.get("scope"),
+            enabled_only=bool(params.get("enabled_only", False)),
+            limit=int(params.get("limit", 100)),
+        )
+        return {"skills": skills, "total": len(skills)}
+
+
 # ── Capability: agent:skill_manage ──
 
 async def _cap_skill_manage(params: dict, caller: str) -> dict:
-    """Manage skills: list / get / create / update / delete / scan / usage / provenance / pending-approvals / approve / reject."""
-    action = params.get("action", "list")
+    """Manage skill governance changes and read individual skill details."""
+    action = params.get("action", "get")
     from app.database import AsyncSessionLocal
 
     from ..services import skill_governance_service as sgs
@@ -271,13 +289,7 @@ async def _cap_skill_manage(params: dict, caller: str) -> dict:
     async with AsyncSessionLocal() as db:
         owner_id = resolve_caller_user_id(caller)
 
-        if action == "list":
-            scope = params.get("scope")
-            enabled_only = params.get("enabled_only", False)
-            skills = await sgs.list_skills(db, scope=scope, enabled_only=enabled_only)
-            return {"skills": skills, "total": len(skills)}
-
-        elif action == "get":
+        if action == "get":
             name = params.get("name", "")
             if not name:
                 return {"error": "name is required"}
@@ -621,11 +633,28 @@ register_capability(
 # ── V2.0 new capabilities ──
 
 register_capability(
+    "agent", "list_skills", _cap_list_skills,
+    description="读取技能注册表中的技能列表及治理状态，不创建、修改或审批技能。",
+    brief="读取技能列表",
+    parameters={
+        "scope": {"type": "string", "description": "可选作用域过滤"},
+        "enabled_only": {"type": "boolean", "description": "是否只返回启用技能"},
+        "limit": {"type": "integer", "description": "最多返回数量"},
+    },
+    min_role="viewer",
+    execution_contract=_READ_CONTRACT,
+    retrieval={
+        "aliases": ["所有技能", "技能列表", "可用技能", "技能目录", "有什么技能", "有哪些技能"],
+        "when_to_use": "用户要求查看、读取或列出当前注册的技能。",
+        "when_not_to_use": "不要用于创建、修改、删除、扫描或审批技能。",
+    },
+)
+register_capability(
     "agent", "skill_manage", _cap_skill_manage,
-    description="管理技能：列表、创建、更新、删除、扫描、使用统计、来源追溯和审批。",
+    description="管理技能的创建、更新、删除、扫描、使用统计、来源追溯和审批。",
     brief="管理技能",
     parameters={
-        "action": {"type": "string", "description": "list/get/create/update/delete/scan/usage/provenance/pending-approvals/approve/reject"},
+        "action": {"type": "string", "description": "get/create/update/delete/scan/usage/provenance/pending-approvals/approve/reject"},
         "name": {"type": "string", "description": "技能名称"},
         "description": {"type": "string", "description": "技能描述"},
         "body": {"type": "string", "description": "技能内容"},

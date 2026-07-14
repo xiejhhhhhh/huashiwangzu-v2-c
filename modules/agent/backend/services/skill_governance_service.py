@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,9 @@ from ..models import (
     SkillRegistryItem,
     SkillUsage,
 )
+
+if TYPE_CHECKING:
+    from ..engine.skills_loader import SkillDef
 
 logger = logging.getLogger("v2.agent").getChild("services.skill_governance")
 
@@ -65,6 +69,39 @@ async def list_skills(
         }
         for item in r.scalars().all()
     ]
+
+
+async def list_active_skill_defs(
+    db: AsyncSession,
+    current_path: str = "",
+    limit: int = 1000,
+) -> list["SkillDef"]:
+    """Load the approved, enabled skills visible to the runtime prompt."""
+    from ..engine.skills_loader import SkillDef, match_skills, resolve_skill_priority
+
+    result = await db.execute(
+        select(SkillRegistryItem)
+        .where(
+            SkillRegistryItem.enabled.is_(True),
+            SkillRegistryItem.approval_status == "approved",
+        )
+        .order_by(SkillRegistryItem.priority.desc(), SkillRegistryItem.name)
+        .limit(max(1, int(limit))),
+    )
+    skills = [
+        SkillDef(
+            name=item.name,
+            description=item.description or "",
+            allowed_tools=list(item.allowed_tools or []),
+            paths=list(item.paths or []),
+            body=item.body or "",
+            enabled=bool(item.enabled),
+            scope=item.scope or "global",
+            priority=int(item.priority or 0),
+        )
+        for item in result.scalars().all()
+    ]
+    return match_skills(resolve_skill_priority(skills), current_path)
 
 
 async def get_skill(db: AsyncSession, name: str) -> dict | None:
@@ -393,11 +430,7 @@ async def scan_file_skills_to_registry(
     base_dir: str = "data/skills",
     created_by: int | None = None,
 ) -> dict:
-    """Scan markdown skill files and import any new skills into the registry.
-
-    This is the minimal scan v1: it discovers skills from files and
-    creates DB records for any that don't already exist.
-    """
+    """Synchronize Markdown skill files into the governed registry."""
     from ..engine.skills_loader import SkillsLoader, resolve_skill_priority
 
     loader = SkillsLoader(base_dir=base_dir)
@@ -413,7 +446,18 @@ async def scan_file_skills_to_registry(
             existing = await db.execute(
                 select(SkillRegistryItem).where(SkillRegistryItem.name == skill.name)
             )
-            if existing.scalar_one_or_none():
+            item = existing.scalar_one_or_none()
+            if item is not None:
+                if item.source == "file_scan":
+                    item.description = skill.description
+                    item.body = skill.body
+                    item.allowed_tools = skill.allowed_tools
+                    item.paths = skill.paths
+                    item.scope = skill.scope
+                    item.priority = skill.priority
+                    item.enabled = skill.enabled
+                    item.approval_status = "approved"
+                    await db.commit()
                 skipped += 1
                 continue
 

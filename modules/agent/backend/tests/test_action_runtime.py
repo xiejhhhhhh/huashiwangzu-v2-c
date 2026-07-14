@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from modules.agent.backend.runtime import action_plan_validator
-from modules.agent.backend.runtime.action_plan import ActionPlan
+from modules.agent.backend.runtime.action_plan import ActionPlan, ActionPlanCheckpoint
 from modules.agent.backend.runtime.action_planner import (
     ActionPlanningResult,
     PlannerDecisionType,
@@ -132,6 +132,38 @@ async def test_runtime_replans_explicitly_and_preserves_completed_actions(
 
 
 @pytest.mark.asyncio
+async def test_runtime_notifies_before_each_planning_round() -> None:
+    events: list[tuple[str, int]] = []
+
+    class Planner:
+        async def decide(self, **kwargs: object) -> ActionPlanningResult:
+            round_number = int(kwargs["planning_round"])
+            events.append(("decide", round_number))
+            return ActionPlanningResult(
+                decision=PlannerDecisionType.DIRECT_ANSWER,
+                answer="已完成规划。",
+            )
+
+    async def on_planning(round_number: int) -> None:
+        events.append(("planning", round_number))
+
+    async def execute(action, arguments, contract):
+        raise AssertionError("executor must not run for a direct answer")
+
+    result = await StructuredActionRuntime(
+        owner_id=1,
+        profile_key="demo",
+        catalog=_catalog(),
+        execute_action=execute,
+        planner=Planner(),  # type: ignore[arg-type]
+        on_planning=on_planning,
+    ).run(goal="hello")
+
+    assert result.status == ActionRuntimeStatus.DIRECT_ANSWER
+    assert events == [("planning", 1), ("decide", 1)]
+
+
+@pytest.mark.asyncio
 async def test_runtime_returns_direct_answer_without_executor() -> None:
     class Planner:
         async def decide(self, **kwargs: object) -> ActionPlanningResult:
@@ -191,3 +223,46 @@ async def test_runtime_refreshes_catalog_before_replan_on_stale_snapshot(
     assert result.status == ActionRuntimeStatus.COMPLETED
     assert result.planning_rounds == 2
     assert refreshes == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_replans_when_resumed_catalog_hash_changes() -> None:
+    old_catalog = _catalog()
+    current_catalog = {**old_catalog, "catalog_hash": "c" * 64}
+    checkpoint = ActionPlanCheckpoint(
+        plan=_plan(1),
+        planning_round=1,
+    )
+    decisions: list[int] = []
+    calls: list[str] = []
+
+    class Planner:
+        async def decide(self, **kwargs: object) -> ActionPlanningResult:
+            round_number = int(kwargs["planning_round"])
+            decisions.append(round_number)
+            return ActionPlanningResult(
+                decision=PlannerDecisionType.DIRECT_ANSWER,
+                answer="已按新能力目录重新规划。",
+            )
+
+    async def execute(action, arguments, contract):
+        calls.append(action.id)
+        return {"success": True}
+
+    async def refresh_catalog() -> dict:
+        return current_catalog
+
+    result = await StructuredActionRuntime(
+        owner_id=1,
+        profile_key="demo",
+        catalog=current_catalog,
+        execute_action=execute,
+        max_planning_rounds=2,
+        planner=Planner(),  # type: ignore[arg-type]
+        refresh_catalog=refresh_catalog,
+    ).run(goal="resume with changed catalog", checkpoint=checkpoint)
+
+    assert result.status == ActionRuntimeStatus.DIRECT_ANSWER
+    assert result.answer == "已按新能力目录重新规划。"
+    assert decisions == [2]
+    assert calls == []

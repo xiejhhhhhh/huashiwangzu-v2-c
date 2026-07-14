@@ -1,5 +1,6 @@
 """Agent 模块表初始化：确保三层提示词默认数据存在，并执行无痛迁移。"""
 import logging
+import os
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1154,3 +1155,13 @@ async def run_init(db: AsyncSession) -> None:
     await ensure_compaction_table(db)
     await ensure_default_prompts(db)
     await ensure_default_agent_prompts(db)
+    try:
+        from .services.skill_governance_service import scan_file_skills_to_registry
+
+        result = await scan_file_skills_to_registry(
+            db,
+            base_dir=os.environ.get("SKILLS_DIR", "data/skills"),
+        )
+        logger.info("Skill registry sync: %s", result)
+    except Exception as exc:
+        logger.warning("Skill registry sync failed (non-fatal): %s", exc)

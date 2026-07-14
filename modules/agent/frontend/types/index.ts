@@ -32,6 +32,17 @@ export interface MsgItem {
   content: string
   created_at?: string | null
   eventType?: string
+  plannerPhase?: string
+  plannerMessage?: string
+  planRound?: number
+  planGoal?: string
+  planActions?: Array<{
+    id?: string
+    capability?: string
+    arguments?: Record<string, unknown>
+    depends_on?: string[]
+    completion_check?: string
+  }>
   toolName?: string
   toolResult?: unknown
   toolStatus?: string

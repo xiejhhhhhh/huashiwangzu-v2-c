@@ -535,6 +535,53 @@
       "min_role": "admin"
     },
     {
+      "action": "enqueue_pipeline_stage_batch",
+      "description": "预览或为指定 owner 受控投递一个云端知识阶段，完成后不自动扩散到下游",
+      "parameters": {
+        "owner_id": {
+          "type": "integer",
+          "description": "目标知识库 owner ID；不传时使用调用者"
+        },
+        "stage": {
+          "type": "string",
+          "description": "仅允许 raw_ocr、raw_vision 或 fusion"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "为 true 时只预览，默认 true"
+        },
+        "confirm": {
+          "type": "string",
+          "description": "真实投递必须为 ENQUEUE_KNOWLEDGE_STAGE_BATCH"
+        },
+        "audit_reason": {
+          "type": "string",
+          "description": "本次投递的审计原因"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "最多选择文档数，默认20，最高500"
+        },
+        "document_ids": {
+          "type": "array",
+          "description": "可选精确文档 ID 列表，仅在目标 owner 内生效"
+        },
+        "extensions": {
+          "type": "array",
+          "description": "可选扩展名过滤，如 [pdf]"
+        },
+        "filename_contains": {
+          "type": "string",
+          "description": "可选文件名包含过滤"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "队列优先级，默认5"
+        }
+      },
+      "min_role": "admin"
+    },
+    {
       "action": "enqueue_incomplete_documents",
       "description": "预览或补排未完成深层知识分析的文档",
       "parameters": {

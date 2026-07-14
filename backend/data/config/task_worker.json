@@ -5,7 +5,7 @@
     "reconcile_seconds": 60,
     "lease_seconds": 45,
     "heartbeat_seconds": 5,
-    "max_executors": 256,
+    "max_executors": 32,
     "cpu_caution_percent": 80,
     "memory_caution_percent": 80,
     "memory_emergency_percent": 90,
@@ -17,11 +17,11 @@
       "derived_index": 2,
       "relation_build": 2,
       "vision_analysis": 40,
-      "llm_analysis": 200,
+      "llm_analysis": 24,
       "general": 2
     },
     "provider_limits": {
-      "knowledge_llm": 200,
+      "knowledge_llm": 24,
       "knowledge_vlm": 40,
       "qwen_embedding": 2
     },
@@ -46,11 +46,11 @@
   ],
   "paused_stages": {
     "kb_pipeline_stage": [
+      "raw_ocr",
+      "raw_vision",
       "fusion",
       "graph",
-      "profile",
-      "raw_ocr",
-      "raw_vision"
+      "profile"
     ]
   },
   "paused_lanes": {
@@ -59,20 +59,18 @@
       "vision_analysis"
     ]
   },
-  "config_note": "唯一控制器是 app.task_worker_main 启动的 Dispatcher。它每 1 秒（有执行器）或 8 秒（空闲）检查持久任务表，以 lease 领取任务并派生一次性 executor 进程。paused_task_types、paused_stages 和 paused_lanes 会阻止新领取；正在运行的可中断任务会在下一次心跳被释放回 pending 并标记 paused_by_config。lane_limits 是本地和云端资源池的硬上限，provider_limits 是云模型供应商的全局并发上限。当前云端 LLM 允许 200 路、VLM 允许 40 路，256 个总 executor 同时保留本地预处理、派生索引、关系、通用和向量槽位；CPU、内存或 GPU 触及阈值时不会继续扩张。GPU 读取未知时 Dispatcher 采用配置上限，不把未知数据伪装成准确监控。",
+    "config_note": "唯一控制器是 app.task_worker_main 启动的 Dispatcher。它每 1 秒（有执行器）或 8 秒（空闲）检查持久任务表，以 lease 领取任务并派生一次性 executor 进程。paused_task_types、paused_stages 和 paused_lanes 会阻止新领取；正在运行的可中断任务会在下一次心跳被释放回 pending 并标记 paused_by_config。lane_limits 是本地和云端资源池的硬上限，provider_limits 是云模型供应商的全局并发上限。云端额度支持 200 路，但 Knowledge Fusion 在 200 文档扩量时触发 PostgreSQL too many clients，因而按实测稳定门槛把 LLM lane/provider 限为 24 路；VLM 保持 40 路。256 个总 executor 同时保留本地预处理、派生索引、关系、通用和向量槽位；CPU、内存或 GPU 触及阈值时不会继续扩张。GPU 读取未知时 Dispatcher 采用配置上限，不把未知数据伪装成准确监控。",
+
   "model_auto_pause": {
     "enabled": true,
     "stage": "all_model_stages",
     "group": "llm_vlm",
     "paused_stages": [
-      "fusion",
       "graph",
-      "profile",
-      "raw_ocr",
-      "raw_vision"
+      "profile"
     ],
-    "reason": "manual_pause_by_user",
-    "error_message": "User requested pausing LLM and VLM knowledge pipeline stages.",
-    "updated_at": "2026-07-13T09:50:00+00:00"
+    "reason": "pause_all_llm_vlm_for_user_checkpoint",
+    "error_message": "LLM and VLM paused per user request; fusion, vision, ocr, profile, and graph all stopped.",
+    "updated_at": "2026-07-13T19:00:00+00:00"
   }
 }

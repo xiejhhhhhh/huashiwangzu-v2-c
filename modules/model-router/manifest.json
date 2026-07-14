@@ -1,0 +1,48 @@
+{
+  "key": "model-router",
+  "name": "模型路由",
+  "icon": "Connection",
+  "icon_asset": "",
+  "category": "system",
+  "module_type": "app",
+  "module_family": "admin",
+  "product_status": "active",
+  "component_key": "index.vue",
+  "route_prefix": "/api/model-router",
+  "permissions": ["admin"],
+  "sort_order": 950,
+  "default_width": 1000,
+  "default_height": 700,
+  "singleton": true,
+  "show_in_launcher": true,
+  "show_on_desktop": true,
+  "show_in_tray": false,
+  "show_in_sidebar": false,
+  "window_type": "normal",
+  "allow_multiple": false,
+  "supported_formats": [],
+  "editable_formats": [],
+  "creatable_formats": [],
+  "module_version": "1.0.0",
+  "contract_version": "2.0",
+  "permission_declaration": {
+    "default": "admin",
+    "actions": [
+      {
+        "action": "view_routing",
+        "name": "查看模型路由",
+        "min_role": "admin"
+      },
+      {
+        "action": "edit_routing",
+        "name": "修改模型路由",
+        "min_role": "admin"
+      }
+    ]
+  },
+  "public_actions": [],
+  "backend": {
+    "enabled": true,
+    "router": "backend/router.py"
+  }
+}

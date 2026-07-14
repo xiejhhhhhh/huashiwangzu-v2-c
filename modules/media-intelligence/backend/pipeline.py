@@ -155,6 +155,7 @@ async def run_pipeline(context: MediaContext, layers: list[str]) -> dict[str, An
         _merge_stage(result, stage)
     result["confidence"] = _aggregate_confidence(result["stages"])
     _attach_content_ir(result, context)
+    result["resource_refs"] = _build_resource_refs(result, context)
     return result
 
 
@@ -201,6 +202,23 @@ def _empty_result(context: MediaContext) -> dict[str, Any]:
         "model_fallback": None,
         "providers": list_providers(),
     }
+
+
+def _build_resource_refs(result: dict[str, Any], context: MediaContext) -> list[dict[str, object]]:
+    return [
+        {
+            "type": "file",
+            "id": context.file_id,
+            "display_name": context.file_name,
+            "mime_type": _mime_type(context.extension, context.media_type),
+            "access_scope": "user",
+            "provenance": {
+                "module": "media-intelligence",
+                "action": context.options.get("action"),
+                "analysis_id": result.get("analysis_id"),
+            },
+        },
+    ]
 
 
 def _attach_content_ir(result: dict[str, Any], context: MediaContext) -> None:

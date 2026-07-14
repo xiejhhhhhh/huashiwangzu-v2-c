@@ -231,10 +231,17 @@ async def enqueue_pipeline_stage_task(
     pipeline_run_id: int | None = None,
     force_raw: bool = False,
     force_fusion: bool = False,
+    stop_after_stage: str | None = None,
+    requested_by: str | None = None,
+    trigger: str = "knowledge.pipeline.successor",
+    audit_reason: str = "",
+    allow_degraded_parse: bool = False,
 ) -> dict:
     """Enqueue one DAG stage, deduping active work for the same document/stage."""
     if stage not in PIPELINE_STAGES:
         raise ValueError(f"Unknown knowledge pipeline stage: {stage}")
+    if stop_after_stage is not None and stop_after_stage not in PIPELINE_STAGES:
+        raise ValueError(f"Unknown knowledge pipeline stop stage: {stop_after_stage}")
     resolved_priority = resolve_knowledge_pipeline_priority(stage, priority)
 
     await db.execute(
@@ -258,6 +265,9 @@ async def enqueue_pipeline_stage_task(
         "pipeline_run_id": pipeline_run_id,
         "force_raw": bool(force_raw),
         "force_fusion": bool(force_fusion),
+        "stop_after_stage": stop_after_stage,
+        "audit_reason": audit_reason.strip(),
+        "allow_degraded_parse": bool(allow_degraded_parse),
     }
     task = await publish_task(
         db,
@@ -265,8 +275,8 @@ async def enqueue_pipeline_stage_task(
         module="knowledge",
         owner_id=user_id,
         body=payload,
-        requested_by=f"user:{user_id}",
-        trigger="knowledge.pipeline.successor",
+        requested_by=requested_by or f"user:{user_id}",
+        trigger=trigger,
         priority=resolved_priority,
         max_retries=PIPELINE_MAX_RETRIES,
         document_id=int(doc.id),
@@ -474,8 +484,19 @@ def _parse_index_ready(doc: KbDocument) -> bool:
     return document_parse_allows_search(doc)
 
 
-async def _ready_for_fusion(db: AsyncSession, doc: KbDocument) -> bool:
-    return _parse_index_ready(doc) and await _raw_complete(db, doc)
+async def _ready_for_fusion(
+    db: AsyncSession,
+    doc: KbDocument,
+    *,
+    allow_degraded_parse: bool = False,
+) -> bool:
+    parse_ready = _parse_index_ready(doc)
+    if allow_degraded_parse and not parse_ready:
+        parse_ready = (
+            str(getattr(doc, "parse_status", "") or "").lower() == "degraded"
+            and int(getattr(doc, "total_chunks", 0) or 0) > 0
+        )
+    return parse_ready and await _raw_complete(db, doc)
 
 
 def _ready_for_relations(doc: KbDocument) -> bool:
@@ -602,7 +623,15 @@ async def _run_stage(
     task_id: int | None = None,
     force_raw: bool = False,
     force_fusion: bool = False,
+    allow_degraded_parse: bool = False,
 ) -> dict:
+    async def ready_for_fusion(stage_db: AsyncSession, stage_doc: KbDocument) -> bool:
+        return await _ready_for_fusion(
+            stage_db,
+            stage_doc,
+            allow_degraded_parse=allow_degraded_parse,
+        )
+
     return await run_pipeline_stage(
         stage,
         db=db,
@@ -611,7 +640,7 @@ async def _run_stage(
         task_id=task_id,
         force_raw=force_raw,
         force_fusion=force_fusion,
-        ready_for_fusion=_ready_for_fusion,
+        ready_for_fusion=ready_for_fusion,
         ready_for_cognitive_index=_ready_for_cognitive_index,
         cognitive_index_complete=_cognitive_index_complete,
     )
@@ -668,6 +697,7 @@ async def _pipeline_stage_handler(params: dict) -> dict:
     pipeline_run_id = int(params.get("pipeline_run_id", 0) or 0) or None
     force_raw = bool(params.get("force_raw", False))
     force_fusion = bool(params.get("force_fusion", False))
+    allow_degraded_parse = bool(params.get("allow_degraded_parse", False))
     if document_id <= 0:
         return {"status": "failed", "error": "document_id required"}
     if stage not in PIPELINE_STAGES:
@@ -707,6 +737,7 @@ async def _pipeline_stage_handler(params: dict) -> dict:
                     task_id=task_id,
                     force_raw=force_raw,
                     force_fusion=force_fusion,
+                    allow_degraded_parse=allow_degraded_parse,
                 )
         except Exception as exc:
             try:
@@ -922,6 +953,23 @@ async def _settle_pipeline_task(
     user_id = int(params.get("user_id") or task.creator_id or doc.owner_id)
     stage = str(task.stage_key or params.get("stage") or ROOT_STAGE)
     pipeline_run_id = int(result.get("pipeline_run_id") or params.get("pipeline_run_id") or 0) or None
+    stop_after_stage = str(params.get("stop_after_stage") or "").strip()
+    if stop_after_stage and stage == stop_after_stage:
+        await _finish_pipeline_run(
+            db,
+            pipeline_run_id,
+            "degraded" if status == "degraded" else "done",
+            reason=reason if status == "degraded" else "stopped_after_requested_stage",
+            diagnostics={
+                "last_stage": stage,
+                "stop_after_stage": stop_after_stage,
+                "stopped_after_requested_stage": True,
+                "audit_reason": str(params.get("audit_reason") or "").strip(),
+            },
+        )
+        result["successors"] = []
+        result["stopped_after_requested_stage"] = True
+        return
     successors = await settle_pipeline_stage_successors(
         db,
         doc=doc,

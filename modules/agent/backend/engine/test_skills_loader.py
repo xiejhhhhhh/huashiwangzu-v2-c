@@ -1,4 +1,11 @@
 """Tests for skills_loader.py — priority resolution + skill discovery."""
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from ..services.skill_governance_service import list_active_skill_defs
+from .context_pipeline import _inject_skills
 from .skills_loader import SkillDef, resolve_skill_priority
 
 
@@ -62,3 +69,28 @@ class TestResolveSkillPriority:
         assert len(result) == 3
         names = {s.name for s in result}
         assert names == {"a", "b", "c"}
+
+
+@pytest.mark.asyncio
+async def test_active_skill_defs_drive_prompt_injection() -> None:
+    item = SimpleNamespace(
+        name="file-analysis",
+        description="文件分析",
+        allowed_tools=["desktop-tools__read_file"],
+        paths=[],
+        body="按步骤分析文件。",
+        enabled=True,
+        scope="global",
+        priority=10,
+    )
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [item]
+    db = AsyncMock()
+    db.execute.return_value = scalar_result
+
+    skills = await list_active_skill_defs(db)
+    prompt = await _inject_skills(db, "系统提示")
+
+    assert [skill.name for skill in skills] == ["file-analysis"]
+    assert '<skill name="file-analysis">' in prompt
+    assert "按步骤分析文件。" in prompt

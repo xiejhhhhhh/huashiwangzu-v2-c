@@ -101,9 +101,17 @@ class ConversationRuntime:
         """
         await run_init(db)
         await ensure_user_profile(db, user.id)
+        conversation = await conv_svc.get_owned_conversation(
+            db,
+            user.id,
+            payload.conversation_id,
+        )
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
         _exec_t0 = time.monotonic()
 
         profile_key = payload.profile_key or "deepseek-v4-flash"
+        agent_code = payload.agent_code or "erp_chat"
         user_message_id: int | None = None
         engine_diag: dict = {}
         capability_catalog: dict
@@ -113,7 +121,10 @@ class ConversationRuntime:
         if payload.resume_checkpoint_id:
             saver = PostgresCheckpointSaver()
             cp = await saver.get_tuple(
-                db, payload.conversation_id, payload.resume_checkpoint_id,
+                db,
+                payload.conversation_id,
+                payload.resume_checkpoint_id,
+                owner_id=user.id,
             )
             if not cp:
                 raise HTTPException(
@@ -173,7 +184,6 @@ class ConversationRuntime:
 
             # ── Assemble context ────────────────────────────────────
             _ctx_t0 = time.monotonic()
-            agent_code = "erp_chat"
             messages, engine_diag = await assemble_context(
                 db, payload.conversation_id, payload.content,
                 profile_key, user.id, agent_code=agent_code,
@@ -271,6 +281,18 @@ class ConversationRuntime:
                 int(capability_catalog.get("total_authorized") or 0),
                 str(capability_catalog.get("catalog_hash") or "")[:12],
             )
+            logger.info(
+                "Capability catalog selected: conv=%d query=%s candidates=%s low_confidence=%s signal=%s",
+                payload.conversation_id,
+                payload.content[:120],
+                [
+                    f"{item.get('module')}__{item.get('action')}"
+                    for item in capability_catalog.get("candidates") or []
+                    if isinstance(item, dict)
+                ],
+                bool(capability_catalog.get("low_confidence")),
+                capability_catalog.get("strongest_retrieval_signal"),
+            )
 
         # ── Wire sub-runtimes lazily inside the SSE stream so preflight does not block the HTTP response ──
         async def _event_stream():
@@ -328,6 +350,7 @@ class ConversationRuntime:
                 user_role=user.role,
                 initial_usage=stream_preflight.usage if stream_preflight else None,
                 capability_catalog=capability_catalog,
+                agent_code=agent_code,
             )
             async for event in loop.run(messages, sink, channel_values=channel_values):
                 yield event
@@ -346,6 +369,7 @@ class ConversationRuntime:
         profile_key: str,
         db: AsyncSession,
         user: User,
+        agent_code: str = "erp_chat",
     ) -> StreamingResponse:
         """Execute a chat turn from an edited user message (soft-branch).
 
@@ -355,7 +379,7 @@ class ConversationRuntime:
         content as the current turn input.
         """
         profile_key = profile_key or "deepseek-v4-flash"
-        agent_code = "erp_chat"
+        agent_code = agent_code or "erp_chat"
 
         # Edit message + archive tail + delete stale events
         edited_msg = await conv_svc.edit_and_resubmit(
@@ -521,6 +545,7 @@ class ConversationRuntime:
                 user_role=user.role,
                 initial_usage=stream_preflight.usage if stream_preflight else None,
                 capability_catalog=capability_catalog,
+                agent_code=agent_code,
             )
             async for event in loop.run(messages, sink):
                 yield event

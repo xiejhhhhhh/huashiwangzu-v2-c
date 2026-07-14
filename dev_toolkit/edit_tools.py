@@ -137,6 +137,21 @@ def recipe_catalog() -> dict[str, Any]:
                 "description": "Replace the text between unique start_marker and end_marker, keeping markers by default.",
                 "parameters": ["path", "start_marker", "end_marker", "new_inner", "include_markers?"],
             },
+            {
+                "name": "add_import",
+                "description": "Append an import line (e.g. 'import os' or 'from pathlib import Path') after the last existing import. Skips if the import already exists.",
+                "parameters": ["path", "import_line", "start_line?", "end_line?"],
+            },
+            {
+                "name": "wrap_in_try_except",
+                "description": "Wrap old_text inside try/except Exception as exc block that logs the exception. Keeps the code structure intact.",
+                "parameters": ["path", "old_text", "start_line?", "end_line?", "log_message?"],
+            },
+            {
+                "name": "replace_in_file",
+                "description": "Replace ALL occurrences of old_text with new_text across the entire file. Unlike exact_replace, this is not scoped to one match.",
+                "parameters": ["path", "old_text", "new_text"],
+            },
         ],
         "notes": [
             "These recipes are deterministic; they do not call an LLM.",
@@ -204,6 +219,85 @@ def build_recipe_operations(repo_root: Path, recipe: str, parameters: Any) -> li
                 "expected_old_text_sha256": "",
             }
         ]
+    if recipe == "add_import":
+        path = str(params["path"])
+        import_line = str(params.get("import_line", ""))
+        if not import_line:
+            raise ValueError("import_line is required")
+        _target, text = _read_repo_text(repo_root, path)
+        if import_line.strip() in text:
+            return []
+        lines = text.splitlines(keepends=True)
+        last_import_idx = -1
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("import ") or stripped.startswith("from "):
+                last_import_idx = idx
+            elif last_import_idx >= 0 and stripped and not stripped.startswith("#"):
+                break
+        if last_import_idx < 0:
+            old_text = lines[0] if lines else ""
+            new_text = old_text + import_line + "\n"
+        else:
+            old_text = lines[last_import_idx]
+            new_text = old_text + import_line + "\n"
+        return [{
+            "path": path,
+            "old_text": old_text,
+            "new_text": new_text,
+            "start_line": params.get("start_line"),
+            "end_line": params.get("end_line"),
+            "expected_old_text_sha256": "",
+        }]
+    if recipe == "wrap_in_try_except":
+        path = str(params["path"])
+        old_text = str(params.get("old_text", ""))
+        log_message = str(params.get("log_message", ""))
+        if not old_text:
+            raise ValueError("old_text is required")
+        indent = ""
+        first_line = old_text.split("\n")[0]
+        if first_line.strip():
+            indent = first_line[:len(first_line) - len(first_line.lstrip())]
+        pad = indent + "    "
+        if log_message:
+            wrapped = (
+                f"{indent}try:\n"
+                f"{pad}{old_text.strip()}\n"
+                f"{indent}except Exception as exc:\n"
+                f'{pad}logger.warning("{log_message}: %s", exc)\n'
+            )
+        else:
+            wrapped = (
+                f"{indent}try:\n"
+                f"{pad}{old_text.strip()}\n"
+                f"{indent}except Exception as exc:\n"
+                f'{pad}logger.warning("Operation failed: %s", exc)\n'
+            )
+        return [{
+            "path": path,
+            "old_text": old_text,
+            "new_text": wrapped,
+            "start_line": params.get("start_line"),
+            "end_line": params.get("end_line"),
+            "expected_old_text_sha256": "",
+        }]
+    if recipe == "replace_in_file":
+        path = str(params["path"])
+        old_text = str(params.get("old_text", ""))
+        new_text = str(params.get("new_text", ""))
+        if not old_text:
+            raise ValueError("old_text is required")
+        _target, file_content = _read_repo_text(repo_root, path)
+        count = file_content.count(old_text)
+        if count == 0:
+            return []
+        replaced = file_content.replace(old_text, new_text)
+        return [{
+            "path": path,
+            "old_text": file_content,
+            "new_text": replaced,
+        }]
     raise ValueError(f"unknown edit recipe: {recipe}")
 
 

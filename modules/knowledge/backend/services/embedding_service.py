@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("v2.knowledge").getChild("embedding")
 
+# kb_chunks.embedding 是 Vector(1024) 硬约束列（旧架构遗留），固定用 bge-m3，
+# 不随 model_types.embedding.primary 切换（primary 现为 qwen3-embedding-8b/4096维）。
+LEGACY_KB_CHUNK_EMBEDDING_PROFILE = "bge-m3"
+
 # 分块参数
 MAX_CHUNK_CHARS = 512       # 每块最大字符数
 MIN_CHUNK_CHARS = 100       # 最小分块阈值（小于此值合并到前一块）
@@ -226,7 +230,9 @@ async def chunk_and_embed(
         batch = chunks_to_store[i:i + batch_size]
         texts = [ch["text"] for ch in batch]
         try:
-            embeddings = await get_embeddings(texts)
+            # 显式锁定 bge-m3（1024维）：kb_chunks.embedding 是 Vector(1024) 硬约束列，
+            # 不能跟随 embedding.primary 切到 qwen3-embedding-8b（4096维），否则维度不匹配。
+            embeddings = await get_embeddings(texts, profile_key=LEGACY_KB_CHUNK_EMBEDDING_PROFILE)
             for j, emb in enumerate(embeddings):
                 if i + j < total:
                     chunks_to_store[i + j]["embedding"] = emb

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
@@ -13,6 +14,8 @@ from .action_plan import ActionPlan, ActionPlanItem, ResourceRefType
 
 ModelCall = Callable[..., Awaitable[dict]]
 
+logger = logging.getLogger("v2.agent").getChild("runtime.action_planner")
+
 
 class PlannedAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -21,9 +24,9 @@ class PlannedAction(BaseModel):
     capability: str = Field(pattern=r"^[A-Za-z0-9_-]+__[A-Za-z0-9_-]+$")
     arguments: dict
     depends_on: list[str]
-    expected_references: list[ResourceRefType]
+    expected_references: list[ResourceRefType] = Field(default_factory=list)
     completion_check: str = Field(min_length=1, max_length=1000)
-    approval_reason: str = Field(max_length=1000)
+    approval_reason: str = Field(default="", max_length=1000)
 
 
 class PlannerDecisionType(StrEnum):
@@ -116,6 +119,15 @@ class ActionPlanner:
         candidates = _catalog_candidates(catalog)
         catalog_hash = str(catalog.get("catalog_hash") or "")
         principal_version = str((catalog.get("principal") or {}).get("profile_version") or "")
+        logger.info(
+            "Planner start: conv=%s round=%d goal=%s candidates=%d low_confidence=%s top=%s",
+            conversation_id,
+            planning_round,
+            goal[:120],
+            len(candidates),
+            bool(catalog.get("low_confidence")),
+            [name for name in list(candidates)[:8]],
+        )
         if not catalog_hash or not principal_version:
             raise ActionPlannerError("catalog_security_binding_is_missing")
 
@@ -135,9 +147,9 @@ class ActionPlanner:
             "previous_observations": observation_payload,
             "rules": [
                 "Only use capabilities listed in authorized_capabilities.",
-                "Choose direct_answer when no capability is needed.",
-                "Choose need_user_input only when required information is missing.",
-                "Choose action_graph only when one or more capabilities must run.",
+                "Choose direct_answer only when the request can be answered without current or capability-provided evidence.",
+                "Choose need_user_input only when required information is missing and no authorized capability can obtain it.",
+                "Choose action_graph when an authorized capability is needed to obtain evidence or perform work.",
                 "Use depends_on for every data dependency.",
                 "Use ${action_id.references[index].id} or .locator for prior outputs.",
                 "Do not repeat a failed action; produce a revised plan or request user input.",
@@ -180,6 +192,12 @@ class ActionPlanner:
         if planned.decision == PlannerDecisionType.DIRECT_ANSWER:
             if not planned.answer.strip() or planned.actions or planned.need_user_input:
                 raise ActionPlannerError("invalid_direct_answer_decision")
+            logger.info(
+                "Planner decision: conv=%s round=%d decision=direct_answer answer_chars=%d",
+                conversation_id,
+                planning_round,
+                len(planned.answer),
+            )
             return ActionPlanningResult(
                 decision=planned.decision,
                 answer=planned.answer.strip(),
@@ -188,6 +206,12 @@ class ActionPlanner:
         if planned.decision == PlannerDecisionType.NEED_USER_INPUT:
             if not planned.need_user_input or planned.actions:
                 raise ActionPlannerError("invalid_need_user_input_decision")
+            logger.info(
+                "Planner decision: conv=%s round=%d decision=need_user_input questions=%d",
+                conversation_id,
+                planning_round,
+                len(planned.need_user_input),
+            )
             return ActionPlanningResult(
                 decision=planned.decision,
                 answer=planned.answer.strip(),
@@ -227,6 +251,12 @@ class ActionPlanner:
             )
         except ValidationError as exc:
             raise ActionPlannerError("invalid_structured_action_plan") from exc
+        logger.info(
+            "Planner decision: conv=%s round=%d decision=action_graph actions=%s",
+            conversation_id,
+            planning_round,
+            [item.capability for item in plan.actions],
+        )
         return ActionPlanningResult(
             decision=planned.decision,
             plan=plan,

@@ -23,6 +23,7 @@ const KNOWN_VARIANTS = new Set([
   'knowledge',
   'media-intelligence', // minimal sandbox-compatible modules.call runtime
   'memory',
+  'model-router',   // minimal runtime, only exposes apiGet/apiPost/apiPut/apiDelete + platform.modules.call
   'office-gen',     // has content namespace + apiPut (content pipeline helpers beyond template)
   'pdf-viewer',
   'ppt-viewer',
@@ -35,6 +36,7 @@ const KNOWN_VARIANTS = new Set([
 
 const MINIMAL_VARIANTS = new Set([
   'media-intelligence', // deliberately exposes only RuntimeConfig/initRuntime/platform.modules.call
+  'model-router',       // deliberately exposes only RuntimeConfig/initRuntime/platform.modules.call (+ CRUD apiGet/apiPost/apiPut/apiDelete)
 ])
 
 const REQUIRED_FULL_EXPORTS = [

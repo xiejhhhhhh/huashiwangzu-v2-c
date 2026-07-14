@@ -70,7 +70,37 @@ import AgentConfigPanel from './admin/AgentConfigPanel.vue'
 import ApprovalPanel from './admin/ApprovalPanel.vue'
 import { useAgentChat } from './composables/useAgentChat'
 import type { AgentEntryProps } from './types'
+import { apiPost } from './api'
 import './components/style-variables.css'
+
+// ── 全局前端错误自动上报 ─────────────────────────────────
+function _setupFrontendErrorReporting(): void {
+  const throttle = new Map<string, number>()
+  const INTERVAL = 10_000 // ms, 同一种错误最多每 10 秒上报一次
+
+  function report(type: string, msg: string, stack: string | undefined, url?: string) {
+    const key = `${type}:${msg?.slice(0, 100)}`
+    const last = throttle.get(key) || 0
+    const now = Date.now()
+    if (now - last < INTERVAL) return
+    throttle.set(key, now)
+    const page_path = window.location.pathname
+    apiPost('/logs/frontend-error', { type, error_message: msg, stack: stack?.slice(0, 2000), page_path, url })
+      .catch(() => {/* 静默失败，不上报错误的上报错误 */})
+  }
+
+  if (typeof window !== 'undefined') {
+    window.onerror = (_event, source, _line, _col, error) => {
+      report('runtime', error?.message || String(_event), error?.stack, source || undefined)
+    }
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason
+      report('promise', reason?.message || String(reason), reason?.stack)
+    })
+  }
+}
+_setupFrontendErrorReporting()
+// ─────────────────────────────────────────────────────────
 
 const props = defineProps<AgentEntryProps>()
 

@@ -19,15 +19,13 @@ from ..prompt_seeds import (
     SYSTEM_BASE_PROMPT_KEY,
 )
 from ..services import conversation_service as conv_svc
+from ..services import skill_governance_service as skill_svc
 from ..services.runtime_prompt_provider import RuntimePromptProvider
 from .budget_allocator import assemble_context as _budget_assemble_context
 from .budget_allocator import estimate_one_message, estimate_tokens, get_effective_context_budget
 from .context_injectors.tool_result_reducer import reduce as reduce_tool_results
 from .event_store import project_messages_with_compaction, project_to_messages, read_events
-from .skills_loader import find_skills as _find_skills
 from .skills_loader import format_skills_for_prompt as _format_skills
-from .skills_loader import match_skills as _match_skills
-from .skills_loader import resolve_skill_priority as _resolve_skill_priority
 from .thinking_router import route_thinking_level
 
 logger = logging.getLogger("v2.agent").getChild("engine.pipeline")
@@ -321,18 +319,13 @@ def _estimate_message_tokens(messages: list[dict]) -> int:
 # =====================================================================
 # Stage 6: Inject skills into system content
 # =====================================================================
-def _inject_skills(system_content: str) -> str:
+async def _inject_skills(db: AsyncSession, system_content: str) -> str:
     try:
-        skill_base = os.environ.get("SKILLS_DIR", "data/skills")
-        all_skills = _find_skills(skill_base, scope="global")
         workspace_path = os.environ.get("CURRENT_PATH", "")
-        if workspace_path:
-            workspace_skills_dir = os.path.join(workspace_path, ".agent-skills")
-            if os.path.isdir(workspace_skills_dir):
-                ws_skills = _find_skills(workspace_skills_dir, scope="workspace")
-                all_skills.extend(ws_skills)
-        all_skills = _resolve_skill_priority(all_skills)
-        matched = _match_skills(all_skills, workspace_path)
+        matched = await skill_svc.list_active_skill_defs(
+            db,
+            current_path=workspace_path,
+        )
         skill_injection = _format_skills(matched)
         if skill_injection and system_content:
             system_content += "\n\n---\n\n<available_skills>\n" + skill_injection + "\n</available_skills>"
@@ -469,7 +462,7 @@ async def run_pipeline(
 
     # Stage 6: Inject skills into system content
     _t6 = time.monotonic()
-    system_content = _inject_skills(system_content)
+    system_content = await _inject_skills(db, system_content)
     logger.info("[PIPELINE_TIMING] Stage 6 (inject skills): %dms", round((time.monotonic() - _t6) * 1000))
 
     # Stage 7: Token budget assembly

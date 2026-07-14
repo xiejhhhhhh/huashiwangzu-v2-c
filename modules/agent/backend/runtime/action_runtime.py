@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -13,10 +14,13 @@ from .action_planner import ActionPlanner, ActionPlannerError, PlannerDecisionTy
 ExecuteAction = Callable[[ActionPlanItem, dict, dict], Awaitable[object]]
 RefreshCatalog = Callable[[], Awaitable[dict]]
 PlanCallback = Callable[[ActionPlanCheckpoint], Awaitable[None]]
+PlanningCallback = Callable[[int], Awaitable[None]]
 ObservationCallback = Callable[
     [ActionPlanCheckpoint, ActionPlanItem, ActionObservation, object | None],
     Awaitable[None],
 ]
+
+logger = logging.getLogger("v2.agent").getChild("runtime.action")
 
 
 class ActionRuntimeStatus(StrEnum):
@@ -57,6 +61,7 @@ class StructuredActionRuntime:
         planner: ActionPlanner | None = None,
         refresh_catalog: RefreshCatalog | None = None,
         on_plan: PlanCallback | None = None,
+        on_planning: PlanningCallback | None = None,
         on_observation: ObservationCallback | None = None,
     ) -> None:
         self.owner_id = int(owner_id)
@@ -71,6 +76,7 @@ class StructuredActionRuntime:
         )
         self.refresh_catalog = refresh_catalog
         self.on_plan = on_plan
+        self.on_planning = on_planning
         self.on_observation = on_observation
 
     async def run(
@@ -89,7 +95,16 @@ class StructuredActionRuntime:
         if checkpoint is not None:
             next_round = checkpoint.planning_round
             self._remember_checkpoint(checkpoint, completed, prior_observations)
-            if not self._requires_replan(checkpoint):
+            if self._catalog_is_stale(checkpoint):
+                prior_observations["resume"] = {
+                    "state": "failed",
+                    "error_class": "stale_catalog",
+                    "error": "能力目录已变化，需要重新规划。",
+                }
+                if self.refresh_catalog is not None:
+                    self.catalog = await self.refresh_catalog()
+                next_round += 1
+            elif not self._requires_replan(checkpoint):
                 resumed = await self._execute(checkpoint)
                 if resumed.status == ActionGraphStatus.COMPLETED:
                     return ActionRuntimeResult(
@@ -108,15 +123,37 @@ class StructuredActionRuntime:
                 next_round += 1
 
         for planning_round in range(next_round, self.max_planning_rounds + 1):
-            decision = await self.planner.decide(
-                goal=goal,
-                catalog=self.catalog,
-                messages=messages,
-                observations=prior_observations,
-                planning_round=planning_round,
-                conversation_id=conversation_id,
-            )
+            if self.on_planning is not None:
+                await self.on_planning(planning_round)
+            try:
+                decision = await self.planner.decide(
+                    goal=goal,
+                    catalog=self.catalog,
+                    messages=messages,
+                    observations=prior_observations,
+                    planning_round=planning_round,
+                    conversation_id=conversation_id,
+                )
+            except ActionPlannerError as exc:
+                logger.warning(
+                    "Planner error in round %d: %s",
+                    planning_round,
+                    exc,
+                )
+                prior_observations[f"plan:{planning_round}"] = {
+                    "state": "failed",
+                    "error_class": str(exc),
+                    "error": f"规划器返回格式异常（{exc}），尝试重新规划。",
+                }
+                continue
             _merge_usage(usage, decision.usage)
+            logger.info(
+                "Structured runtime decision: conv=%s round=%d decision=%s candidate_count=%d",
+                conversation_id,
+                planning_round,
+                decision.decision,
+                len(self.catalog.get("candidates") or []),
+            )
             if decision.decision == PlannerDecisionType.DIRECT_ANSWER:
                 return ActionRuntimeResult(
                     status=ActionRuntimeStatus.DIRECT_ANSWER,
@@ -139,6 +176,12 @@ class StructuredActionRuntime:
             try:
                 validator.validate_plan(decision.plan)
             except ActionPlanValidationError as exc:
+                logger.warning(
+                    "Action plan validation failed: conv=%s round=%d issues=%s",
+                    conversation_id,
+                    planning_round,
+                    [item.code for item in exc.issues],
+                )
                 prior_observations[f"plan:{planning_round}"] = {
                     "state": "failed",
                     "error_class": "action_plan_invalid",
@@ -218,6 +261,11 @@ class StructuredActionRuntime:
             observation_callback=observe,
             max_concurrency=self.max_concurrency,
         ).execute(checkpoint)
+
+    def _catalog_is_stale(self, checkpoint: ActionPlanCheckpoint) -> bool:
+        plan_hash = str(checkpoint.plan.catalog_hash or "")
+        current_hash = str(self.catalog.get("catalog_hash") or "")
+        return bool(plan_hash and current_hash and plan_hash != current_hash)
 
     @staticmethod
     def _requires_replan(checkpoint: ActionPlanCheckpoint) -> bool:

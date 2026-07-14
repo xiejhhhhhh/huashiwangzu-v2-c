@@ -189,6 +189,34 @@ export function useAgentChat(props: AgentEntryProps) {
         const entryType = e.type as string
         if (entryType === 'work_summary') {
           workDurationMs = (e.duration_ms as number) || workDurationMs
+        } else if (entryType === 'planner_status') {
+          items.push({
+            id: 0,
+            role: '',
+            content: '',
+            eventType: 'planner_status',
+            plannerPhase: typeof e.phase === 'string' ? e.phase : 'planning',
+            plannerMessage: typeof e.message === 'string' ? e.message : '正在分析任务并制定执行步骤…',
+            planRound: Number(e.planning_round) || 1,
+          } as MsgItem)
+        } else if (entryType === 'action_plan') {
+          items.push({
+            id: 0,
+            role: '',
+            content: '',
+            eventType: 'action_plan',
+            plannerPhase: 'planned',
+            plannerMessage: '已制定执行步骤，准备开始执行',
+            planRound: Number(e.planning_round) || 1,
+            planGoal: typeof e.goal === 'string' ? e.goal : '',
+            planActions: Array.isArray(e.actions) ? e.actions.filter(isRecord).map(action => ({
+              id: typeof action.id === 'string' ? action.id : '',
+              capability: typeof action.capability === 'string' ? action.capability : '',
+              arguments: isRecord(action.arguments) ? action.arguments : {},
+              depends_on: Array.isArray(action.depends_on) ? action.depends_on.filter((id): id is string => typeof id === 'string') : [],
+              completion_check: typeof action.completion_check === 'string' ? action.completion_check : '',
+            })) : [],
+          } as MsgItem)
         } else if (entryType === 'schedule_overhead') {
           items.push({
             id: 0, role: '', content: '',
@@ -844,6 +872,39 @@ export function useAgentChat(props: AgentEntryProps) {
                       } else if (etype === 'work_start') {
 
                 ensureWorkGroup()
+              } else if (etype === 'planner_status') {
+                ensureWorkGroup()
+                const items = currentWorkGroup.value?.items ?? messages.value
+                items.push({
+                  id: 0,
+                  role: '',
+                  content: '',
+                  eventType: 'planner_status',
+                  plannerPhase: typeof evt.phase === 'string' ? evt.phase : 'planning',
+                  plannerMessage: typeof evt.message === 'string' ? evt.message : '正在分析任务并制定执行步骤…',
+                  planRound: Number(evt.planning_round) || 1,
+                } as MsgItem)
+              } else if (etype === 'action_plan') {
+                ensureWorkGroup()
+                const planEvent = evt
+                const items = currentWorkGroup.value?.items ?? messages.value
+                items.push({
+                  id: 0,
+                  role: '',
+                  content: '',
+                  eventType: 'action_plan',
+                  plannerPhase: 'planned',
+                  plannerMessage: '已制定执行步骤，准备开始执行',
+                  planRound: Number(planEvent.planning_round) || 1,
+                  planGoal: typeof planEvent.goal === 'string' ? planEvent.goal : '',
+                  planActions: Array.isArray(planEvent.actions) ? planEvent.actions.filter(isRecord).map(action => ({
+                    id: typeof action.id === 'string' ? action.id : '',
+                    capability: typeof action.capability === 'string' ? action.capability : '',
+                    arguments: isRecord(action.arguments) ? action.arguments : {},
+                    depends_on: Array.isArray(action.depends_on) ? action.depends_on.filter((id): id is string => typeof id === 'string') : [],
+                    completion_check: typeof action.completion_check === 'string' ? action.completion_check : '',
+                  })) : [],
+                } as MsgItem)
               } else if (etype === 'work_done') {
                 const durMs = (evt.duration_ms as number) || 0
                 finishWorkGroup(durMs)
@@ -880,6 +941,11 @@ export function useAgentChat(props: AgentEntryProps) {
                 if (durMs) finishWorkGroup(durMs)
 
 
+                      } else if (etype === 'assistant_empty') {
+                        streaming.value = false
+                        sending.value = false
+                        finishWorkGroupOnError()
+                        error.value = '模型未生成有效回复，请重试。'
                       } else if (etype === 'references') {
                 const refs = normalizeRefItems(evt.references)
                 if (refs.length) {
@@ -991,7 +1057,7 @@ export function useAgentChat(props: AgentEntryProps) {
             const resp = await apiFetchEventStream('/agent/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ conversation_id: activeConvId.value, content: text, profile_key: profileKey.value }),
+              body: JSON.stringify({ conversation_id: activeConvId.value, content: text, profile_key: profileKey.value, agent_code: 'erp_chat' }),
               signal: requestController.signal,
             })
             if (!resp.ok) { error.value = await responseErrorText(resp, `请求失败 (${resp.status})`); return }

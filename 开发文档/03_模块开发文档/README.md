@@ -1,130 +1,62 @@
 # 模块开发文档
 
-模块是桌面里的软件和插件。业务功能优先放入 `modules/`，不要塞进框架。
+## 模块结构
 
-## Module Contract
-
-Agent 对话执行编排的当前重构规范见
-[`agent-runtime-orchestration-architecture.md`](agent-runtime-orchestration-architecture.md)。
-
-| Area | Rule |
-|---|---|
-| Code location | `modules/{key}/` |
-| Manifest | `modules/{key}/manifest.json` declares desktop/runtime metadata |
-| Backend API | `modules/{key}/backend/router.py` |
-| Frontend entry | `modules/{key}/frontend/index.vue` |
-| Runtime | `modules/{key}/runtime/index.ts` |
-| Sandbox | `modules/{key}/sandbox/` |
-| Long-lived docs | `modules/{key}/README.md` only |
-
-## Module Taxonomy
-
-Modules stay physically flat under `modules/{key}/`. Classification is logical only and does not create parent/child import rights.
-
-| Field | Purpose |
-|---|---|
-| `module_type` | Shape of the module: `app`, `orchestrator`, `provider`, `parser`, `viewer`, `editor`, `service`, or `demo` |
-| `module_family` | Product family: `desktop`, `office`, `knowledge`, `agent`, `media`, `web`, `business`, `devtool`, or `demo` |
-| `product_status` | Entry/priority status: `core`, `active`, `background`, `hidden`, `demo`, `debt`, or `deprecated` |
-
-Entry rule: parser/provider/service/demo modules should normally stay out of launcher/desktop entries; app/orchestrator/viewer/editor modules may be visible when they are user-facing.
-
-## Data And Interaction Rules
-
-- Module business tables use the module prefix, for example `kb_*`, `agent_*`, `memory_*`.
-- Modules do not directly read/write `framework_*` or other module tables.
-- Modules do not add database foreign keys to framework or other module tables.
-- Cross-module calls must use framework capability routes.
-- Same-family modules still use capability routes; `module_family` is not permission to import or share tables.
-- Framework data access goes through public framework APIs or approved service helpers.
-
-## Backend Capability Contract
-
-- Register public capabilities with `register_capability(module, action, handler, parameters, min_role)`.
-- Mirror public capabilities in `manifest.public_actions`.
-- Validate with `capability_contract_diff(module, include_parameters=true)`.
-- `/api/modules/call` uses `target_module`, `action`, and `parameters`.
-
-## New Module Flow
-
-```bash
-cp -r modules/_template modules/your-module-key
-# edit manifest/runtime/frontend/backend as needed
-cd modules/your-module-key/sandbox && npm run build
-cd frontend && npm run build
+```
+modules/{key}/
+├── manifest.json       模块声明（必须）
+├── frontend/
+│   └── index.vue       前端入口组件
+├── backend/
+│   └── router.py       后端路由（APIRouter，export 名必须是 router）
+├── runtime/
+│   └── index.ts        前端运行时 API 封装
+└── sandbox/            独立测试沙箱（可选）
 ```
 
-If the module has backend capabilities, add `sandbox/test_module.py` and verify it with the backend virtualenv.
+## manifest.json 关键字段
 
-## Target Structure
+| 字段 | 说明 |
+|------|------|
+| key | 模块唯一标识（目录名） |
+| name | 显示名称 |
+| route_prefix | 后端路由前缀（如 /api/knowledge） |
+| backend.router | router.py 相对路径 |
+| permissions | 允许的角色列表 |
+| show_in_launcher | 是否显示在启动器 |
+| product_status | core/active/background/demo |
 
-```text
-modules/{module}/
-  manifest.json
-  README.md
-  frontend/index.vue
-  runtime/index.ts
-  backend/router.py          # optional
-  backend/schemas.py         # optional
-  backend/models.py          # optional
-  backend/services/          # optional
-  sandbox/test_module.py     # backend contract tests when backend exists
-  sandbox/package.json       # frontend sandbox when UI exists
+## capability 注册
+
+后端 router.py 里用 `register_capability` 注册对外能力：
+
+```python
+from app.services.module_registry import register_capability
+
+register_capability(
+    module_key="knowledge",
+    action="search",
+    handler=handle_search,
+    description="知识库搜索",
+    parameters={"query": {"type": "string"}},
+    min_role="viewer",
+)
 ```
 
-## README Template
+Agent 通过 capability_catalog 自动发现并调用。
 
-Every module README should describe current behavior only:
+## 跨模块调用
 
-```text
-Responsibility
-Manifest Contract
-Current Capabilities
-HTTP API / Endpoint Families
-Public Actions / Capability Contract
-Data Ownership
-Cross-Module Dependencies
-File Access / Permission Boundary
-Frontend / Backend Structure
-Acceptance
-Reproducible Checks
-Boundaries
-```
+- 前端：`platform.modules.call(target_module, action, parameters)`
+- 后端：`call_capability(module, action, params, caller)`
+- **禁止直接 import 其他模块代码或读其他模块的表**
 
-No task logs, execution letters, dated audit notes, or historical repair reports.
+## 当前模块清单（约 35 个）
 
-## Sandbox Acceptance
-
-| Module type | Required verification |
-|---|---|
-| UI-only | frontend sandbox build or main frontend build |
-| Backend capability | `PYTHONPATH=backend backend/.venv/bin/python modules/{key}/sandbox/test_module.py` |
-| Parser | real sample files and blocks/resources/metadata assertions |
-| Live integration | `probe` or `call_capability` against the main backend |
-
-Run the matrix:
-
-```bash
-python3.14 dev_toolkit/module_sandbox_matrix.py --json
-```
-
-## Parser / Content IR
-
-Parser outputs should align with Content IR:
-
-| Field | Requirement |
-|---|---|
-| `file_id` | Source framework file ID |
-| `format` | Lowercase format/extension |
-| `blocks` | English block types |
-| `resources` | Binary/resource references when present |
-| `metadata` | Parser, quality, truncation, warnings |
-| `warnings` | Recoverable issues; failures must not be fake success |
-
-## Runtime Boundary
-
-Module frontend code uses its runtime/platform object and must not import desktop shell internals. Module backend code may use approved framework DB/auth/response/file/task/gateway/capability services, but business logic and tables stay in the module.
-
-## Documentation Rule
-
-Temporary plans, audit notes, and execution letters are deleted after useful rules are distilled into the relevant README.
+核心：agent、knowledge、desktop-tools、memory
+应用：douyin-delivery、im、wechat-writer、excel-engine、docs-open
+工具：browser-tools、web-tools、github-search、terminal-tools、codemap
+解析器：pdf-parser、docx-parser、pptx-parser、xlsx-parser、csv-parser、text-parser、email-parser、markdown-parser、structured-parser
+媒体：image-gen、image-vision、media-asr、media-intelligence
+查看器：doc-viewer、pdf-viewer、ppt-viewer、image-viewer、text-editor
+其他：office-gen、scheduler、model-router
