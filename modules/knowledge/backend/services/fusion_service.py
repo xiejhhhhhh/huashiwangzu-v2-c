@@ -18,7 +18,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import KbDocument, KbPageFusion, KbRawData
 from .llm_diagnostics import timed_llm_chat
 from .model_routing import resolve_knowledge_concurrency, resolve_knowledge_profile
+from .parsing_service import IMAGE_FORMATS
 from .prompt_utils import TFUSION, load_prompt_detached
+
+
+def _is_image_ext(extension: str | None) -> bool:
+    """文档扩展名是否图片(判别 round1 是像素分析而非真文本)。"""
+    return (extension or "").lower().lstrip(".") in IMAGE_FORMATS
+
+
+def _fusion_round_texts(round_texts: dict[int, str], is_image: bool) -> dict[int, str]:
+    """喂给融合的轮次。图片:剔除 round1(像素分析,非正文),只留 OCR(2)+VLM(3)。
+    非图片:原样(round1 是真提取文本)。"""
+    if not is_image:
+        return round_texts
+    return {r: t for r, t in round_texts.items() if r != 1}
 
 logger = logging.getLogger("v2.knowledge").getChild("fusion")
 
@@ -107,11 +121,25 @@ def classify_fusion_status(
     return "done"
 
 
-async def _llm_fuse(db: AsyncSession | None, round_texts: dict[int, str]) -> dict:
-    """调用 LLM 进行交叉印证融合。"""
+async def _llm_fuse(db: AsyncSession | None, round_texts: dict[int, str], is_image: bool = False) -> dict:
+    """调用 LLM 进行交叉印证融合。
+
+    is_image=True:图片无 round1 文本层,只喂 OCR(2)+VLM(3);像素技术数据不进 user_message。
+    """
     profile_key = resolve_knowledge_profile("fusion")
     system_prompt = await load_prompt_detached(TFUSION)
-    user_message = f"""请交叉印证以下三轮采集结果，输出融合后的权威描述。
+    if is_image:
+        user_message = f"""请交叉印证以下图片的两轮采集结果，输出融合后的权威描述。
+注意:这是图片,没有文本提取层。图里的文字以 OCR 为准,画面内容以视觉描述为准。
+不要把像素尺寸/分辨率/亮度等技术元数据写进 fused_text 正文。
+
+=== 图内文字：截图 OCR ===
+{round_texts.get(2, '(无)')[:4000]}
+
+=== 画面内容：视觉描述 ===
+{round_texts.get(3, '(无)')[:4000]}"""
+    else:
+        user_message = f"""请交叉印证以下三轮采集结果，输出融合后的权威描述。
 
 === 第1轮：文本提取 ===
 {round_texts.get(1, '(无)')[:4000]}
@@ -162,9 +190,11 @@ async def fuse_page(
     document_id: int,
     owner_id: int,
     page: int,
+    is_image: bool = False,
 ) -> dict:
     """第4层页级融合：交叉印证 → 冲突消解 → 权威描述。
 
+    is_image=True 时:round1(像素分析)不进融合/fused_text,单独存 attributes.图像技术属性。
     返回融合结果 dict，包含 fused_text / confidence / conflicts 等。
     """
     started = perf_counter()
@@ -198,11 +228,15 @@ async def fuse_page(
         }
     await db.commit()
 
-    # 2. 启发式冲突检测
-    simple_conflicts = _detect_simple_conflicts(round_texts)
+    # 图片:round1 是像素分析(非正文),剔除后再喂融合;单独留存进 attributes.图像技术属性
+    fusion_texts = _fusion_round_texts(round_texts, is_image)
+    image_tech_attr = round_texts.get(1, "").strip() if is_image else ""
+
+    # 2. 启发式冲突检测(只对喂融合的轮次)
+    simple_conflicts = _detect_simple_conflicts(fusion_texts)
 
     # 3. LLM 交叉印证融合
-    fusion_result = await _llm_fuse(db, round_texts)
+    fusion_result = await _llm_fuse(db, fusion_texts, is_image=is_image)
 
     # 4. 综合置信度（LLM 给的 + 启发式加权）
     llm_confidence = fusion_result.get("confidence", 0.7)
@@ -232,6 +266,11 @@ async def fuse_page(
         )
     )
 
+    # 图片技术属性(像素分析)并进 attributes,不进 fused_text
+    attributes = dict(fusion_result.get("attributes") or {})
+    if image_tech_attr:
+        attributes["图像技术属性"] = image_tech_attr
+
     pf = KbPageFusion(
         document_id=document_id,
         owner_id=owner_id,
@@ -240,7 +279,7 @@ async def fuse_page(
         page_summary=fusion_result.get("page_summary", ""),
         page_title=fusion_result.get("page_title"),
         body_json=fusion_result.get("entities"),
-        attributes_json=fusion_result.get("attributes"),
+        attributes_json=attributes,
         tags_json=fusion_result.get("tags"),
         conflicts_json=all_conflicts,
         evidence_json=evidence_ids,
@@ -291,6 +330,7 @@ async def fuse_all_pages(
         raise ValueError(f"Document {document_id} not found")
 
     total_pages = doc.total_pages or 1
+    is_image = _is_image_ext(getattr(doc, "extension", None))
 
     # 更新状态
     doc.fusion_status = "running"
@@ -315,7 +355,7 @@ async def fuse_all_pages(
         async with sem:
             async with AsyncSessionLocal() as page_db:
                 try:
-                    result = await fuse_page(page_db, document_id, owner_id, page)
+                    result = await fuse_page(page_db, document_id, owner_id, page, is_image=is_image)
                     # 逐页 commit：超时/中断只丢当前页
                     await page_db.commit()
                     logger.info("Fusion page=%d committed (confidence=%.2f)", page, result.get("confidence", 0))
