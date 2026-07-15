@@ -19,18 +19,23 @@ from modules.knowledge.backend.services.semantic_align_service import (
 OWNER = 4
 
 
+SHARD = 0     # 本进程分片号(id % SHARDS == SHARD 才处理)
+SHARDS = 1    # 总分片数(1=不分片)
+
+
 async def fetch_batch(db, batch):
-    """取一批未验证、被chunk引用、含汉字的实体。短名优先(真变体多是短专名)。"""
+    """取一批未验证、被chunk引用、含汉字的实体。短名优先。按 id 取模分片(并行用)。"""
     r = await db.execute(T("""
         SELECT ed.id, ed.name, ed.category
         FROM kb_entity_dictionary ed
         WHERE ed.owner_id=:o AND ed.status!='merged'
           AND COALESCE(ed.align_status,'pending')='pending'
           AND ed.name ~ '[一-鿿]' AND length(ed.name)>=2
+          AND (mod(ed.id, :shards) = :shard)
           AND EXISTS (SELECT 1 FROM kb_chunk_entities ce WHERE ce.entity_id=ed.id AND ce.owner_id=:o)
         ORDER BY length(ed.name), ed.id
         LIMIT :b
-    """), {"o": OWNER, "b": batch})
+    """), {"o": OWNER, "b": batch, "shards": SHARDS, "shard": SHARD})
     return [(int(i), n, c) for i, n, c in r.all()]
 
 
@@ -81,8 +86,9 @@ async def pending_count():
             WHERE ed.owner_id=:o AND ed.status!='merged'
               AND COALESCE(ed.align_status,'pending')='pending'
               AND ed.name ~ '[一-鿿]' AND length(ed.name)>=2
+              AND (mod(ed.id, :shards) = :shard)
               AND EXISTS (SELECT 1 FROM kb_chunk_entities ce WHERE ce.entity_id=ed.id AND ce.owner_id=:o)
-        """), {"o": OWNER})
+        """), {"o": OWNER, "shards": SHARDS, "shard": SHARD})
         return r.first()[0]
 
 
@@ -112,5 +118,9 @@ if __name__ == "__main__":
     ap.add_argument("--batch", type=int, default=2000)
     ap.add_argument("--rounds", type=int, default=1)  # 默认跑1轮,0=滚到清空
     ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--shard", type=int, default=0)   # 本进程分片号
+    ap.add_argument("--shards", type=int, default=1)  # 总分片数(并行时>1)
     a = ap.parse_args()
+    SHARD = a.shard
+    SHARDS = max(1, a.shards)
     asyncio.run(main(a.batch, a.rounds, a.dry))
