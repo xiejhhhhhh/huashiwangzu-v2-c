@@ -370,7 +370,7 @@
         "relation_entity_candidates": 1000,
         "relation_write_batch": 100,
         "graph_write_batch": 10,
-        "model_call_global": 200
+        "model_call_global": 30
       },
       "image_preprocess": {
         "raw_ocr_max_side": 1600,

@@ -17,11 +17,11 @@
       "derived_index": 2,
       "relation_build": 2,
       "vision_analysis": 12,
-      "llm_analysis": 3,
+      "llm_analysis": 6,
       "general": 2
     },
     "provider_limits": {
-      "knowledge_llm": 3,
+      "knowledge_llm": 6,
       "knowledge_vlm": 40,
       "qwen_embedding": 2
     },
@@ -42,20 +42,20 @@
     }
   },
   "paused_task_types": [],
-  "paused_stages": {},
+  "paused_stages": {
+    "kb_pipeline_stage": [
+      "fusion",
+      "profile",
+      "graph",
+      "raw_vision",
+      "raw_ocr"
+    ]
+  },
   "paused_lanes": {},
   "config_note": "唯一控制器是 app.task_worker_main 启动的 Dispatcher。它每 1 秒（有执行器）或 8 秒（空闲）检查持久任务表，以 lease 领取任务并派生一次性 executor 进程。paused_task_types、paused_stages 和 paused_lanes 会阻止新领取；正在运行的可中断任务会在下一次心跳被释放回 pending 并标记 paused_by_config。lane_limits 是本地和云端资源池的硬上限，provider_limits 是云模型供应商的全局并发上限。云端额度支持 200 路，但 Knowledge Fusion 在 200 文档扩量时触发 PostgreSQL too many clients，因而按实测稳定门槛把 LLM lane/provider 限为 24 路；VLM 保持 40 路。256 个总 executor 同时保留本地预处理、派生索引、关系、通用和向量槽位；CPU、内存或 GPU 触及阈值时不会继续扩张。GPU 读取未知时 Dispatcher 采用配置上限，不把未知数据伪装成准确监控。",
   "model_auto_pause": {
-    "enabled": true,
-    "stage": "fusion",
-    "group": "llm",
-    "paused_stages": [
-      "fusion",
-      "graph",
-      "profile"
-    ],
-    "reason": "model_rate_limit_threshold",
-    "error_message": "model supply failure count 30 reached threshold 30 within 300s; last_error=Client error '429 Too Many Requests' for url 'https://jayce.sky1818.com/v1/responses'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429\n响应体: {\"error\":{\"message\":\"Concurrency limit exceeded for user, please retry later\",\"type\":\"rate_limit_error\"}}\nClient error '429 Too Many Requests' for url 'https://opencode.ai/zen/go/v1/chat/completions'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429\n响应体: {\"type\":\"error\",\"error\":{\"",
-    "updated_at": "2026-07-17T05:48:03.656239+00:00"
+    "enabled": false,
+    "cleared_at": "2026-07-17T06:48:42.432993+00:00",
+    "cleared_reason": "阶段4人工清熔断:13:48的429窗口(300s)早已过期,恢复LLM三阶段补跑"
   }
 }

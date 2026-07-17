@@ -40,11 +40,14 @@ export function useDesktopAppLoading(currentRole: Ref<string>) {
     loading.value = true
     try {
       const allApps = await loadAppRegistry(currentRole.value)
-      allAppList.value = allApps
-      desktopAppList.value = allApps.filter(a => a.showOnDesktop)
-      launcherAppList.value = allApps.filter(isLauncherVisibleApp)
-      sidebarAppList.value = allApps.filter(a => a.showInSidebar)
-      trayAppList.value = allApps.filter(a => a.showInTray)
+      const byOrder = (a: AppRegistryEntry, b: AppRegistryEntry) =>
+        (a.sortOrder ?? 100) - (b.sortOrder ?? 100) || a.appName.localeCompare(b.appName)
+      const ordered = [...allApps].sort(byOrder)
+      allAppList.value = ordered
+      desktopAppList.value = ordered.filter(a => a.showOnDesktop)
+      launcherAppList.value = ordered.filter(isLauncherVisibleApp)
+      sidebarAppList.value = ordered.filter(a => a.showInSidebar)
+      trayAppList.value = ordered.filter(a => a.showInTray)
 
       // 给模块 runtime 注入框架上下文（当前用户权限等）
       ;(window as unknown as { __HUASHI_RUNTIME__?: unknown }).__HUASHI_RUNTIME__ = {

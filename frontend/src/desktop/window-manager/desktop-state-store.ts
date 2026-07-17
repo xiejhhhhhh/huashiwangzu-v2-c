@@ -13,15 +13,19 @@ export interface DesktopPersistentState {
 const state = reactive<DesktopPersistentState>({ version: 1, windows: [], appState: {}, iconPositions: {} })
 const loaded = ref(false)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+/** framework_desktop_states.version CAS 游标 */
+let serverVersion = 0
 
 export async function loadDesktopState() {
   try {
-    const data = await readDesktopStateRequest()
-    state.windows = Array.isArray(data.windows) ? data.windows : []
-    state.appState = data.appState || {}
-    state.iconPositions = data.iconPositions || {}
+    const envelope = await readDesktopStateRequest()
+    state.windows = Array.isArray(envelope.state.windows) ? envelope.state.windows : []
+    state.appState = envelope.state.appState || {}
+    state.iconPositions = envelope.state.iconPositions || {}
+    state.version = envelope.state.version ?? 1
+    serverVersion = Number(envelope.serverVersion || 0) || 0
   } catch {
-    // desktop state load failed, start with defaults
+    serverVersion = 0
   }
   loaded.value = true
   return state
@@ -53,15 +57,28 @@ export async function saveDesktopStateNow() {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = null
   try {
-    await saveDesktopStateRequest(JSON.parse(JSON.stringify(state)))
-  } catch {
-    // desktop state save failed silently
+    const expected = serverVersion > 0 ? serverVersion : undefined
+    const envelope = await saveDesktopStateRequest(JSON.parse(JSON.stringify(state)), expected)
+    serverVersion = Number(envelope.serverVersion || (serverVersion + 1)) || (serverVersion + 1)
+    state.version = envelope.state.version ?? serverVersion
+  } catch (err: unknown) {
+    const msg = String((err as { error?: string; message?: string })?.error
+      || (err as { message?: string })?.message
+      || err
+      || '')
+    if (msg.includes('DESKTOP_STATE_CONFLICT') || msg.includes('409') || msg.includes('conflict')) {
+      try { await loadDesktopState() } catch { /* ignore */ }
+    }
   }
 }
 
 export function saveDesktopStateWithKeepalive() {
   if (!loaded.value) return
-  keepaliveFetch('/desktop/state', { state_json: state })
+  const expected = serverVersion > 0 ? serverVersion : undefined
+  const { version: _ignored, ...stateJson } = state as DesktopPersistentState & { version?: number }
+  const body: Record<string, unknown> = { state_json: stateJson }
+  if (expected !== undefined) body.expected_version = expected
+  keepaliveFetch('/desktop/state', body)
 }
 
 export const desktopStateStore = { state, loaded }

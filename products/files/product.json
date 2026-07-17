@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "files",
+  "version": "1.0.0",
+  "displayName": "文件",
+  "aliases": [
+    "desktop",
+    "文件管理"
+  ],
+  "description": "桌面文件管理与资源浏览",
+  "category": "files",
+  "iconSet": {
+    "primary": "Folder"
+  },
+  "entryComponentKey": "apps/desktop/index.vue",
+  "workspaceKind": "CatalogWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [
+    {
+      "associationId": "files.any",
+      "contentTypes": [
+        "*/*"
+      ],
+      "extensions": [
+        "*"
+      ],
+      "mimeTypes": [
+        "*/*"
+      ],
+      "modes": [
+        "view"
+      ],
+      "adapterId": "files.browse",
+      "priority": 10,
+      "readOnlyFormats": []
+    }
+  ],
+  "createDocumentTypes": [],
+  "windowPolicy": {
+    "defaultWidth": 1000,
+    "defaultHeight": 700,
+    "singleton": false,
+    "allowMultiple": true,
+    "sortOrder": 10
+  },
+  "activationPolicy": {
+    "default": "reuse-tab"
+  },
+  "deepLinks": [
+    "files://"
+  ],
+  "commands": [
+    "files.open",
+    "files.new-folder"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "desktop"
+  ]
+}

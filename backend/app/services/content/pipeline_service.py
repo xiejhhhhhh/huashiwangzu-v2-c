@@ -55,10 +55,12 @@ class ContentPipelineService:
                 db, file_id, file_record.owner_id, caller,
             )
 
-            if pkg_info["status"] == "parsed":
-                # Check if source file changed
-                current_hash = file_record.md5_hash or ""
-                if pkg_info.get("source_hash") and pkg_info["source_hash"] == hashlib_md5(current_hash):
+            if pkg_info["status"] in ("parsed", "ready", "degraded"):
+                # 源文件是否变过：比对真源字节 SHA-256（取代旧的 SHA256(md5)/MD5(md5) 假 hash，
+                # 那对永不相等导致每次都重解析）。优先读上传写好的 FileRevision.sha256。
+                from app.services.content.source_revision import resolve_source_sha256
+                current_sha256 = await resolve_source_sha256(db, file_record)
+                if pkg_info.get("source_hash") and pkg_info["source_hash"] == current_sha256:
                     return {
                         "package_id": pkg_info["id"],
                         "status": "already_parsed",
@@ -136,8 +138,3 @@ class ContentPipelineService:
             yield b
             if b.get("children"):
                 yield from self._iter_blocks(b["children"])
-
-
-def hashlib_md5(s: str) -> str:
-    import hashlib
-    return hashlib.md5(s.encode()).hexdigest()

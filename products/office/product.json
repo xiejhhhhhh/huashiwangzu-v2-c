@@ -1,0 +1,168 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "office",
+  "version": "1.0.0",
+  "displayName": "Office",
+  "aliases": [
+    "办公",
+    "文档"
+  ],
+  "description": "统一文档/表格/演示工作区",
+  "category": "office",
+  "iconSet": {
+    "primary": "Document"
+  },
+  "entryComponentKey": "products/office/frontend/index.vue",
+  "workspaceKind": "DocumentWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [
+    {
+      "associationId": "office.docx",
+      "contentTypes": [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ],
+      "extensions": [
+        "docx",
+        "doc"
+      ],
+      "mimeTypes": [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword"
+      ],
+      "modes": [
+        "view",
+        "edit"
+      ],
+      "adapterId": "office.document",
+      "priority": 100,
+      "readOnlyFormats": [
+        "doc"
+      ]
+    },
+    {
+      "associationId": "office.pptx",
+      "contentTypes": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      ],
+      "extensions": [
+        "pptx",
+        "ppt"
+      ],
+      "mimeTypes": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint"
+      ],
+      "modes": [
+        "view",
+        "edit"
+      ],
+      "adapterId": "office.presentation",
+      "priority": 100,
+      "readOnlyFormats": [
+        "ppt"
+      ]
+    },
+    {
+      "associationId": "office.xlsx",
+      "contentTypes": [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      ],
+      "extensions": [
+        "xlsx",
+        "xls",
+        "csv"
+      ],
+      "mimeTypes": [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+        "text/csv"
+      ],
+      "modes": [
+        "view",
+        "edit"
+      ],
+      "adapterId": "office.spreadsheet",
+      "priority": 90,
+      "readOnlyFormats": [
+        "xls"
+      ]
+    },
+    {
+      "associationId": "office.pdf",
+      "contentTypes": [
+        "application/pdf"
+      ],
+      "extensions": [
+        "pdf"
+      ],
+      "mimeTypes": [
+        "application/pdf"
+      ],
+      "modes": [
+        "view"
+      ],
+      "adapterId": "office.pdf",
+      "priority": 100,
+      "readOnlyFormats": [
+        "pdf"
+      ]
+    }
+  ],
+  "createDocumentTypes": [
+    {
+      "extension": "docx",
+      "label": "Word 文档",
+      "contentType": "document"
+    },
+    {
+      "extension": "pptx",
+      "label": "演示文稿",
+      "contentType": "presentation"
+    },
+    {
+      "extension": "xlsx",
+      "label": "工作簿",
+      "contentType": "spreadsheet"
+    }
+  ],
+  "windowPolicy": {
+    "defaultWidth": 1100,
+    "defaultHeight": 760,
+    "singleton": false,
+    "allowMultiple": true,
+    "sortOrder": 20
+  },
+  "activationPolicy": {
+    "default": "reuse-tab"
+  },
+  "deepLinks": [
+    "office://"
+  ],
+  "commands": [
+    "office.new",
+    "office.open",
+    "office.save"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "doc-viewer",
+    "ppt-viewer",
+    "pdf-viewer",
+    "excel-engine",
+    "docs-open"
+  ]
+}

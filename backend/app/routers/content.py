@@ -843,20 +843,21 @@ async def _cap_compile(params: dict, caller: str) -> dict:
             return {"success": False, "error": str(e)}
 
 
-# ── Event handler: file.uploaded → content pipeline ─────────────
+# ── Event handler: file.uploaded → 异步摄取编排器（WP2）─────────────
+# 旧同步内联解析（pipeline_svc.handle_file_uploaded）已下线：上传事件只「唤醒」
+# 编排器建 IngestionRun + 发首阶段任务，真正解析由 Dispatcher 异步跑阶段 DAG。
+# 好处：上传立即返回，解析可重试/可取消/可续跑/可重放，不再阻塞上传。
 
 async def _on_file_uploaded(payload: dict, caller: str, caller_role: str) -> dict:
     file_id = payload.get("file_id")
     if not file_id:
         return {"success": False, "error": "file_id required"}
     try:
-        result = await pipeline_svc.handle_file_uploaded(payload, caller, caller_role)
-        pipeline_error = _pipeline_failure(result)
-        if pipeline_error:
-            return {"success": False, "error": pipeline_error, "data": result}
+        from app.services.content.ingestion_orchestrator import ensure_run_and_kickoff
+        result = await ensure_run_and_kickoff(int(file_id), caller, trigger="upload")
         return {"success": True, "data": result}
     except Exception as e:
-        logger.warning("Content pipeline from file.uploaded failed: %s", e)
+        logger.warning("Ingestion kickoff from file.uploaded failed: %s", e)
         return {"success": False, "error": str(e)}
 
 
@@ -973,6 +974,9 @@ async def _cap_store_analysis_resource(params: dict, caller: str) -> dict:
 
 
 from app.services.module_events import register_module_event_handler
+
+# 载入摄取阶段模块 → 注册 content_ingest_stage 的 handler/settlement/reconciler（导入即注册）。
+from app.services.content import ingestion_stages as _ingestion_stages  # noqa: F401
 
 register_module_event_handler("file.uploaded", _on_file_uploaded, "content")
 register_module_event_handler("file.deleted", _on_file_deleted, "content")

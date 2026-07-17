@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "ai",
+  "version": "1.0.0",
+  "displayName": "AI",
+  "aliases": [
+    "agent",
+    "助手"
+  ],
+  "description": "智能体对话与工具编排",
+  "category": "ai",
+  "iconSet": {
+    "primary": "ChatDotRound"
+  },
+  "entryComponentKey": "agent/index.vue",
+  "workspaceKind": "ConversationWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [],
+  "createDocumentTypes": [],
+  "windowPolicy": {
+    "defaultWidth": 1080,
+    "defaultHeight": 760,
+    "singleton": false,
+    "allowMultiple": true,
+    "sortOrder": 50
+  },
+  "activationPolicy": {
+    "default": "new-window"
+  },
+  "deepLinks": [
+    "ai://"
+  ],
+  "commands": [
+    "ai.chat"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "agent"
+  ]
+}

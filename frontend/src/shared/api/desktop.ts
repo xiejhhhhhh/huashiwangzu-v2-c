@@ -74,23 +74,44 @@ function toFileListPage(data: BackendFileListResponse): FileListPageResponse {
   }
 }
 
-function toDesktopPersistentState(response: BackendDesktopStateResponse): DesktopPersistentState {
+export interface DesktopStateEnvelope {
+  state: DesktopPersistentState
+  /** framework_desktop_states.version，CAS 用 */
+  serverVersion: number
+}
+
+function toDesktopPersistentState(response: BackendDesktopStateResponse): DesktopStateEnvelope {
   const payload = response.state_json || {}
+  const serverVersion = Number(response.version ?? 1) || 1
   return {
-    version: payload.version ?? payload.版本 ?? response.version ?? 1,
-    windows: Array.isArray(payload.windows) ? payload.windows : Array.isArray(payload.窗口) ? payload.窗口 : [],
-    appState: payload.appState ?? payload.应用状态 ?? {},
-    iconPositions: payload.iconPositions ?? payload.图标位置 ?? {},
+    serverVersion,
+    state: {
+      // 内容版本与服务端 CAS 版本解耦：state.version 只服务前端快照，CAS 用 serverVersion
+      version: payload.version ?? payload.版本 ?? serverVersion,
+      windows: Array.isArray(payload.windows) ? payload.windows : Array.isArray(payload.窗口) ? payload.窗口 : [],
+      appState: payload.appState ?? payload.应用状态 ?? {},
+      iconPositions: payload.iconPositions ?? payload.图标位置 ?? {},
+    },
   }
 }
 
-export async function readDesktopStateRequest(): Promise<DesktopPersistentState> {
+export async function readDesktopStateRequest(): Promise<DesktopStateEnvelope> {
   const data = await api.get<unknown, BackendDesktopStateResponse>('/desktop/state')
   return toDesktopPersistentState(data)
 }
 
-export async function saveDesktopStateRequest(state: DesktopPersistentState): Promise<DesktopPersistentState> {
-  const data = await api.post<unknown, BackendDesktopStateResponse>('/desktop/state', { state_json: state })
+export async function saveDesktopStateRequest(
+  state: DesktopPersistentState,
+  expectedVersion?: number | null,
+): Promise<DesktopStateEnvelope> {
+  // WP6 CAS：带 expected_version，冲突由上层决定是否重载
+  // state_json 不回传 version 字段给 CAS，避免与服务端 version 混淆
+  const { version: _ignored, ...stateJson } = state as DesktopPersistentState & { version?: number }
+  const body: Record<string, unknown> = { state_json: stateJson }
+  if (expectedVersion !== undefined && expectedVersion !== null) {
+    body.expected_version = expectedVersion
+  }
+  const data = await api.post<unknown, BackendDesktopStateResponse>('/desktop/state', body)
   return toDesktopPersistentState(data)
 }
 

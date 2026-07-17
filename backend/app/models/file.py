@@ -41,6 +41,9 @@ class File(Base, TimestampMixin):
     storage_path: Mapped[str] = mapped_column(String(512), default="", comment="Path on disk relative to storage root")
     mime_type: Mapped[str] = mapped_column(String(128), default="", comment="MIME type")
     md5_hash: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="MD5 hash")
+    current_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="指向 framework_file_revisions 的当前字节血缘(方案07 §19.3-C)"
+    )
     ref_count: Mapped[int] = mapped_column(Integer, default=1, comment="Reference count for content dedup")
     deleted: Mapped[bool] = mapped_column(Boolean, default=False, comment="Soft delete flag")
     deleted_at: Mapped[datetime | None] = mapped_column(

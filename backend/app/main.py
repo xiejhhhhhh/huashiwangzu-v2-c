@@ -33,6 +33,10 @@ async def lifespan(app: FastAPI):
     from app.models.system import ensure_framework_scheduling_columns
     await ensure_framework_scheduling_columns()
 
+    # Idempotent migration: 内容运行时 V1 扩张期 schema（8 新表 + 可空字段 + 非唯一索引）
+    from app.services.content_runtime_schema import ensure_content_runtime_schema
+    await ensure_content_runtime_schema()
+
     # Idempotent migration: add origin_type to framework_content_packages
     from sqlalchemy import text as sa_text
 

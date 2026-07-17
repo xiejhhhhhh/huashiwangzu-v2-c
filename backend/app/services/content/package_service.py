@@ -241,6 +241,11 @@ class ContentPackageService:
             if ref is not None and int(ref) in local_to_real:
                 block["resource_ref"] = local_to_real[int(ref)]
 
+        # 真源字节 SHA-256（取代旧的 SHA256(md5字符串) 假 hash）。优先读上传时写好的
+        # FileRevision.sha256，历史文件无 Revision 时按 storage_path 现算一次。
+        from app.services.content.source_revision import resolve_source_sha256
+        real_source_sha256 = await resolve_source_sha256(db, file_record)
+
         manifest_dict = {
             "title": file_record.name or "",
             "source_file_id": pkg.source_file_id,
@@ -248,7 +253,7 @@ class ContentPackageService:
             "package_type": pkg.package_type,
             "created_by_parser": f"{module_key}:{action}",
             "parser_version": "1.0",
-            "source_hash": file_record.md5_hash or "",
+            "source_hash": real_source_sha256,
         }
 
         parse_status = _compute_package_parse_status(resource_diagnostics)
@@ -263,8 +268,28 @@ class ContentPackageService:
 
         content_json_str = json.dumps(content_ir, ensure_ascii=False)
 
-        source_bytes_str = file_record.md5_hash or ""
-        pkg.source_hash = hashlib.sha256(source_bytes_str.encode()).hexdigest()
+        # 正式写入：content_json（包编辑/兼容结构）+ canonical_json（Content Runtime 主结构）。
+        canonical_json_str: str | None = None
+        canonical_profile: str | None = None
+        canonical_content_sha: str | None = None
+        canonical_fidelity: str | None = None
+        try:
+            from app.contracts.content_hash import content_sha256
+            from app.services.content.canonical_normalizer import normalize_parser_output
+
+            canonical_ir = normalize_parser_output(
+                content_ir, file_id=pkg.source_file_id, extension=ext,
+                source_sha256=real_source_sha256,
+                original_name=file_record.name or "", size=file_record.size or 0,
+            )
+            canonical_json_str = canonical_ir.model_dump_json()
+            canonical_profile = canonical_ir.profile
+            canonical_content_sha = content_sha256(canonical_ir)
+            canonical_fidelity = canonical_ir.fidelity.level
+        except Exception as e:  # 归一失败：content_json 仍落盘，canonical 可空（运行时现场归一）
+            logger.warning("canonical normalize skipped package_id=%d: %s", package_id, e)
+
+        pkg.source_hash = real_source_sha256
         pkg.manifest_json = json.dumps(manifest_dict, ensure_ascii=False)
         pkg.status = parse_status
         pkg.parse_error = None
@@ -288,10 +313,20 @@ class ContentPackageService:
             package_id=pkg.id,
             version_no=version_no,
             content_json=content_json_str,
+            canonical_json=canonical_json_str,
+            schema_version="canonical-content-ir/v1" if canonical_json_str else None,
+            profile=canonical_profile,
+            content_sha256=canonical_content_sha,
+            source_sha256=real_source_sha256,
+            fidelity_level=canonical_fidelity,
             summary=f"Parsed via {module_key}:{action}",
             operation_type="parse",
             created_by=pkg.owner_id,
         )
+        # Package 侧也回填 profile / schema_version（供 Resolver/门禁按 profile 分流）。
+        if canonical_profile:
+            pkg.profile = canonical_profile
+            pkg.schema_version = "canonical-content-ir/v1"
         db.add(version)
         await db.flush()
         pkg.current_version_id = version.id

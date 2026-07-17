@@ -1,0 +1,95 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "text",
+  "version": "1.0.0",
+  "displayName": "文本",
+  "aliases": [
+    "text-editor",
+    "记事本"
+  ],
+  "description": "纯文本与 Markdown 编辑",
+  "category": "text",
+  "iconSet": {
+    "primary": "EditPen"
+  },
+  "entryComponentKey": "text-editor/index.vue",
+  "workspaceKind": "DocumentWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [
+    {
+      "associationId": "text.plain",
+      "contentTypes": [
+        "text/plain",
+        "text/markdown"
+      ],
+      "extensions": [
+        "txt",
+        "md",
+        "json",
+        "yaml",
+        "yml",
+        "log",
+        "csv"
+      ],
+      "mimeTypes": [
+        "text/plain",
+        "text/markdown",
+        "application/json"
+      ],
+      "modes": [
+        "view",
+        "edit"
+      ],
+      "adapterId": "text.editor",
+      "priority": 80,
+      "readOnlyFormats": []
+    }
+  ],
+  "createDocumentTypes": [
+    {
+      "extension": "txt",
+      "label": "文本文档",
+      "contentType": "text"
+    },
+    {
+      "extension": "md",
+      "label": "Markdown",
+      "contentType": "text"
+    }
+  ],
+  "windowPolicy": {
+    "defaultWidth": 900,
+    "defaultHeight": 640,
+    "singleton": false,
+    "allowMultiple": true,
+    "sortOrder": 21
+  },
+  "activationPolicy": {
+    "default": "new-tab"
+  },
+  "deepLinks": [
+    "text://"
+  ],
+  "commands": [
+    "text.open",
+    "text.new"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "text-editor"
+  ]
+}

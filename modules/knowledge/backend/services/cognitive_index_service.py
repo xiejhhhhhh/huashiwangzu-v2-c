@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from ..models import (
     KbContentObject,
     KbDocument,
     KbDocumentProfile,
+    KbEntityDictionary,
     KbFactCandidate,
     KbFileKnowledgeLink,
     KbIngestBatch,
@@ -32,9 +34,12 @@ from ..models import (
     KbQueryContext,
     KbTerm,
     KbTermEdge,
+    KbTermOccurrence,
     KbValidationReport,
 )
 from .analysis_artifact_service import stable_hash
+
+logger = logging.getLogger("v2.knowledge.cognitive_index")
 
 COGNITIVE_INDEX_WRITE_BATCH = 10
 
@@ -51,8 +56,8 @@ def normalize_term(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "").strip().lower())
 
 
-def extract_terms(text: str, *, limit: int = 80) -> list[str]:
-    """Extract lightweight terms without freezing business taxonomies."""
+def _extract_terms_legacy(text: str, *, limit: int = 80) -> list[str]:
+    """旧贪婪正则实现,保留作 jieba 分词器的降级兜底(勿删)。"""
     counts: Counter[str] = Counter()
     for match in _TOKEN_RE.findall(str(text or "")):
         term = match.strip()
@@ -63,6 +68,19 @@ def extract_terms(text: str, *, limit: int = 80) -> list[str]:
             continue
         counts[term] += 1
     return [term for term, _ in counts.most_common(limit)]
+
+
+def extract_terms(text: str, *, limit: int = 80) -> list[str]:
+    """分词提取词层。主路走 term_tokenizer(jieba+业务词典+双向剥离),
+    任何异常(jieba 未装等)降级回旧贪婪正则,保证词层始终有产出。"""
+    try:
+        from .term_tokenizer import 提取词
+        result = 提取词(str(text or ""), limit=limit)
+        if result:
+            return result
+    except Exception:  # noqa: BLE001 分词器不可用时静默降级,不拖垮索引主流程
+        logger.warning("term_tokenizer 不可用,降级用旧正则抽词", exc_info=True)
+    return _extract_terms_legacy(text, limit=limit)
 
 
 def term_hash_parts(term: str) -> dict:
@@ -415,6 +433,24 @@ async def upsert_term(
     return item
 
 
+async def _确保业务词典已灌(db: AsyncSession, owner_id: int) -> None:
+    """进程内一次性把库里的实体名灌进 jieba,专名才不被切碎。
+    幂等:靠 term_tokenizer 内部 _词典已载 标志,只灌一次。分词器不可用则静默跳过。"""
+    try:
+        from . import term_tokenizer as _tk
+        if getattr(_tk, "_词典已载", False):
+            return
+        names = (await db.execute(
+            select(KbEntityDictionary.name).where(
+                func.char_length(KbEntityDictionary.name).between(2, 12)
+            )
+        )).scalars().all()
+        n = _tk.载入业务词典(names)
+        logger.info("分词器业务词典已灌入 %d 词", n)
+    except Exception:  # noqa: BLE001 灌词典失败不拖垮 derive,分词器退化为通用切词
+        logger.warning("灌业务词典失败,分词器按通用词典切", exc_info=True)
+
+
 async def derive_document_cognitive_index(
     db: AsyncSession,
     *,
@@ -434,7 +470,7 @@ async def derive_document_cognitive_index(
         return {"fact_candidates": 0, "causal_candidates": 0}
     document_filename = str(doc.filename or "")
 
-    for model in (KbFactCandidate, KbCausalCandidate):
+    for model in (KbFactCandidate, KbCausalCandidate, KbTermOccurrence):
         await db.execute(
             sa_delete(model).where(
                 model.owner_id == owner_id,
@@ -477,6 +513,66 @@ async def derive_document_cognitive_index(
             " ".join(str(item.get("name", "")) for item in (profile.key_entities or []) if isinstance(item, dict)),
         ])
         source_texts.append((profile_text, None, None, "document_profile"))
+
+    # ── 词层:分词器(jieba+业务词典+双向剥离)切词 → 写 kb_terms + kb_term_occurrences ──
+    # 通名定类的词 term_type=类目(机构/产品/成分…),纯专名 term_type=term 留待后续判类。
+    # source_hash 去重保证可重跑不翻倍(开头已清本文档 occurrence)。
+    await _确保业务词典已灌(db, owner_id)
+    term_count = 0
+    term_occurrence_count = 0
+    seen_term_source: set[str] = set()
+    for text_value, page, fusion_id, source_type in source_texts:
+        try:
+            from .term_tokenizer import 切词带类目
+            切出 = 切词带类目(text_value)
+        except Exception:  # noqa: BLE001 分词器不可用不拖垮 derive 主流程
+            logger.warning("term_tokenizer 切词失败,跳过词层写入", exc_info=True)
+            切出 = []
+        for pos, item in enumerate(切出[:limit]):
+            主体 = (item.get("主体") or "").strip()
+            if len(normalize_term(主体)) < 2:
+                continue
+            类目 = item.get("类目") or "term"
+            try:
+                term_row = await upsert_term(
+                    db, owner_id=owner_id, term=主体, term_type=类目,
+                    source="tokenizer", confidence=0.7 if item.get("状态") == "confirmed" else 0.6,
+                )
+            except Exception:  # noqa: BLE001 单词写入失败不影响整篇
+                continue
+            term_count += 1
+            occ_hash = _source_hash("term_occurrence", {
+                "document_id": document_id, "term_id": int(term_row.id),
+                "page": page, "source_type": source_type, "pos": pos,
+            })
+            if occ_hash in seen_term_source:
+                continue
+            seen_term_source.add(occ_hash)
+            result = await db.execute(
+                sa_text(
+                    """
+                    INSERT INTO kb_term_occurrences (
+                        owner_id, term_id, document_id, page_fusion_id, page,
+                        source_type, position, weight, context, source_hash
+                    )
+                    VALUES (
+                        :owner_id, :term_id, :document_id, :page_fusion_id, :page,
+                        :source_type, :position, 1.0, :context, :source_hash
+                    )
+                    ON CONFLICT (owner_id, source_hash) DO NOTHING
+                    RETURNING id
+                    """
+                ),
+                {
+                    "owner_id": owner_id, "term_id": int(term_row.id), "document_id": document_id,
+                    "page_fusion_id": fusion_id, "page": page, "source_type": source_type,
+                    "position": pos, "context": (主体 + " | " + 类目)[:1000], "source_hash": occ_hash,
+                },
+            )
+            if result.scalar_one_or_none() is not None:
+                term_occurrence_count += 1
+        await db.commit()
+        db.expunge_all()
 
     fact_count = 0
     if profile is not None:
@@ -604,6 +700,8 @@ async def derive_document_cognitive_index(
     db.expunge_all()
 
     return {
+        "terms": term_count,
+        "term_occurrences": term_occurrence_count,
         "fact_candidates": fact_count,
         "causal_candidates": causal_count,
     }

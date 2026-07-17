@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "recycle",
+  "version": "1.0.0",
+  "displayName": "回收站",
+  "aliases": [
+    "trash"
+  ],
+  "description": "已删除文件恢复与清理",
+  "category": "files",
+  "iconSet": {
+    "primary": "Delete"
+  },
+  "entryComponentKey": "apps/recycle/index.vue",
+  "workspaceKind": "CatalogWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [],
+  "createDocumentTypes": [],
+  "windowPolicy": {
+    "defaultWidth": 900,
+    "defaultHeight": 600,
+    "singleton": true,
+    "allowMultiple": false,
+    "sortOrder": 11
+  },
+  "activationPolicy": {
+    "default": "reuse-tab"
+  },
+  "deepLinks": [
+    "recycle://"
+  ],
+  "commands": [
+    "recycle.open"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "recycle"
+  ]
+}

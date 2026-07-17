@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.exceptions import NotFound
 from app.database import get_db
+from app.middleware.auth import require_permission
+from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.schemas.desktop_state import DesktopAuditLogRequest, DesktopStateSaveRequest
-from app.middleware.auth import get_current_user, require_permission
-from app.models.user import User
 from app.services import app_service
 from app.services.desktop_state_service import get_state, save_state
 from app.services.log_service import write_log
@@ -55,7 +56,12 @@ async def _save_desktop_state(
     db: AsyncSession,
     current_user: User,
 ):
-    state = await save_state(db, current_user.id, data.state_json)
+    state = await save_state(
+        db,
+        current_user.id,
+        data.state_json,
+        expected_version=data.expected_version,
+    )
     return ApiResponse(data={
         "user_id": state.user_id,
         "state_json": state.state_json,

@@ -92,6 +92,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, 'src'),
       '@modules': path.resolve(__dirname, '../modules'),
+      '@products': path.resolve(__dirname, '../products'),
       'marked': path.resolve(__dirname, 'node_modules/marked'),
       'dompurify': path.resolve(__dirname, 'node_modules/dompurify'),
       'highlight.js': path.resolve(__dirname, 'node_modules/highlight.js'),

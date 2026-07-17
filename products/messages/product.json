@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "messages",
+  "version": "1.0.0",
+  "displayName": "消息",
+  "aliases": [
+    "im",
+    "会话"
+  ],
+  "description": "即时消息与会话工作区",
+  "category": "messages",
+  "iconSet": {
+    "primary": "ChatLineRound"
+  },
+  "entryComponentKey": "im/index.vue",
+  "workspaceKind": "ConversationWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [],
+  "createDocumentTypes": [],
+  "windowPolicy": {
+    "defaultWidth": 1000,
+    "defaultHeight": 720,
+    "singleton": true,
+    "allowMultiple": false,
+    "sortOrder": 60
+  },
+  "activationPolicy": {
+    "default": "reuse-tab"
+  },
+  "deepLinks": [
+    "messages://"
+  ],
+  "commands": [
+    "messages.open"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "im"
+  ]
+}

@@ -40,6 +40,11 @@ class ContentPackage(Base):
     )
     parse_error: Mapped[str | None] = mapped_column(Text, nullable=True, comment="Last parse error message")
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="SHA-256 of source file at parse time")
+    # WP1（方案07 §19.3-C）扩张期新列：Profile / schema 版本 / 来源 Revision / 活跃 Ingestion
+    profile: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="document/spreadsheet/presentation/pdf/media/generic")
+    schema_version: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="内容 IR schema 版本，如 canonical-content-ir/v1")
+    source_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="来源 FileRevision id（血缘事实源）")
+    active_ingestion_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="当前活跃 IngestionRun id(UUIDv7)")
     deleted: Mapped[bool] = mapped_column(Boolean, default=False, comment="Soft delete flag")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -66,6 +71,16 @@ class ContentPackageVersion(Base):
     )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="Monotonic version number")
     content_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", comment="Blocks + document structure (no binary resources)")
+    # WP1 §19.3-C 扩张期新增字段（DB 已由 patcher 建列，此处补 ORM 映射）
+    parent_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="Parent version (同 Package、版本号更小)")
+    schema_version: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="内容 IR schema 版本，如 canonical-content-ir/v1")
+    profile: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="document/spreadsheet/presentation/pdf/media/generic")
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="canonical IR 的 RFC8785 规范化 SHA-256")
+    source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="原始字节 SHA-256")
+    fidelity_level: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="lossless/structural/textual/metadata_only")
+    retention_state: Mapped[str] = mapped_column(String(16), default="active", comment="active/superseded/gc_pending")
+    # WP3 双写：CanonicalContentIRV1 载荷（旧 content_json 兼容期不动）
+    canonical_json: Mapped[str | None] = mapped_column(Text, nullable=True, comment="CanonicalContentIRV1 JSON（Content Runtime 主结构）")
     summary: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="Human-readable version summary")
     operation_type: Mapped[str] = mapped_column(
         String(32), default="parse",

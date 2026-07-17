@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "knowledge",
+  "version": "1.0.0",
+  "displayName": "知识库",
+  "aliases": [
+    "knowledge"
+  ],
+  "description": "知识检索、画像与图谱",
+  "category": "knowledge",
+  "iconSet": {
+    "primary": "Collection"
+  },
+  "entryComponentKey": "knowledge/index.vue",
+  "workspaceKind": "CatalogWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [],
+  "createDocumentTypes": [],
+  "windowPolicy": {
+    "defaultWidth": 1100,
+    "defaultHeight": 760,
+    "singleton": true,
+    "allowMultiple": false,
+    "sortOrder": 40
+  },
+  "activationPolicy": {
+    "default": "reuse-tab"
+  },
+  "deepLinks": [
+    "knowledge://"
+  ],
+  "commands": [
+    "knowledge.search"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "knowledge"
+  ]
+}

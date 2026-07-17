@@ -66,9 +66,16 @@ export function getAppByFileFormat(format: string, role?: string): FileAssociati
     }
   }
 
-  // Sort by sort_order within each group
+  // Sort by sort_order within each group.
+  // prefer product runtime keys: non-viewer product shells (office/text/media/files) over legacy *-viewer
+  const rank = (appKey: string) => {
+    if (appKey === 'office' || appKey === 'text' || appKey === 'media' || appKey === 'files') return -100
+    if (appKey.endsWith('-viewer') || appKey === 'docs-open' || appKey === 'excel-engine') return 50
+    return 0
+  }
   const sortFn = (a: MatchCandidate, b: MatchCandidate) =>
-    (a.app.sortOrder ?? 0) - (b.app.sortOrder ?? 0)
+    rank(a.app.appKey) - rank(b.app.appKey)
+    || (a.app.sortOrder ?? 0) - (b.app.sortOrder ?? 0)
 
   editableMatches.sort(sortFn)
   supportedMatches.sort(sortFn)

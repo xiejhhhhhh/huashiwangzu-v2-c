@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "content-studio",
+  "version": "1.0.0",
+  "displayName": "内容工作室",
+  "aliases": [
+    "studio",
+    "内容创作"
+  ],
+  "description": "内容创作与发布编排入口",
+  "category": "content",
+  "iconSet": {
+    "primary": "Brush"
+  },
+  "entryComponentKey": "products/content-studio/frontend/index.vue",
+  "workspaceKind": "DocumentWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [],
+  "createDocumentTypes": [
+    {
+      "extension": "md",
+      "label": "内容草稿",
+      "contentType": "text"
+    }
+  ],
+  "windowPolicy": {
+    "defaultWidth": 1040,
+    "defaultHeight": 740,
+    "singleton": false,
+    "allowMultiple": true,
+    "sortOrder": 70
+  },
+  "activationPolicy": {
+    "default": "new-window"
+  },
+  "deepLinks": [
+    "studio://"
+  ],
+  "commands": [
+    "studio.new"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": []
+}

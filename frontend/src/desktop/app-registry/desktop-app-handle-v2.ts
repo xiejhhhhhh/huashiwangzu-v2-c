@@ -2,7 +2,6 @@ import { ElMessage } from 'element-plus'
 import api from '@/shared/api'
 import { windowManager } from '@/desktop/window-manager/window-manager'
 import { getApp } from '@/desktop/app-registry/app-registry'
-import { getAppByFileFormat } from '@/desktop/app-registry/file-association-registry'
 import emitter from '@/desktop/events'
 import { useUserStore } from '@/platform/stores/user'
 import { getOpenWindowFailureMessage } from './app-visibility'
@@ -46,13 +45,10 @@ export function useDesktopAppHandleV2() {
   }
 
   async function openFile(fileId: number, format?: string, options?: CommandOptions): Promise<WindowHandle | null> {
-    const association = getAppByFileFormat(format || '', userStore.userInfo?.role)
-    if (!association || !association.appKey) {
-      ElMessage.warning(`无应用支持打开 ${format} 格式`)
-      return null
-    }
-    const windowId = openApp(association.appKey, { fileId, format })
-    return windowId ? { windowId, appId: association.appKey } : null
+    // 正式路径：只走 Content Open Resolver
+    const { openFileByRecord } = await import('@/desktop/app-registry/app-opener')
+    openFileByRecord({ fileId, fileName: '', format: format || '' })
+    return { windowId: '', appId: '' }
   }
 
   async function sendCommand(

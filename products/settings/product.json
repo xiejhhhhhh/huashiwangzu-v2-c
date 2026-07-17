@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "settings",
+  "version": "1.0.0",
+  "displayName": "设置",
+  "aliases": [
+    "preferences"
+  ],
+  "description": "系统与个人偏好设置",
+  "category": "system",
+  "iconSet": {
+    "primary": "Setting"
+  },
+  "entryComponentKey": "apps/settings/index.vue",
+  "workspaceKind": "CatalogWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [],
+  "createDocumentTypes": [],
+  "windowPolicy": {
+    "defaultWidth": 860,
+    "defaultHeight": 640,
+    "singleton": true,
+    "allowMultiple": false,
+    "sortOrder": 90
+  },
+  "activationPolicy": {
+    "default": "reuse-tab"
+  },
+  "deepLinks": [
+    "settings://"
+  ],
+  "commands": [
+    "settings.open"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": []
+}

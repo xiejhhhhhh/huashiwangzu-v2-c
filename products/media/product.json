@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "ProductManifestV1",
+  "productId": "media",
+  "version": "1.0.0",
+  "displayName": "媒体",
+  "aliases": [
+    "media-intelligence",
+    "图片",
+    "音视频"
+  ],
+  "description": "图片与音视频浏览/轻分析入口",
+  "category": "media",
+  "iconSet": {
+    "primary": "Picture"
+  },
+  "entryComponentKey": "media-intelligence/index.vue",
+  "workspaceKind": "MediaWorkspace",
+  "visibility": {
+    "desktop": true,
+    "launcher": true,
+    "dock": true
+  },
+  "permissionPolicy": {
+    "allOf": [
+      "viewer"
+    ],
+    "anyOf": []
+  },
+  "requiredCapabilities": [],
+  "fileAssociations": [
+    {
+      "associationId": "media.image",
+      "contentTypes": [
+        "image/*"
+      ],
+      "extensions": [
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "bmp",
+        "svg"
+      ],
+      "mimeTypes": [
+        "image/*"
+      ],
+      "modes": [
+        "view"
+      ],
+      "adapterId": "media.image",
+      "priority": 80,
+      "readOnlyFormats": []
+    },
+    {
+      "associationId": "media.av",
+      "contentTypes": [
+        "audio/*",
+        "video/*"
+      ],
+      "extensions": [
+        "mp3",
+        "wav",
+        "aac",
+        "ogg",
+        "flac",
+        "m4a",
+        "mp4",
+        "webm",
+        "mov",
+        "m4v"
+      ],
+      "mimeTypes": [
+        "audio/*",
+        "video/*"
+      ],
+      "modes": [
+        "view"
+      ],
+      "adapterId": "media.av",
+      "priority": 70,
+      "readOnlyFormats": []
+    }
+  ],
+  "createDocumentTypes": [],
+  "windowPolicy": {
+    "defaultWidth": 980,
+    "defaultHeight": 700,
+    "singleton": false,
+    "allowMultiple": true,
+    "sortOrder": 30
+  },
+  "activationPolicy": {
+    "default": "new-window"
+  },
+  "deepLinks": [
+    "media://"
+  ],
+  "commands": [
+    "media.open"
+  ],
+  "frameworkCompatibility": {
+    "min": "2.0",
+    "max": "2.x"
+  },
+  "legacyAppKeys": [
+    "media-intelligence",
+    "image-viewer"
+  ]
+}

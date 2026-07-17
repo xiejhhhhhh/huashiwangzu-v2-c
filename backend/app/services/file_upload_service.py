@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.contracts.content_hash import source_sha256_from_bytes, source_sha256_from_path
 from app.core.exceptions import AppException, NotFound
 from app.models.file import File, Folder
 
@@ -46,8 +47,11 @@ async def upload_file(
         if folder.owner_id != owner_id:
             raise AppException("Access denied: target folder does not belong to current user", status_code=403)
 
+    from app.services.content.source_revision import record_file_revision
+
     file_bytes = file_obj.read()
     md5_hash = hashlib.md5(file_bytes).hexdigest()
+    source_sha256 = source_sha256_from_bytes(file_bytes)
 
     if relative_path:
         target_folder_id = await _ensure_folder_path(db, relative_path, owner_id, target_folder_id)
@@ -98,6 +102,11 @@ async def upload_file(
         )
         db.add(new_file)
         await db.flush()
+        # 记录首个不可变字节血缘 Revision（origin=user_import），并指向 current
+        await record_file_revision(
+            db, new_file, sha256=source_sha256, origin="user_import",
+            created_by=owner_id,
+        )
         # Increment ref_count on the existing content-bearing record
         await db.execute(
             update(File).where(File.id == existing_file.id).values(ref_count=File.ref_count + 1)
@@ -122,6 +131,11 @@ async def upload_file(
             deleted=False,
         )
         db.add(new_file)
+        await db.flush()
+        await record_file_revision(
+            db, new_file, sha256=source_sha256, origin="user_import",
+            created_by=owner_id,
+        )
         await db.commit()
         await db.refresh(new_file)
 
@@ -185,8 +199,11 @@ async def replace_file_content(
 
     await check_file_write_access(db, file_id, user_id)
 
+    from app.services.content.source_revision import record_file_revision
+
     old_storage_path = file.storage_path
     new_md5 = hashlib.md5(content).hexdigest()
+    new_source_sha256 = source_sha256_from_bytes(content)
     ext = file.extension or ""
     new_content_path = f"{new_md5[:2]}/{new_md5[2:4]}/{new_md5}.{ext}" if ext else f"{new_md5[:2]}/{new_md5[2:4]}/{new_md5}"
     abs_new_path = UPLOAD_ROOT / new_content_path
@@ -210,6 +227,12 @@ async def replace_file_content(
     file.size = len(content)
     file.md5_hash = new_md5
     await db.flush()
+
+    # 内容替换 → 新增一条 external_replace Revision（revision_no 递增），并指向 current
+    await record_file_revision(
+        db, file, sha256=new_source_sha256, origin="external_replace",
+        created_by=user_id,
+    )
 
     # Decrement ref_count of old content
     if old_storage_path and old_storage_path != file.storage_path:
@@ -287,12 +310,16 @@ async def upload_file_from_path(
         if folder.owner_id != owner_id:
             raise AppException("Access denied: target folder does not belong to current user", status_code=403)
 
+    from app.services.content.source_revision import record_file_revision
+
     if md5_hex:
         md5_hash = md5_hex
     else:
         md5_hash = hashlib.md5(file_path.read_bytes()).hexdigest()
 
     file_size = file_path.stat().st_size
+    # 真源字节 SHA-256（流式，趁临时文件还在原地、未 rename）
+    source_sha256 = source_sha256_from_path(str(file_path))
 
     if relative_path:
         target_folder_id = await _ensure_folder_path(db, relative_path, owner_id, target_folder_id)
@@ -337,6 +364,10 @@ async def upload_file_from_path(
         )
         db.add(new_file)
         await db.flush()
+        await record_file_revision(
+            db, new_file, sha256=source_sha256, origin="user_import",
+            created_by=owner_id,
+        )
         await db.execute(
             update(File).where(File.id == existing_file.id).values(ref_count=File.ref_count + 1)
         )
@@ -359,6 +390,11 @@ async def upload_file_from_path(
             md5_hash=md5_hash, ref_count=1, deleted=False,
         )
         db.add(new_file)
+        await db.flush()
+        await record_file_revision(
+            db, new_file, sha256=source_sha256, origin="user_import",
+            created_by=owner_id,
+        )
         await db.commit()
         await db.refresh(new_file)
 
