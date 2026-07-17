@@ -1,5 +1,6 @@
 from .app import App
 from .artifact import Artifact, ArtifactOperation, ArtifactVersion
+from .background_process import BackgroundProcess
 from .content import ContentPackage, ContentPackageVersion, Resource, ResourceRef
 from .desktop_state import DesktopState
 from .file import File, FileDerivative, Folder
@@ -33,4 +34,5 @@ __all__ = ["User", "App", "Folder", "File", "FileDerivative", "FileUploadSession
            "CapabilityIdentity", "CapabilityPermissionRequirement",
            "GatewayUsageDaily",
            "Artifact", "ArtifactVersion", "ArtifactOperation",
-           "ContentPackage", "ContentPackageVersion", "Resource", "ResourceRef"]
+           "ContentPackage", "ContentPackageVersion", "Resource", "ResourceRef",
+           "BackgroundProcess"]

@@ -162,6 +162,31 @@ class OpenAICompatLikeAdapter(ModelAdapter):
         )
 
     def _build_stream_chunk(self, chunk: dict, provider: str = "") -> StreamEvent | None:
+        # res 协议(GPT responses API)流式:事件形状是 response.* 而非 choices[].delta
+        # 归一成统一事件,前端一套模板通吃,不用管后端选了哪个协议
+        chunk_type = chunk.get("type")
+        if isinstance(chunk_type, str) and chunk_type.startswith("response."):
+            if chunk_type == "response.output_text.delta":
+                delta = chunk.get("delta")
+                if delta:
+                    return _build_stream_event(StreamEventType.TOKEN, str(delta))
+                return None
+            if chunk_type == "response.reasoning_summary_text.delta":
+                if self.include_thinking:
+                    delta = chunk.get("delta")
+                    if delta:
+                        return _build_stream_event(StreamEventType.THINKING, str(delta))
+                return None
+            if chunk_type == "response.completed":
+                resp = chunk.get("response") or {}
+                usage = _extract_usage(resp) or _extract_usage(chunk)
+                return _build_stream_event(StreamEventType.DONE, usage=usage)
+            if chunk_type in {"response.failed", "response.incomplete"}:
+                resp = chunk.get("response") or {}
+                err = resp.get("error") or chunk.get("error") or chunk_type
+                return _build_stream_event(StreamEventType.ERROR, str(err))
+            # created/in_progress/output_item.*/content_part.*/reasoning等结构事件:跳过
+            return None
         if provider == "ollama":
             if chunk.get("done"):
                 return _build_stream_event(StreamEventType.DONE)

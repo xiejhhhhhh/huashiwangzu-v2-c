@@ -56,6 +56,7 @@ PLATFORM_ROUTER_MODULES: tuple[str, ...] = (
     "app.routers.private_modules",
     "app.routers.artifacts",
     "app.routers.content",
+    "app.routers.process_manager",
 )
 
 

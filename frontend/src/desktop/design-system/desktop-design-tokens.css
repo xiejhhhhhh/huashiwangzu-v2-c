@@ -8,19 +8,41 @@
   --desktop-bg-gradient-middle: #1d4ed8;
   --desktop-bg-gradient-end: #7c3aed;
   --desktop-bg-overlay: rgba(0, 0, 0, 0.08);
+  --desktop-wallpaper-vignette: linear-gradient(180deg, rgba(3, 7, 18, 0.04), rgba(3, 7, 18, 0.22));
   --desktop-icon-text: #f1f5f9;
-  --desktop-icon-selected-bg: rgba(99, 102, 241, 0.16);
-  --desktop-icon-selected-border: rgba(99, 102, 241, 0.35);
+  --desktop-icon-selected-bg: rgba(14, 165, 233, 0.18);
+  --desktop-icon-selected-border: rgba(125, 211, 252, 0.46);
+
+  /* ===== Liquid Glass ===== */
+  --desktop-liquid-blur-strong: 30px;
+  --desktop-liquid-blur-medium: 22px;
+  --desktop-liquid-blur-light: 14px;
+  --desktop-liquid-saturate: 165%;
+  --desktop-liquid-hairline: rgba(255, 255, 255, 0.26);
+  --desktop-liquid-hairline-dark: rgba(15, 23, 42, 0.16);
+  --desktop-liquid-specular: inset 1px 1px 0 rgba(255, 255, 255, 0.46);
+  --desktop-liquid-inner-glow: inset 0 0 18px rgba(255, 255, 255, 0.16);
+  --desktop-liquid-shadow-soft: 0 12px 34px rgba(15, 23, 42, 0.22);
+  --desktop-liquid-shadow-strong: 0 26px 76px rgba(15, 23, 42, 0.34), 0 2px 12px rgba(15, 23, 42, 0.18);
+  --desktop-liquid-surface: rgba(248, 250, 252, 0.74);
+  --desktop-liquid-surface-strong: rgba(248, 250, 252, 0.9);
+  --desktop-liquid-surface-dark: rgba(15, 23, 42, 0.42);
+  --desktop-liquid-text-on-wallpaper: rgba(248, 250, 252, 0.94);
+  --desktop-liquid-text-muted: rgba(226, 232, 240, 0.74);
+  --desktop-liquid-accent: #0ea5e9;
+  --desktop-ease-ios: cubic-bezier(.32, .72, 0, 1);
+  --desktop-ease-out-strong: cubic-bezier(.23, 1, .32, 1);
+  --desktop-ease-spring: cubic-bezier(.34, 1.35, .44, 1);
 
   /* ===== 任务栏 ===== */
-  --taskbar-height: 40px;
-  --taskbar-bg: rgba(0, 0, 0, 0.35);
-  --taskbar-blur: 14px;
+  --taskbar-height: 58px;
+  --taskbar-bg: rgba(248, 250, 252, 0.26);
+  --taskbar-blur: var(--desktop-liquid-blur-medium);
   --taskbar-text: #eff6ff;
-  --taskbar-text-secondary: #94a3b8;
-  --taskbar-top-border: rgba(255, 255, 255, 0.06);
-  --taskbar-active-bg: rgba(99, 102, 241, 0.15);
-  --taskbar-active-border: rgba(99, 102, 241, 0.2);
+  --taskbar-text-secondary: rgba(226, 232, 240, 0.78);
+  --taskbar-top-border: rgba(255, 255, 255, 0.2);
+  --taskbar-active-bg: rgba(255, 255, 255, 0.22);
+  --taskbar-active-border: rgba(255, 255, 255, 0.34);
   --taskbar-z-index: 10000;
 
   /* ===== 启动器 ===== */
@@ -36,17 +58,17 @@
   --launcher-search-bg: rgba(255, 255, 255, 0.06);
 
   /* ===== 窗口系统 ===== */
-  --window-bg: rgba(250, 250, 252, 0.98);
-  --window-radius: 14px;
-  --window-border: rgba(225, 229, 235, 0.96);
-  --window-shadow: 0 20px 56px rgba(15, 23, 42, 0.18);
-  --window-shadow-active: 0 24px 64px rgba(15, 23, 42, 0.20);
+  --window-bg: var(--desktop-liquid-surface-strong);
+  --window-radius: 16px;
+  --window-border: rgba(255, 255, 255, 0.45);
+  --window-shadow: var(--desktop-liquid-shadow-soft);
+  --window-shadow-active: var(--desktop-liquid-shadow-strong);
   --window-min-width: 400px;
   --window-min-height: 260px;
-  --window-titlebar-height: 32px;
-  --window-titlebar-bg: linear-gradient(180deg, rgba(248, 248, 249, 0.98), rgba(240, 240, 242, 0.96));
-  --window-titlebar-active-bg: linear-gradient(180deg, rgba(251, 251, 252, 1), rgba(242, 242, 244, 0.98));
-  --window-titlebar-border: rgba(228, 228, 230, 0.96);
+  --window-titlebar-height: 36px;
+  --window-titlebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(241, 245, 249, 0.62));
+  --window-titlebar-active-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 246, 255, 0.68));
+  --window-titlebar-border: rgba(255, 255, 255, 0.36);
   --window-title-text: #374151;
   --window-content-bg: linear-gradient(180deg, #fcfcfd 0%, #ffffff 100%);
   --window-z-index: 5000;

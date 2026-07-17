@@ -125,6 +125,7 @@ def _poll_until_healthy(
                     logger.info(
                         "Model %s is healthy (HTTP %d)", record.name, resp.status_code
                     )
+                    _登记模型进程(record, launch_cmd or [])
                     return
             except (httpx.RequestError, httpx.TimeoutException):
                 pass
@@ -150,11 +151,35 @@ def _poll_until_healthy(
             time.sleep(interval)
 
 
+def _登记模型进程(record: ModelRecord, launch_cmd: list[str]) -> None:
+    """模型健康后,把端口后面的真身 PID 登记进全盘进程管理器(找bug用)。辅助,失败不拖垮启动。"""
+    try:
+        from app.services.process_registry import 同步登记
+        pids = _pids_on_port(record.port)
+        pid = pids[0] if pids else None
+        同步登记(
+            label=f"模型-{record.name}",
+            pid=pid,
+            kind="model",
+            source="model_watchdog",
+            command=" ".join(launch_cmd)[:4000],
+            note=f"port={record.port} screen=model_{record.name}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("登记模型进程失败 model=%s: %s", record.name, exc)
+
+
 def kill_model(record: ModelRecord) -> None:
     screen_session = f"model_{record.name}"
     _run_quiet(["screen", "-S", screen_session, "-X", "quit"], timeout=5)
     stopped_pids = _kill_processes_on_port(record.port)
     _run_quiet(["screen", "-wipe"], timeout=5)
+    try:
+        from app.services.process_registry import 同步注销
+        for pid in (stopped_pids or []):
+            同步注销(pid=pid, status="killed")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("注销模型进程失败 model=%s: %s", record.name, exc)
     logger.info(
         "Model %s stopped via screen session %s; port_pids=%s",
         record.name,

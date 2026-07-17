@@ -1,0 +1,20 @@
+{
+  "id": "msg_b2333229afc54b82b0bcfa7d6ea3de38",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "text",
+      "text": "探针成功"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 6523,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 6
+  }
+}

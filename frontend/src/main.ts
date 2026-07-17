@@ -12,6 +12,7 @@ import './styles/base.css'
 import './styles/layout.css'
 import './styles/common-components.css'
 import './styles/notice-panel.css'
+import './desktop/design-system/desktop-design-tokens.css'
 import './styles/desktop-shell.css'
 import './styles/login-page.css'
 

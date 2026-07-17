@@ -1,0 +1,26 @@
+{
+  "id": "8ca356c2-49cc-4fa9-92a9-4f8cef677b17",
+  "type": "message",
+  "role": "assistant",
+  "model": "deepseek-v4-flash",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "我们要求只回复四个字:探针成功。所以直接输出。",
+      "signature": "8ca356c2-49cc-4fa9-92a9-4f8cef677b17"
+    },
+    {
+      "type": "text",
+      "text": "探针成功"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 12,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 19,
+    "service_tier": "standard"
+  }
+}

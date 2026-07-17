@@ -75,6 +75,25 @@ async def lifespan(app: FastAPI):
         start_dispatcher()
         logger.info("Background task dispatcher started")
 
+    # 资源底座:后端常驻采样器,每5秒采整机CPU/内存/GPU落盘缓存,各进程读缓存(毫秒,收口散读)
+    try:
+        from app.services.resource_monitor import 启动采样器
+        启动采样器()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("资源底座采样器启动失败(降级各自现采): %s", exc)
+
+    # 全盘进程管理器:后端主进程自己先登记,再周期巡检对账把暴毙进程标 stale
+    try:
+        import os as _os
+
+        from app.services.process_registry import 注册进程
+        await 注册进程(
+            label="后端主进程", pid=_os.getpid(), kind="backend",
+            source="main", command="uvicorn app.main:app",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("后端主进程登记失败: %s", exc)
+
     # After modules are loaded, set up per-module file handlers
     from app.services.module_logger import setup_v2_loggers_for_modules
     setup_v2_loggers_for_modules()
@@ -103,7 +122,22 @@ async def lifespan(app: FastAPI):
     _model_idle_reaper_task = asyncio.create_task(idle_reaper_loop())
     app.state._model_idle_reaper_task = _model_idle_reaper_task
 
+    # 全盘进程管理器:每60秒巡检对账,把 pid已死/被回收复用/心跳超时的进程标 stale
+    async def _进程巡检loop():
+        from app.services.process_registry import 巡检对账
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await 巡检对账()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:  # noqa: BLE001
+                logger.warning("进程巡检loop错误: %s", e)
+    app.state._进程巡检task = asyncio.create_task(_进程巡检loop())
+
     yield
+    if hasattr(app.state, "_进程巡检task"):
+        app.state._进程巡检task.cancel()
     if hasattr(app.state, "_model_idle_reaper_task"):
         app.state._model_idle_reaper_task.cancel()
     if hasattr(app.state, "_event_retry_task"):

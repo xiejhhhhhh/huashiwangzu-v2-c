@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import AsyncSessionLocal, engine
 from app.models.system import SystemTaskQueue, TaskAttemptMetric
 from app.services.event_bus import append_event_in_transaction
+from app.services.process_registry import 注册进程, 注销进程
 
 logger = logging.getLogger("v2.task_dispatcher")
 
@@ -104,6 +105,7 @@ class ExecutorState:
     cpu_start_seconds: float | None
     io_start: tuple[int, int] | None
     last_heartbeat: datetime
+    reg_id: int | None = None
 
 
 _definitions: dict[str, TaskDefinition] = {}
@@ -403,6 +405,22 @@ def _task_stage(task: SystemTaskQueue) -> str:
 
 
 def _resource_snapshot() -> dict[str, Any]:
+    """整机资源:读资源底座缓存(毫秒,含GPU)。缓存无则 psutil 兜底(不卡在macmon)。"""
+    try:
+        from app.services.resource_monitor import 读缓存
+        snap = 读缓存(默认现采=False)
+        cpu = snap.get("cpu_percent")
+        if cpu is not None:
+            gpu_src = snap.get("gpu_source")
+            return {
+                "cpu_percent": float(cpu),
+                "memory_percent": float(snap.get("memory_percent") or 0.0),
+                "memory_available_mb": float(snap.get("memory_available_mb") or 0.0),
+                "gpu_memory_percent": snap.get("gpu_ram_percent"),
+                "gpu_confidence": "macmon" if gpu_src == "macmon" else "unknown",
+            }
+    except Exception:  # noqa: BLE001 缓存不可用退回现采
+        pass
     memory = psutil.virtual_memory()
     cpu_percent = psutil.cpu_percent(interval=None)
     return {
@@ -1037,6 +1055,15 @@ class TaskDispatcher:
                 .values(executor_pid=process.pid)
             )
             await db.commit()
+        reg = await 注册进程(
+            label=f"queue-{claim.task_type}-{claim.stage_key}",
+            pid=process.pid,
+            kind="queue",
+            source="task_dispatcher",
+            ref_id=claim.task_id,
+            command="app.task_worker_main --executor-task-id",
+        )
+        state.reg_id = reg.get("reg_id") if reg else None
 
     async def _reap_and_heartbeat(self, config: DispatcherConfig) -> None:
         now = _now()
@@ -1048,6 +1075,7 @@ class TaskDispatcher:
             if return_code is not None:
                 async with AsyncSessionLocal() as db:
                     await _mark_executor_exit(db, state, return_code)
+                await 注销进程(reg_id=state.reg_id, pid=state.process.pid, exit_code=return_code)
                 _active_executors.pop(task_id, None)
                 continue
             if (now - state.started_at).total_seconds() >= state.claim.timeout_seconds:
@@ -1060,6 +1088,7 @@ class TaskDispatcher:
                 await self._terminate_executor(state)
                 async with AsyncSessionLocal() as db:
                     await _mark_executor_exit(db, state, 124)
+                await 注销进程(reg_id=state.reg_id, pid=state.process.pid, status="killed", exit_code=124)
                 _active_executors.pop(task_id, None)
                 continue
             if (now - state.last_heartbeat).total_seconds() >= config.heartbeat_seconds:
@@ -1090,6 +1119,7 @@ class TaskDispatcher:
                         await db.commit()
                 if not renewed:
                     await self._terminate_executor(state)
+                    await 注销进程(reg_id=state.reg_id, pid=state.process.pid, status="killed")
                     _active_executors.pop(task_id, None)
 
     async def _terminate_executor(self, state: ExecutorState) -> None:
@@ -1143,6 +1173,8 @@ async def stop_dispatcher() -> None:
                     status="shutdown_requeue" if released else "fenced",
                     exit_code=state.process.returncode,
                 )
+                await 注销进程(reg_id=state.reg_id, pid=state.process.pid, status="killed",
+                             exit_code=state.process.returncode)
             await db.commit()
     _active_executors.clear()
 

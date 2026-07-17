@@ -1,3 +1,4 @@
+from .anthropic import AnthropicAdapter
 from .base import GemmaAdapter, ModelAdapter, OpenAICompatAdapter, QwenAdapter
 from .deepseek import DeepSeekAdapter
 
@@ -35,6 +36,7 @@ ADAPTER_REGISTRY: dict[str, type[ModelAdapter]] = {
     "gemma-4": GemmaAdapter,
     "qwen-72b": QwenAdapter,
     "qwen2.5-14b": QwenAdapter,
+    "claude": AnthropicAdapter,
     "__default__": OpenAICompatAdapter,
 }
 

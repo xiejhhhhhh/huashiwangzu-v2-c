@@ -1,6 +1,31 @@
 <template>
   <div ref="desktopContainerRef" class="desktop-shell-container" @contextmenu.prevent="handleDesktopContextMenu" @mousedown="handleDesktopMouseDown" @dragover.prevent="onDragEnter" @dragleave.prevent="onDragLeave" @drop.prevent="onDrop">
     <div class="desktop-shell-wallpaper" :style="{ backgroundImage: `url(${wallpaper})` }" />
+    <svg class="desktop-liquid-filter" width="0" height="0" aria-hidden="true" focusable="false">
+      <defs>
+        <filter id="desktop-liquid-refraction" x="-6%" y="-6%" width="112%" height="112%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.012 0.018" numOctaves="2" seed="9" result="noise" />
+          <feGaussianBlur in="noise" stdDeviation="2.2" result="softNoise" />
+          <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="10" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+      </defs>
+    </svg>
+    <div class="desktop-menubar" @mousedown.stop>
+      <div class="desktop-menubar-left" aria-label="桌面菜单">
+        <span class="desktop-menubar-brand">华世王镞</span>
+        <span class="desktop-menubar-app">{{ activeMenuTitle }}</span>
+        <span class="desktop-menubar-item">文件</span>
+        <span class="desktop-menubar-item">编辑</span>
+        <span class="desktop-menubar-item">查看</span>
+        <span class="desktop-menubar-item">窗口</span>
+        <span class="desktop-menubar-item">帮助</span>
+      </div>
+      <div class="desktop-menubar-right" aria-label="桌面状态">
+        <span class="desktop-menubar-status-dot" aria-hidden="true" />
+        <span class="desktop-menubar-user">{{ desktopUserName }}</span>
+        <span class="desktop-menubar-clock">{{ menuClock }}</span>
+      </div>
+    </div>
     <div class="desktop-shell-icon-layer">
       <component :is="desktopIconGrid" :app-list="desktopAppList" :file-list="desktopFileList" @openApp="handleOpenApp" @openFile="openDesktopEntry" @app-context-menu="handleAppContextMenu" @file-context-menu="handleFileContextMenu" @move-to-folder="handleIconMoveToFolder" @drop-on-window="handleDropOnWindow" />
       <SelectionBox />
@@ -88,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineAsyncComponent, ref, computed, unref, watch } from 'vue'
+import { defineAsyncComponent, ref, computed, unref, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
@@ -144,10 +169,31 @@ const { registerAllApps } = useCommandRegistry(handleOpenApp, handleLauncherComm
 
 const showLauncher = ref(false); const showRightSidebar = ref(false); const rightSidebarAppKey = ref('desktop')
 const canWrite = computed(() => canBusinessWrite.value)
+const activeMenuTitle = computed(() => windowManager.windows.find(w => w.isActive && !w.minimized)?.title || '桌面')
+const desktopUserName = computed(() => userStore.userInfo?.displayName || '用户')
+const menuClock = ref('')
+let menuClockTimer: ReturnType<typeof window.setInterval> | undefined
 
-const wallpaper = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0f172a"/><stop offset="50%" stop-color="#1d4ed8"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient><radialGradient id="r" cx="30%" cy="20%" r="60%"><stop offset="0%" stop-color="rgba(191,219,254,0.35)"/><stop offset="100%" stop-color="rgba(15,23,42,0)"/></radialGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><rect width="100%" height="100%" fill="url(#r)"/></svg>')
+const wallpaper = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000"><defs><linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#082f49"/><stop offset=".42" stop-color="#0f766e"/><stop offset=".72" stop-color="#2563eb"/><stop offset="1" stop-color="#312e81"/></linearGradient><radialGradient id="sun" cx=".18" cy=".22" r=".42"><stop offset="0" stop-color="#fde68a" stop-opacity=".9"/><stop offset=".44" stop-color="#fb923c" stop-opacity=".28"/><stop offset="1" stop-color="#fb923c" stop-opacity="0"/></radialGradient><radialGradient id="water" cx=".72" cy=".62" r=".58"><stop offset="0" stop-color="#67e8f9" stop-opacity=".62"/><stop offset=".54" stop-color="#0ea5e9" stop-opacity=".24"/><stop offset="1" stop-color="#020617" stop-opacity="0"/></radialGradient><filter id="grain"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="8"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="table" tableValues="0 .07"/></feComponentTransfer></filter></defs><rect width="1600" height="1000" fill="url(#sky)"/><rect width="1600" height="1000" fill="url(#sun)"/><rect width="1600" height="1000" fill="url(#water)"/><path d="M0 710 C260 560 440 820 710 640 C980 460 1200 660 1600 520 L1600 1000 L0 1000 Z" fill="#031525" opacity=".38"/><path d="M0 780 C310 700 510 920 780 760 C1050 600 1320 760 1600 620 L1600 1000 L0 1000 Z" fill="#e0f2fe" opacity=".12"/><rect width="1600" height="1000" filter="url(#grain)"/></svg>')
+
+function updateMenuClock() {
+  const now = new Date()
+  const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+  const hour = String(now.getHours()).padStart(2, '0')
+  const minute = String(now.getMinutes()).padStart(2, '0')
+  menuClock.value = `${now.getMonth() + 1}月${now.getDate()}日 ${weekdays[now.getDay()]} ${hour}:${minute}`
+}
 
 watch(allAppList, apps => registerAllApps(apps), { immediate: true })
+
+onMounted(() => {
+  updateMenuClock()
+  menuClockTimer = window.setInterval(updateMenuClock, 30_000)
+})
+
+onUnmounted(() => {
+  if (menuClockTimer !== undefined) window.clearInterval(menuClockTimer)
+})
 
 function getSourceFolderId(key: string): number | null {
   const el = document.querySelector(`[data-selection-key="${key}"]`)
@@ -399,8 +445,8 @@ function handleIconMoveToFolder(keys: string[], folderKey: string) {
   // folderKey 格式为 "file:{id}"，提取 folderId
   const colonIdx = folderKey.indexOf(':')
   if (colonIdx === -1) return
-  const targetFolderId = Number(folderKey.slice(colonIdx + 1))
-  if (!Number.isFinite(targetFolderId)) return
+  const targetFolderId = folderKey.slice(colonIdx + 1)
+  if (!Number.isFinite(Number(targetFolderId))) return
   emit('desktop:move-to-folder', { ids: keys, targetFolderId })
 }
 
@@ -408,7 +454,8 @@ function handleDropOnWindow(keys: string[], windowId: string) {
   // 从窗口ID找到对应窗口的payload（获取目标文件夹ID）
   const w = windowManager.windows.find(x => x.id === windowId)
   if (!w) return
-  const targetFolderId = w.payload?.folderId as number | null ?? null
+  const rawFolderId = w.payload?.folderId as number | string | null | undefined
+  const targetFolderId = rawFolderId === null || rawFolderId === undefined ? null : String(rawFolderId)
   // 触发和拖到文件夹图标相同的事件
   emit('desktop:move-to-folder', { ids: keys, targetFolderId })
 }

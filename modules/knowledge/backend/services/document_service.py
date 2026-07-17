@@ -346,6 +346,47 @@ async def enqueue_pipeline_task(
     }
 
 
+async def _enqueue_resume_stage(db: AsyncSession, doc, user_id: int, *, priority: int = 5) -> dict:
+    """按文档当前缺口选起始阶段补投，而非一律从 source_validate 全量重跑。
+
+    根治续跑断裂僵尸债：管线纯事件驱动，fusion done 后 profile/graph 若历史中断则永久卡住
+    （fusion 已 done 无法重投触发，从 source_validate 重跑又被 pdf 的 parse degraded 门槛挡在
+    _ready_for_fusion 外，到不了 fusion 后的 profile+graph 投递）。这里直接从缺口阶段补投。
+    - fusion done 但 profile/graph 没跑完 → 直接投 profile+graph（绕过前置门槛，allow_degraded_parse）
+    - raw done 但 fusion 没跑 → 投 fusion（允许 degraded parse，pdf 扫描件 parse 常 degraded）
+    - 其余 → 从 source_validate 完整跑
+    """
+    from .pipeline_service import enqueue_pipeline_stage_task
+
+    fusion_done = getattr(doc, "fusion_status", "pending") == "done"
+    raw_done = getattr(doc, "raw_status", "pending") == "done"
+    profile_done = getattr(doc, "profile_status", "pending") == "done"
+    graph_done = getattr(doc, "graph_status", "pending") == "done"
+
+    if fusion_done and not (profile_done and graph_done):
+        infos = []
+        if not profile_done:
+            infos.append(await enqueue_pipeline_stage_task(
+                db, doc, user_id, "profile", priority=6,
+                allow_degraded_parse=True, trigger="knowledge.gap_autofill"))
+        if not graph_done:
+            infos.append(await enqueue_pipeline_stage_task(
+                db, doc, user_id, "graph", priority=6,
+                allow_degraded_parse=True, trigger="knowledge.gap_autofill"))
+        enq = next((i for i in infos if i.get("enqueued")), None)
+        if enq:
+            return enq
+        if infos:
+            return infos[0]
+
+    if raw_done and not fusion_done:
+        return await enqueue_pipeline_stage_task(
+            db, doc, user_id, "fusion", priority=7,
+            allow_degraded_parse=True, trigger="knowledge.gap_autofill")
+
+    return await enqueue_pipeline_task(db, doc, user_id, priority=priority)
+
+
 async def enqueue_incomplete_documents(
     db: AsyncSession,
     owner_id: int,
@@ -508,7 +549,7 @@ async def enqueue_incomplete_documents(
             continue
         candidates.append(item)
         if not dry_run:
-            task_info = await enqueue_pipeline_task(
+            task_info = await _enqueue_resume_stage(
                 db,
                 doc,
                 owner_id,

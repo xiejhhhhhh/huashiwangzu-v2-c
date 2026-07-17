@@ -23,6 +23,25 @@ ENTITY_PAGE_CONCURRENCY = 6
 GRAPH_WRITE_COMMIT_EVERY = 50
 
 
+def _规范实体列表(items) -> list[dict]:
+    """把模型返回的实体列表规范成 list[dict]。
+
+    根治 `'str' object has no attribute 'get'`:模型(deepseek/gpt)偶尔不听话,
+    entities 里混入 str(纯实体名)或其他类型,下游 ent.get("name") 就抛异常 →
+    被熔断层误判成"模型降级链耗尽"→ 暂停整条管线(今日 219 卡死元凶)。
+    这里在源头收口:str 包装成 {name}, dict 原样, 其他给空壳。长度不变(保 entity_page 索引对齐)。
+    """
+    out: list[dict] = []
+    for it in (items or []):
+        if isinstance(it, dict):
+            out.append(it)
+        elif isinstance(it, str):
+            out.append({"name": it.strip(), "category": "通用"})
+        else:
+            out.append({"name": "", "category": "通用"})
+    return out
+
+
 def _graph_write_commit_every() -> int:
     """Resolve graph write batch size from hot JSON config."""
     return resolve_knowledge_concurrency(
@@ -209,7 +228,7 @@ async def process_document_entities(
         page_model_used[page] = model_used_from_result(result) or _model_used_from_diagnostics(
             page_model_diagnostics[page]
         )
-        all_entities.extend(result.get("entities", []))
+        all_entities.extend(_规范实体列表(result.get("entities", [])))
         all_relationships.extend(result.get("relationships", []))
         stats["errors"].extend(result.get("errors", []))
         if result.get("model_degraded"):
@@ -519,7 +538,7 @@ async def process_document_entities_from_fusions(
         page = int(item["page"])
         result = item["result"]
         page_durations[page] = int(item.get("duration_ms") or 0)
-        page_ents = result.get("entities", [])
+        page_ents = _规范实体列表(result.get("entities", []))
         page_model_diagnostics[page] = result.get("model_diagnostics")
         page_model_used[page] = model_used_from_result(result) or _model_used_from_diagnostics(
             page_model_diagnostics[page]

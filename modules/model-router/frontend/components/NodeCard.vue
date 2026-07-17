@@ -141,9 +141,9 @@ async function handleSave() {
   try {
     const payload: NodeUpdatePayload = {
       profile_key: form.profile_key,
-      temperature: form.temperature,
-      max_tokens: form.max_tokens,
-      context_budget: form.context_budget,
+      temperature: form.temperature ?? undefined,
+      max_tokens: form.max_tokens ?? undefined,
+      context_budget: form.context_budget ?? undefined,
       fallback_chain: form.fallback_chain,
     }
     const updated = await api.nodes.update(props.node.id, payload)
