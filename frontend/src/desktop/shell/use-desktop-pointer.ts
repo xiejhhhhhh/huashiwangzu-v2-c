@@ -64,8 +64,9 @@ export function useDesktopPointer() {
   const { emit } = useDesktopEventBus()
 
   function handleDesktopMouseDown(e: MouseEvent) {
-    if (e.target !== e.currentTarget) return
-    if (!e.ctrlKey) clearSelection()
+    const target = e.target as HTMLElement | null
+    if (target?.closest('.desktop-icon-item, .desktop-window, .mac-menu-bar, .mac-dock, .v40-ctx-menu, .v40-ctx-sub')) return
+    if (!e.ctrlKey && !e.metaKey) clearSelection()
     startBoxSelection(e.clientX, e.clientY)
   }
 

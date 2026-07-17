@@ -159,13 +159,13 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
 }
 .taskbar-notifications-button {
   position: relative;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 22px;
   border: 1px solid transparent;
   background: transparent;
-  color: #dbeafe;
+  color: inherit;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 5px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -184,10 +184,10 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
   box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.36);
 }
 .taskbar-notifications-button:hover {
-  background: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.2);
   border-color: rgba(255,255,255,.14);
   opacity: 1;
-  transform: translateY(-1px);
+  transform: none;
 }
 .taskbar-notifications-button:focus-visible {
   outline: 2px solid rgba(191, 219, 254, .9);
@@ -218,17 +218,18 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
 }
 .taskbar-notifications-button.status-processing::after { background: #38bdf8; }
 .taskbar-notifications-panel {
-  position: absolute;
-  bottom: 44px;
-  right: 0;
+  position: fixed;
+  top: 30px;
+  right: 8px;
+  bottom: auto;
   width: min(380px, calc(100vw - 24px));
   max-height: min(560px, calc(100vh - 72px));
   overflow-y: auto;
-  background: rgba(248, 250, 252, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 12px;
-  box-shadow: 0 22px 70px rgba(15,23,42,0.36), 0 0 0 1px rgba(15,23,42,0.08);
-  backdrop-filter: blur(22px);
-  z-index: 11000;
+  background: var(--desktop-material-popover);
+  border: 1px solid var(--desktop-material-border);
+  border-radius: var(--desktop-radius-popover);
+  box-shadow: var(--desktop-shadow-popover);
+  backdrop-filter: blur(24px) saturate(160%);
+  z-index: var(--z-system-popover);
 }
 </style>

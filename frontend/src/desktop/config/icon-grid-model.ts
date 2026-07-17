@@ -65,7 +65,7 @@ function occupiedSet(excludeKeys?: string[]): Set<string> {
 // 网格度量计算
 // ═══════════════════════════════════════════════════
 
-const GRID_PADDING_X = 14
+const GRID_PADDING_X = 18
 const GRID_PADDING_Y = 14
 
 /**
@@ -83,7 +83,7 @@ export function computeGridMetrics(containerWidth: number, containerHeight: numb
   const rows = Math.max(1, Math.floor(availableHeight / cellHeight))
 
   return {
-    originX: GRID_PADDING_X,
+    originX: Math.max(GRID_PADDING_X, containerWidth - GRID_PADDING_X - ((cols - 1) * cellWidth + sizeData.width)),
     originY: GRID_PADDING_Y,
     cellWidth,
     cellHeight,
@@ -148,19 +148,19 @@ export function findNearestFreeCell(
 }
 
 /**
- * 自动排列：按序分配格子（列优先，从上到下再换列，模仿Windows）
+ * 自动排列：从右上开始，按列从上到下，再向左换列。
  */
 export function autoArrangePositions(keys: string[], metrics: GridMetrics): Record<string, GridCell> {
   const result: Record<string, GridCell> = {}
   let row = 0
-  let col = 0
+  let col = metrics.cols - 1
   for (const key of keys) {
     result[key] = { row, col }
     row++
     if (row >= metrics.rows) {
       row = 0
-      col++
-      if (col >= metrics.cols) col = metrics.cols - 1
+      col--
+      if (col < 0) col = 0
     }
   }
   return result

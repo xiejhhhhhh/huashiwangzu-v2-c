@@ -372,7 +372,7 @@ onUnmounted(() => {
 }
 
 .desktop-window-maximized {
-  border-radius: 0 0 0 0 !important;
+  border-radius: var(--window-maximized-radius) !important;
 }
 
 /* ═══ 拖拽时禁用过渡 ═══ */

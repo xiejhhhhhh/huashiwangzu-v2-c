@@ -27,7 +27,7 @@ sub_router = APIRouter()
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 10
-    use_rerank: bool = False
+    use_rerank: bool = True  # 默认开重排:rerank()是真bge-reranker,之前默认关导致召回不精
     embedding_profile: str | None = None
 
 

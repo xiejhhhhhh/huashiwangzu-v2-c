@@ -75,6 +75,7 @@ export function useIconGridDrag(
   let grabOffsetX = 0
   let grabOffsetY = 0
   let ghostEl: HTMLElement | null = null
+  let highlightedWindow: HTMLElement | null = null
   /** 记录哪些格子上有文件夹 */
   let folderCellMap: Map<string, string> = new Map()
 
@@ -147,11 +148,13 @@ export function useIconGridDrag(
     // 先检测是否拖到了打开的窗口上（优先级高于网格格子）
     const windowEl = detectWindowAtPoint(clientX, clientY)
     if (windowEl) {
+      setHighlightedWindow(windowEl)
       state.hoverWindowId = windowEl.getAttribute('data-window-id') || windowEl.closest('.desktop-window')?.getAttribute('data-window-id') || null
       state.targetCell = null
       state.highlightFolderKey = null
       return
     }
+    setHighlightedWindow(null)
     state.hoverWindowId = null
 
     // 计算目标格子
@@ -252,6 +255,7 @@ export function useIconGridDrag(
     state.targetCell = null
     state.highlightFolderKey = null
     state.hoverWindowId = null
+    setHighlightedWindow(null)
 
     emit.onDragEnd(result)
   }
@@ -300,9 +304,17 @@ export function useIconGridDrag(
     }
   }
 
+  function setHighlightedWindow(windowEl: HTMLElement | null): void {
+    if (highlightedWindow === windowEl) return
+    highlightedWindow?.classList.remove('desktop-window-drop-target')
+    highlightedWindow = windowEl
+    highlightedWindow?.classList.add('desktop-window-drop-target')
+  }
+
   // 组件卸载时清理
   onUnmounted(() => {
     removeGhost()
+    setHighlightedWindow(null)
     document.body.classList.remove('desktop-grid-dragging')
   })
 

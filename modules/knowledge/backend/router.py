@@ -307,6 +307,8 @@ async def _cap_search(params: dict, caller: str) -> dict:
     top_k = int(params.get("top_k", 10) or 10)
     embedding_profile = params.get("embedding_profile")
     embedding_profile = str(embedding_profile).strip() if embedding_profile else None
+    # 重排默认开(bge-reranker真重排):Agent检索走这条路,之前硬编码False导致召回不精
+    use_rerank = bool(params.get("use_rerank", True))
     if not query:
         raise ValueError("query is required")
     async with AsyncSessionLocal() as db:
@@ -315,7 +317,7 @@ async def _cap_search(params: dict, caller: str) -> dict:
             query,
             owner_id,
             top_k=top_k,
-            use_rerank=False,
+            use_rerank=use_rerank,
             embedding_profile=embedding_profile,
         )
         enriched, context_data = await _enrich_search_results(

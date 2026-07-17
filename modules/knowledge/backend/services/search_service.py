@@ -29,6 +29,9 @@ DOCUMENT_SEARCH_MAX_CANDIDATES = 200
 QUERY_PLAN_TIMEOUT_SECONDS = 8.0
 QUERY_PLAN_MAX_TERMS = 16
 RETRIEVAL_SCORE_VERSION = "kb_retrieval_score_v1"
+# 重排分阈值:bge-reranker输出0~1,低于此分视为不相关砍掉。保守取0.3宁多留不错杀。
+# 只在真跑了重排时按此过滤(rerank分有明确量纲);没跑重排不按此砍(RRF融合分量纲不同)。
+RERANK_SCORE_THRESHOLD = 0.3
 MODEL_WARM_THRESHOLD_MS = 1500.0
 MODEL_COLD_THRESHOLD_MS = 3000.0
 LEGACY_CHUNK_EMBEDDING_PROFILE = "bge-m3"
@@ -548,6 +551,38 @@ async def _load_entity_idf_table(
             for name, cat, df in result.all()
             if str(name or "").strip()
         ]
+        # 别名接入(同义词命中的关键):别名文本也可被查询命中,但原名映射回规范实体名,
+        # 沿用规范实体的 category/df(权重量纲一致)。用户用别名提问 → 命中 → 下游检索词用规范名。
+        seen_norm = {p[0] for p in pairs}
+        try:
+            alias_result = await db.execute(
+                sa_text(
+                    """
+                    WITH ef AS (
+                        SELECT entity_id, count(DISTINCT document_id) AS df
+                        FROM kb_chunk_entities
+                        WHERE owner_id = :owner_id
+                        GROUP BY entity_id
+                    )
+                    SELECT a.alias, ed.name, ed.category, COALESCE(ef.df, 0) AS df
+                    FROM kb_entity_aliases a
+                    JOIN kb_entity_dictionary ed ON ed.id = a.entity_id
+                    LEFT JOIN ef ON ef.entity_id = a.entity_id
+                    WHERE a.owner_id = :owner_id
+                      AND ed.status IN ('candidate', 'confirmed')
+                      AND a.alias <> ''
+                    """
+                ),
+                {"owner_id": owner_id},
+            )
+            for alias, canon_name, cat, df in alias_result.all():
+                norm_alias = _normalize_term_text(str(alias))
+                if not norm_alias or norm_alias in seen_norm or not str(canon_name or "").strip():
+                    continue
+                seen_norm.add(norm_alias)
+                pairs.append((norm_alias, str(canon_name), str(cat or "通用"), int(df or 0)))
+        except Exception as alias_exc:  # noqa: BLE001
+            logger.warning("Entity alias load failed (non-fatal): %s", alias_exc)
         doc_count_row = await db.execute(
             sa_text("SELECT count(*) FROM kb_documents WHERE owner_id = :owner_id AND deleted IS FALSE"),
             {"owner_id": owner_id},
@@ -2326,11 +2361,13 @@ async def hybrid_search(
         len(doc_results), len(structured_results), len(kw_results), len(vec_results),
         len(results), len(results),
     )
+    reranked_ran = False
     if use_rerank and results:
         stage_started_at = time.perf_counter()
         try:
             docs = [r["text"] for r in results]
             reranked = await rerank(query, docs, top_k=top_k)
+            reranked_ran = True
             rerank_duration_ms = _elapsed_ms(stage_started_at)
             diagnostics.model_node("rerank", used=True, duration_ms=rerank_duration_ms)
             rerank_map = {}
@@ -2362,6 +2399,19 @@ async def hybrid_search(
         diagnostics.skipped("rerank", reason)
         diagnostics.model_node("rerank", used=False, status="skipped", reason=reason)
 
+    # 重排分阈值过滤:只在真跑了重排时按分砍(量纲明确),砍掉低相关噪音,精度优先。
+    # 兜底:若全被砍光则退回原序top_k,不返空。
+    if reranked_ran:
+        before_n = len(results)
+        kept = [r for r in results if (r.get("rerank_score") or 0) >= RERANK_SCORE_THRESHOLD]
+        if kept:
+            results = kept
+        diagnostics.stage(
+            "rerank_threshold_filter",
+            result_count=len(results),
+            threshold=RERANK_SCORE_THRESHOLD,
+            filtered_out=before_n - len(results),
+        )
     final_results = results[:top_k]
     return SearchResults(
         final_results,

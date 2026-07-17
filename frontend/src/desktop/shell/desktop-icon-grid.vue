@@ -19,7 +19,10 @@
       @mousedown.stop="handleIconMouseDown(`app:${app.appKey}`, $event)"
       @click="handleAppClick(app.appKey, $event)"
       @dblclick="$emit('openApp', app.appKey)"
-      @contextmenu.prevent.stop="$emit('app-context-menu', app.appKey, $event)"
+      tabindex="0"
+      role="button"
+      @keydown.enter.prevent="$emit('openApp', app.appKey)"
+      @contextmenu.prevent.stop="handleAppContextMenu(app.appKey, $event)"
     >
       <div class="desktop-icon-image" :style="iconImageStyle">
         <AppIcon :icon="app.icon" :size="currentIconImageSize" />
@@ -42,7 +45,10 @@
       @mousedown.stop="handleIconMouseDown(`file:${file.id}`, $event)"
       @click="handleFileClick(file, $event)"
       @dblclick="$emit('openFile', file)"
-      @contextmenu.prevent.stop="$emit('file-context-menu', file, $event)"
+      tabindex="0"
+      role="button"
+      @keydown.enter.prevent="$emit('openFile', file)"
+      @contextmenu.prevent.stop="handleFileContextMenu(file, $event)"
     >
       <div class="desktop-icon-image" :style="iconImageStyle">
         <FileVisualIcon
@@ -65,7 +71,7 @@ import type { FileEntry } from '@/shared/api/types'
 import type { GridMetrics, GridCell } from '@/desktop/config/icon-grid-model'
 import AppIcon from '@/desktop/components/app-icon.vue'
 import FileVisualIcon from '@/shared/components/file-visual-icon.vue'
-import { isSelected, select, appendSelection, selectedIds } from '@/desktop/selection/desktop-selection-state'
+import { isSelected, select, toggleSelection, selectedIds } from '@/desktop/selection/desktop-selection-state'
 import { formatFileDisplayName } from '@/shared/files/display-name'
 import { desktopConfig, ICON_SIZE_MAP } from '@/desktop/config/desktop-preferences'
 import {
@@ -169,21 +175,18 @@ const allIconKeys = computed(() => {
 function ensureAllPositioned(): void {
   const m = metrics.value
   if (!m) return
+  if (desktopConfig.iconLayout === 'auto-arrange') {
+    setPositions(autoArrangePositions(allIconKeys.value, m))
+    return
+  }
   const unpositioned: string[] = []
   for (const key of allIconKeys.value) {
     if (!getPosition(key)) unpositioned.push(key)
   }
   if (unpositioned.length > 0) {
-    if (desktopConfig.iconLayout === 'auto-arrange') {
-      // 自动排列所有图标（包括已有位置的，重新分配）
-      const arranged = autoArrangePositions(allIconKeys.value, m)
-      setPositions(arranged)
-    } else {
-      // 自由模式：只给未注册的找空位
-      for (const key of unpositioned) {
-        const cell = findNearestFreeCell({ row: 0, col: 0 }, m, [key])
-        setPosition(key, cell)
-      }
+    for (const key of unpositioned) {
+      const cell = findNearestFreeCell({ row: 0, col: m.cols - 1 }, m, [key])
+      setPosition(key, cell)
     }
   }
 }
@@ -323,7 +326,7 @@ function handleIconMouseDown(key: string, e: MouseEvent): void {
 function handleAppClick(appKey: string, e: MouseEvent): void {
   if (suppressNextClick) { suppressNextClick = false; return }
   const key = `app:${appKey}`
-  if (e.ctrlKey || e.metaKey) { appendSelection(key); return }
+  if (e.ctrlKey || e.metaKey) { toggleSelection(key); return }
   if (isSelected(key)) return
   select(key)
 }
@@ -331,13 +334,25 @@ function handleAppClick(appKey: string, e: MouseEvent): void {
 function handleFileClick(file: FileEntry, e: MouseEvent): void {
   if (suppressNextClick) { suppressNextClick = false; return }
   const key = `file:${file.id}`
-  if (e.ctrlKey || e.metaKey) { appendSelection(key); return }
+  if (e.ctrlKey || e.metaKey) { toggleSelection(key); return }
   if (isSelected(key)) return
   select(key)
 }
 
 function getFileName(file: FileEntry): string {
   return file.is_folder ? String(file.file_name || '') : formatFileDisplayName(file.file_name, file.format)
+}
+
+function handleAppContextMenu(appKey: string, event: MouseEvent) {
+  const key = `app:${appKey}`
+  if (!isSelected(key)) select(key)
+  emit('app-context-menu', appKey, event)
+}
+
+function handleFileContextMenu(file: FileEntry, event: MouseEvent) {
+  const key = `file:${file.id}`
+  if (!isSelected(key)) select(key)
+  emit('file-context-menu', file, event)
 }
 
 // ═══════════════════════════════════════════════════

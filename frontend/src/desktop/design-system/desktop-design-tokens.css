@@ -3,6 +3,45 @@
 /* 业务模块内容区请使用主题.css 的基础变量 */
 
 :root {
+  /* ===== macOS Shell Contract ===== */
+  --desktop-menu-bar-height: 24px;
+  --desktop-dock-height: 62px;
+  --desktop-dock-padding: 7px;
+  --desktop-dock-bottom-gap: 10px;
+  --desktop-work-bottom-inset: 80px;
+  --desktop-system-blue: #0a84ff;
+  --desktop-selection: #0a84ff;
+  --desktop-ink: rgba(20, 20, 22, 0.88);
+  --desktop-ink-muted: rgba(60, 60, 67, 0.62);
+  --desktop-wallpaper-ink: rgba(255, 255, 255, 0.96);
+  --desktop-divider: rgba(60, 60, 67, 0.18);
+  --desktop-material-border: rgba(255, 255, 255, 0.42);
+  --desktop-material-menubar: rgba(235, 241, 244, 0.24);
+  --desktop-material-dock: rgba(238, 244, 247, 0.28);
+  --desktop-material-popover: rgba(245, 245, 247, 0.86);
+  --desktop-material-window: rgba(239, 239, 241, 0.96);
+  --desktop-shadow-dock: inset 1px 1px 0 rgba(255,255,255,.52), inset 0 0 0 .5px rgba(255,255,255,.18), 0 12px 32px rgba(0,0,0,.24);
+  --desktop-shadow-window: 0 24px 72px rgba(0,0,0,.34), 0 2px 12px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.2);
+  --desktop-shadow-window-inactive: 0 14px 42px rgba(0,0,0,.22), 0 1px 6px rgba(0,0,0,.12);
+  --desktop-shadow-popover: 0 18px 48px rgba(0,0,0,.28), 0 0 0 .5px rgba(0,0,0,.14);
+  --desktop-radius-control: 6px;
+  --desktop-radius-menu: 10px;
+  --desktop-radius-popover: 12px;
+  --desktop-radius-window: 16px;
+  --desktop-font-menu: 600 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --desktop-font-body: 400 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --desktop-font-caption: 400 11px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --desktop-duration-fast: 130ms;
+  --desktop-duration-standard: 210ms;
+  --desktop-duration-window: 280ms;
+  --desktop-ease-standard: cubic-bezier(.32,.72,0,1);
+  --desktop-ease-spring: cubic-bezier(.34,1.35,.44,1);
+  --z-menu-bar: 12000;
+  --z-dock: 11000;
+  --z-launchpad: 14000;
+  --z-spotlight: 15000;
+  --z-system-popover: 16000;
+
   /* ===== 桌面背景系统 ===== */
   --desktop-bg-gradient-start: #0f172a;
   --desktop-bg-gradient-middle: #1d4ed8;
@@ -29,13 +68,13 @@
   --desktop-liquid-surface-dark: rgba(15, 23, 42, 0.42);
   --desktop-liquid-text-on-wallpaper: rgba(248, 250, 252, 0.94);
   --desktop-liquid-text-muted: rgba(226, 232, 240, 0.74);
-  --desktop-liquid-accent: #0ea5e9;
+  --desktop-liquid-accent: var(--desktop-system-blue);
   --desktop-ease-ios: cubic-bezier(.32, .72, 0, 1);
   --desktop-ease-out-strong: cubic-bezier(.23, 1, .32, 1);
   --desktop-ease-spring: cubic-bezier(.34, 1.35, .44, 1);
 
   /* ===== 任务栏 ===== */
-  --taskbar-height: 58px;
+  --taskbar-height: var(--desktop-dock-height);
   --taskbar-bg: rgba(248, 250, 252, 0.26);
   --taskbar-blur: var(--desktop-liquid-blur-medium);
   --taskbar-text: #eff6ff;
@@ -49,30 +88,30 @@
   --launcher-bg: rgba(32, 32, 36, 0.96);
   --launcher-blur: 24px;
   --launcher-border: rgba(255, 255, 255, 0.08);
-  --launcher-radius: 8px;
+  --launcher-radius: 18px;
   --launcher-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
-  --launcher-width: 304px;
+  --launcher-width: 1040px;
   --launcher-max-height: 540px;
   --launcher-z-index: 9000;
   --launcher-text: #e2e8f0;
   --launcher-search-bg: rgba(255, 255, 255, 0.06);
 
   /* ===== 窗口系统 ===== */
-  --window-bg: var(--desktop-liquid-surface-strong);
-  --window-radius: 16px;
-  --window-border: rgba(255, 255, 255, 0.45);
-  --window-shadow: var(--desktop-liquid-shadow-soft);
-  --window-shadow-active: var(--desktop-liquid-shadow-strong);
+  --window-bg: var(--desktop-material-window);
+  --window-radius: var(--desktop-radius-window);
+  --window-border: rgba(0, 0, 0, 0.2);
+  --window-shadow: var(--desktop-shadow-window-inactive);
+  --window-shadow-active: var(--desktop-shadow-window);
   --window-min-width: 400px;
   --window-min-height: 260px;
-  --window-titlebar-height: 36px;
-  --window-titlebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(241, 245, 249, 0.62));
-  --window-titlebar-active-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 246, 255, 0.68));
-  --window-titlebar-border: rgba(255, 255, 255, 0.36);
+  --window-titlebar-height: 44px;
+  --window-titlebar-bg: rgba(232, 232, 234, 0.96);
+  --window-titlebar-active-bg: rgba(239, 239, 241, 0.98);
+  --window-titlebar-border: rgba(60, 60, 67, 0.16);
   --window-title-text: #374151;
   --window-content-bg: linear-gradient(180deg, #fcfcfd 0%, #ffffff 100%);
   --window-z-index: 5000;
-  --window-maximized-radius: 10px 10px 0 0;
+  --window-maximized-radius: 14px;
 
   /* ===== 交通灯按钮 ===== */
   --window-close-color: #ff5f57;
@@ -84,18 +123,18 @@
   --window-button-size: 12px;
 
   /* ===== 右键菜单（深色主题） ===== */
-  --context-menu-bg: rgba(30, 30, 36, 0.96);
+  --context-menu-bg: var(--desktop-material-popover);
   --context-menu-blur: 18px;
-  --context-menu-border: rgba(55, 58, 64, 0.92);
-  --context-menu-radius: 11px;
-  --context-menu-shadow: 0 14px 38px rgba(15, 23, 42, 0.16);
+  --context-menu-border: var(--desktop-material-border);
+  --context-menu-radius: var(--desktop-radius-menu);
+  --context-menu-shadow: var(--desktop-shadow-popover);
   --context-menu-z-index: 99999;
   --context-menu-min-width: 196px;
-  --context-menu-text: #e2e8f0;
-  --context-menu-hover-bg: rgba(59, 130, 246, 0.16);
-  --context-menu-danger-text: #f87171;
-  --context-menu-disabled-text: #6b7280;
-  --context-menu-divider: rgba(75, 78, 85, 0.9);
+  --context-menu-text: var(--desktop-ink);
+  --context-menu-hover-bg: var(--desktop-selection);
+  --context-menu-danger-text: #ff3b30;
+  --context-menu-disabled-text: rgba(60,60,67,.36);
+  --context-menu-divider: var(--desktop-divider);
 
   /* ===== 托盘 ===== */
   --tray-button-size: 24px;

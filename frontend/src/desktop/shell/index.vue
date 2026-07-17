@@ -10,22 +10,22 @@
         </filter>
       </defs>
     </svg>
-    <div class="desktop-menubar" @mousedown.stop>
-      <div class="desktop-menubar-left" aria-label="桌面菜单">
-        <span class="desktop-menubar-brand">华世王镞</span>
-        <span class="desktop-menubar-app">{{ activeMenuTitle }}</span>
-        <span class="desktop-menubar-item">文件</span>
-        <span class="desktop-menubar-item">编辑</span>
-        <span class="desktop-menubar-item">查看</span>
-        <span class="desktop-menubar-item">窗口</span>
-        <span class="desktop-menubar-item">帮助</span>
-      </div>
-      <div class="desktop-menubar-right" aria-label="桌面状态">
-        <span class="desktop-menubar-status-dot" aria-hidden="true" />
-        <span class="desktop-menubar-user">{{ desktopUserName }}</span>
-        <span class="desktop-menubar-clock">{{ menuClock }}</span>
-      </div>
-    </div>
+    <MacMenuBar
+      :active-title="activeMenuTitle"
+      :active-window-id="activeWindow?.id"
+      :username="desktopUserName"
+      :clock="menuClock"
+      :windows="windowManager.windows"
+      @open-app="handleOpenApp"
+      @open-spotlight="openSpotlight"
+      @open-launchpad="openLaunchpad"
+      @activate-window="windowManager.activateWindow"
+      @minimize-window="windowManager.minimizeWindow"
+      @zoom-window="windowManager.toggleMaximized"
+      @close-window="windowManager.closeWindow"
+      @show-desktop="handleShowDesktop"
+      @command="handleLauncherCommand"
+    />
     <div class="desktop-shell-icon-layer">
       <component :is="desktopIconGrid" :app-list="desktopAppList" :file-list="desktopFileList" @openApp="handleOpenApp" @openFile="openDesktopEntry" @app-context-menu="handleAppContextMenu" @file-context-menu="handleFileContextMenu" @move-to-folder="handleIconMoveToFolder" @drop-on-window="handleDropOnWindow" />
       <SelectionBox />
@@ -47,6 +47,7 @@
       :is-active="w.isActive"
       :app-key="w.appKey"
       :payload="w.payload"
+      :pre-maximize-state="w.preMaximizeState"
       :animation-origin="w.animationOrigin"
       @activate="windowManager.activateWindow"
       @close="windowManager.closeWindow"
@@ -55,9 +56,9 @@
       @update-position="windowManager.updateWindowPosition"
       @update-geometry="windowManager.updateWindowGeometry"
     />
-    <component :is="desktopTaskbar" :items="unref(windowManager.taskbarItems)" :launcher-open="showLauncher" :tray-apps="trayAppList" @switchWindow="handleSwitchWindow" @openLauncher="showLauncher = !showLauncher" @openTrayApp="handleOpenApp" @showDesktop="handleShowDesktop" @closeWindow="windowManager.closeWindow" />
+    <component :is="desktopTaskbar" :items="unref(windowManager.taskbarItems)" :launcher-open="showLauncher" :app-list="launcherAppList" @switchWindow="handleSwitchWindow" @openLauncher="openLaunchpad" @openSpotlight="openSpotlight" @openApp="handleOpenApp" @closeWindow="windowManager.closeWindow" />
     <component :is="desktopLauncher" v-if="showLauncher" :show="showLauncher" :app-list="launcherAppList" @openApp="handleLauncherOpen" @execute-command="handleLauncherCommand" @close="showLauncher = false" />
-    <component :is="desktopRightSidebar" :show="showRightSidebar" :current-path="rightSidebarPath" :current-app-key="rightSidebarAppKey" :app-list="sidebarAppList" @close="showRightSidebar = false" @switch="openSidebar" @open-window="handleOpenApp" />
+    <component :is="desktopSpotlight" v-if="showSpotlight" :show="showSpotlight" @close="showSpotlight = false" />
     <ContextMenu
       :visible="contextMenu.visible.value"
       :x="contextMenu.x.value"
@@ -69,6 +70,7 @@
       :close-submenu="contextMenu.closeSubmenu"
       :keep-submenu-open="contextMenu.keepSubmenuOpen"
       @select="handleContextMenuSelect"
+      @dismiss="contextMenu.close"
     />
     <LoadStateBanner
       v-if="desktopFileLoadState.status === 'stale'"
@@ -85,9 +87,6 @@
      <div v-else-if="desktopFileLoadState.status === 'error'" class="desktop-shell-error">
        <p>{{ desktopFileLoadState.error?.userMessage || '桌面文件加载失败' }}</p>
        <button @click="loadDesktopFiles">重试</button>
-     </div>
-     <div v-else-if="!windowManager.openedWindowCount" class="desktop-shell-hint">
-       双击图标打开应用 · 右键管理文件与回收站
      </div>
      <div v-if="isDragActive" class="desktop-shell-drop-hint">松开后上传到桌面</div>
      <!-- 首屏骨架屏 -->
@@ -145,12 +144,13 @@ import type { FileEntry } from '@/shared/api/types'
 import { useCreatableFormats } from '@/shared/composables/use-creatable-formats'
 import { useFileOperations } from '@/shared/files/use-file-operations'
 import LoadStateBanner from '@/shared/components/load-state-banner.vue'
+import MacMenuBar from '@/desktop/menubar/desktop-menu-bar.vue'
 
 const desktopIconGrid = defineAsyncComponent(() => import('@/desktop/shell/desktop-icon-grid.vue'))
 const desktopWindowFrame = defineAsyncComponent(() => import('@/desktop/window-manager/desktop-window-frame.vue'))
 const desktopTaskbar = defineAsyncComponent(() => import('@/desktop/taskbar/desktop-taskbar.vue'))
 const desktopLauncher = defineAsyncComponent(() => import('@/desktop/launcher/desktop-launcher.vue'))
-const desktopRightSidebar = defineAsyncComponent(() => import('@/desktop/shell/desktop-right-sidebar.vue'))
+const desktopSpotlight = defineAsyncComponent(() => import('@/desktop/launcher/desktop-spotlight.vue'))
 
 // 暴露 event bus 到全局，供 agent 等模块触发桌面刷新
 window.__DESKTOP_EVENT_BUS__ = desktopEmitter as Window['__DESKTOP_EVENT_BUS__']
@@ -163,14 +163,16 @@ const { emit, on } = useDesktopEventBus()
 const { isDragActive, onDragEnter, onDragLeave, onDrop } = useDesktopShellDropUpload()
 const { desktopFileList, desktopFileLoadState, loadDesktopFiles, openDesktopEntry } = useDesktopRootFiles()
 const { creatableFormats } = useCreatableFormats()
-const { allAppList, desktopAppList, launcherAppList, sidebarAppList, trayAppList, registryError, loading, desktopContainerRef, retryLoadRegistry, updateContainerSize } = useDesktopAppLoading(currentRole)
+const { allAppList, desktopAppList, launcherAppList, registryError, loading, desktopContainerRef, retryLoadRegistry, updateContainerSize } = useDesktopAppLoading(currentRole)
 const { handleDesktopMouseDown } = useDesktopPointer()
 const { registerAllApps } = useCommandRegistry(handleOpenApp, handleLauncherCommand)
 
-const showLauncher = ref(false); const showRightSidebar = ref(false); const rightSidebarAppKey = ref('desktop')
+const showLauncher = ref(false)
+const showSpotlight = ref(false)
 const canWrite = computed(() => canBusinessWrite.value)
-const activeMenuTitle = computed(() => windowManager.windows.find(w => w.isActive && !w.minimized)?.title || '桌面')
-const desktopUserName = computed(() => userStore.userInfo?.displayName || '用户')
+const activeWindow = computed(() => windowManager.windows.find(w => w.isActive && !w.minimized))
+const activeMenuTitle = computed(() => activeWindow.value?.title || '桌面')
+const desktopUserName = computed(() => userStore.userInfo?.display_name || userStore.userInfo?.displayName || userStore.userInfo?.username || '用户')
 const menuClock = ref('')
 let menuClockTimer: ReturnType<typeof window.setInterval> | undefined
 
@@ -189,11 +191,35 @@ watch(allAppList, apps => registerAllApps(apps), { immediate: true })
 onMounted(() => {
   updateMenuClock()
   menuClockTimer = window.setInterval(updateMenuClock, 30_000)
+  window.addEventListener('keydown', handleGlobalShortcut)
 })
 
 onUnmounted(() => {
   if (menuClockTimer !== undefined) window.clearInterval(menuClockTimer)
+  window.removeEventListener('keydown', handleGlobalShortcut)
 })
+
+function openLaunchpad() {
+  showSpotlight.value = false
+  showLauncher.value = !showLauncher.value
+}
+
+function openSpotlight() {
+  showLauncher.value = false
+  showSpotlight.value = true
+}
+
+function handleGlobalShortcut(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.code === 'Space') {
+    event.preventDefault()
+    showSpotlight.value ? showSpotlight.value = false : openSpotlight()
+    return
+  }
+  if (event.key === 'Escape') {
+    showLauncher.value = false
+    showSpotlight.value = false
+  }
+}
 
 function getSourceFolderId(key: string): number | null {
   const el = document.querySelector(`[data-selection-key="${key}"]`)
@@ -244,25 +270,23 @@ on('desktop:move-to-folder', async ({ ids, targetFolderId }) => {
   }
 })
 
-function handleOpenApp(appKey: string): string | null {
-  return openAppById(appKey)
+function handleOpenApp(appKey: string, payload?: Record<string, unknown>): string | null {
+  return openAppById(appKey, payload)
 }
-function openSidebar(appKey = 'desktop') { rightSidebarAppKey.value = appKey; showRightSidebar.value = true }
 function handleLauncherOpen(appKey: string) {
   showLauncher.value = false
-  const app = getApp(appKey)
-  if (app?.showInSidebar) openSidebar(appKey); else handleOpenApp(appKey)
+  handleOpenApp(appKey)
 }
 async function handleLauncherCommand(command: string) {
-  const { windows: ws, toggleMinimized: toggle } = windowManager
-  if (command === 'refresh-desktop') updateContainerSize()
+  if (command === 'refresh-desktop') refreshDesktop()
   else if (command === 'logout') { await userStore.logout(); window.location.href = '/' }
-  else if (command === 'minimize-all' || command === 'restore-all') ws.forEach((w: { id: string }) => toggle(w.id))
+  else if (command === 'open-profile') handleOpenApp('user-profile')
+  else if (command === 'new-folder' && canWrite.value) await fileOps.createFolder(null)
+  else if (command === 'minimize-all') windowManager.showDesktop()
+  else if (command === 'restore-all') windowManager.restoreDesktop()
   showLauncher.value = false
+  showSpotlight.value = false
 }
-function getSidebarPath(appKey: string): string { return '/' + appKey }
-
-const rightSidebarPath = computed(() => getSidebarPath(rightSidebarAppKey.value))
 
 // ── Context Menu: App Icons ──────────────────────────────────────────
 function handleAppContextMenu(appKey: string, e: MouseEvent) {
@@ -433,12 +457,10 @@ function formatSize(bytes: number): string {
 
 function handleSwitchWindow(id: string) {
   const w = windowManager.windows.find(x => x.id === id)
-  if (w) {
-    if (w.minimized || !w.isActive) { windowManager.activateWindow(id) } else { windowManager.toggleMinimized(id) }
-  }
+  if (w) windowManager.activateWindow(id)
 }
 function handleShowDesktop() {
-  windowManager.windows.forEach((w: { id: string }) => windowManager.toggleMinimized(w.id))
+  windowManager.toggleDesktopVisibility()
 }
 
 function handleIconMoveToFolder(keys: string[], folderKey: string) {
