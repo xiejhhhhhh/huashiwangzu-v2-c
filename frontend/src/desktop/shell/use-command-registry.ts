@@ -2,13 +2,17 @@ import { onMounted, onUnmounted } from 'vue'
 import { commandRegistry, getAppOpener, type IDisposable } from '@/desktop/app-registry/command-registry'
 import { getApp } from '@/desktop/app-registry/desktop-app-state'
 import type { AppRegistryEntry } from '@/desktop/window-manager/window-types'
+import type { FileEntry } from '@/shared/api/types'
+import { formatFileDisplayName } from '@/shared/files/display-name'
 
 export function useCommandRegistry(
   openAppFn: (appKey: string) => unknown,
   executeCommandFn: (command: string) => void,
+  openFileFn: (file: FileEntry) => unknown,
 ) {
   const builtinDisposables: IDisposable[] = []
   let appDisposables: IDisposable[] = []
+  let fileDisposables: IDisposable[] = []
 
   getAppOpener().setOpenApp(openAppFn)
   getAppOpener().setExecuteAction((appKey: string) => openAppFn(appKey))
@@ -19,10 +23,10 @@ export function useCommandRegistry(
 
   function registerBuiltinCommands() {
     const builtins: Array<{ id: string; title: string; description?: string; icon?: string; handler: () => void }> = [
-      { id: 'builtin:refresh-desktop', title: '刷新桌面', description: '刷新桌面图标和布局', icon: '🔄', handler: () => executeCommandFn('refresh-desktop') },
-      { id: 'builtin:minimize-all', title: '最小化所有窗口', description: '将所有窗口最小化到任务栏', icon: '🪟', handler: () => executeCommandFn('minimize-all') },
-      { id: 'builtin:restore-all', title: '还原全部窗口', description: '将所有窗口恢复到正常状态', icon: '📐', handler: () => executeCommandFn('restore-all') },
-      { id: 'builtin:logout', title: '退出登录', description: '注销当前用户', icon: '🚪', handler: () => executeCommandFn('logout') },
+      { id: 'builtin:refresh-desktop', title: '刷新桌面', description: '刷新桌面图标和布局', icon: 'RefreshCw', handler: () => executeCommandFn('refresh-desktop') },
+      { id: 'builtin:minimize-all', title: '最小化所有窗口', description: '将所有窗口最小化到 Dock', icon: 'Minimize2', handler: () => executeCommandFn('minimize-all') },
+      { id: 'builtin:restore-all', title: '还原全部窗口', description: '将所有窗口恢复到正常状态', icon: 'Maximize2', handler: () => executeCommandFn('restore-all') },
+      { id: 'builtin:logout', title: '退出登录', description: '注销当前用户', icon: 'LogOut', handler: () => executeCommandFn('logout') },
     ]
     for (const c of builtins) {
       builtinDisposables.push(
@@ -44,6 +48,24 @@ export function useCommandRegistry(
     }
   }
 
+  function registerAllFiles(fileList: FileEntry[]) {
+    disposeMany(fileDisposables)
+    fileDisposables = fileList.map(file => commandRegistry.register(
+      {
+        id: `file:${file.id}`,
+        title: file.is_folder
+          ? String(file.file_name || '')
+          : formatFileDisplayName(file.file_name, file.format),
+        description: file.is_folder ? '桌面文件夹' : `${String(file.format || '文件').toUpperCase()} · 桌面文件`,
+        icon: file.is_folder ? 'Folder' : 'Document',
+        category: '文件',
+        resultType: 'file',
+      },
+      () => openFileFn(file),
+      'desktop-files',
+    ))
+  }
+
   onMounted(() => {
     registerBuiltinCommands()
   })
@@ -51,8 +73,10 @@ export function useCommandRegistry(
   onUnmounted(() => {
     disposeMany(builtinDisposables)
     disposeMany(appDisposables)
+    disposeMany(fileDisposables)
     appDisposables = []
+    fileDisposables = []
   })
 
-  return { registerAllApps, commandRegistry }
+  return { registerAllApps, registerAllFiles, commandRegistry }
 }

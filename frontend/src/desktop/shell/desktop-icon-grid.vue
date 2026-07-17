@@ -18,7 +18,7 @@
       :style="getIconPositionStyle(`app:${app.appKey}`)"
       @mousedown.stop="handleIconMouseDown(`app:${app.appKey}`, $event)"
       @click="handleAppClick(app.appKey, $event)"
-      @dblclick="$emit('openApp', app.appKey)"
+      @dblclick.stop="handleAppDoubleClick(app.appKey)"
       tabindex="0"
       role="button"
       @keydown.enter.prevent="$emit('openApp', app.appKey)"
@@ -44,7 +44,7 @@
       :style="getIconPositionStyle(`file:${file.id}`)"
       @mousedown.stop="handleIconMouseDown(`file:${file.id}`, $event)"
       @click="handleFileClick(file, $event)"
-      @dblclick="$emit('openFile', file)"
+      @dblclick.stop="handleFileDoubleClick(file)"
       tabindex="0"
       role="button"
       @keydown.enter.prevent="$emit('openFile', file)"
@@ -309,11 +309,12 @@ let suppressNextClick = false
 function handleIconMouseDown(key: string, e: MouseEvent): void {
   if (e.button !== 0) return
   const iconEl = (e.currentTarget as HTMLElement)
+  const isToggleGesture = e.ctrlKey || e.metaKey
   // 判断是否需要拖拽多个
   const shouldMulti = selectedIds.value.includes(key) && selectedIds.value.length > 1
   const dragKeys = shouldMulti ? [...selectedIds.value] : [key]
-  // 如果未选中，先选中
-  if (!selectedIds.value.includes(key)) select(key)
+  // 修饰键选择由 click 阶段统一 toggle，避免 mousedown 先单选后又被移除。
+  if (!isToggleGesture && !selectedIds.value.includes(key)) select(key)
   // 启动拖拽追踪
   beginTracking(dragKeys, e.clientX, e.clientY, iconEl)
   // 标记抑制下一次点击（如果触发了拖拽）
@@ -337,6 +338,18 @@ function handleFileClick(file: FileEntry, e: MouseEvent): void {
   if (e.ctrlKey || e.metaKey) { toggleSelection(key); return }
   if (isSelected(key)) return
   select(key)
+}
+
+function handleAppDoubleClick(appKey: string): void {
+  suppressNextClick = false
+  select(`app:${appKey}`)
+  emit('openApp', appKey)
+}
+
+function handleFileDoubleClick(file: FileEntry): void {
+  suppressNextClick = false
+  select(`file:${file.id}`)
+  emit('openFile', file)
 }
 
 function getFileName(file: FileEntry): string {

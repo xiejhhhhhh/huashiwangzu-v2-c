@@ -49,4 +49,7 @@ function handleEscape() { if (searchText.value) searchText.value = ''; else emit
 .launchpad-empty{margin:auto;color:rgba(255,255,255,.72)}.launchpad-page-indicator{margin-top:auto;height:8px;display:flex;align-items:center}.launchpad-page-indicator span{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.38)}.launchpad-page-indicator .is-active{background:white}
 .launchpad-fade-enter-active,.launchpad-fade-leave-active{transition:opacity var(--desktop-duration-standard) var(--desktop-ease-standard)}.launchpad-fade-enter-from,.launchpad-fade-leave-to{opacity:0}
 @media(max-width:900px){.launchpad-grid{grid-template-columns:repeat(4,minmax(84px,1fr));gap:24px 14px}.launcher-panel{padding-inline:24px}}@media(max-width:620px){.launchpad-grid{grid-template-columns:repeat(3,minmax(76px,1fr))}}
+@media(prefers-reduced-motion:reduce){.launchpad-fade-enter-active,.launchpad-fade-leave-active,.launcher-pinned-item{transition:none}.launcher-pinned-item:hover,.launcher-pinned-item:active{transform:none}}
+@media(prefers-contrast:more),(prefers-reduced-transparency:reduce){.launchpad-overlay{background:rgba(7,17,28,.94);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.launchpad-overlay{background:rgba(7,17,28,.94)}}
 </style>

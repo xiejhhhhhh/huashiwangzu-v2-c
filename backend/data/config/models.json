@@ -135,11 +135,11 @@
       "primary": "gpt-5.5-knowledge",
       "fallback_on_explicit_profile": true,
       "fallback_chain": [
-        "deepseek-v4-flash"
+        "gemma-4"
       ],
       "profiles": {
         "gpt-5.5-knowledge": {
-          "provider": "gptstore-local",
+          "provider": "gptstore-text",
           "model": "gpt-5.5",
           "temperature": 0.2,
           "max_tokens": 16000,
@@ -340,11 +340,11 @@
       "planning_profile": "deepseek-v4-flash"
     },
     "knowledge": {
-      "default_profile": "deepseek-v4-flash",
+      "default_profile": "gpt-5.5-knowledge",
       "agent_search_profile": "deepseek-v4-flash",
       "default_vision_profile": "gpt-5.5-vision",
-      "fallback_profile": "deepseek-v4-flash",
-      "pause_after_fallback": true,
+      "fallback_profile": "gpt-5.5-knowledge",
+      "pause_after_fallback": false,
       "rate_limit_auto_pause": {
         "enabled": true,
         "threshold": 30,
@@ -393,10 +393,10 @@
       "stages": {
         "raw_ocr": "gpt-5.5-vision",
         "raw_vision": "gpt-5.5-vision",
-        "fusion": "deepseek-v4-flash",
-        "profile": "deepseek-v4-flash",
-        "entity": "deepseek-v4-flash",
-        "legacy_page_fusion": "deepseek-v4-flash"
+        "fusion": "gpt-5.5-knowledge",
+        "profile": "gpt-5.5-knowledge",
+        "entity": "gpt-5.5-knowledge",
+        "legacy_page_fusion": "gpt-5.5-knowledge"
       },
       "query_planning_profile": "qwen-local-planner"
     }

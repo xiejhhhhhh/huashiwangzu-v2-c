@@ -56,9 +56,9 @@
       @update-position="windowManager.updateWindowPosition"
       @update-geometry="windowManager.updateWindowGeometry"
     />
-    <component :is="desktopTaskbar" :items="unref(windowManager.taskbarItems)" :launcher-open="showLauncher" :app-list="launcherAppList" @switchWindow="handleSwitchWindow" @openLauncher="openLaunchpad" @openSpotlight="openSpotlight" @openApp="handleOpenApp" @closeWindow="windowManager.closeWindow" />
-    <component :is="desktopLauncher" v-if="showLauncher" :show="showLauncher" :app-list="launcherAppList" @openApp="handleLauncherOpen" @execute-command="handleLauncherCommand" @close="showLauncher = false" />
-    <component :is="desktopSpotlight" v-if="showSpotlight" :show="showSpotlight" @close="showSpotlight = false" />
+    <component :is="desktopTaskbar" :items="unref(windowManager.taskbarItems)" :launcher-open="showLauncher" :app-list="allAppList" @switchWindow="handleSwitchWindow" @openLauncher="openLaunchpad" @openSpotlight="openSpotlight" @openApp="handleOpenApp" @closeWindow="windowManager.closeWindow" />
+    <component :is="desktopLauncher" v-if="showLauncher" :show="showLauncher" :app-list="launcherAppList" @openApp="handleLauncherOpen" @execute-command="handleLauncherCommand" @close="closeLaunchpad" />
+    <component :is="desktopSpotlight" v-if="showSpotlight" :show="showSpotlight" @close="closeSpotlight" />
     <ContextMenu
       :visible="contextMenu.visible.value"
       :x="contextMenu.x.value"
@@ -91,7 +91,7 @@
      <div v-if="isDragActive" class="desktop-shell-drop-hint">松开后上传到桌面</div>
      <!-- 首屏骨架屏 -->
      <div v-if="loading" class="desktop-skeleton-overlay">
-       <div class="desktop-skeleton-taskbar">
+       <div class="desktop-skeleton-menubar">
          <div class="skeleton-block" style="width:32px;height:32px;border-radius:8px;" />
          <div class="skeleton-block" style="width:120px;height:24px;" />
          <div style="flex:1" />
@@ -112,7 +112,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineAsyncComponent, ref, computed, unref, watch, onMounted, onUnmounted } from 'vue'
+import { defineAsyncComponent, ref, computed, nextTick, unref, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
@@ -165,10 +165,11 @@ const { desktopFileList, desktopFileLoadState, loadDesktopFiles, openDesktopEntr
 const { creatableFormats } = useCreatableFormats()
 const { allAppList, desktopAppList, launcherAppList, registryError, loading, desktopContainerRef, retryLoadRegistry, updateContainerSize } = useDesktopAppLoading(currentRole)
 const { handleDesktopMouseDown } = useDesktopPointer()
-const { registerAllApps } = useCommandRegistry(handleOpenApp, handleLauncherCommand)
+const { registerAllApps, registerAllFiles } = useCommandRegistry(handleOpenApp, handleLauncherCommand, openDesktopEntry)
 
 const showLauncher = ref(false)
 const showSpotlight = ref(false)
+let overlayReturnFocus: HTMLElement | null = null
 const canWrite = computed(() => canBusinessWrite.value)
 const activeWindow = computed(() => windowManager.windows.find(w => w.isActive && !w.minimized))
 const activeMenuTitle = computed(() => activeWindow.value?.title || '桌面')
@@ -187,6 +188,7 @@ function updateMenuClock() {
 }
 
 watch(allAppList, apps => registerAllApps(apps), { immediate: true })
+watch(desktopFileList, files => registerAllFiles(files), { immediate: true })
 
 onMounted(() => {
   updateMenuClock()
@@ -200,24 +202,60 @@ onUnmounted(() => {
 })
 
 function openLaunchpad() {
+  if (showLauncher.value) {
+    closeLaunchpad()
+    return
+  }
+  rememberOverlayFocus()
   showSpotlight.value = false
-  showLauncher.value = !showLauncher.value
+  showLauncher.value = true
 }
 
 function openSpotlight() {
+  rememberOverlayFocus()
   showLauncher.value = false
   showSpotlight.value = true
+}
+
+function rememberOverlayFocus() {
+  if (showLauncher.value || showSpotlight.value) return
+  const active = document.activeElement
+  overlayReturnFocus = active instanceof HTMLElement && active !== document.body ? active : null
+}
+
+function restoreOverlayFocus() {
+  const target = overlayReturnFocus
+  overlayReturnFocus = null
+  if (target?.isConnected) nextTick(() => target.focus())
+}
+
+function closeLaunchpad() {
+  if (!showLauncher.value) return
+  showLauncher.value = false
+  restoreOverlayFocus()
+}
+
+function closeSpotlight() {
+  if (!showSpotlight.value) return
+  showSpotlight.value = false
+  restoreOverlayFocus()
+}
+
+function closeSystemOverlays() {
+  const wasOpen = showLauncher.value || showSpotlight.value
+  showLauncher.value = false
+  showSpotlight.value = false
+  if (wasOpen) restoreOverlayFocus()
 }
 
 function handleGlobalShortcut(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.code === 'Space') {
     event.preventDefault()
-    showSpotlight.value ? showSpotlight.value = false : openSpotlight()
+    showSpotlight.value ? closeSpotlight() : openSpotlight()
     return
   }
   if (event.key === 'Escape') {
-    showLauncher.value = false
-    showSpotlight.value = false
+    closeSystemOverlays()
   }
 }
 
@@ -274,7 +312,7 @@ function handleOpenApp(appKey: string, payload?: Record<string, unknown>): strin
   return openAppById(appKey, payload)
 }
 function handleLauncherOpen(appKey: string) {
-  showLauncher.value = false
+  closeLaunchpad()
   handleOpenApp(appKey)
 }
 async function handleLauncherCommand(command: string) {
@@ -284,8 +322,7 @@ async function handleLauncherCommand(command: string) {
   else if (command === 'new-folder' && canWrite.value) await fileOps.createFolder(null)
   else if (command === 'minimize-all') windowManager.showDesktop()
   else if (command === 'restore-all') windowManager.restoreDesktop()
-  showLauncher.value = false
-  showSpotlight.value = false
+  closeSystemOverlays()
 }
 
 // ── Context Menu: App Icons ──────────────────────────────────────────

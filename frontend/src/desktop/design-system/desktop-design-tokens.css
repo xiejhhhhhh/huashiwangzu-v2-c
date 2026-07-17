@@ -73,37 +73,12 @@
   --desktop-ease-out-strong: cubic-bezier(.23, 1, .32, 1);
   --desktop-ease-spring: cubic-bezier(.34, 1.35, .44, 1);
 
-  /* ===== 任务栏 ===== */
-  --taskbar-height: var(--desktop-dock-height);
-  --taskbar-bg: rgba(248, 250, 252, 0.26);
-  --taskbar-blur: var(--desktop-liquid-blur-medium);
-  --taskbar-text: #eff6ff;
-  --taskbar-text-secondary: rgba(226, 232, 240, 0.78);
-  --taskbar-top-border: rgba(255, 255, 255, 0.2);
-  --taskbar-active-bg: rgba(255, 255, 255, 0.22);
-  --taskbar-active-border: rgba(255, 255, 255, 0.34);
-  --taskbar-z-index: 10000;
-
-  /* ===== 启动器 ===== */
-  --launcher-bg: rgba(32, 32, 36, 0.96);
-  --launcher-blur: 24px;
-  --launcher-border: rgba(255, 255, 255, 0.08);
-  --launcher-radius: 18px;
-  --launcher-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
-  --launcher-width: 1040px;
-  --launcher-max-height: 540px;
-  --launcher-z-index: 9000;
-  --launcher-text: #e2e8f0;
-  --launcher-search-bg: rgba(255, 255, 255, 0.06);
-
   /* ===== 窗口系统 ===== */
   --window-bg: var(--desktop-material-window);
   --window-radius: var(--desktop-radius-window);
   --window-border: rgba(0, 0, 0, 0.2);
   --window-shadow: var(--desktop-shadow-window-inactive);
   --window-shadow-active: var(--desktop-shadow-window);
-  --window-min-width: 400px;
-  --window-min-height: 260px;
   --window-titlebar-height: 44px;
   --window-titlebar-bg: rgba(232, 232, 234, 0.96);
   --window-titlebar-active-bg: rgba(239, 239, 241, 0.98);
@@ -136,19 +111,6 @@
   --context-menu-disabled-text: rgba(60,60,67,.36);
   --context-menu-divider: var(--desktop-divider);
 
-  /* ===== 托盘 ===== */
-  --tray-button-size: 24px;
-  --tray-icon-color: #dbeafe;
-  --tray-icon-opacity: 0.82;
-  --tray-hover-bg: rgba(255, 255, 255, 0.08);
-  --tray-radius: 4px;
-
-  /* ===== 右侧功能栏 ===== */
-  --sidebar-bg: #0f172a;
-  --sidebar-width: min(520px, 48vw);
-  --sidebar-z-index: 10001;
-  --sidebar-overlay: rgba(15, 23, 42, 0.12);
-
   /* ===== 文件管理 ===== */
   --file-manager-toolbar-bg: #f8fafc;
   --file-manager-sidebar-bg: #f1f5f9;
@@ -179,9 +141,6 @@
 
   /* ===== Z-索引层级 ===== */
   --z-desktop-icon: 100;
-  --z-launcher: 9000;
-  --z-taskbar: 10000;
-  --z-sidebar: 10001;
   --z-window-default: 2000;
   --z-context-menu: 20000;
   --z-system-dialog: 30000;
@@ -193,4 +152,22 @@
   --opacity-overlay-light: 0.08;
   --opacity-overlay-medium: 0.12;
   --opacity-overlay-heavy: 0.35;
+}
+
+@media (prefers-contrast: more), (prefers-reduced-transparency: reduce) {
+  :root {
+    --desktop-material-menubar: rgba(36, 45, 50, 0.96);
+    --desktop-material-dock: rgba(61, 70, 78, 0.96);
+    --desktop-material-popover: #f4f4f6;
+    --desktop-material-window: #f1f1f3;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --desktop-material-menubar: rgba(36, 45, 50, 0.96);
+    --desktop-material-dock: rgba(61, 70, 78, 0.96);
+    --desktop-material-popover: #f4f4f6;
+    --desktop-material-window: #f1f1f3;
+  }
 }

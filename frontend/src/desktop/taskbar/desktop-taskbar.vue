@@ -6,19 +6,22 @@
       </button>
     </div>
     <div class="mac-dock-separator" />
-    <div v-for="(app, index) in dockApps" :key="app.appKey" class="mac-dock-item-wrap" :class="magnifyClass(index)" @mouseenter="hoveredIndex = index" @mouseleave="hoveredIndex = -1">
-      <button class="mac-dock-icon-button mac-dock-app" type="button" :title="app.appName" :aria-label="app.appName" :data-dock-app-key="app.appKey" :aria-pressed="app.isActive" @click="activateApp(app)" @contextmenu.prevent="openAppMenu(app.appKey)">
-        <AppIcon :icon="app.icon" :size="46" />
-        <span v-if="app.isRunning" class="mac-dock-running-dot" />
-        <span v-if="getProgress(app.appKey)" class="mac-dock-progress"><span :style="progressStyle(app.appKey)" /></span>
-      </button>
-      <div v-if="contextAppKey === app.appKey" class="mac-dock-menu" role="menu">
-        <strong>{{ app.appName }}</strong>
-        <button v-for="windowItem in app.windows" :key="windowItem.id" type="button" role="menuitem" @click="emit('switchWindow', windowItem.id); closeAppMenu()"><Check v-if="windowItem.isActive" :size="13" /><span v-else class="mac-dock-menu-space" />{{ windowItem.title }}</button>
-        <div v-if="app.windows.length" class="mac-dock-menu-separator" />
-        <button type="button" role="menuitem" @click="emit('openApp', app.appKey); closeAppMenu()"><Plus :size="13" />打开</button>
+    <template v-for="(app, index) in dockApps" :key="app.appKey">
+      <div v-if="app.isUtility && index > 0" class="mac-dock-separator" />
+      <div class="mac-dock-item-wrap" :class="magnifyClass(index)" @mouseenter="hoveredIndex = index" @mouseleave="hoveredIndex = -1">
+        <button class="mac-dock-icon-button mac-dock-app" type="button" :title="app.appName" :aria-label="app.appName" :data-dock-app-key="app.appKey" :aria-pressed="app.isActive" @click="activateApp(app)" @contextmenu.prevent="openAppMenu(app.appKey)">
+          <AppIcon :icon="app.icon" :size="46" />
+          <span v-if="app.isRunning" class="mac-dock-running-dot" />
+          <span v-if="getProgress(app.appKey)" class="mac-dock-progress"><span :style="progressStyle(app.appKey)" /></span>
+        </button>
+        <div v-if="contextAppKey === app.appKey" class="mac-dock-menu" role="menu">
+          <strong>{{ app.appName }}</strong>
+          <button v-for="windowItem in app.windows" :key="windowItem.id" type="button" role="menuitem" @click="emit('switchWindow', windowItem.id); closeAppMenu()"><Check v-if="windowItem.isActive" :size="13" /><span v-else class="mac-dock-menu-space" />{{ windowItem.title }}</button>
+          <div v-if="app.windows.length" class="mac-dock-menu-separator" />
+          <button type="button" role="menuitem" @click="emit('openApp', app.appKey); closeAppMenu()"><Plus :size="13" />打开</button>
+        </div>
       </div>
-    </div>
+    </template>
     <div class="mac-dock-separator" />
     <div class="mac-dock-item-wrap">
       <button class="mac-dock-icon-button" type="button" title="Spotlight" aria-label="打开 Spotlight" @click="emit('openSpotlight')"><Search :size="28" :stroke-width="1.8" /></button>
@@ -40,12 +43,15 @@ const contextAppKey = ref('')
 
 const dockApps = computed(() => {
   const registered = new Map(props.appList.filter(app => app.windowType !== 'background-service').map(app => [app.appKey, app]))
-  const order = [...registered.keys()]
-  for (const item of props.items) if (item.appKey && !registered.has(item.appKey)) order.push(item.appKey)
+  const utilityKeys = new Set(['recycle'])
+  const fixedKeys = [...registered.values()].filter(app => app.showOnDesktop).map(app => app.appKey)
+  const runningKeys = props.items.map(item => item.appKey).filter((key): key is string => Boolean(key))
+  const mainKeys = [...new Set([...fixedKeys, ...runningKeys])].filter(key => !utilityKeys.has(key))
+  const order = [...mainKeys, ...fixedKeys.filter(key => utilityKeys.has(key))]
   return order.map(appKey => {
     const app = registered.get(appKey)
     const windows = props.items.filter(item => item.appKey === appKey).sort((a, b) => Number(b.isActive) - Number(a.isActive))
-    return { appKey, appName: app?.appName || windows[0]?.title || appKey, icon: app?.icon || windows[0]?.icon || 'Grid', windows, isRunning: windows.length > 0, isActive: windows.some(item => item.isActive) }
+    return { appKey, appName: app?.appName || windows[0]?.title || appKey, icon: app?.icon || windows[0]?.icon || 'Grid', windows, isRunning: windows.length > 0, isActive: windows.some(item => item.isActive), isUtility: utilityKeys.has(appKey) }
   })
 })
 

@@ -28,6 +28,7 @@ export function useContextMenu() {
   const activeSubmenu = ref<{ parentKey: string; items: MenuItemConfig[]; x: number; y: number } | null>(null)
   const context = ref<MenuContext | null>(null)
   let submenuCloseTimer: number | null = null
+  let returnFocus: HTMLElement | null = null
 
   function getMenuSize(items: MenuItemConfig[]) {
     const separatorCount = items.filter(i => i.separator).length
@@ -51,6 +52,9 @@ export function useContextMenu() {
     currentItems.value = items
     context.value = ctx
     activeSubmenu.value = null
+    returnFocus = e.currentTarget instanceof HTMLElement
+      ? e.currentTarget
+      : document.activeElement instanceof HTMLElement ? document.activeElement : null
     const size = getMenuSize(items)
     const pos = clampToViewport(e.clientX, e.clientY, size.width, size.height)
     x.value = pos.x
@@ -59,11 +63,15 @@ export function useContextMenu() {
   }
 
   function close() {
+    const wasVisible = visible.value
+    const target = returnFocus
     visible.value = false
     currentItems.value = []
     activeSubmenu.value = null
     context.value = null
     clearSubmenuCloseTimer()
+    returnFocus = null
+    if (wasVisible && target?.isConnected) requestAnimationFrame(() => target.focus())
   }
 
   function openSubmenu(e: MouseEvent, parentKey: string, items: MenuItemConfig[]) {

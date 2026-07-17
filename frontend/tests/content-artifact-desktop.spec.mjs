@@ -174,7 +174,7 @@ test('content publish artifact is visible, openable, and downloadable from deskt
     const icon = page.locator(`.desktop-file-icon-item[data-selection-key="file:${state.fileId}"]`)
     await expect(icon).toBeVisible({ timeout: 15000 })
 
-    await icon.dblclick({ force: true })
+    await icon.dblclick()
     await expect.poll(async () => page.evaluate((fileId) => {
       const manager = window.__HSWZ_WINDOW_MANAGER__
       if (!manager || !Array.isArray(manager.windows)) return false

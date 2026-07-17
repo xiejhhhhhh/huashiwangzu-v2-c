@@ -150,7 +150,7 @@ function getTaskbarButtonRect(): { x: number; y: number } | null {
       y: rect.top - (parentRect?.top ?? 0) + rect.height / 2,
     }
   }
-  // 默认飞向底部中央（任务栏区域）
+  // 没有应用图标时退回到底部中央。
   const parent = rootEl.value?.parentElement
   return {
     x: (parent?.clientWidth ?? window.innerWidth) / 2,
@@ -324,7 +324,7 @@ onUnmounted(() => {
     transform var(--window-anim-duration, 200ms) cubic-bezier(0.5, 0, 0.75, 0);
 }
 
-/* ═══ 最小化动画 - 飞入任务栏 ═══ */
+/* ═══ 最小化动画 - 飞入 Dock ═══ */
 .desktop-window-minimizing {
   opacity: 0;
   transform: translate(var(--minimize-target-x, 0), var(--minimize-target-y, 0)) scale(0.15);
@@ -334,7 +334,7 @@ onUnmounted(() => {
     transform var(--window-anim-duration, 200ms) cubic-bezier(0.5, 0, 0.75, 0);
 }
 
-/* ═══ 从任务栏还原动画 ═══ */
+/* ═══ 从 Dock 还原动画 ═══ */
 .desktop-window-restoring {
   animation: window-restore-keyframes var(--window-anim-duration, 200ms) cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
@@ -396,8 +396,6 @@ onUnmounted(() => {
     height 0.08s ease,
     opacity 0.08s ease;
 }
-.window-snap-preview-left { border-radius: 0 8px 8px 0; }
-.window-snap-preview-right { border-radius: 8px 0 0 8px; }
 .window-snap-preview-top { border-radius: 0 0 8px 8px; }
 
 /* ═══ 缩放手柄 ═══ */

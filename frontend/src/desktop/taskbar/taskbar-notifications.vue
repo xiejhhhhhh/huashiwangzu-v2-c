@@ -12,7 +12,7 @@
         aria-controls="taskbar-notifications-panel"
         @click.stop="handleToggleNotificationPanel"
       >
-        <el-icon :size="18"><Bell /></el-icon>
+        <Bell :size="14" :stroke-width="2" />
       </button>
     </el-badge>
     <div
@@ -46,7 +46,7 @@
 </template>
 
 <script setup lang="ts">
-import { Bell } from '@element-plus/icons-vue'
+import { Bell } from 'lucide-vue-next'
 import { useNotifications } from '@/shared/composables/use-notifications'
 import type { ActionItem, NotificationLoadIssue } from '@/shared/composables/use-notifications'
 import NotifyPanel from '@/shared/components/notification-panel.vue'
