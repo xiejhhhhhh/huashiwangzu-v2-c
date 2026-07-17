@@ -92,3 +92,4 @@ dev_toolkit/memory_embeddings.json
 frontend/tests/.auth/
 开发文档/临时文档/语义治理验证脚本/*.csv
 开发文档/临时文档/语义治理验证脚本/*.log
+backend/data/config/*.bak*
