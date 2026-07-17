@@ -2,10 +2,10 @@
   <header class="fm-navigation-bar">
     <div class="fm-nav-left">
       <button class="fm-icon-button" type="button" :disabled="!canGoBack" title="后退" aria-label="后退" @click="$emit('go-back')">
-        ←
+        <ChevronLeft :size="17" :stroke-width="2" />
       </button>
       <button class="fm-icon-button" type="button" :disabled="!canGoForward" title="前进" aria-label="前进" @click="$emit('go-forward')">
-        →
+        <ChevronRight :size="17" :stroke-width="2" />
       </button>
       <button
         v-if="canGoUp"
@@ -16,7 +16,7 @@
         :data-folder="parentFolderId() || undefined"
         @click="$emit('go-up')"
       >
-        ↑
+        <ArrowUp :size="16" :stroke-width="2" />
       </button>
     </div>
 
@@ -27,10 +27,10 @@
         title="桌面"
         @click="$emit('go-root')"
       >
-        🏠
+        <Monitor :size="15" :stroke-width="2" />
       </button>
       <span v-for="(crumb, index) in breadcrumb" :key="`crumb-${index}`" class="fm-crumb-segment">
-        <span class="fm-crumb-sep">&gt;</span>
+        <ChevronRight class="fm-crumb-sep" :size="13" :stroke-width="1.75" />
         <button
           class="fm-crumb-btn"
           :class="{ 'fm-crumb-active': index === breadcrumb.length - 1 }"
@@ -44,6 +44,7 @@
     </div>
 
     <div class="fm-nav-search">
+      <Search class="fm-search-icon" :size="14" :stroke-width="2" />
       <input
         class="fm-search-input"
         type="text"
@@ -56,6 +57,7 @@
 </template>
 
 <script setup lang="ts">
+import { ArrowUp, ChevronLeft, ChevronRight, Monitor, Search } from 'lucide-vue-next'
 import type { DesktopFileManagerBreadcrumbItem } from './types'
 
 const props = defineProps<{
@@ -86,11 +88,11 @@ const parentFolderId = () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 12px;
-  height: 38px;
-  border-bottom: 1px solid #d7e0ea;
-  background: rgba(250, 252, 255, 0.92);
-  backdrop-filter: blur(8px);
+  padding: 5px 12px;
+  min-height: 42px;
+  border-bottom: 1px solid rgba(60, 60, 67, 0.18);
+  background: rgba(246, 246, 246, 0.88);
+  backdrop-filter: saturate(160%) blur(18px);
 }
 
 .fm-nav-left {
@@ -104,10 +106,9 @@ const parentFolderId = () => {
   width: 28px;
   height: 28px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
-  color: #475569;
-  font-size: 16px;
+  color: #343438;
   line-height: 1;
   cursor: pointer;
   display: flex;
@@ -115,8 +116,7 @@ const parentFolderId = () => {
   justify-content: center;
 }
 .fm-icon-button:hover:not(:disabled) {
-  background: #eaf0f6;
-  border-color: #d4dce8;
+  background: rgba(60, 60, 67, 0.1);
 }
 .fm-icon-button:disabled {
   opacity: 0.35;
@@ -128,27 +128,26 @@ const parentFolderId = () => {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 0 8px;
-  height: 30px;
-  border: 1px solid #d4dce8;
-  border-radius: 6px;
-  background: #fff;
+  gap: 1px;
+  padding: 0 7px;
+  height: 29px;
+  border: 1px solid rgba(60, 60, 67, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
   overflow: hidden;
 }
 
 .fm-root-btn {
   border: none;
   background: transparent;
-  font-size: 15px;
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
   flex-shrink: 0;
-  color: #475569;
+  color: #4b4b50;
 }
 .fm-root-btn:hover {
-  color: #2563eb;
+  color: var(--desktop-accent, #007aff);
 }
 
 .fm-crumb-segment {
@@ -159,8 +158,7 @@ const parentFolderId = () => {
 }
 
 .fm-crumb-sep {
-  color: #94a3b8;
-  font-size: 12px;
+  color: #99999f;
   margin: 0 2px;
   flex-shrink: 0;
 }
@@ -169,7 +167,7 @@ const parentFolderId = () => {
   border: none;
   background: transparent;
   font-size: 12px;
-  color: #475569;
+  color: #55555a;
   cursor: pointer;
   padding: 2px 4px;
   white-space: nowrap;
@@ -179,34 +177,51 @@ const parentFolderId = () => {
   border-radius: 3px;
 }
 .fm-crumb-btn:hover {
-  color: #2563eb;
-  background: #eaf0f6;
+  color: var(--desktop-accent, #007aff);
+  background: rgba(60, 60, 67, 0.08);
 }
 .fm-crumb-active {
-  color: #1e293b;
+  color: #1d1d1f;
   font-weight: 600;
 }
 
 .fm-nav-search {
+  position: relative;
   flex-shrink: 0;
+}
+
+.fm-search-icon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  z-index: 1;
+  color: #8e8e93;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .fm-search-input {
   width: 140px;
   height: 28px;
-  padding: 0 10px;
-  border: 1px solid #d4dce8;
-  border-radius: 6px;
-  background: #fff;
+  padding: 0 9px 0 27px;
+  border: 1px solid rgba(60, 60, 67, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
   font-size: 12px;
-  color: #1e293b;
+  color: #1d1d1f;
   outline: none;
 }
 .fm-search-input::placeholder {
-  color: #94a3b8;
+  color: #8e8e93;
 }
 .fm-search-input:focus {
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.15);
+  border-color: var(--desktop-accent, #007aff);
+  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.14);
+}
+
+@media (max-width: 720px) {
+  .fm-nav-address { display: none; }
+  .fm-nav-search { flex: 1; }
+  .fm-search-input { width: 100%; }
 }
 </style>

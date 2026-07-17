@@ -1,12 +1,13 @@
 <template>
   <aside class="fm-nav-pane">
+    <div class="fm-nav-section-label">个人收藏</div>
     <button
       class="fm-nav-item"
       :class="{ 'fm-nav-item-active': currentFolderId === 0 && !isRecycleBin }"
       type="button"
       @click="$emit('go-root')"
     >
-      <span class="fm-nav-icon">🏠</span>
+      <Monitor class="fm-nav-icon" :size="16" :stroke-width="2" />
       <span class="fm-nav-label">桌面</span>
     </button>
     <button
@@ -15,13 +16,15 @@
       type="button"
       @click="$emit('open-recycle')"
     >
-      <span class="fm-nav-icon">🗑</span>
+      <Trash2 class="fm-nav-icon" :size="16" :stroke-width="2" />
       <span class="fm-nav-label">回收站</span>
     </button>
   </aside>
 </template>
 
 <script setup lang="ts">
+import { Monitor, Trash2 } from 'lucide-vue-next'
+
 defineProps<{
   currentFolderId: number
   isRecycleBin: boolean
@@ -35,38 +38,48 @@ defineEmits<{
 
 <style scoped>
 .fm-nav-pane {
-  padding: 12px 8px;
-  border-right: 1px solid #d9e2ec;
-  background: linear-gradient(180deg, #f8fbff, #edf3f9);
+  padding: 13px 9px;
+  border-right: 1px solid rgba(60, 60, 67, 0.16);
+  background: rgba(235, 235, 235, 0.82);
+  backdrop-filter: saturate(150%) blur(18px);
+}
+
+.fm-nav-section-label {
+  margin: 0 9px 6px;
+  color: #77777c;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .fm-nav-item {
   width: 100%;
-  height: 34px;
-  margin-bottom: 4px;
+  height: 30px;
+  margin-bottom: 2px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  color: #243244;
+  color: #303034;
   cursor: pointer;
   text-align: left;
-  font-size: 13px;
+  font-size: 12px;
 }
 
-.fm-nav-item:hover,
+.fm-nav-item:hover {
+  background: rgba(60, 60, 67, 0.08);
+}
+
 .fm-nav-item-active {
-  background: rgba(255, 255, 255, 0.86);
-  border-color: rgba(148, 163, 184, 0.45);
+  background: rgba(0, 122, 255, 0.14);
+  color: #005ec4;
 }
 
 .fm-nav-icon {
-  font-size: 16px;
-  line-height: 1;
   flex-shrink: 0;
+  color: var(--desktop-accent, #007aff);
 }
 
 .fm-nav-label {

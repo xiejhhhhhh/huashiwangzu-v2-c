@@ -173,7 +173,7 @@ const emit = defineEmits<{
 .fm-file-list {
   min-height: 0;
   overflow: auto;
-  background: #f8fafc;
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .fm-view-list {
@@ -181,137 +181,134 @@ const emit = defineEmits<{
   flex-direction: column;
 }
 
-.fm-list-header {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 140px 92px 80px;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  height: 30px;
-  border-bottom: 1px solid #dbe4ee;
-  background: #f1f5f9;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.fm-list-header button {
-  border: none;
-  background: transparent;
-  font-size: 12px;
-  color: #64748b;
-  cursor: pointer;
-  text-align: left;
-  padding: 0 4px;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 500;
-}
-.fm-list-header button:hover {
-  color: #334155;
-}
-
-.fm-col-icon {
-  pointer-events: none;
-}
-
-.fm-content-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
-  align-content: start;
-  gap: 10px;
-  padding: 16px;
-}
-
-.fm-content-list {
-  display: grid;
-  align-content: start;
-  gap: 4px;
-  padding: 4px 0;
-}
-
+.fm-list-header,
 .fm-content-list .fm-entry {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 140px 92px 80px;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  padding: 0 10px;
+}
+
+.fm-list-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 28px;
+  border-bottom: 1px solid rgba(60, 60, 67, 0.14);
+  background: rgba(246, 246, 246, 0.94);
+}
+
+.fm-list-header button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: #6e6e73;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fm-list-header button:hover { color: #1d1d1f; }
+.fm-col-icon { pointer-events: none; }
+
+.fm-content-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  align-content: start;
+  gap: 8px;
+  padding: 14px;
+}
+
+.fm-content-list {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  padding: 2px 0;
+}
+
+.fm-content-list .fm-entry {
+  min-height: 27px;
+  padding-block: 2px;
 }
 
 .fm-entry {
   min-width: 0;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 5px;
   background: transparent;
-  color: #243244;
+  color: #242426;
   cursor: pointer;
   user-select: none;
   text-align: left;
 }
 
 .fm-content-grid .fm-entry {
-  height: 104px;
   display: grid;
   place-items: center;
   align-content: center;
   gap: 6px;
+  height: 100px;
   padding: 8px 6px;
 }
 
-.fm-entry:hover,
+.fm-entry:hover { background: rgba(60, 60, 67, 0.07); }
+
 .fm-entry-selected {
-  background: rgba(219, 234, 254, 0.82);
-  border-color: rgba(96, 165, 250, 0.56);
+  border-color: var(--desktop-accent, #007aff);
+  background: var(--desktop-accent, #007aff);
+  color: #fff;
 }
 
 .fm-entry-name {
   max-width: 100%;
+  overflow: hidden;
   font-size: 12px;
   line-height: 1.25;
-  overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .fm-content-grid .fm-entry-name {
-  text-align: center;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  text-align: center;
 }
 
 .fm-content-list .fm-entry-name {
-  text-align: left;
+  overflow: hidden;
   white-space: nowrap;
+  text-align: left;
 }
 
-.fm-entry-date {
-  color: #64748b;
+.fm-entry-date,
+.fm-entry-kind,
+.fm-entry-size {
+  color: #77777c;
   font-size: 12px;
 }
 
 .fm-entry-kind,
-.fm-entry-size {
-  color: #64748b;
-  font-size: 12px;
-  text-align: right;
-}
+.fm-entry-size { text-align: right; }
+
+.fm-entry-selected .fm-entry-date,
+.fm-entry-selected .fm-entry-kind,
+.fm-entry-selected .fm-entry-size { color: rgba(255, 255, 255, 0.86); }
 
 .fm-state {
-  min-height: 100%;
   display: grid;
   place-items: center;
-  color: #64748b;
-  font-size: 13px;
+  min-height: 100%;
   padding: 40px;
+  color: #77777c;
+  font-size: 13px;
 }
 
-.fm-state-error {
-  align-content: center;
-}
-
-.fm-load-banner {
-  margin: 10px;
-}
+.fm-state-error { align-content: center; }
+.fm-load-banner { margin: 10px; }
 </style>

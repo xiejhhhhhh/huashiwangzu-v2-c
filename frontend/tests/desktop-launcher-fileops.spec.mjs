@@ -112,7 +112,7 @@ async function openLauncher(page) {
   await expect(page.locator('.desktop-launcher-panel')).toBeVisible()
 }
 
-test('launcher marks background capabilities and does not open them as apps', async ({ page }) => {
+test('Launchpad excludes background capabilities and Spotlight marks them', async ({ page }) => {
   await mockDesktopShell(page)
   await gotoDesktop(page)
   await openLauncher(page)
@@ -120,10 +120,13 @@ test('launcher marks background capabilities and does not open them as apps', as
   await expect(page.locator('.desktop-launcher-app-item', { hasText: '文件管理' })).toBeVisible()
   await expect(page.locator('.desktop-launcher-app-item', { hasText: 'Desktop Tools' })).toHaveCount(0)
 
-  await page.locator('.desktop-launcher-search-input').fill('Desktop Tools')
-  const result = page.locator('.desktop-launcher-result-item', { hasText: 'Desktop Tools' })
+  await page.locator('.desktop-launcher-search-input').press('Escape')
+  await expect(page.locator('.desktop-launcher-panel')).toHaveCount(0)
+  await page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '打开 Spotlight' }).click()
+  await page.locator('.spotlight-input').fill('Desktop Tools')
+  const result = page.locator('.spotlight-result', { hasText: 'Desktop Tools' })
   await expect(result).toBeVisible()
-  await expect(result).toContainText('后台能力/不可直接打开')
+  await expect(result).toContainText('后台能力')
 
   await result.click()
   await expect(page.locator('.desktop-window')).toHaveCount(0)

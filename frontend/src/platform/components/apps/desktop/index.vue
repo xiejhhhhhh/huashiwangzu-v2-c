@@ -77,6 +77,7 @@
       :close-submenu="contextMenu.closeSubmenu"
       :keep-submenu-open="contextMenu.keepSubmenuOpen"
       @select="handleContextMenuSelect"
+      @dismiss="contextMenu.close"
     />
   </div>
 </template>
@@ -232,14 +233,14 @@ onMounted(() => {
   height: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  background: #eef3f8;
-  color: #1f2937;
+  background: rgba(255, 255, 255, 0.96);
+  color: #1d1d1f;
 }
 
 .fm-body {
   min-height: 0;
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: 190px minmax(0, 1fr);
 }
 
 .fm-main {
@@ -254,8 +255,8 @@ onMounted(() => {
 }
 
 .fm-main-drag-over {
-  background: rgba(35, 149, 188, 0.05) !important;
-  box-shadow: inset 0 0 0 1.5px #2395bc;
+  background: rgba(0, 122, 255, 0.06) !important;
+  box-shadow: inset 0 0 0 1.5px var(--desktop-accent, #007aff);
   border-radius: 4px;
 }
 

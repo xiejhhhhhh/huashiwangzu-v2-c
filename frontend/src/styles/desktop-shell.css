@@ -185,6 +185,7 @@
 }
 .desktop-window {
   position: absolute;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   background: var(--window-bg);

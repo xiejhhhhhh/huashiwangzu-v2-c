@@ -18,7 +18,7 @@
         title="列表"
         @click="$emit('update:viewMode', 'list')"
       >
-        ≣
+        <List :size="15" :stroke-width="2" />
       </button>
       <button
         class="fm-view-btn"
@@ -27,13 +27,14 @@
         title="图标"
         @click="$emit('update:viewMode', 'grid')"
       >
-        ▦
+        <Grid3X3 :size="14" :stroke-width="2" />
       </button>
     </div>
   </footer>
 </template>
 
 <script setup lang="ts">
+import { Grid3X3, List } from 'lucide-vue-next'
 import type { FileEntry } from '@/shared/api/types'
 
 defineProps<{
@@ -58,12 +59,12 @@ defineEmits<{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 30px;
+  height: 29px;
   padding: 0 14px;
-  border-top: 1px solid #d7e0ea;
-  background: rgba(250, 252, 255, 0.92);
+  border-top: 1px solid rgba(60, 60, 67, 0.16);
+  background: rgba(246, 246, 246, 0.88);
   font-size: 12px;
-  color: #64748b;
+  color: #6e6e73;
 }
 
 .fm-status-left {
@@ -78,18 +79,20 @@ defineEmits<{
 .fm-status-right {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
+  padding: 2px;
+  border-radius: 6px;
+  background: rgba(60, 60, 67, 0.1);
   flex-shrink: 0;
 }
 
 .fm-view-btn {
-  width: 28px;
-  height: 24px;
+  width: 27px;
+  height: 21px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: #64748b;
-  font-size: 14px;
+  color: #626267;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -98,13 +101,13 @@ defineEmits<{
 }
 
 .fm-view-btn:hover {
-  background: #eaf0f6;
-  border-color: #d4dce8;
+  background: rgba(255, 255, 255, 0.6);
 }
 
 .fm-view-btn-active {
-  color: #2563eb;
-  background: #edf6ff;
-  border-color: #8bb8ee;
+  color: #1d1d1f;
+  background: #fff;
+  border-color: rgba(60, 60, 67, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
 }
 </style>

@@ -88,8 +88,9 @@ async function openDesktopWindow(page) {
 
   const shellBox = await page.locator('.desktop-shell-container').boundingBox()
   const titlebarBox = await page.locator('.desktop-window .window-titlebar').boundingBox()
-  if (!shellBox || !titlebarBox) throw new Error('Desktop shell or window titlebar was not measurable')
-  return { shellBox, titlebarBox }
+  const initialBox = await page.locator('.desktop-window').boundingBox()
+  if (!shellBox || !titlebarBox || !initialBox) throw new Error('Desktop shell or window was not measurable')
+  return { shellBox, titlebarBox, initialBox }
 }
 
 async function dragTitlebarTo(page, titlebarBox, x, y) {
@@ -107,74 +108,72 @@ async function expectPreviewGeometry(page, selector, expected) {
   expect(Math.abs(previewBox.height - expected.height)).toBeLessThanOrEqual(4)
 }
 
-test('dragging a window to the left edge shows snap preview before release', async ({ page }) => {
-  const { shellBox, titlebarBox } = await openDesktopWindow(page)
-  await dragTitlebarTo(page, titlebarBox, shellBox.x + 5, titlebarBox.y + titlebarBox.height / 2)
+test('dragging a window to the left edge keeps its size and clamps it inside the work area', async ({ page }) => {
+  const { shellBox, titlebarBox, initialBox } = await openDesktopWindow(page)
+  await dragTitlebarTo(page, titlebarBox, shellBox.x - 40, titlebarBox.y + titlebarBox.height / 2)
 
-  await expect(page.locator('.window-snap-preview.window-snap-preview-left')).toBeVisible()
-  await expectPreviewGeometry(page, '.window-snap-preview.window-snap-preview-left', {
-    x: shellBox.x,
-    y: shellBox.y,
-    width: shellBox.width / 2,
-    height: shellBox.height - 48,
-  })
-
-  await page.mouse.up()
   await expect(page.locator('.window-snap-preview')).toHaveCount(0)
-
-  const snappedBox = await page.locator('.desktop-window').boundingBox()
-  if (!snappedBox) throw new Error('Snapped window was not measurable')
-  expect(Math.abs(snappedBox.width - shellBox.width / 2)).toBeLessThanOrEqual(4)
+  await page.mouse.up()
+  const movedBox = await page.locator('.desktop-window').boundingBox()
+  if (!movedBox) throw new Error('Moved window was not measurable')
+  expect(Math.abs(movedBox.width - initialBox.width)).toBeLessThanOrEqual(4)
+  expect(movedBox.x).toBeGreaterThanOrEqual(shellBox.x)
 })
 
-test('dragging a window to the right edge previews and lands on the right half', async ({ page }) => {
-  const { shellBox, titlebarBox } = await openDesktopWindow(page)
-  await dragTitlebarTo(page, titlebarBox, shellBox.x + shellBox.width - 5, titlebarBox.y + titlebarBox.height / 2)
+test('dragging a window to the right edge keeps its size and clamps it inside the work area', async ({ page }) => {
+  const { shellBox, titlebarBox, initialBox } = await openDesktopWindow(page)
+  await dragTitlebarTo(page, titlebarBox, shellBox.x + shellBox.width + 40, titlebarBox.y + titlebarBox.height / 2)
 
-  await expect(page.locator('.window-snap-preview.window-snap-preview-right')).toBeVisible()
-  await expectPreviewGeometry(page, '.window-snap-preview.window-snap-preview-right', {
-    x: shellBox.x + shellBox.width / 2,
-    y: shellBox.y,
-    width: shellBox.width / 2,
-    height: shellBox.height - 48,
-  })
-
-  await page.mouse.up()
   await expect(page.locator('.window-snap-preview')).toHaveCount(0)
-
-  const snappedBox = await page.locator('.desktop-window').boundingBox()
-  if (!snappedBox) throw new Error('Snapped window was not measurable')
-  expect(Math.abs(snappedBox.width - shellBox.width / 2)).toBeLessThanOrEqual(4)
-  expect(Math.abs(snappedBox.x - (shellBox.x + shellBox.width / 2))).toBeLessThanOrEqual(4)
+  await page.mouse.up()
+  const movedBox = await page.locator('.desktop-window').boundingBox()
+  if (!movedBox) throw new Error('Moved window was not measurable')
+  expect(Math.abs(movedBox.width - initialBox.width)).toBeLessThanOrEqual(4)
+  expect(movedBox.x + movedBox.width).toBeLessThanOrEqual(shellBox.x + shellBox.width + 4)
 })
 
 test('dragging a window to the top edge previews maximized landing and restores original size', async ({ page }) => {
-  const { shellBox, titlebarBox } = await openDesktopWindow(page)
-  await dragTitlebarTo(page, titlebarBox, shellBox.x + shellBox.width / 2, shellBox.y + 5)
+  const { shellBox, titlebarBox, initialBox } = await openDesktopWindow(page)
+  await dragTitlebarTo(page, titlebarBox, shellBox.x + shellBox.width / 2, shellBox.y + 28)
 
   await expect(page.locator('.window-snap-preview.window-snap-preview-top')).toBeVisible()
   await expectPreviewGeometry(page, '.window-snap-preview.window-snap-preview-top', {
     x: shellBox.x,
-    y: shellBox.y,
+    y: shellBox.y + 24,
     width: shellBox.width,
-    height: shellBox.height - 48,
+    height: shellBox.height - 104,
   })
 
   await page.mouse.up()
   await expect(page.locator('.window-snap-preview')).toHaveCount(0)
 
+  await expect.poll(async () => {
+    const box = await page.locator('.desktop-window').boundingBox()
+    return box ? {
+      x: Math.round(box.x),
+      y: Math.round(box.y),
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+    } : null
+  }).toEqual({
+    x: Math.round(shellBox.x),
+    y: Math.round(shellBox.y + 24),
+    width: Math.round(shellBox.width),
+    height: Math.round(shellBox.height - 104),
+  })
   const maximizedBox = await page.locator('.desktop-window').boundingBox()
   if (!maximizedBox) throw new Error('Maximized window was not measurable')
   expect(Math.abs(maximizedBox.width - shellBox.width)).toBeLessThanOrEqual(4)
-  expect(Math.abs(maximizedBox.height - (shellBox.height - 48))).toBeLessThanOrEqual(4)
+  expect(Math.abs(maximizedBox.y - (shellBox.y + 24))).toBeLessThanOrEqual(4)
+  expect(Math.abs(maximizedBox.height - (shellBox.height - 104))).toBeLessThanOrEqual(4)
 
   await page.locator('.desktop-window .window-titlebar').dblclick()
   await expect.poll(async () => {
     const box = await page.locator('.desktop-window').boundingBox()
     return box ? { width: Math.round(box.width), height: Math.round(box.height) } : null
-  }).toEqual({ width: mockApps[0].default_width, height: mockApps[0].default_height })
+  }).toEqual({ width: Math.round(initialBox.width), height: Math.round(initialBox.height) })
   const restoredBox = await page.locator('.desktop-window').boundingBox()
   if (!restoredBox) throw new Error('Restored window was not measurable')
-  expect(Math.abs(restoredBox.width - mockApps[0].default_width)).toBeLessThanOrEqual(4)
-  expect(Math.abs(restoredBox.height - mockApps[0].default_height)).toBeLessThanOrEqual(4)
+  expect(Math.abs(restoredBox.width - initialBox.width)).toBeLessThanOrEqual(4)
+  expect(Math.abs(restoredBox.height - initialBox.height)).toBeLessThanOrEqual(4)
 })
