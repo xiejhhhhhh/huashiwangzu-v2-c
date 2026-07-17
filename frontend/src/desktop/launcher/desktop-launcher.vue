@@ -9,7 +9,7 @@
           </div>
           <div class="launchpad-grid" aria-label="应用">
             <button v-for="app in filteredApps" :key="app.appKey" class="launcher-pinned-item desktop-launcher-app-item" type="button" @click="openApp(app.appKey)">
-              <AppIcon :icon="app.icon" :size="58" />
+              <AppIcon :icon="app.icon" :app-key="app.appKey" :size="58" />
               <span>{{ app.appName }}</span>
             </button>
           </div>

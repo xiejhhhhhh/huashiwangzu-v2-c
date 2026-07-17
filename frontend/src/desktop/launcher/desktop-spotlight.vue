@@ -11,7 +11,7 @@
           <div v-if="results.length" class="spotlight-results" role="listbox">
             <button v-for="(item, index) in results" :key="item.id" class="spotlight-result" :class="{ 'is-selected': index === selectedIndex }" type="button" role="option" :aria-selected="index === selectedIndex" @mouseenter="selectedIndex = index" @click="execute(item)">
               <span v-if="systemIcon(item)" class="spotlight-system-icon"><component :is="systemIcon(item)" :size="22" :stroke-width="1.8" /></span>
-              <AppIcon v-else :icon="item.icon || fallbackIcon(item.type)" :size="34" />
+              <AppIcon v-else :icon="item.icon || fallbackIcon(item.type)" :app-key="resultAppKey(item)" :size="34" />
               <span class="spotlight-result-copy"><strong>{{ item.title }}</strong><small>{{ item.description || resultKindLabel(item.type) }}</small></span>
               <span class="spotlight-kind">{{ resultKindLabel(item.type) }}</span>
             </button>
@@ -52,6 +52,7 @@ function moveSelection(delta: number) {
 function executeSelected() { const item = results.value[selectedIndex.value]; if (item) execute(item) }
 function execute(item: SearchResultItem) { void item.execute(); emit('close') }
 function fallbackIcon(type: SearchResultItem['type']) { return type === 'file' ? 'Document' : type === 'app' ? 'Grid' : 'Search' }
+function resultAppKey(item: SearchResultItem) { return item.id.startsWith('app:') ? item.id.split(':')[1] : '' }
 const systemIcons = { Document: FileText, Folder, LogOut, Maximize2, Minimize2, RefreshCw }
 function systemIcon(item: SearchResultItem) { return item.type === 'app' || item.type === 'background-capability' ? null : systemIcons[item.icon as keyof typeof systemIcons] || Search }
 function resultKindLabel(type: SearchResultItem['type']) { return type === 'app' ? '应用' : type === 'file' ? '文件' : type === 'background-capability' ? '后台能力' : '命令' }

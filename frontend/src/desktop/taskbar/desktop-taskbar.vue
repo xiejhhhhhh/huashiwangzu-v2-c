@@ -10,7 +10,7 @@
       <div v-if="app.isUtility && index > 0" class="mac-dock-separator" />
       <div class="mac-dock-item-wrap" :class="magnifyClass(index)" @mouseenter="hoveredIndex = index" @mouseleave="hoveredIndex = -1">
         <button class="mac-dock-icon-button mac-dock-app" type="button" :title="app.appName" :aria-label="app.appName" :data-dock-app-key="app.appKey" :aria-pressed="app.isActive" @click="activateApp(app)" @contextmenu.prevent="openAppMenu(app.appKey)">
-          <AppIcon :icon="app.icon" :size="46" />
+          <AppIcon :icon="app.icon" :app-key="app.appKey" :size="46" />
           <span v-if="app.isRunning" class="mac-dock-running-dot" />
           <span v-if="getProgress(app.appKey)" class="mac-dock-progress"><span :style="progressStyle(app.appKey)" /></span>
         </button>

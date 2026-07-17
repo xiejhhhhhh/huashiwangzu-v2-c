@@ -84,11 +84,14 @@ async function openDesktopWindow(page) {
     return manager.openWindow('hello-world')
   })
   expect(windowId).toBeTruthy()
-  await expect(page.locator('.desktop-window')).toBeVisible()
+  const desktopWindow = page.locator('.desktop-window')
+  await expect(desktopWindow).toBeVisible()
+  await expect(desktopWindow).toHaveClass(/desktop-window-entered/)
+  await page.waitForTimeout(250)
 
   const shellBox = await page.locator('.desktop-shell-container').boundingBox()
   const titlebarBox = await page.locator('.desktop-window .window-titlebar').boundingBox()
-  const initialBox = await page.locator('.desktop-window').boundingBox()
+  const initialBox = await desktopWindow.boundingBox()
   if (!shellBox || !titlebarBox || !initialBox) throw new Error('Desktop shell or window was not measurable')
   return { shellBox, titlebarBox, initialBox }
 }

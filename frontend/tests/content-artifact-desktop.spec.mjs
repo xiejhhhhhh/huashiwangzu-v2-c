@@ -171,6 +171,7 @@ test('content publish artifact is visible, openable, and downloadable from deskt
     await closeAllWindows(page)
     await page.reload({ waitUntil: 'domcontentloaded' })
     await gotoDesktop(page)
+    await closeAllWindows(page)
     const icon = page.locator(`.desktop-file-icon-item[data-selection-key="file:${state.fileId}"]`)
     await expect(icon).toBeVisible({ timeout: 15000 })
 

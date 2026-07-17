@@ -17,7 +17,7 @@
       @dblclick="$emit('maximize', id)"
     >
       <div class="window-title-info">
-        <AppIcon :icon="icon" :size="16" />
+        <AppIcon :icon="icon" :app-key="appKey" :size="16" />
         <span class="window-title">{{ title }}</span>
       </div>
       <div class="window-action-buttons">

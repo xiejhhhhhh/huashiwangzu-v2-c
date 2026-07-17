@@ -25,7 +25,7 @@
       @contextmenu.prevent.stop="handleAppContextMenu(app.appKey, $event)"
     >
       <div class="desktop-icon-image" :style="iconImageStyle">
-        <AppIcon :icon="app.icon" :size="currentIconImageSize" />
+        <AppIcon :icon="app.icon" :app-key="app.appKey" :size="currentIconImageSize" />
       </div>
       <span v-if="desktopConfig.showIconLabels" class="desktop-icon-label" :style="labelStyle">
         {{ app.appName }}

@@ -140,7 +140,10 @@ test('menus and system overlays restore focus and Spotlight indexes desktop file
 
   const launchpadButton = page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '打开 Launchpad' })
   await launchpadButton.click()
-  await expect(page.getByRole('dialog', { name: 'Launchpad' })).toBeVisible()
+  const launchpad = page.getByRole('dialog', { name: 'Launchpad' })
+  await expect(launchpad).toBeVisible()
+  await expect(launchpad.locator('.desktop-launcher-app-item', { hasText: '访达' }).locator('[data-app-icon-key]')).toHaveAttribute('data-app-icon-key', 'finder')
+  await expect(launchpad.locator('.desktop-launcher-app-item', { hasText: '文本编辑器' }).locator('[data-app-icon-key]')).toHaveAttribute('data-app-icon-key', 'text-editor')
   await page.locator('.desktop-launcher-search-input').press('Escape')
   await expect(launchpadButton).toBeFocused()
 
