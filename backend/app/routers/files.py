@@ -1,7 +1,9 @@
 import logging
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +21,7 @@ from app.schemas.file import (
     MoveRequest,
     RenameRequest,
 )
-from app.services import file_ops_service, file_service, file_tag_service
+from app.services import file_compress_service, file_ops_service, file_service, file_tag_service
 from app.services.system_service import create_log
 
 router = APIRouter(prefix="/api/files", tags=["files"])
@@ -320,6 +322,28 @@ async def batch_copy(body: BatchRequest, db: AsyncSession = Depends(get_db), use
             results.append({"id": item.id, "type": item.item_type, "success": False, "error": str(e)})
             failed_count += 1
     return ApiResponse(data={"items": results, "success_count": success_count, "failed_count": failed_count})
+
+
+class CompressRequest(BaseModel):
+    items: list[BatchItem]
+
+
+@router.post("/compress")
+async def compress_items(
+    body: CompressRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    payload = [{"id": i.id, "item_type": i.item_type} for i in body.items]
+    data, filename = await file_compress_service.build_zip_bytes(db, owner_id=user.id, items=payload)
+    await create_log(db, "info", "file_system", "compress", f"Compressed {len(payload)} items", user_id=user.id)
+    # RFC 5987 filename*
+    cd = f"attachment; filename=\"archive.zip\"; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": cd},
+    )
 
 
 @router.get("/path/{item_type}/{item_id}")

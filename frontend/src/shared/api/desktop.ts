@@ -253,6 +253,18 @@ export async function batchCopyRequest(
   })
 }
 
+export async function compressEntriesRequest(items: BatchFileItem[]): Promise<{ blob: Blob; filename: string }> {
+  const blob = await api.post<unknown, Blob>('/files/compress', { items }, {
+    responseType: 'blob',
+  })
+  if (!(blob instanceof Blob)) {
+    throw new Error('compress response is not a blob')
+  }
+  // response interceptor strips headers for blob; name is best-effort client default
+  const filename = items.length === 1 ? '归档.zip' : `归档-${items.length}项.zip`
+  return { blob, filename }
+}
+
 export async function downloadFileRequest(fileId: number, filename?: string) {
   const response = await api.get<unknown, Blob>(`/files/download/${fileId}`, { responseType: 'blob' })
   const objectUrl = URL.createObjectURL(response)

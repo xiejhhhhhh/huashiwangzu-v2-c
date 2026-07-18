@@ -470,6 +470,13 @@ async function handleLauncherCommand(command: string) {
   else if (command === 'new-folder' && canWrite.value) await fileOps.createFolder(null)
   else if (command === 'minimize-all') windowManager.showDesktop()
   else if (command === 'restore-all') windowManager.restoreDesktop()
+  else if (command === 'finder-go-documents') {
+    handleOpenApp('desktop', { folderName: '文稿' })
+    // payload folderId resolved by files app via locations on openNamedLocation if needed
+  }
+  else if (command === 'finder-go-downloads') {
+    handleOpenApp('desktop', { folderName: '下载' })
+  }
   closeSystemOverlays()
 }
 

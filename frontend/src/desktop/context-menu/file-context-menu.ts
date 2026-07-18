@@ -43,7 +43,14 @@ export function buildFileMenu(
       children: buildTagMenuChildren(activeTags),
     },
     { key: 'details', label: '显示简介', icon: 'ⓘ' },
-    ...(writable ? [...separatorItems(), { key: 'rename', label: '重命名', icon: '✎' }, { key: 'delete', label: '删除', icon: '🗑', danger: true }] : []),
+    ...(writable
+      ? [
+          ...separatorItems(),
+          { key: 'compress', label: '压缩', icon: '📦' },
+          { key: 'rename', label: '重命名', icon: '✎' },
+          { key: 'delete', label: '删除', icon: '🗑', danger: true },
+        ]
+      : []),
   ]
 }
 
@@ -74,7 +81,14 @@ export function buildFolderMenu(
     },
     { key: 'details', label: '显示简介', icon: 'ⓘ' },
     ...(writable && hasContent.value ? [...separatorItems(), { key: 'paste-here', label: '粘贴', icon: '📌' }] : []),
-    ...(writable ? [...separatorItems(), { key: 'rename', label: '重命名', icon: '✎' }, { key: 'delete', label: '删除', icon: '🗑', danger: true }] : []),
+    ...(writable
+      ? [
+          ...separatorItems(),
+          { key: 'compress', label: '压缩', icon: '📦' },
+          { key: 'rename', label: '重命名', icon: '✎' },
+          { key: 'delete', label: '删除', icon: '🗑', danger: true },
+        ]
+      : []),
   ]
 }
 
@@ -106,6 +120,7 @@ export function buildMultiSelectMenu(
           { key: 'cut', label: '剪切', icon: '✂' },
           { key: 'copy', label: '复制', icon: '📋' },
           { key: 'duplicate', label: '制作副本', icon: '❐' },
+          { key: 'compress', label: '压缩', icon: '📦' },
         ]
       : []),
     {
@@ -115,6 +130,19 @@ export function buildMultiSelectMenu(
       children: buildTagMenuChildren(activeTags),
     },
     ...(writable ? [...separatorItems(), { key: 'delete', label: '删除', icon: '🗑', danger: true }] : []),
+  ]
+}
+
+export function buildArrangeMenu(active: 'none' | 'kind' | 'date' = 'none'): MenuItemConfig[] {
+  const mark = (mode: string, label: string) => ({
+    key: `group-by:${mode}`,
+    label: active === mode ? `✓ ${label}` : label,
+    icon: '☰',
+  })
+  return [
+    mark('none', '不分组'),
+    mark('kind', '按种类'),
+    mark('date', '按修改日期'),
   ]
 }
 

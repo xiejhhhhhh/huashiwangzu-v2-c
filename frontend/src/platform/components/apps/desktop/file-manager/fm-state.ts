@@ -57,6 +57,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
 
   const sortColumn = ref<'name' | 'date' | 'type' | 'size'>('name')
   const sortDirection = ref<'asc' | 'desc'>('asc')
+  /** none | kind | date — Finder-like arrangement groups */
+  const groupBy = ref<'none' | 'kind' | 'date'>('none')
   const searchKeyword = ref('')
   const searchScope = ref<'folder' | 'all'>('folder')
   const searchResults = ref<FileEntry[] | null>(null)
@@ -117,9 +119,38 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
         return cmp * dir
       })
     }
-    return [...sortByColumn(folderList), ...sortByColumn(fileList)]
+    const base = [...sortByColumn(folderList), ...sortByColumn(fileList)]
+    if (groupBy.value === 'none') return base
+
+    // stable group order then original sort within group
+    const groupKey = (item: FileEntry) => {
+      if (groupBy.value === 'kind') {
+        if (item.is_folder) return '0-文件夹'
+        return `1-${(item.format || '文件').toUpperCase()}`
+      }
+      // date
+      const raw = item.updated_at || item.created_at || ''
+      const d = raw ? new Date(raw) : null
+      if (!d || Number.isNaN(d.getTime())) return '9-未知日期'
+      const today = new Date()
+      const yday = new Date()
+      yday.setDate(today.getDate() - 1)
+      if (d.toDateString() === today.toDateString()) return '0-今天'
+      if (d.toDateString() === yday.toDateString()) return '1-昨天'
+      return `2-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    }
+    return [...base].sort((a, b) => {
+      const ga = groupKey(a)
+      const gb = groupKey(b)
+      if (ga === gb) return 0
+      return ga.localeCompare(gb, 'zh-CN')
+    })
   })
   const sortedItems = filteredItems
+
+  function setGroupBy(mode: 'none' | 'kind' | 'date') {
+    groupBy.value = mode
+  }
 
   const selectedItem = computed(() => {
     if (selectedId.value != null) {
@@ -681,6 +712,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     sortColumn,
     sortDirection,
     setSort,
+    groupBy,
+    setGroupBy,
     searchKeyword,
     searchScope,
     searchResults,

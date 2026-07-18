@@ -110,7 +110,7 @@
           :folder-count="state.folders.value.length"
           :file-count="state.files.value.length"
           :selected-item="state.selectedItem.value"
-          :selected-size="state.selectedItem.value ? state.formatSize(state.selectedItem.value.file_size) : ''"
+          :selected-size="selectedTotalSize || (state.selectedItem.value && !state.selectedItem.value.is_folder ? state.formatSize(state.selectedItem.value.file_size) : '')"
           :selected-count="state.selectedIds.value.length"
           :view-mode="state.viewMode.value"
           :search-keyword="state.searchKeyword.value"
@@ -166,7 +166,8 @@ import { MacAppShell, useAppFeedback } from '@/desktop/app-kit'
 import { dragState } from '@/desktop/drag-drop/drag-state'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
-import { buildFileMenu, buildFolderMenu, buildMultiSelectMenu } from '@/desktop/context-menu/file-context-menu'
+import { buildArrangeMenu, buildFileMenu, buildFolderMenu, buildMultiSelectMenu } from '@/desktop/context-menu/file-context-menu'
+import { canUndo, undoLast } from './file-manager/finder-undo-stack'
 import { useCreatableFormats } from '@/shared/composables/use-creatable-formats'
 import { hasContent } from '@/desktop/clipboard/clipboard-state'
 import { restoreRecycleBinEntry, permanentlyDeleteEntry, emptyRecycleBinRequest } from '@/shared/api/desktop'
@@ -205,14 +206,20 @@ type FinderListColumnWidths = {
   size?: number
 }
 
+type FinderGroupBy = 'none' | 'kind' | 'date'
+
 type FinderUiPrefs = {
   iconSize?: number
   showPathBar?: boolean
   showPreview?: boolean
   viewMode?: string
   searchScope?: 'folder' | 'all'
+  groupBy?: FinderGroupBy
   listColumnWidths?: FinderListColumnWidths
-  folderViews?: Record<string, { sort?: FinderFolderSort }>
+  folderViews?: Record<string, {
+    sort?: FinderFolderSort
+    listColumnWidths?: FinderListColumnWidths
+  }>
 }
 
 const DEFAULT_LIST_COLUMN_WIDTHS: Required<FinderListColumnWidths> = {
@@ -261,12 +268,27 @@ function resolveFolderSort(folderId: number): FinderFolderSort | null {
   }
 }
 
+function resolveFolderColumnWidths(folderId: number): FinderListColumnWidths | null {
+  const current = loadPrefs()
+  const widths = current.folderViews?.[folderViewKey(folderId)]?.listColumnWidths
+  return widths || null
+}
+
 function persistFolderSort(folderId: number, sort: FinderFolderSort) {
   const prev = loadPrefs()
   const key = folderViewKey(folderId)
   const folderViews = { ...(prev.folderViews || {}) }
   folderViews[key] = { ...(folderViews[key] || {}), sort }
   persistPrefs({ folderViews })
+}
+
+function persistFolderColumnWidths(folderId: number, widths: Required<FinderListColumnWidths>) {
+  const prev = loadPrefs()
+  const key = folderViewKey(folderId)
+  const folderViews = { ...(prev.folderViews || {}) }
+  folderViews[key] = { ...(folderViews[key] || {}), listColumnWidths: widths }
+  // also keep global fallback
+  persistPrefs({ folderViews, listColumnWidths: widths })
 }
 
 const state = useFileManagerState({
@@ -282,12 +304,31 @@ if (prefs?.viewMode && ['grid', 'list', 'column', 'gallery'].includes(prefs.view
 if (prefs?.searchScope === 'all' || prefs?.searchScope === 'folder') {
   state.searchScope.value = prefs.searchScope
 }
+if (prefs?.groupBy === 'kind' || prefs?.groupBy === 'date' || prefs?.groupBy === 'none') {
+  state.groupBy.value = prefs.groupBy
+}
 // apply remembered sort for the initial folder before first load
-const initialSort = resolveFolderSort(Number(props.folderId || 0))
+const initialFolderId = Number(props.folderId || 0)
+const initialSort = resolveFolderSort(initialFolderId)
 if (initialSort) {
   state.sortColumn.value = initialSort.column
   state.sortDirection.value = initialSort.direction
 }
+const initialCols = resolveFolderColumnWidths(initialFolderId)
+if (initialCols) {
+  listColumnWidths.value = normalizeListColumnWidths({
+    ...listColumnWidths.value,
+    ...initialCols,
+  })
+}
+
+const selectedTotalSize = computed(() => {
+  const items = state.selectedItems.value
+  if (!items.length) return ''
+  const total = items.reduce((sum, item) => sum + (item.is_folder ? 0 : (item.file_size || 0)), 0)
+  if (!total) return items.length > 1 ? `${items.length} 项` : ''
+  return state.formatSize(total)
+})
 
 const contextMenu = useContextMenu()
 const { creatableFormats } = useCreatableFormats()
@@ -371,6 +412,7 @@ function persistPrefs(patch: Partial<FinderUiPrefs> = {}) {
     showPreview: showPreview.value,
     viewMode: state.viewMode.value,
     searchScope: state.searchScope.value,
+    groupBy: state.groupBy.value,
     listColumnWidths: listColumnWidths.value,
     ...patch,
   })
@@ -401,8 +443,24 @@ function setListColumnWidths(next: FinderListColumnWidths) {
     ...listColumnWidths.value,
     ...next,
   })
-  persistPrefs({ listColumnWidths: listColumnWidths.value })
+  persistFolderColumnWidths(state.currentFolderId.value || 0, listColumnWidths.value)
 }
+
+function setGroupBy(mode: FinderGroupBy) {
+  state.setGroupBy(mode)
+  persistPrefs({ groupBy: mode })
+}
+
+// when navigating folders, restore per-folder column widths if present
+watch(() => state.currentFolderId.value, (folderId) => {
+  const widths = resolveFolderColumnWidths(folderId || 0)
+  if (widths) {
+    listColumnWidths.value = normalizeListColumnWidths({
+      ...DEFAULT_LIST_COLUMN_WIDTHS,
+      ...widths,
+    })
+  }
+})
 
 function openFolderInNewWindow(item: FileEntry | null | undefined) {
   if (!item?.is_folder) return
@@ -514,6 +572,23 @@ function handleKeydown(e: KeyboardEvent) {
     if (props.windowId) windowManager.closeWindow(props.windowId)
     return
   }
+  if (meta && key === 'z' && !e.shiftKey) {
+    e.preventDefault()
+    void (async () => {
+      if (!canUndo()) {
+        feedback.info('没有可撤销的操作')
+        return
+      }
+      const result = await undoLast()
+      if (result.ok) {
+        feedback.success(result.message)
+        void state.loadFiles()
+      } else {
+        feedback.warning(result.message)
+      }
+    })()
+    return
+  }
 
   if (e.code === 'Space' || e.key === ' ') {
     e.preventDefault()
@@ -623,6 +698,12 @@ function handleBlankContextMenu(e: MouseEvent) {
     { key: 'upload-file', label: '上传文件', icon: '⬆', disabled: !state.canWrite.value },
     { key: 'create-folder', label: '新建文件夹', icon: '📁', disabled: !state.canWrite.value },
     { key: 'refresh', label: '刷新', icon: '↻' },
+    {
+      key: 'arrange',
+      label: '整理方式',
+      icon: '☰',
+      children: buildArrangeMenu(state.groupBy.value),
+    },
   ]
   if (state.canWrite.value && creatableFormats.value.length) {
     items.splice(2, 0, {
@@ -737,6 +818,11 @@ async function handleContextMenuSelect(key: string) {
     openFolderInNewWindow(ctxtFile)
     return
   }
+  if (key.startsWith('group-by:')) {
+    const mode = key.slice('group-by:'.length) as FinderGroupBy
+    if (mode === 'none' || mode === 'kind' || mode === 'date') setGroupBy(mode)
+    return
+  }
   const multiTargets = (ctxType === 'multi-select' || state.selectedItems.value.length > 1)
     ? state.selectedItems.value
     : null
@@ -772,10 +858,10 @@ onMounted(async () => {
   color: var(--mac-app-text, #1d1d1f);
   --mac-app-toolbar-height: 44px;
   --mac-app-statusbar-height: 22px;
-  --mac-app-surface: #ffffff;
-  --mac-app-surface-sidebar: transparent;
-  --mac-app-surface-toolbar: color-mix(in srgb, #f2f2f4 82%, white);
-  --mac-app-surface-status: color-mix(in srgb, #f2f2f4 90%, white);
+  --mac-app-surface: rgba(255, 255, 255, 0.92);
+  --mac-app-surface-sidebar: color-mix(in srgb, var(--glass-panel-bg, rgba(246, 246, 250, 0.62)) 88%, transparent);
+  --mac-app-surface-toolbar: color-mix(in srgb, var(--glass-menubar-bg, rgba(246, 246, 250, 0.28)) 70%, white);
+  --mac-app-surface-status: color-mix(in srgb, var(--glass-panel-bg, rgba(246, 246, 250, 0.62)) 85%, white);
 }
 
 .fm-main {
@@ -837,8 +923,16 @@ onMounted(async () => {
 
 :deep(.app-window-frame_sidebar) {
   border-right: 0;
-  background: transparent;
+  background: var(--mac-app-surface-sidebar);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
   overflow: visible;
+}
+
+:deep(.app-window-frame_statusbar) {
+  background: var(--mac-app-surface-status);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
 }
 
 :deep(.app-window-frame_body) {

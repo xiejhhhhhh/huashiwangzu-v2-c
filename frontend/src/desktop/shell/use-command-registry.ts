@@ -27,6 +27,11 @@ export function useCommandRegistry(
       { id: 'builtin:minimize-all', title: '最小化所有窗口', description: '将所有窗口最小化到 Dock', icon: 'Minimize2', handler: () => executeCommandFn('minimize-all') },
       { id: 'builtin:restore-all', title: '还原全部窗口', description: '将所有窗口恢复到正常状态', icon: 'Maximize2', handler: () => executeCommandFn('restore-all') },
       { id: 'builtin:logout', title: '退出登录', description: '注销当前用户', icon: 'LogOut', handler: () => executeCommandFn('logout') },
+      // Finder-oriented commands (open files app / common actions)
+      { id: 'finder:open', title: '打开访达', description: '打开文件管理器窗口', icon: 'Folder', handler: () => openAppFn('desktop') },
+      { id: 'finder:new-window', title: '新建访达窗口', description: '再开一个文件管理器窗口', icon: 'FolderOpen', handler: () => openAppFn('desktop') },
+      { id: 'finder:go-documents', title: '前往文稿', description: '打开文稿位置', icon: 'FileText', handler: () => executeCommandFn('finder-go-documents') },
+      { id: 'finder:go-downloads', title: '前往下载', description: '打开下载位置', icon: 'Download', handler: () => executeCommandFn('finder-go-downloads') },
     ]
     for (const c of builtins) {
       builtinDisposables.push(

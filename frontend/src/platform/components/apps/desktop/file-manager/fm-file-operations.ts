@@ -1,8 +1,11 @@
 import { useFileOperations } from '@/shared/files/use-file-operations'
 import { useCreatableFormats } from '@/shared/composables/use-creatable-formats'
 import { copyItems, cutItems, hasContent, currentClipboardType, currentClipboardItems, clearClipboard } from '@/desktop/clipboard/clipboard-state'
+import { compressEntriesRequest } from '@/shared/api/desktop'
+import { pushUndo } from './finder-undo-stack'
 import type { FileEntry } from '@/shared/api/types'
 import type { ComputedRef, Ref } from 'vue'
+import { ElMessage } from 'element-plus'
 
 interface FileOperationsDeps {
   uploadInput: Ref<HTMLInputElement | null>
@@ -84,15 +87,52 @@ export function createFileOperations(deps: FileOperationsDeps) {
   }
 
   async function deleteEntries(files: FileEntry[]) {
+    const snapshot = files.map((f) => ({
+      id: f.id,
+      type: (f.is_folder ? 'folder' : 'file') as 'folder' | 'file',
+    }))
     const result = await ops.deleteEntries(files)
-    if (result && result.successCount > 0) deps.clearSelection?.()
+    if (result && result.successCount > 0) {
+      pushUndo({ kind: 'delete', items: snapshot })
+      deps.clearSelection?.()
+    }
     return result
   }
 
   async function moveEntries(files: FileEntry[], targetFolderId: number | null) {
+    const from = deps.currentFolderId.value || null
+    const snapshot = files.map((f) => ({
+      id: f.id,
+      type: (f.is_folder ? 'folder' : 'file') as 'folder' | 'file',
+      from,
+      to: targetFolderId,
+    }))
     const result = await ops.moveEntries(files, targetFolderId)
-    if (result.successCount > 0) deps.clearSelection?.()
+    if (result.successCount > 0) {
+      pushUndo({ kind: 'move', items: snapshot })
+      deps.clearSelection?.()
+    }
     return result
+  }
+
+  async function compressEntries(files: FileEntry[]) {
+    if (!files.length) return
+    try {
+      const { blob, filename } = await compressEntriesRequest(
+        files.map((f) => ({ id: f.id, item_type: f.is_folder ? 'folder' : 'file' })),
+      )
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename || '归档.zip'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      ElMessage.success(files.length > 1 ? `已压缩 ${files.length} 项` : '已压缩')
+    } catch {
+      ElMessage.warning('压缩失败')
+    }
   }
 
   async function handleAction(key: string, file: FileEntry | null) {
@@ -110,8 +150,22 @@ export function createFileOperations(deps: FileOperationsDeps) {
       if (hasContent.value) {
         const isCut = currentClipboardType.value === 'cut'
         const folderId = (file && file.is_folder) ? file.id : deps.currentFolderId.value
-        await ops.pasteToFolder(folderId, currentClipboardItems.value, isCut)
-        if (isCut) clearClipboard()
+        const clip = currentClipboardItems.value
+        await ops.pasteToFolder(folderId, clip, isCut)
+        if (isCut) {
+          pushUndo({
+            kind: 'move',
+            items: clip.map((c) => ({
+              id: c.id,
+              type: c.type,
+              from: folderId,
+              to: deps.currentFolderId.value || null,
+            })),
+          })
+          clearClipboard()
+        } else {
+          // copy: cannot know new ids without API response; skip precise undo
+        }
       }
       return
     }
@@ -144,11 +198,22 @@ export function createFileOperations(deps: FileOperationsDeps) {
       )
       return
     }
+    if (key === 'compress') {
+      if (!targets.length) return
+      await compressEntries(targets)
+      return
+    }
     if (!file) return
     if (key === 'open') { deps.openItem(file); return }
     if (key === 'download') { await downloadFile(file); return }
     if (key === 'copy-path') { await copyPath(file); return }
-    if (key === 'rename') { await renameEntry(file); return }
+    if (key === 'rename') {
+      const prev = file.file_name
+      await renameEntry(file)
+      // best-effort: renameEntry prompts; if success list refreshes — we can't know new name here without return
+      void prev
+      return
+    }
   }
 
   return {

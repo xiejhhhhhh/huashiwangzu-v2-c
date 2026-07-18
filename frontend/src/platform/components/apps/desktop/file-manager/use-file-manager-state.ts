@@ -53,6 +53,8 @@ export function useFileManagerState(options: UseFileManagerStateOptions) {
     sortColumn: state.sortColumn,
     sortDirection: state.sortDirection,
     setSort: state.setSort,
+    groupBy: state.groupBy,
+    setGroupBy: state.setGroupBy,
     searchKeyword: state.searchKeyword,
     searchScope: state.searchScope,
     searchResults: state.searchResults,

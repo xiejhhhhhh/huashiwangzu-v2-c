@@ -7,9 +7,9 @@
       </template>
       <template v-else>
         <span>{{ itemCount }} 个项目</span>
-        <span v-if="selectedCount > 1">· 已选择 {{ selectedCount }} 项</span>
+        <span v-if="selectedCount > 1">· 已选择 {{ selectedCount }} 项<span v-if="selectedSize">（{{ selectedSize }}）</span></span>
         <span v-else-if="selectedItem">· 已选择 {{ displayName(selectedItem) }}</span>
-        <span v-if="selectedCount <= 1 && selectedItem && !selectedItem.is_folder">({{ selectedSize }})</span>
+        <span v-if="selectedCount <= 1 && selectedItem && !selectedItem.is_folder && selectedSize">（{{ selectedSize }}）</span>
       </template>
     </div>
     <div v-if="viewMode === 'grid' || viewMode === 'gallery'" class="fm-status-right">
