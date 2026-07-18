@@ -281,12 +281,124 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _maybe_clear_expired_model_auto_pause(config_path: Path, raw: dict[str, Any]) -> dict[str, Any]:
+    """Self-heal temporary model stage pauses written by knowledge rate-limit auto-pause.
+
+    Gateway owns retry/fallback. Worker config may temporarily pause stages after
+    exhausted supply; once resume TTL elapses, clear those stages so the queue
+    cannot stay frozen forever after a 429 window.
+    """
+    auto_pause = raw.get("model_auto_pause")
+    if not isinstance(auto_pause, dict) or not auto_pause.get("enabled"):
+        return raw
+
+    expires_raw = str(auto_pause.get("expires_at") or "").strip()
+    expires_at: datetime | None = None
+    if expires_raw:
+        try:
+            text = expires_raw[:-1] + "+00:00" if expires_raw.endswith("Z") else expires_raw
+            parsed = datetime.fromisoformat(text)
+            expires_at = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            expires_at = None
+
+    now = _now()
+    if expires_at is None:
+        # Legacy permanent pause: attach a default TTL from updated_at/now.
+        resume_ttl = 900
+        try:
+            resume_ttl = max(30, min(86_400, int(auto_pause.get("resume_ttl_seconds") or 900)))
+        except (TypeError, ValueError):
+            resume_ttl = 900
+        updated_raw = str(auto_pause.get("updated_at") or "").strip()
+        base = now
+        if updated_raw:
+            try:
+                text = updated_raw[:-1] + "+00:00" if updated_raw.endswith("Z") else updated_raw
+                parsed = datetime.fromisoformat(text)
+                base = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                base = now
+        expires_at = base + timedelta(seconds=resume_ttl)
+        auto_pause = dict(auto_pause)
+        auto_pause["resume_ttl_seconds"] = resume_ttl
+        auto_pause["expires_at"] = expires_at.isoformat()
+        raw = dict(raw)
+        raw["model_auto_pause"] = auto_pause
+        try:
+            config_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Cannot backfill model auto-pause TTL: %s", exc)
+            return raw
+
+    if now < expires_at:
+        return raw
+
+    paused_stages = raw.get("paused_stages")
+    if not isinstance(paused_stages, dict):
+        paused_stages = {}
+    else:
+        paused_stages = dict(paused_stages)
+
+    pipeline_key = "kb_pipeline_stage"
+    existing_raw = paused_stages.get(pipeline_key)
+    if isinstance(existing_raw, list):
+        existing = {str(item or "").strip() for item in existing_raw if str(item or "").strip()}
+    elif str(existing_raw or "").strip():
+        existing = {str(existing_raw).strip()}
+    else:
+        existing = set()
+
+    auto_paused = {
+        str(item or "").strip()
+        for item in (auto_pause.get("paused_stages") or [])
+        if str(item or "").strip()
+    }
+    if not auto_paused:
+        group = str(auto_pause.get("group") or "")
+        if group == "vlm":
+            auto_paused = {"raw_ocr", "raw_vision"}
+        elif group == "llm":
+            auto_paused = {"fusion", "profile", "graph"}
+
+    remaining = sorted(existing - auto_paused)
+    if remaining:
+        paused_stages[pipeline_key] = remaining
+    else:
+        paused_stages.pop(pipeline_key, None)
+
+    raw = dict(raw)
+    raw["paused_stages"] = paused_stages
+    raw["model_auto_pause"] = {
+        "enabled": False,
+        "cleared_at": now.isoformat(),
+        "cleared_reason": "auto_resume_ttl_elapsed",
+        "cleared_stages": sorted(auto_paused),
+        "expired_at": auto_pause.get("expires_at"),
+        "original_reason": auto_pause.get("reason"),
+        "group": auto_pause.get("group"),
+    }
+    try:
+        config_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        logger.warning(
+            "Auto-resumed model stages after TTL elapsed stages=%s group=%s",
+            ",".join(sorted(auto_paused)) or "-",
+            auto_pause.get("group"),
+        )
+    except OSError as exc:
+        logger.warning("Cannot clear expired model auto-pause: %s", exc)
+    return raw
+
+
 def _dispatcher_config() -> DispatcherConfig:
     raw: dict[str, Any] = {}
+    config_path = Path(__file__).resolve().parents[2] / "data" / "config" / "task_worker.json"
     try:
-        raw = json.loads((Path(__file__).resolve().parents[2] / "data" / "config" / "task_worker.json").read_text(encoding="utf-8"))
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         raw = {}
+    if isinstance(raw, dict):
+        raw = _maybe_clear_expired_model_auto_pause(config_path, raw)
     dispatch = raw.get("dispatcher") if isinstance(raw.get("dispatcher"), dict) else {}
 
     def int_mapping(value: Any) -> dict[str, int]:

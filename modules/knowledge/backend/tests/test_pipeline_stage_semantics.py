@@ -557,6 +557,117 @@ def test_model_rate_limit_stage_alias_pauses_llm_queue_group(tmp_path, monkeypat
     assert saved["paused_stages"]["kb_pipeline_stage"] == ["fusion", "graph", "profile"]
 
 
+
+def test_model_auto_pause_writes_resume_ttl_metadata(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.json"
+    worker_path = tmp_path / "task_worker.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_routing": {
+                    "knowledge": {
+                        "rate_limit_auto_pause": {
+                            "enabled": True,
+                            "threshold": 1,
+                            "window_seconds": 300,
+                            "resume_ttl_seconds": 120,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(model_routing, "get_models_config_path", lambda: config_path)
+
+    result = model_routing.pause_model_stage_queue(
+        "profile",
+        reason="model_fallback_exhausted",
+        error_message="all fallback profiles failed",
+    )
+    saved = json.loads(worker_path.read_text(encoding="utf-8"))
+    assert result["paused"] is True
+    assert result["resume_ttl_seconds"] == 120
+    assert result["expires_at"]
+    assert saved["model_auto_pause"]["enabled"] is True
+    assert saved["model_auto_pause"]["resume_ttl_seconds"] == 120
+    assert saved["model_auto_pause"]["expires_at"]
+
+
+def test_model_auto_pause_self_heals_after_ttl(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.json"
+    worker_path = tmp_path / "task_worker.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_routing": {
+                    "knowledge": {
+                        "rate_limit_auto_pause": {
+                            "enabled": True,
+                            "threshold": 1,
+                            "window_seconds": 300,
+                            "resume_ttl_seconds": 60,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(model_routing, "get_models_config_path", lambda: config_path)
+
+    paused = model_routing.pause_model_stage_queue(
+        "raw_vision",
+        reason="model_rate_limit_threshold",
+        error_message="HTTP 429",
+    )
+    assert paused["paused"] is True
+    mid = json.loads(worker_path.read_text(encoding="utf-8"))
+    assert mid["paused_stages"]["kb_pipeline_stage"] == ["raw_ocr", "raw_vision"]
+
+    # Force expiry into the past and clear.
+    mid["model_auto_pause"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+    worker_path.write_text(json.dumps(mid, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    cleared = model_routing.maybe_clear_expired_model_auto_pause()
+    saved = json.loads(worker_path.read_text(encoding="utf-8"))
+    assert cleared["cleared"] is True
+    assert saved["model_auto_pause"]["enabled"] is False
+    assert "kb_pipeline_stage" not in (saved.get("paused_stages") or {})
+
+
+def test_legacy_permanent_auto_pause_gets_ttl_backfill(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.json"
+    worker_path = tmp_path / "task_worker.json"
+    config_path.write_text("{}", encoding="utf-8")
+    worker_path.write_text(
+        json.dumps(
+            {
+                "paused_stages": {"kb_pipeline_stage": ["fusion", "profile", "graph"]},
+                "model_auto_pause": {
+                    "enabled": True,
+                    "stage": "profile",
+                    "group": "llm",
+                    "paused_stages": ["fusion", "profile", "graph"],
+                    "reason": "legacy_permanent",
+                    "updated_at": "2000-01-01T00:00:00+00:00",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_routing, "get_models_config_path", lambda: config_path)
+
+    cleared = model_routing.maybe_clear_expired_model_auto_pause()
+    saved = json.loads(worker_path.read_text(encoding="utf-8"))
+    assert cleared["cleared"] is True
+    assert saved["model_auto_pause"]["enabled"] is False
+    assert "kb_pipeline_stage" not in (saved.get("paused_stages") or {})
+
+
 @pytest.mark.asyncio
 async def test_timed_llm_chat_rejects_gateway_attempt_without_success(monkeypatch):
     calls: list[tuple[str, object]] = []

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from time import perf_counter, time
 from typing import Any
 
-from app.gateway.config import get_model_type_config, get_models_config, get_models_config_path
+from app.gateway.config import get_models_config, get_models_config_path
 
 logger = logging.getLogger("v2.knowledge").getChild("model_routing")
 
@@ -27,6 +27,8 @@ MODEL_STAGE_ALIASES = {
 }
 DEFAULT_RATE_LIMIT_AUTO_PAUSE_THRESHOLD = 30
 DEFAULT_RATE_LIMIT_AUTO_PAUSE_WINDOW_SECONDS = 300
+# After auto-pause, stages self-heal when TTL elapses (no permanent pause).
+DEFAULT_RATE_LIMIT_AUTO_PAUSE_RESUME_TTL_SECONDS = 900
 
 _model_call_active = 0
 _model_call_condition: asyncio.Condition | None = None
@@ -195,6 +197,12 @@ def _rate_limit_auto_pause_config() -> dict[str, Any]:
             minimum=10,
             maximum=86_400,
         ),
+        "resume_ttl_seconds": _bounded_int(
+            config.get("resume_ttl_seconds"),
+            DEFAULT_RATE_LIMIT_AUTO_PAUSE_RESUME_TTL_SECONDS,
+            minimum=30,
+            maximum=86_400,
+        ),
     }
 
 
@@ -231,6 +239,7 @@ def is_rate_limit_error(error_message: object) -> bool:
 
 def record_model_rate_limit(stage: str, *, error_message: object = "") -> dict[str, Any]:
     """Count transient model-supply failures and pause the affected group past threshold."""
+    maybe_clear_expired_model_auto_pause()
     canonical_stage = canonical_model_stage(stage)
     if not is_model_stage(canonical_stage):
         return {"paused": False, "reason": "not_model_stage", "stage": canonical_stage}
@@ -340,18 +349,22 @@ def _atomic_write_json(path: Any, payload: dict[str, Any]) -> None:
         raise
 
 
-def pause_model_stage_queue(stage: str, *, reason: str, error_message: str = "") -> dict[str, Any]:
-    """Pause knowledge model stages in the worker hot-reload config.
+def _parse_iso_timestamp(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
 
-    The caller reaches this only after the gateway has exhausted its configured
-    profile/fallback attempts. Pausing pending model stages prevents a bad
-    account, relay, or local model outage from burning retries across the
-    remaining queue.
-    """
-    stage = canonical_model_stage(stage)
-    if not is_model_stage(stage):
-        return {"paused": False, "reason": "not_model_stage", "stage": stage}
 
+def _read_task_worker_config() -> tuple[Any, dict[str, Any]]:
     config_path = _task_worker_config_path()
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
@@ -360,8 +373,145 @@ def pause_model_stage_queue(stage: str, *, reason: str, error_message: str = "")
     except FileNotFoundError:
         raw = {}
     except Exception as exc:
-        logger.warning("Cannot read task worker config for model auto-pause: %s", exc)
-        return {"paused": False, "reason": "config_read_failed", "stage": stage, "error": str(exc)}
+        logger.warning("Cannot read task worker config: %s", exc)
+        raw = {}
+    return config_path, raw
+
+
+def _write_task_worker_config(config_path: Any, raw: dict[str, Any]) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{config_path.name}.",
+        suffix=".tmp",
+        dir=str(config_path.parent),
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(raw, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temp_name, config_path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def maybe_clear_expired_model_auto_pause(*, now: float | None = None) -> dict[str, Any]:
+    """Clear knowledge model auto-pauses whose resume TTL has elapsed.
+
+    Gateway remains the retry/fallback decision maker. Knowledge only records
+    rate-limit pressure and may pause stages temporarily; this function self-heals
+    so a 429 window cannot permanently freeze the queue.
+    """
+    now_ts = time() if now is None else float(now)
+    config_path, raw = _read_task_worker_config()
+    auto_pause = raw.get("model_auto_pause")
+    if not isinstance(auto_pause, dict) or not auto_pause.get("enabled"):
+        return {"cleared": False, "reason": "no_active_auto_pause"}
+
+    expires_at = _parse_iso_timestamp(auto_pause.get("expires_at"))
+    if expires_at is None:
+        # Legacy permanent pause without TTL: convert to TTL window from updated_at/now.
+        resume_ttl = _bounded_int(
+            auto_pause.get("resume_ttl_seconds"),
+            DEFAULT_RATE_LIMIT_AUTO_PAUSE_RESUME_TTL_SECONDS,
+            minimum=30,
+            maximum=86_400,
+        )
+        updated_at = _parse_iso_timestamp(auto_pause.get("updated_at")) or now_ts
+        expires_at = updated_at + float(resume_ttl)
+        auto_pause["resume_ttl_seconds"] = resume_ttl
+        auto_pause["expires_at"] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+        raw["model_auto_pause"] = auto_pause
+        try:
+            _write_task_worker_config(config_path, raw)
+        except Exception as exc:
+            logger.warning("Cannot backfill model auto-pause TTL: %s", exc)
+            return {"cleared": False, "reason": "ttl_backfill_failed", "error": str(exc)}
+
+    if now_ts < expires_at:
+        return {
+            "cleared": False,
+            "reason": "not_expired",
+            "expires_at": auto_pause.get("expires_at"),
+            "remaining_seconds": max(0, int(expires_at - now_ts)),
+        }
+
+    paused_stages = raw.get("paused_stages")
+    if not isinstance(paused_stages, dict):
+        paused_stages = {}
+    existing_raw = paused_stages.get(PIPELINE_TASK_TYPE)
+    if isinstance(existing_raw, list):
+        existing = {str(item or "").strip() for item in existing_raw if str(item or "").strip()}
+    elif str(existing_raw or "").strip():
+        existing = {str(existing_raw).strip()}
+    else:
+        existing = set()
+
+    auto_paused = {
+        str(item or "").strip()
+        for item in (auto_pause.get("paused_stages") or [])
+        if str(item or "").strip()
+    }
+    if not auto_paused:
+        group = str(auto_pause.get("group") or "")
+        if group == "vlm":
+            auto_paused = set(VLM_STAGES)
+        elif group == "llm":
+            auto_paused = set(LLM_STAGES)
+
+    remaining = sorted(existing - auto_paused)
+    if remaining:
+        paused_stages[PIPELINE_TASK_TYPE] = remaining
+    else:
+        paused_stages.pop(PIPELINE_TASK_TYPE, None)
+    raw["paused_stages"] = paused_stages
+    raw["model_auto_pause"] = {
+        "enabled": False,
+        "cleared_at": datetime.now(timezone.utc).isoformat(),
+        "cleared_reason": "auto_resume_ttl_elapsed",
+        "cleared_stages": sorted(auto_paused),
+        "expired_at": auto_pause.get("expires_at"),
+        "original_reason": auto_pause.get("reason"),
+        "group": auto_pause.get("group"),
+    }
+    try:
+        _write_task_worker_config(config_path, raw)
+    except Exception as exc:
+        logger.warning("Cannot clear expired model auto-pause: %s", exc)
+        return {"cleared": False, "reason": "config_write_failed", "error": str(exc)}
+
+    logger.warning(
+        "Auto-resumed knowledge model stages after TTL elapsed stages=%s group=%s",
+        ",".join(sorted(auto_paused)) or "-",
+        auto_pause.get("group"),
+    )
+    return {
+        "cleared": True,
+        "reason": "auto_resume_ttl_elapsed",
+        "cleared_stages": sorted(auto_paused),
+        "group": auto_pause.get("group"),
+    }
+
+
+def pause_model_stage_queue(stage: str, *, reason: str, error_message: str = "") -> dict[str, Any]:
+    """Pause knowledge model stages temporarily in the worker hot-reload config.
+
+    The caller reaches this only after the gateway has exhausted its configured
+    profile/fallback attempts. Pausing pending model stages prevents a bad
+    account, relay, or local model outage from burning retries across the
+    remaining queue. Pauses always carry a resume TTL and self-heal via
+    ``maybe_clear_expired_model_auto_pause``.
+    """
+    maybe_clear_expired_model_auto_pause()
+    stage = canonical_model_stage(stage)
+    if not is_model_stage(stage):
+        return {"paused": False, "reason": "not_model_stage", "stage": stage}
+
+    config_path, raw = _read_task_worker_config()
 
     paused_stages = raw.get("paused_stages")
     if not isinstance(paused_stages, dict):
@@ -379,6 +529,10 @@ def pause_model_stage_queue(stage: str, *, reason: str, error_message: str = "")
     updated = sorted(existing | target_stages)
     paused_stages[PIPELINE_TASK_TYPE] = updated
     raw["paused_stages"] = paused_stages
+
+    resume_ttl = int(_rate_limit_auto_pause_config()["resume_ttl_seconds"])
+    now_dt = datetime.now(timezone.utc)
+    expires_at = datetime.fromtimestamp(now_dt.timestamp() + resume_ttl, tz=timezone.utc)
     raw["model_auto_pause"] = {
         "enabled": True,
         "stage": stage,
@@ -386,35 +540,25 @@ def pause_model_stage_queue(stage: str, *, reason: str, error_message: str = "")
         "paused_stages": sorted(target_stages),
         "reason": reason,
         "error_message": str(error_message or "")[:1000],
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": now_dt.isoformat(),
+        "resume_ttl_seconds": resume_ttl,
+        "expires_at": expires_at.isoformat(),
     }
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{config_path.name}.",
-        suffix=".tmp",
-        dir=str(config_path.parent),
-        text=True,
-    )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(raw, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(temp_name, config_path)
+        _write_task_worker_config(config_path, raw)
     except Exception as exc:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
         logger.warning("Cannot write task worker config for model auto-pause: %s", exc)
         return {"paused": False, "reason": "config_write_failed", "stage": stage, "error": str(exc)}
 
     logger.error(
-        "Paused knowledge %s model stages after exhausted fallback stage=%s stages=%s reason=%s",
+        "Paused knowledge %s model stages after exhausted fallback stage=%s stages=%s reason=%s resume_ttl=%ss expires_at=%s",
         group,
         stage,
         ",".join(sorted(target_stages)),
         reason,
+        resume_ttl,
+        expires_at.isoformat(),
     )
     return {
         "paused": True,
@@ -422,6 +566,8 @@ def pause_model_stage_queue(stage: str, *, reason: str, error_message: str = "")
         "group": group,
         "paused_stages": sorted(target_stages),
         "reason": reason,
+        "resume_ttl_seconds": resume_ttl,
+        "expires_at": expires_at.isoformat(),
     }
 
 
