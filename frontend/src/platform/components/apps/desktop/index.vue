@@ -46,27 +46,35 @@
           :crumbs="state.breadcrumb.value"
           @navigate="state.navigateToCrumb"
         />
-        <FmFileList
-          :items="state.sortedItems.value"
-          :selected-id="state.selectedId.value"
-          :view-mode="state.viewMode.value"
-          :icon-size="iconSize"
-          :column-stack="state.columnStack.value"
-          :loading="state.loading.value"
-          :display-name="state.displayName"
-          :format-size="state.formatSize"
-          :sort-column="state.sortColumn.value"
-          :sort-direction="state.sortDirection.value"
-          :load-status="state.loadState.value.status"
-          :load-error="state.loadState.value.error"
-          @select="state.selectItem"
-          @open="handleItemOpen"
-          @context-menu="handleItemContextMenu"
-          @sort="handleSort"
-          @retry="state.loadFiles"
-          @column-select="(item, col) => state.selectInColumn(item, col)"
-          @column-open="(item, col) => state.selectInColumn(item, col)"
-        />
+        <div class="fm-body">
+          <FmFileList
+            :items="state.sortedItems.value"
+            :selected-id="state.selectedId.value"
+            :view-mode="state.viewMode.value"
+            :icon-size="iconSize"
+            :column-stack="state.columnStack.value"
+            :loading="state.loading.value"
+            :display-name="state.displayName"
+            :format-size="state.formatSize"
+            :sort-column="state.sortColumn.value"
+            :sort-direction="state.sortDirection.value"
+            :load-status="state.loadState.value.status"
+            :load-error="state.loadState.value.error"
+            @select="state.selectItem"
+            @open="handleItemOpen"
+            @context-menu="handleItemContextMenu"
+            @sort="handleSort"
+            @retry="state.loadFiles"
+            @column-select="(item, col) => state.selectInColumn(item, col)"
+            @column-open="(item, col) => state.selectInColumn(item, col)"
+          />
+          <FmPreviewPane
+            v-if="state.viewMode.value !== 'column'"
+            :item="state.selectedItem.value"
+            :display-name="state.displayName"
+            :format-size="state.formatSize"
+          />
+        </div>
       </div>
 
       <template #statusbar>
@@ -127,6 +135,7 @@ import FmNavigationBar from './file-manager/fm-navigation-bar.vue'
 import FmNavPane from './file-manager/fm-nav-pane.vue'
 import FmPathBar from './file-manager/fm-path-bar.vue'
 import FmFileList from './file-manager/fm-file-list.vue'
+import FmPreviewPane from './file-manager/fm-preview-pane.vue'
 import FmStatusBar from './file-manager/fm-status-bar.vue'
 import FmPropertiesDialog from './file-manager/fm-properties-dialog.vue'
 import { useFileManagerState } from './file-manager/use-file-manager-state'
@@ -314,9 +323,16 @@ onMounted(async () => {
   background: var(--mac-app-surface, #fff);
 }
 
-.fm-main > .fm-file-list,
-.fm-main > :deep(.fm-file-list) {
+.fm-body {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  min-width: 0;
+}
+
+.fm-body > :deep(.fm-file-list) {
+  flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 

@@ -3,17 +3,21 @@
     <!-- Column headers (list view only) -->
     <div v-if="viewMode === 'list'" class="fm-list-header">
       <span class="fm-col-icon"></span>
-      <button class="fm-col-name" @click="$emit('sort', 'name')">
-        名称 <span v-if="sortColumn === 'name'">{{ sortDirection === 'asc' ? '↑' : '↓' }}</span>
+      <button class="fm-col-name" type="button" @click="$emit('sort', 'name')">
+        名称
+        <span v-if="sortColumn === 'name'" class="fm-sort-mark">{{ sortDirection === 'asc' ? '▲' : '▼' }}</span>
       </button>
-      <button class="fm-col-date" @click="$emit('sort', 'date')">
-        修改日期 <span v-if="sortColumn === 'date'">{{ sortDirection === 'asc' ? '↑' : '↓' }}</span>
+      <button class="fm-col-date" type="button" @click="$emit('sort', 'date')">
+        修改日期
+        <span v-if="sortColumn === 'date'" class="fm-sort-mark">{{ sortDirection === 'asc' ? '▲' : '▼' }}</span>
       </button>
-      <button class="fm-col-type" @click="$emit('sort', 'type')">
-        类型 <span v-if="sortColumn === 'type'">{{ sortDirection === 'asc' ? '↑' : '↓' }}</span>
+      <button class="fm-col-type" type="button" @click="$emit('sort', 'type')">
+        种类
+        <span v-if="sortColumn === 'type'" class="fm-sort-mark">{{ sortDirection === 'asc' ? '▲' : '▼' }}</span>
       </button>
-      <button class="fm-col-size" @click="$emit('sort', 'size')">
-        大小 <span v-if="sortColumn === 'size'">{{ sortDirection === 'asc' ? '↑' : '↓' }}</span>
+      <button class="fm-col-size" type="button" @click="$emit('sort', 'size')">
+        大小
+        <span v-if="sortColumn === 'size'" class="fm-sort-mark">{{ sortDirection === 'asc' ? '▲' : '▼' }}</span>
       </button>
     </div>
 
@@ -137,11 +141,11 @@
           @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
           @mousedown.stop="handleEntryMouseDown(item, $event)"
         >
-          <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="22" />
+          <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="18" />
           <span class="fm-entry-name">{{ displayName(item) }}</span>
-          <span class="fm-entry-date">{{ item.created_at?.slice(0, 10) || '' }}</span>
-          <span class="fm-entry-kind">{{ item.is_folder ? '文件夹' : (item.format || '文件') }}</span>
-          <span class="fm-entry-size">{{ item.is_folder ? '' : formatSize(item.file_size) }}</span>
+          <span class="fm-entry-date">{{ formatListDate(item.created_at) }}</span>
+          <span class="fm-entry-kind">{{ item.is_folder ? '文件夹' : ((item.format || '文件').toUpperCase()) }}</span>
+          <span class="fm-entry-size">{{ item.is_folder ? '—' : formatSize(item.file_size) }}</span>
         </button>
       </div>
     </template>
@@ -304,6 +308,19 @@ function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseE
   }
   emit('open', item)
 }
+
+function formatListDate(raw?: string | null) {
+  if (!raw) return ''
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return String(raw).slice(0, 16)
+  const now = new Date()
+  const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (d.toDateString() === now.toDateString()) return `今天 ${time}`
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (d.toDateString() === yesterday.toDateString()) return `昨天 ${time}`
+  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+}
 </script>
 
 <style scoped>
@@ -323,9 +340,9 @@ function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseE
 .fm-list-header,
 .fm-content-list .fm-entry {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 140px 92px 80px;
+  grid-template-columns: 24px minmax(0, 1fr) 132px 88px 72px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 0 12px;
 }
 
@@ -333,9 +350,9 @@ function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseE
   position: sticky;
   top: 0;
   z-index: 1;
-  height: 28px;
-  border-bottom: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
-  background: color-mix(in srgb, #f6f6f8 90%, white);
+  height: 24px;
+  border-bottom: 0.5px solid rgba(60, 60, 67, 0.14);
+  background: color-mix(in srgb, #f3f3f5 94%, white);
 }
 
 .fm-list-header button {
@@ -343,18 +360,21 @@ function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseE
   align-items: center;
   gap: 4px;
   height: 100%;
-  padding: 0 4px;
+  padding: 0 2px;
   border: 0;
   background: transparent;
-  color: var(--mac-app-text-secondary, #6e6e73);
-  font-size: 12px;
-  font-weight: 500;
+  color: rgba(60, 60, 67, 0.62);
+  font: 500 11px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
   text-align: left;
   cursor: pointer;
 }
 
-.fm-list-header button:hover { color: var(--mac-app-text, #1d1d1f); }
+.fm-list-header button:hover { color: #1d1d1f; }
 .fm-col-icon { pointer-events: none; }
+.fm-sort-mark {
+  font-size: 8px;
+  opacity: 0.75;
+}
 
 .fm-content-grid {
   display: grid;
@@ -449,8 +469,8 @@ function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseE
 }
 
 .fm-content-list .fm-entry {
-  min-height: 28px;
-  padding-block: 3px;
+  min-height: 26px;
+  padding-block: 2px;
   border-radius: 0;
 }
 
@@ -491,11 +511,17 @@ function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseE
 }
 
 .fm-content-list .fm-entry:hover {
-  background: color-mix(in srgb, var(--mac-app-text, #1d1d1f) 5%, transparent);
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .fm-content-list .fm-entry-selected {
-  background: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 16%, transparent);
+  background: rgba(10, 132, 255, 0.18);
+}
+
+.fm-content-list .fm-entry-selected .fm-entry-date,
+.fm-content-list .fm-entry-selected .fm-entry-kind,
+.fm-content-list .fm-entry-selected .fm-entry-size {
+  color: rgba(29, 29, 31, 0.72);
 }
 
 .fm-entry-name {
@@ -535,12 +561,19 @@ function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseE
 .fm-entry-date,
 .fm-entry-kind,
 .fm-entry-size {
-  color: var(--mac-app-text-secondary, #77777c);
-  font-size: 12px;
+  color: rgba(60, 60, 67, 0.58);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fm-entry-kind,
 .fm-entry-size { text-align: right; }
+
+.fm-content-list .fm-entry-name {
+  font-size: 13px;
+}
 
 .fm-state {
   display: grid;
