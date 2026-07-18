@@ -228,7 +228,7 @@ onMounted(async () => {
   width: 32px;
   height: 32px;
   border: 3px solid #e0e0e0;
-  border-top-color: #2395bc;
+  border-top-color: var(--mac-app-accent, #0a84ff);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -265,17 +265,17 @@ onMounted(async () => {
 }
 
 .pt-thumb:hover {
-  border-color: #2395bc55;
+  border-color: var(--mac-app-accent, #0a84ff)55;
 }
 
 .pt-thumb.active {
-  border-color: #2395bc;
+  border-color: var(--mac-app-accent, #0a84ff);
   background: #eef7fa;
 }
 
 .pt-thumb-num {
   font-weight: 600;
-  color: #2395bc;
+  color: var(--mac-app-accent, #0a84ff);
   font-size: 11px;
   margin-bottom: 4px;
 }

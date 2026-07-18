@@ -171,7 +171,7 @@ onMounted(async () => {
   width: 32px;
   height: 32px;
   border: 3px solid #e0e0e0;
-  border-top-color: #2395bc;
+  border-top-color: var(--mac-app-accent, #0a84ff);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }

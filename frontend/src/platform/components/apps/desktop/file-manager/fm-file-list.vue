@@ -64,7 +64,7 @@
           @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
           @mousedown.stop="handleEntryMouseDown(item, $event)"
         >
-          <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="42" />
+          <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="52" />
           <span class="fm-entry-name">{{ displayName(item) }}</span>
         </button>
       </div>
@@ -179,8 +179,11 @@ const emit = defineEmits<{
 <style scoped>
 .fm-file-list {
   min-height: 0;
+  height: 100%;
   overflow: auto;
-  background: var(--mac-app-surface, rgba(255, 255, 255, 0.96));
+  background:
+    radial-gradient(120% 80% at 0% 0%, rgba(255, 255, 255, 0.55), transparent 48%),
+    var(--mac-app-surface, #fbfbfd);
   color: var(--mac-app-text, #1d1d1f);
 }
 
@@ -192,7 +195,7 @@ const emit = defineEmits<{
 .fm-list-header,
 .fm-content-list .fm-entry {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 132px 88px 76px;
+  grid-template-columns: 28px minmax(0, 1fr) 140px 92px 80px;
   align-items: center;
   gap: 8px;
   padding: 0 12px;
@@ -202,9 +205,9 @@ const emit = defineEmits<{
   position: sticky;
   top: 0;
   z-index: 1;
-  height: 26px;
+  height: 30px;
   border-bottom: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
-  background: color-mix(in srgb, var(--mac-app-surface-toolbar, rgba(246, 246, 250, 0.9)) 92%, white);
+  background: color-mix(in srgb, var(--mac-app-surface-toolbar, rgba(246, 246, 250, 0.92)) 94%, white);
   backdrop-filter: var(--desktop-lg-filter-soft, blur(20px) saturate(150%));
   -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(20px) saturate(150%));
 }
@@ -229,57 +232,69 @@ const emit = defineEmits<{
 
 .fm-content-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
   align-content: start;
-  gap: 8px;
-  padding: 14px;
+  gap: 6px 8px;
+  padding: 16px 14px 18px;
 }
 
 .fm-content-list {
   display: grid;
   align-content: start;
   gap: 0;
-  padding: 2px 0;
+  padding: 2px 0 8px;
 }
 
 .fm-content-list .fm-entry {
-  min-height: 30px;
+  min-height: 28px;
   padding-block: 3px;
+  border-radius: 0;
 }
 
 .fm-entry {
   min-width: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 10px;
   background: transparent;
   color: var(--mac-app-text, #242426);
   cursor: pointer;
   user-select: none;
   text-align: left;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .fm-content-grid .fm-entry {
   display: grid;
   place-items: center;
-  align-content: center;
-  gap: 6px;
-  height: 100px;
-  padding: 8px 6px;
+  align-content: start;
+  gap: 8px;
+  min-height: 112px;
+  padding: 12px 8px 10px;
 }
 
-.fm-entry:hover { background: color-mix(in srgb, var(--mac-app-text, #242426) 6%, transparent); }
+.fm-entry:hover {
+  background: color-mix(in srgb, var(--mac-app-text, #242426) 5.5%, transparent);
+}
 
 .fm-entry-selected {
-  border-color: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 35%, transparent);
-  background: var(--mac-app-selection, rgba(10, 132, 255, 0.16));
+  border-color: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 28%, transparent);
+  background: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 14%, transparent);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mac-app-accent, #0a84ff) 22%, transparent);
   color: var(--mac-app-text, #1d1d1f);
+}
+
+.fm-content-list .fm-entry-selected {
+  border-color: transparent;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 16%, transparent);
 }
 
 .fm-entry-name {
   max-width: 100%;
   overflow: hidden;
-  font-size: 12.5px;
-  line-height: 1.25;
+  font-size: 12px;
+  line-height: 1.28;
+  letter-spacing: -0.01em;
   text-overflow: ellipsis;
 }
 
@@ -288,6 +303,8 @@ const emit = defineEmits<{
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   text-align: center;
+  width: 100%;
+  word-break: break-word;
 }
 
 .fm-content-list .fm-entry-name {
@@ -308,7 +325,9 @@ const emit = defineEmits<{
 
 .fm-entry-selected .fm-entry-date,
 .fm-entry-selected .fm-entry-kind,
-.fm-entry-selected .fm-entry-size { color: var(--mac-app-text-secondary, #555); }
+.fm-entry-selected .fm-entry-size {
+  color: color-mix(in srgb, var(--mac-app-text, #1d1d1f) 72%, #6e6e73);
+}
 
 .fm-state {
   display: grid;

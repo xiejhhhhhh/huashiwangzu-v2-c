@@ -120,6 +120,17 @@ const sidebarStyle = computed(() => ({
 }
 .app-window-frame--file-manager .app-window-frame_content {
   padding: 0;
+  overflow: hidden;
   background: var(--mac-app-surface, #fbfbfd);
+}
+.app-window-frame--file-manager .app-window-frame_sidebar {
+  background: var(--mac-app-surface-sidebar, rgba(238, 240, 243, 0.82));
+}
+.app-window-frame--file-manager .app-window-frame_toolbar {
+  min-height: var(--mac-app-toolbar-height, 44px);
+}
+.app-window-frame--file-manager .app-window-frame_statusbar {
+  min-height: var(--mac-app-statusbar-height, 28px);
+  background: var(--mac-app-surface-status, rgba(242, 242, 244, 0.92));
 }
 </style>

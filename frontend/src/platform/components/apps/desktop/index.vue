@@ -275,6 +275,12 @@ onMounted(() => {
   min-height: 0;
   position: relative;
   color: var(--mac-app-text, #1d1d1f);
+  --mac-app-toolbar-height: 44px;
+  --mac-app-statusbar-height: 28px;
+  --mac-app-surface: #fbfbfd;
+  --mac-app-surface-sidebar: color-mix(in srgb, #eef0f3 72%, rgba(255, 255, 255, 0.55));
+  --mac-app-surface-toolbar: color-mix(in srgb, #f4f4f6 78%, rgba(255, 255, 255, 0.7));
+  --mac-app-surface-status: color-mix(in srgb, #f2f2f4 84%, rgba(255, 255, 255, 0.72));
 }
 
 .fm-main {
@@ -290,26 +296,41 @@ onMounted(() => {
 }
 
 .fm-main-drag-over {
-  background: var(--mac-app-selection, rgba(0, 122, 255, 0.06)) !important;
-  box-shadow: inset 0 0 0 1.5px var(--mac-app-accent, var(--desktop-accent, #007aff));
-  border-radius: 8px;
+  background: var(--mac-app-selection, rgba(10, 132, 255, 0.08)) !important;
+  box-shadow: inset 0 0 0 1.5px var(--mac-app-accent, #0a84ff);
+  border-radius: 10px;
+}
+
+:deep(.mac-app-kit),
+:deep(.app-window-frame) {
+  height: 100%;
+  min-height: 0;
 }
 
 :deep(.app-window-frame_toolbar) {
   padding: 0;
+  min-height: var(--mac-app-toolbar-height, 44px);
+  background: var(--mac-app-surface-toolbar);
+  border-bottom: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
 :deep(.app-window-frame_sidebar) {
   border-right: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
-  background: var(--mac-app-surface-sidebar, rgba(245, 246, 248, 0.82));
+  background: var(--mac-app-surface-sidebar);
+  backdrop-filter: blur(28px) saturate(165%);
+  -webkit-backdrop-filter: blur(28px) saturate(165%);
 }
 
 :deep(.app-window-frame--file-manager .app-window-frame_content) {
   padding: 0;
   background: var(--mac-app-surface, #fbfbfd);
+  overflow: hidden;
 }
 
 :deep(.app-window-frame_statusbar) {
-  background: var(--mac-app-surface-status, rgba(246, 246, 248, 0.9));
+  min-height: var(--mac-app-statusbar-height, 28px);
+  background: var(--mac-app-surface-status);
+  border-top: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.1));
 }
 </style>

@@ -6,7 +6,7 @@ const apps = [
     name: '文本',
     icon: 'Edit',
     description: '编辑文本文件',
-    entry_component_key: 'apps/text-editor/index.vue',
+    entry_component_key: 'text-editor/index.vue',
     default_width: 760,
     default_height: 520,
     min_width: 360,
@@ -17,7 +17,7 @@ const apps = [
     supported_formats: ['txt', 'md'],
     editable_formats: ['txt', 'md'],
     allow_multiple: true,
-    show_on_desktop: false,
+    show_on_desktop: true,
     show_in_launcher: true,
     show_in_tray: false,
     show_in_sidebar: false,
@@ -524,7 +524,40 @@ test('files finder app mounts MacAppShell contract', async ({ page }) => {
   await expect(finder.locator('.mac-app-kit[data-mac-app-layout="finder"]')).toBeVisible()
   await expect(finder.locator('.fm-navigation-bar')).toBeVisible()
   await expect(finder.locator('.fm-nav-pane')).toBeVisible()
+  await expect(finder.locator('.fm-nav-section-label').filter({ hasText: '个人收藏' })).toBeVisible()
+  await expect(finder.locator('.fm-nav-section-label').filter({ hasText: '位置' })).toBeVisible()
   await expect(finder.locator('.fm-status-bar')).toBeVisible()
+  await expect(finder.locator('.app-window-frame--file-manager')).toBeVisible()
+})
+
+test('document viewer shell uses mac-app-v1 chrome instead of legacy teal shell', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.desktop-shell-container')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '文本' })).toBeVisible()
+
+  const opened = await page.evaluate(() => {
+    const manager = window.__HSWZ_WINDOW_MANAGER__
+    if (!manager) return null
+    return manager.openWindow('text', {
+      fileId: 1,
+      fileName: 'readme.txt',
+      format: 'txt',
+    })
+  })
+  expect(opened).toBeTruthy()
+
+  const app = page.locator('.text-editor-app[data-mac-app-kit="mac-app-v1"]')
+  await expect(app).toBeVisible({ timeout: 15000 })
+  const shell = page.locator('.viewer-shell[data-mac-app-kit="mac-app-v1"]')
+  await expect(shell).toBeVisible({ timeout: 15000 })
+  await expect(shell).toHaveAttribute('data-mac-app-layout', 'document')
+  await expect(shell.locator('.vs-toolbar')).toBeVisible()
+  await expect(shell.locator('.vs-app-badge')).toBeVisible()
+  // legacy teal badge background should no longer exist
+  const badgeBg = await shell.locator('.vs-app-badge').evaluate((el) => getComputedStyle(el).backgroundColor)
+  expect(badgeBg === 'rgba(0, 0, 0, 0)' || badgeBg === 'transparent').toBeTruthy()
 })
 
 test('slice4 main products mount MacAppShell layouts', async ({ page }) => {

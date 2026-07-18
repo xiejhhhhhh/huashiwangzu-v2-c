@@ -82,11 +82,11 @@ const parentFolderId = () => {
 .fm-navigation-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   min-width: 0;
-  padding: 0 10px;
-  min-height: 40px;
+  padding: 0 12px;
+  min-height: var(--mac-app-toolbar-height, 44px);
   background: transparent;
 }
 
@@ -96,15 +96,16 @@ const parentFolderId = () => {
   gap: 1px;
   flex-shrink: 0;
   padding: 2px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--mac-app-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--mac-app-border, rgba(60, 60, 67, 0.12)) 58%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 .fm-icon-button {
-  width: 28px;
+  width: 30px;
   height: 26px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--mac-app-text, #343438);
   line-height: 1;
@@ -114,10 +115,10 @@ const parentFolderId = () => {
   justify-content: center;
 }
 .fm-icon-button:hover:not(:disabled) {
-  background: color-mix(in srgb, white 70%, transparent);
+  background: color-mix(in srgb, white 78%, transparent);
 }
 .fm-icon-button:disabled {
-  opacity: 0.35;
+  opacity: 0.34;
   cursor: not-allowed;
 }
 
@@ -128,10 +129,11 @@ const parentFolderId = () => {
   align-items: center;
   gap: 1px;
   padding: 0 8px;
-  height: 28px;
+  height: 30px;
   border: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.14));
-  border-radius: 8px;
-  background: color-mix(in srgb, white 72%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, white 78%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
   overflow: hidden;
 }
 
@@ -151,13 +153,13 @@ const parentFolderId = () => {
 .fm-crumb-segment {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
 .fm-crumb-sep {
   color: var(--mac-app-text-secondary, #99999f);
-  margin: 0 2px;
+  margin: 0 1px;
   flex-shrink: 0;
 }
 
@@ -167,12 +169,12 @@ const parentFolderId = () => {
   font-size: 12px;
   color: var(--mac-app-text-secondary, #55555a);
   cursor: pointer;
-  padding: 2px 5px;
+  padding: 2px 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
-  border-radius: 5px;
+  max-width: 140px;
+  border-radius: 6px;
 }
 .fm-crumb-btn:hover {
   color: var(--mac-app-accent, #0a84ff);
@@ -190,7 +192,7 @@ const parentFolderId = () => {
 
 .fm-search-icon {
   position: absolute;
-  left: 8px;
+  left: 9px;
   top: 50%;
   z-index: 1;
   color: var(--mac-app-text-secondary, #8e8e93);
@@ -200,11 +202,12 @@ const parentFolderId = () => {
 
 .fm-search-input {
   width: 168px;
-  height: 28px;
-  padding: 0 9px 0 27px;
+  height: 30px;
+  padding: 0 10px 0 28px;
   border: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.14));
-  border-radius: 8px;
-  background: color-mix(in srgb, white 72%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, white 78%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
   font-size: 12px;
   color: var(--mac-app-text, #1d1d1f);
   outline: none;
@@ -214,7 +217,9 @@ const parentFolderId = () => {
 }
 .fm-search-input:focus {
   border-color: var(--mac-app-accent, #0a84ff);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mac-app-accent, #0a84ff) 18%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--mac-app-accent, #0a84ff) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
 @media (max-width: 720px) {

@@ -23,17 +23,17 @@ const variantClass = computed(() => `app-toolbar--${props.variant}`)
   display: flex;
   align-items: center;
   gap: 8px;
-  height: var(--mac-app-toolbar-height, 42px);
-  min-height: var(--mac-app-toolbar-height, 42px);
+  height: var(--mac-app-toolbar-height, 44px);
+  min-height: var(--mac-app-toolbar-height, 44px);
   padding: 0 14px;
   box-sizing: border-box;
   background: transparent;
   flex-shrink: 0;
 }
 .app-toolbar-glass {
-  background: var(--mac-app-surface-toolbar, rgba(255, 255, 255, 0.58));
+  background: var(--mac-app-surface-toolbar, rgba(255, 255, 255, 0.62));
   border-bottom: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
   backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
   -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
 }

@@ -61,8 +61,8 @@ defineEmits<{
   justify-content: space-between;
   width: 100%;
   height: 100%;
-  min-height: 24px;
-  padding: 0 4px;
+  min-height: var(--mac-app-statusbar-height, 28px);
+  padding: 0 8px 0 12px;
   font: var(--mac-app-font-caption, 400 11px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif);
   color: var(--mac-app-text-secondary, #6e6e73);
   background: transparent;
@@ -82,16 +82,17 @@ defineEmits<{
   align-items: center;
   gap: 0;
   padding: 2px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--mac-app-border, rgba(60, 60, 67, 0.12)) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mac-app-border, rgba(60, 60, 67, 0.12)) 72%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
   flex-shrink: 0;
 }
 
 .fm-view-btn {
-  width: 27px;
-  height: 21px;
+  width: 28px;
+  height: 22px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--mac-app-text-secondary, #626267);
   cursor: pointer;
@@ -102,12 +103,12 @@ defineEmits<{
 }
 
 .fm-view-btn:hover {
-  background: color-mix(in srgb, white 70%, transparent);
+  background: color-mix(in srgb, white 74%, transparent);
 }
 
 .fm-view-btn-active {
   color: var(--mac-app-text, #1d1d1f);
-  background: color-mix(in srgb, white 92%, transparent);
+  background: color-mix(in srgb, white 94%, transparent);
   border-color: var(--mac-app-border, rgba(60, 60, 67, 0.1));
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }

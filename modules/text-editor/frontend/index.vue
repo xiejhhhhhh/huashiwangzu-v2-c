@@ -157,8 +157,15 @@ onMounted(() => {
 .text-editor-app {
   height: 100%;
   min-height: 0;
-  background: var(--mac-app-surface, #f8fafc);
-  color: var(--mac-app-text, #1f2937);
+  background: var(--mac-app-surface, #f7f7f9);
+  color: var(--mac-app-text, #1d1d1f);
+}
+
+:deep(.app-window-frame_content),
+:deep(.app-window-frame--editor .app-window-frame_content) {
+  padding: 0;
+  overflow: hidden;
+  background: var(--mac-app-surface, #f7f7f9);
 }
 
 .te-container {
@@ -174,12 +181,12 @@ onMounted(() => {
   border: none;
   outline: none;
   resize: none;
-  padding: 16px;
-  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  padding: 18px 20px;
+  font-family: 'SF Mono', ui-monospace, 'Menlo', 'Consolas', monospace;
   font-size: 13px;
-  line-height: 1.6;
-  color: #333;
-  background: #fafafa;
+  line-height: 1.65;
+  color: var(--mac-app-text, #1d1d1f);
+  background: #fff;
   tab-size: 2;
 }
 
@@ -190,30 +197,31 @@ onMounted(() => {
 .te-preview {
   width: 100%;
   height: 100%;
-  padding: 16px 20px;
+  padding: 18px 22px;
   overflow-y: auto;
   font-size: 14px;
   line-height: 1.7;
-  color: #333;
+  color: var(--mac-app-text, #1d1d1f);
+  background: #fff;
 }
 
 .te-preview :deep(h1),
 .te-preview :deep(h2),
 .te-preview :deep(h3) {
-  color: #2395bc;
+  color: var(--mac-app-text, #1d1d1f);
   margin-top: 20px;
   margin-bottom: 10px;
 }
 
 .te-preview :deep(h1) { font-size: 22px; }
 .te-preview :deep(h2) { font-size: 18px; }
-.te-preview :deep(h3) { font-size: 15px; }
+.te-preview :deep(h3) { font-size: 15px; color: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 55%, #1d1d1f); }
 
 .te-preview :deep(code) {
-  background: #f0f0f0;
+  background: color-mix(in srgb, var(--mac-app-border, rgba(60, 60, 67, 0.12)) 55%, #f5f5f7);
   padding: 1px 5px;
-  border-radius: 3px;
-  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  border-radius: 5px;
+  font-family: 'SF Mono', ui-monospace, 'Menlo', 'Consolas', monospace;
   font-size: 12px;
 }
 

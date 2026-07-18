@@ -427,7 +427,7 @@ onMounted(() => {
 }
 
 .pv-search-input:focus {
-  border-color: #2395bc;
+  border-color: var(--mac-app-accent, #0a84ff);
 }
 
 .pv-search-count {
@@ -437,7 +437,7 @@ onMounted(() => {
 
 .pv-search-status {
   font-size: 12px;
-  color: #2395bc;
+  color: var(--mac-app-accent, #0a84ff);
 }
 
 .pv-viewport {
@@ -526,7 +526,7 @@ onMounted(() => {
 }
 
 .pv-page-input:focus {
-  border-color: #2395bc;
+  border-color: var(--mac-app-accent, #0a84ff);
 }
 
 .pv-error {
