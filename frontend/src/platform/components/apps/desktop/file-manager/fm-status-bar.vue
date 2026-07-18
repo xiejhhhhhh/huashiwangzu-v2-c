@@ -10,7 +10,7 @@
         <span v-if="selectedItem && !selectedItem.is_folder">({{ selectedSize }})</span>
       </template>
     </div>
-    <div class="fm-status-right">
+    <div v-if="viewMode === 'grid' || viewMode === 'gallery'" class="fm-status-right">
       <span class="fm-icon-size-label">图标大小</span>
       <input
         class="fm-icon-size"
@@ -35,7 +35,7 @@ defineProps<{
   fileCount: number
   selectedItem: FileEntry | null
   selectedSize: string
-  viewMode: 'grid' | 'list' | 'column'
+  viewMode: 'grid' | 'list' | 'column' | 'gallery'
   searchKeyword: string
   filteredCount: number
   displayName: (file: FileEntry) => string
@@ -43,7 +43,7 @@ defineProps<{
 }>()
 
 defineEmits<{
-  (e: 'update:viewMode', mode: 'grid' | 'list'): void
+  (e: 'update:viewMode', mode: 'grid' | 'list' | 'column' | 'gallery'): void
   (e: 'update:iconSize', size: number): void
 }>()
 </script>

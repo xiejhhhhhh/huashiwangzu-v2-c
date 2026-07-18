@@ -311,12 +311,28 @@ onUnmounted(() => {
 .desktop-window-finder :deep(.window-title) {
   font-weight: 600;
   letter-spacing: -0.01em;
+  font-size: 13px;
 }
 .desktop-window-finder :deep(.window-titlebar) {
-  height: 40px;
+  height: 38px;
+  border-bottom: 0;
+  background: color-mix(in srgb, #ececef 78%, rgba(255, 255, 255, 0.55));
+  box-shadow: inset 0 -0.5px 0 rgba(60, 60, 67, 0.12);
+}
+.desktop-window-finder.desktop-window-active :deep(.window-titlebar) {
+  background: color-mix(in srgb, #f4f4f6 82%, rgba(255, 255, 255, 0.6));
 }
 .desktop-window-finder :deep(.window-content) {
   background: transparent;
+}
+.desktop-window-finder :deep(.window-content-padding) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.desktop-window-finder :deep(.desktop-file-manager) {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ═══ 打开动画 - 通用（从中心淡入） ═══ */

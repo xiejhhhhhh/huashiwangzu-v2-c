@@ -126,6 +126,44 @@
         </div>
       </div>
 
+      <div
+        v-else-if="viewMode === 'gallery'"
+        class="fm-content-gallery"
+      >
+        <div class="fm-gallery-stage">
+          <template v-if="selected">
+            <FileVisualIcon
+              :kind="selected.is_folder || !selected.format ? 'folder' : 'file'"
+              :extension="selected.format || ''"
+              :size="148"
+            />
+            <div class="fm-gallery-name">{{ displayName(selected) }}</div>
+            <div class="fm-gallery-meta">
+              {{ selected.is_folder ? '文件夹' : ((selected.format || '文件').toUpperCase()) }}
+              <template v-if="!selected.is_folder"> · {{ formatSize(selected.file_size) }}</template>
+            </div>
+          </template>
+          <div v-else class="fm-gallery-empty">选择一个项目以在画廊中预览</div>
+        </div>
+        <div class="fm-gallery-strip">
+          <button
+            v-for="item in items"
+            :key="`g-${item.is_folder ? 'folder' : 'file'}-${item.id}`"
+            type="button"
+            class="fm-gallery-thumb"
+            :class="{ 'fm-entry-selected': selectedId === item.id }"
+            :data-selection-key="(item.is_folder ? 'folder' : 'file') + ':' + item.id"
+            @click="handleClick(item, $event)"
+            @dblclick="handleDoubleClick(item, $event)"
+            @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
+            @mousedown.stop="handleEntryMouseDown(item, $event)"
+          >
+            <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="42" />
+            <span class="fm-gallery-thumb-name">{{ displayName(item) }}</span>
+          </button>
+        </div>
+      </div>
+
       <div v-else class="fm-content-list">
         <button
           v-for="item in items"
@@ -175,7 +213,7 @@ export type ColumnStackItem = {
 const props = withDefaults(defineProps<{
   items: FileEntry[]
   selectedId: number | null
-  viewMode: 'grid' | 'list' | 'column'
+  viewMode: 'grid' | 'list' | 'column' | 'gallery'
   iconSize?: number
   columnStack?: ColumnStackItem[]
   loading: boolean
@@ -590,4 +628,74 @@ function formatListDate(raw?: string | null) {
 
 .fm-state-error { align-content: center; }
 .fm-load-banner { margin: 10px; }
+
+.fm-content-gallery {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 118px;
+  background: #fff;
+}
+.fm-gallery-stage {
+  min-height: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(255,255,255,0.9), transparent 55%),
+    #f7f7f9;
+}
+.fm-gallery-name {
+  max-width: 420px;
+  text-align: center;
+  font: 600 14px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  color: #1d1d1f;
+  word-break: break-word;
+}
+.fm-gallery-meta,
+.fm-gallery-empty {
+  color: rgba(60, 60, 67, 0.55);
+  font-size: 12px;
+}
+.fm-gallery-strip {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-top: 0.5px solid rgba(60, 60, 67, 0.14);
+  background: color-mix(in srgb, #f4f4f6 90%, white);
+}
+.fm-gallery-thumb {
+  flex: 0 0 88px;
+  width: 88px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  padding: 8px 6px;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  cursor: default;
+  color: #1d1d1f;
+}
+.fm-gallery-thumb:hover {
+  background: rgba(0,0,0,0.05);
+}
+.fm-gallery-thumb.fm-entry-selected {
+  background: rgba(10, 132, 255, 0.16);
+}
+.fm-gallery-thumb-name {
+  width: 100%;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
 </style>

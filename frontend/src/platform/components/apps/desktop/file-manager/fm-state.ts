@@ -25,7 +25,7 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
   const loading = ref(false)
   const uploadInput = ref<HTMLInputElement | null>(null)
   const breadcrumb = ref<DesktopFileManagerBreadcrumbItem[]>([{ id: null, name: '桌面' }])
-  const viewMode = ref<'grid' | 'list' | 'column'>('grid')
+  const viewMode = ref<'grid' | 'list' | 'column' | 'gallery'>('grid')
   const activeNamed = ref<'documents' | 'downloads' | null>(null)
   const locations = ref<Record<string, FinderLocation>>({
     desktop: { key: 'desktop', id: 0, name: '桌面' },
@@ -366,7 +366,7 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
   }
 
   watch(viewMode, (mode) => {
-    if (mode === 'column' && !isRecycleBin.value) {
+    if ((mode === 'column') && !isRecycleBin.value) {
       const name = breadcrumb.value[breadcrumb.value.length - 1]?.name || '桌面'
       void resetColumnStack(currentFolderId.value, name)
     }

@@ -1,10 +1,13 @@
 <template>
   <div
+    ref="rootRef"
     class="desktop-file-manager"
+    tabindex="0"
     :data-folder="String(state.currentFolderId.value || 0)"
     data-mac-app-kit="mac-app-v1"
     data-mac-app-layout="finder"
     @contextmenu.prevent="handleBlankContextMenu"
+    @keydown="handleKeydown"
   >
     <MacAppShell layout="finder" :sidebar-width="216">
       <template #toolbar>
@@ -15,6 +18,8 @@
           :breadcrumb="state.breadcrumb.value"
           :search-keyword="state.searchKeyword.value"
           :view-mode="state.viewMode.value"
+          :show-path-bar="showPathBar"
+          :show-preview="showPreview"
           @go-back="state.goBack"
           @go-forward="state.goForward"
           @go-up="state.goUp"
@@ -22,6 +27,9 @@
           @navigate="state.navigateToCrumb"
           @update:search-keyword="state.searchKeyword.value = $event"
           @update:view-mode="state.viewMode.value = $event"
+          @update:show-path-bar="setShowPathBar"
+          @update:show-preview="setShowPreview"
+          @action="handleToolbarAction"
         />
       </template>
 
@@ -42,7 +50,7 @@
         :class="{ 'fm-main-drag-over': dragState.dragOverId === String(state.currentFolderId.value) && dragState.isDragging }"
       >
         <FmPathBar
-          v-if="!state.isRecycleBin.value"
+          v-if="showPathBar && !state.isRecycleBin.value"
           :crumbs="state.breadcrumb.value"
           @navigate="state.navigateToCrumb"
         />
@@ -69,7 +77,7 @@
             @column-open="(item, col) => state.selectInColumn(item, col)"
           />
           <FmPreviewPane
-            v-if="state.viewMode.value !== 'column'"
+            v-if="showPreview && state.viewMode.value !== 'column' && state.viewMode.value !== 'gallery'"
             :item="state.selectedItem.value"
             :display-name="state.displayName"
             :format-size="state.formatSize"
@@ -90,7 +98,7 @@
           :display-name="state.displayName"
           :icon-size="iconSize"
           @update:view-mode="state.viewMode.value = $event"
-          @update:icon-size="iconSize = $event"
+          @update:icon-size="setIconSize"
         />
       </template>
     </MacAppShell>
@@ -122,7 +130,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { MacAppShell, useAppFeedback } from '@/desktop/app-kit'
 import { dragState } from '@/desktop/drag-drop/drag-state'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
@@ -151,16 +159,126 @@ const props = defineProps<{
 
 const feedback = useAppFeedback()
 const uploadInputRef = ref<HTMLInputElement | null>(null)
-const iconSize = ref(50)
+const rootRef = ref<HTMLElement | null>(null)
+
+const PREFS_KEY = 'finder.ui.prefs.v1'
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as { iconSize?: number; showPathBar?: boolean; showPreview?: boolean; viewMode?: string }
+  } catch {
+    return null
+  }
+}
+const prefs = loadPrefs()
+const iconSize = ref(typeof prefs?.iconSize === 'number' ? prefs.iconSize : 50)
+const showPathBar = ref(prefs?.showPathBar !== false)
+const showPreview = ref(prefs?.showPreview !== false)
+
 const state = useFileManagerState({
   folderId: () => props.folderId,
   folderName: () => props.folderName,
   windowId: () => props.windowId,
 })
+if (prefs?.viewMode && ['grid', 'list', 'column', 'gallery'].includes(prefs.viewMode)) {
+  state.viewMode.value = prefs.viewMode as 'grid' | 'list' | 'column' | 'gallery'
+}
+
 const contextMenu = useContextMenu()
 const { creatableFormats } = useCreatableFormats()
 
 let ctxtFile: FileEntry | null = null
+
+function persistPrefs() {
+  localStorage.setItem(PREFS_KEY, JSON.stringify({
+    iconSize: iconSize.value,
+    showPathBar: showPathBar.value,
+    showPreview: showPreview.value,
+    viewMode: state.viewMode.value,
+  }))
+}
+
+function setShowPathBar(v: boolean) {
+  showPathBar.value = v
+  persistPrefs()
+}
+
+function setShowPreview(v: boolean) {
+  showPreview.value = v
+  persistPrefs()
+}
+
+function setIconSize(v: number) {
+  iconSize.value = v
+  persistPrefs()
+}
+
+watch(() => state.viewMode.value, () => persistPrefs())
+
+function handleToolbarAction(key: string) {
+  if (key === 'upload-file') {
+    void state.handleAction('upload-file', null)
+    return
+  }
+  if (key === 'create-folder') {
+    void state.handleAction('create-folder', null)
+    return
+  }
+  if (key === 'refresh') {
+    void state.loadFiles()
+  }
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+
+  const items = state.sortedItems.value
+  if (!items.length && !['Backspace', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+
+  const idx = items.findIndex((item) => item.id === state.selectedId.value)
+
+  if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+    e.preventDefault()
+    const next = items[Math.min(items.length - 1, Math.max(0, idx + 1))] || items[0]
+    if (next) state.selectItem(next)
+    return
+  }
+  if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+    e.preventDefault()
+    if (idx <= 0) {
+      const first = items[0]
+      if (first) state.selectItem(first)
+      return
+    }
+    const prev = items[idx - 1]
+    if (prev) state.selectItem(prev)
+    return
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    if (state.selectedItem.value) handleItemOpen(state.selectedItem.value)
+    return
+  }
+  if (e.key === 'Delete' || ((e.metaKey || e.ctrlKey) && e.key === 'Backspace')) {
+    if (state.selectedItem.value) {
+      e.preventDefault()
+      void state.handleAction('delete', state.selectedItem.value)
+    }
+    return
+  }
+  if (e.key === 'Backspace') {
+    e.preventDefault()
+    if (state.canGoUp.value) state.goUp()
+    else state.goRoot()
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+    e.preventDefault()
+    if (items[0]) state.selectItem(items[0])
+  }
+}
 
 function handleSort(column: string) {
   if (state.sortColumn.value === column) {
@@ -297,6 +415,7 @@ onMounted(async () => {
   void state.loadFiles()
   const name = state.breadcrumb.value[state.breadcrumb.value.length - 1]?.name || '桌面'
   state.syncWindowTitle(name)
+  rootRef.value?.focus({ preventScroll: true })
 })
 </script>
 
@@ -305,13 +424,14 @@ onMounted(async () => {
   height: 100%;
   min-height: 0;
   position: relative;
+  outline: none;
   color: var(--mac-app-text, #1d1d1f);
   --mac-app-toolbar-height: 44px;
   --mac-app-statusbar-height: 22px;
   --mac-app-surface: #ffffff;
   --mac-app-surface-sidebar: transparent;
-  --mac-app-surface-toolbar: color-mix(in srgb, #f6f6f8 86%, white);
-  --mac-app-surface-status: color-mix(in srgb, #f4f4f6 90%, white);
+  --mac-app-surface-toolbar: color-mix(in srgb, #f2f2f4 82%, white);
+  --mac-app-surface-status: color-mix(in srgb, #f2f2f4 90%, white);
 }
 
 .fm-main {
