@@ -235,6 +235,24 @@ export async function batchMoveRequest(
   })
 }
 
+export async function batchCopyRequest(
+  items: BatchFileItem[],
+  targetFolderId?: number | null,
+): Promise<{
+  success_count: number
+  failed_count: number
+  items: Array<{ id: number; type: string; success: boolean; error?: string | null; new_id?: number | null }>
+}> {
+  return await api.post<unknown, {
+    success_count: number
+    failed_count: number
+    items: Array<{ id: number; type: string; success: boolean; error?: string | null; new_id?: number | null }>
+  }>('/files/batch-copy', {
+    items,
+    target_folder_id: targetFolderId ?? null,
+  })
+}
+
 export async function downloadFileRequest(fileId: number, filename?: string) {
   const response = await api.get<unknown, Blob>(`/files/download/${fileId}`, { responseType: 'blob' })
   const objectUrl = URL.createObjectURL(response)
@@ -303,9 +321,22 @@ export interface FileSearchPageResponse {
   page_size: number
 }
 
-export async function searchFilesRequest(keyword: string, extension?: string, page = 1, pageSize = 50): Promise<FileSearchPageResponse> {
+export async function searchFilesRequest(
+  keyword: string,
+  extension?: string,
+  page = 1,
+  pageSize = 50,
+  opts?: { folderId?: number | null; recursive?: boolean },
+): Promise<FileSearchPageResponse> {
   const data = await api.get<unknown, BackendFileListResponse>('/files/search', {
-    params: { keyword, extension, page, page_size: pageSize }
+    params: {
+      keyword,
+      extension,
+      page,
+      page_size: pageSize,
+      folder_id: opts?.folderId == null ? undefined : opts.folderId,
+      recursive: opts?.recursive ?? true,
+    },
   })
   return toFileListPage(data)
 }

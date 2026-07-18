@@ -2,7 +2,7 @@ import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppException, NotFound, PermissionDenied
@@ -535,11 +535,98 @@ async def check_file_write_access(db: AsyncSession, file_id: int, user_id: int) 
     return file
 
 
-async def search_files(db: AsyncSession, owner_id: int, keyword: str = "", extension: str | None = None, page: int = 1, page_size: int = 50) -> dict:
-    # Get all accessible file IDs (owned + shared)
-    accessible_ids = await get_accessible_file_ids(db, owner_id)
-    base = File.deleted.is_(False)
-    fq = select(File).where(base, File.id.in_(accessible_ids))
+async def _collect_owned_folder_ids(
+    db: AsyncSession,
+    *,
+    owner_id: int,
+    root_folder_id: int,
+    recursive: bool,
+) -> list[int]:
+    """Return folder ids in scope. root itself is included."""
+    root = await db.get(Folder, root_folder_id)
+    if not root or root.deleted or root.owner_id != owner_id:
+        raise NotFound("Folder not found")
+    if not recursive:
+        return [root_folder_id]
+
+    ids: list[int] = []
+    stack = [root_folder_id]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        ids.append(current)
+        children = await db.execute(
+            select(Folder.id).where(
+                Folder.parent_id == current,
+                Folder.owner_id == owner_id,
+                Folder.deleted.is_(False),
+            )
+        )
+        for child_id in children.scalars().all():
+            stack.append(int(child_id))
+    return ids
+
+
+async def search_files(
+    db: AsyncSession,
+    owner_id: int,
+    keyword: str = "",
+    extension: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    folder_id: int | None = None,
+    recursive: bool = True,
+) -> dict:
+    """Search files/folders by name.
+
+    - folder_id is None: global (owned + shared files; owned folders)
+    - folder_id set + recursive=False: only that folder's direct children
+    - folder_id set + recursive=True: that folder subtree
+    Desktop root uses folder_id=0 → treated as parent_id/folder_id IS NULL scope.
+    """
+    scope_folder_ids: list[int] | None = None
+    root_scope = False
+    if folder_id is not None:
+        if int(folder_id) == 0:
+            root_scope = True
+            if recursive:
+                # all owned folders + root files
+                owned = await db.execute(
+                    select(Folder.id).where(Folder.owner_id == owner_id, Folder.deleted.is_(False))
+                )
+                scope_folder_ids = [int(i) for i in owned.scalars().all()]
+            else:
+                scope_folder_ids = []
+        else:
+            scope_folder_ids = await _collect_owned_folder_ids(
+                db, owner_id=owner_id, root_folder_id=int(folder_id), recursive=recursive
+            )
+
+    if scope_folder_ids is None:
+        accessible_ids = await get_accessible_file_ids(db, owner_id)
+        base = File.deleted.is_(False)
+        fq = select(File).where(base, File.id.in_(accessible_ids))
+    else:
+        base = File.deleted.is_(False)
+        if root_scope and not recursive:
+            fq = select(File).where(base, File.owner_id == owner_id, File.folder_id.is_(None))
+        elif root_scope and recursive:
+            # root files + files in any owned folder
+            fq = select(File).where(
+                base,
+                File.owner_id == owner_id,
+                or_(File.folder_id.is_(None), File.folder_id.in_(scope_folder_ids or [-1])),
+            )
+        else:
+            # non-root: files whose folder is in scope; for non-recursive only direct folder_id
+            if recursive:
+                fq = select(File).where(base, File.owner_id == owner_id, File.folder_id.in_(scope_folder_ids or [-1]))
+            else:
+                fq = select(File).where(base, File.owner_id == owner_id, File.folder_id == int(folder_id))
+
     if keyword:
         fq = fq.where(File.name.ilike(f"%{keyword}%"))
     if extension:
@@ -549,7 +636,35 @@ async def search_files(db: AsyncSession, owner_id: int, keyword: str = "", exten
     file_list = [{"id": f.id, "name": f.name, "extension": f.extension, "size": f.size, "folder_id": f.folder_id, "created_at": f.created_at, "updated_at": f.updated_at, "is_folder": False} for f in result.scalars().all()]
     if extension:
         return {"items": file_list, "total": total, "page": page, "page_size": page_size}
-    fld_q = select(Folder).where(Folder.deleted.is_(False), Folder.owner_id == owner_id)
+
+    if scope_folder_ids is None:
+        fld_q = select(Folder).where(Folder.deleted.is_(False), Folder.owner_id == owner_id)
+    elif root_scope and not recursive:
+        fld_q = select(Folder).where(
+            Folder.deleted.is_(False),
+            Folder.owner_id == owner_id,
+            Folder.parent_id.is_(None),
+        )
+    elif root_scope and recursive:
+        fld_q = select(Folder).where(Folder.deleted.is_(False), Folder.owner_id == owner_id)
+    else:
+        if recursive:
+            # folders in subtree except the root itself (search hits children)
+            child_ids = [i for i in (scope_folder_ids or []) if i != int(folder_id)]
+            if not child_ids:
+                return {"items": file_list, "total": total, "page": page, "page_size": page_size}
+            fld_q = select(Folder).where(
+                Folder.deleted.is_(False),
+                Folder.owner_id == owner_id,
+                Folder.id.in_(child_ids),
+            )
+        else:
+            fld_q = select(Folder).where(
+                Folder.deleted.is_(False),
+                Folder.owner_id == owner_id,
+                Folder.parent_id == int(folder_id),
+            )
+
     if keyword:
         fld_q = fld_q.where(Folder.name.ilike(f"%{keyword}%"))
     fld_total = len((await db.execute(fld_q.with_only_columns(Folder.id))).scalars().all())

@@ -193,7 +193,7 @@ async def move(body: MoveRequest, db: AsyncSession = Depends(get_db), user: User
 @router.post("/copy")
 async def copy(body: MoveRequest, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
     item = await file_ops_service.copy_item(db, body.type, body.id, body.target_folder_id, user.id)
-    return ApiResponse(data={"id": item.id, "message": "Copied"})
+    return ApiResponse(data={"id": item.id, "type": body.type, "message": "Copied"})
 
 
 @router.post("/delete")
@@ -211,8 +211,26 @@ async def delete_item(body: DeleteRequest, db: AsyncSession = Depends(get_db), u
 
 
 @router.get("/search")
-async def search(keyword: str = Query(""), extension: str = Query(None), page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
-    result = await file_service.search_files(db, user.id, keyword, extension, page, page_size)
+async def search(
+    keyword: str = Query(""),
+    extension: str = Query(None),
+    folder_id: int | None = Query(None),
+    recursive: bool = Query(True),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    result = await file_service.search_files(
+        db,
+        user.id,
+        keyword,
+        extension,
+        page,
+        page_size,
+        folder_id=folder_id,
+        recursive=recursive,
+    )
     return ApiResponse(data=result)
 
 
@@ -266,6 +284,37 @@ async def batch_move(body: BatchRequest, db: AsyncSession = Depends(get_db), use
             results.append({"id": item.id, "type": item.item_type, "success": True, "error": None})
             success_count += 1
             await create_log(db, "info", "file_system", "move", f"Moved {item.item_type} {item.id} to folder {body.target_folder_id}", user_id=user.id)
+        except Exception as e:
+            await db.rollback()
+            results.append({"id": item.id, "type": item.item_type, "success": False, "error": str(e)})
+            failed_count += 1
+    return ApiResponse(data={"items": results, "success_count": success_count, "failed_count": failed_count})
+
+
+@router.post("/batch-copy")
+async def batch_copy(body: BatchRequest, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
+    results = []
+    success_count = 0
+    failed_count = 0
+    for item in body.items:
+        try:
+            copied = await file_ops_service.copy_item(db, item.item_type, item.id, body.target_folder_id, user.id)
+            results.append({
+                "id": item.id,
+                "type": item.item_type,
+                "success": True,
+                "error": None,
+                "new_id": getattr(copied, "id", None),
+            })
+            success_count += 1
+            await create_log(
+                db,
+                "info",
+                "file_system",
+                "copy",
+                f"Copied {item.item_type} {item.id} to folder {body.target_folder_id}",
+                user_id=user.id,
+            )
         except Exception as e:
             await db.rollback()
             results.append({"id": item.id, "type": item.item_type, "success": False, "error": str(e)})

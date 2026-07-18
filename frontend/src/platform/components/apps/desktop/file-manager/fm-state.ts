@@ -86,7 +86,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
   const filteredItems = computed(() => {
     const keyword = searchKeyword.value.trim()
     let filtered = items.value
-    if (keyword && searchScope.value === 'all' && searchResults.value) {
+    // both scopes use server search results when available
+    if (keyword && searchResults.value) {
       filtered = searchResults.value
     } else if (keyword) {
       const needle = keyword.toLowerCase()
@@ -209,8 +210,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
       }
       items.value = nextItems
       finishLoading(loadState, nextItems)
-      if (searchKeyword.value.trim() && searchScope.value === 'all' && !isRecycleBin.value) {
-        void runGlobalSearch(searchKeyword.value)
+      if (searchKeyword.value.trim() && !isRecycleBin.value) {
+        void runSearch(searchKeyword.value)
       }
     } catch (error: unknown) {
       failLoading(loadState, error, '文件列表加载失败')
@@ -224,7 +225,7 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     searchLoading.value = false
   }
 
-  async function runGlobalSearch(raw: string) {
+  async function runSearch(raw: string) {
     const keyword = raw.trim()
     if (!keyword || isRecycleBin.value) {
       clearSearchResults()
@@ -233,7 +234,13 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     const token = ++searchToken
     searchLoading.value = true
     try {
-      const page = await searchFilesRequest(keyword, undefined, 1, 200)
+      // folder scope: recursive under current folder (Finder-like); all = global
+      const page = searchScope.value === 'folder'
+        ? await searchFilesRequest(keyword, undefined, 1, 200, {
+            folderId: currentFolderId.value || 0,
+            recursive: true,
+          })
+        : await searchFilesRequest(keyword, undefined, 1, 200)
       if (token !== searchToken) return
       searchResults.value = page.items || []
     } catch {
@@ -247,25 +254,25 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
   function scheduleSearch() {
     if (searchTimer) clearTimeout(searchTimer)
     const keyword = searchKeyword.value.trim()
-    if (!keyword || searchScope.value !== 'all' || isRecycleBin.value) {
+    if (!keyword || isRecycleBin.value) {
       clearSearchResults()
       return
     }
     searchTimer = setTimeout(() => {
-      void runGlobalSearch(keyword)
+      void runSearch(keyword)
     }, 220)
   }
 
   function setSearchScope(scope: 'folder' | 'all') {
     if (searchScope.value === scope) return
     searchScope.value = scope
-    if (scope === 'all') scheduleSearch()
+    if (searchKeyword.value.trim()) scheduleSearch()
     else clearSearchResults()
   }
 
   function setSearchKeyword(value: string) {
     searchKeyword.value = value
-    if (searchScope.value === 'all') scheduleSearch()
+    if (value.trim()) scheduleSearch()
     else clearSearchResults()
   }
 
@@ -298,7 +305,7 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
 
   watch(searchKeyword, () => {
     // keep compatibility for direct writes from templates
-    if (searchScope.value === 'all') scheduleSearch()
+    if (searchKeyword.value.trim()) scheduleSearch()
     else clearSearchResults()
   })
 

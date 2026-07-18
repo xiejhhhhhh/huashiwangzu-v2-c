@@ -28,7 +28,13 @@ export function buildFileMenu(
     { key: 'open', label: '打开', icon: '↗' },
     { key: 'download', label: '下载到本地', icon: '⬇' },
     ...separatorItems(),
-    ...(writable ? [{ key: 'cut', label: '剪切', icon: '✂' }, { key: 'copy', label: '复制', icon: '📋' }] : []),
+    ...(writable
+      ? [
+          { key: 'cut', label: '剪切', icon: '✂' },
+          { key: 'copy', label: '复制', icon: '📋' },
+          { key: 'duplicate', label: '制作副本', icon: '❐' },
+        ]
+      : []),
     { key: 'copy-path', label: '复制路径', icon: '⎘' },
     {
       key: 'tags',
@@ -36,7 +42,7 @@ export function buildFileMenu(
       icon: '🏷',
       children: buildTagMenuChildren(activeTags),
     },
-    { key: 'details', label: '属性', icon: 'ⓘ' },
+    { key: 'details', label: '显示简介', icon: 'ⓘ' },
     ...(writable ? [...separatorItems(), { key: 'rename', label: '重命名', icon: '✎' }, { key: 'delete', label: '删除', icon: '🗑', danger: true }] : []),
   ]
 }
@@ -52,7 +58,13 @@ export function buildFolderMenu(
     { key: 'upload-here', label: '上传文件', icon: '⬆', disabled: !writable },
     { key: 'create-folder-here', label: '新建文件夹', icon: '+', disabled: !writable },
     ...separatorItems(),
-    ...(writable ? [{ key: 'cut', label: '剪切', icon: '✂' }, { key: 'copy', label: '复制', icon: '📋' }] : []),
+    ...(writable
+      ? [
+          { key: 'cut', label: '剪切', icon: '✂' },
+          { key: 'copy', label: '复制', icon: '📋' },
+          { key: 'duplicate', label: '制作副本', icon: '❐' },
+        ]
+      : []),
     { key: 'copy-path', label: '复制路径', icon: '⎘' },
     {
       key: 'tags',
@@ -60,6 +72,7 @@ export function buildFolderMenu(
       icon: '🏷',
       children: buildTagMenuChildren(activeTags),
     },
+    { key: 'details', label: '显示简介', icon: 'ⓘ' },
     ...(writable && hasContent.value ? [...separatorItems(), { key: 'paste-here', label: '粘贴', icon: '📌' }] : []),
     ...(writable ? [...separatorItems(), { key: 'rename', label: '重命名', icon: '✎' }, { key: 'delete', label: '删除', icon: '🗑', danger: true }] : []),
   ]
@@ -88,7 +101,13 @@ export function buildMultiSelectMenu(
   return [
     { key: 'selection-info', label, icon: '☑', disabled: true },
     ...separatorItems(),
-    ...(writable ? [{ key: 'cut', label: '剪切', icon: '✂' }, { key: 'copy', label: '复制', icon: '📋' }] : []),
+    ...(writable
+      ? [
+          { key: 'cut', label: '剪切', icon: '✂' },
+          { key: 'copy', label: '复制', icon: '📋' },
+          { key: 'duplicate', label: '制作副本', icon: '❐' },
+        ]
+      : []),
     {
       key: 'tags',
       label: '标签',

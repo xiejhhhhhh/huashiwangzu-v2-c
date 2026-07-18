@@ -134,6 +134,16 @@ export function createFileOperations(deps: FileOperationsDeps) {
       copyItems(targets.map(toClipboardItem))
       return
     }
+    if (key === 'duplicate') {
+      if (!targets.length) return
+      // copy into current folder (Finder "Duplicate")
+      await ops.pasteToFolder(
+        deps.currentFolderId.value || null,
+        targets.map(toClipboardItem),
+        false,
+      )
+      return
+    }
     if (!file) return
     if (key === 'open') { deps.openItem(file); return }
     if (key === 'download') { await downloadFile(file); return }

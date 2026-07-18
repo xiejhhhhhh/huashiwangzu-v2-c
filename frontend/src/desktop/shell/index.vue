@@ -146,7 +146,7 @@ import type { ClipboardItem } from '@/desktop/clipboard/clipboard-state'
 // 旧 drag-tool 已被 icon-grid-model 替代，图标网格组件自管理位置
 // import { restorePersistedIconPositions } from '@/desktop/drag-drop/drag-tool'
 import {
-  moveEntryRequest, batchMoveRequest, copyEntryRequest, emptyRecycleBinRequest,
+  moveEntryRequest, batchMoveRequest, batchCopyRequest, copyEntryRequest, emptyRecycleBinRequest,
 } from '@/shared/api/desktop'
 import type { FileEntry } from '@/shared/api/types'
 import { useCreatableFormats } from '@/shared/composables/use-creatable-formats'
@@ -388,30 +388,33 @@ on('desktop:move-to-folder', async ({ ids, targetFolderId, copy }) => {
       const entry = desktopFileList.value?.find((f: FileEntry) => f.id === fileId)
       if (entry?.is_folder) itemType = 'folder'
     }
-    // backend copy currently supports files only
-    if (isCopy && itemType === 'folder') continue
     items.push({ id: fileId, item_type: itemType })
     if (srcFolderId !== null) affectedFolders.add(srcFolderId)
   }
-  if (!items.length) {
-    if (isCopy) desktopMessage.warning('暂不支持复制文件夹')
-    return
-  }
+  if (!items.length) return
 
   let doneCount = 0
   if (isCopy) {
-    for (const item of items) {
-      try {
-        await copyEntryRequest(item.item_type, item.id, targetId)
-        doneCount += 1
-      } catch (e: unknown) {
-        const err = e as { http_status?: number; response?: { status?: number } } | null
-        if (err?.http_status === 409 || err?.response?.status === 409) {
-          desktopMessage.warning('目标已有同名文件')
+    try {
+      const resp = await batchCopyRequest(items, targetId)
+      doneCount = Number(resp.success_count || 0)
+      const failed = Number(resp.failed_count || 0)
+      if (failed > 0 && doneCount === 0) desktopMessage.warning('复制失败')
+      else if (failed > 0) desktopMessage.warning(`已复制 ${doneCount} 个，失败 ${failed} 个`)
+    } catch {
+      for (const item of items) {
+        try {
+          await copyEntryRequest(item.item_type, item.id, targetId)
+          doneCount += 1
+        } catch (e: unknown) {
+          const err = e as { http_status?: number; response?: { status?: number } } | null
+          if (err?.http_status === 409 || err?.response?.status === 409) {
+            desktopMessage.warning('目标已有同名文件')
+          }
         }
       }
+      if (doneCount === 0) desktopMessage.warning('复制失败')
     }
-    if (doneCount === 0) desktopMessage.warning('复制失败')
   } else {
     try {
       const resp = await batchMoveRequest(items, targetId)

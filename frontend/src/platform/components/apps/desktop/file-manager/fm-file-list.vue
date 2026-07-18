@@ -118,7 +118,22 @@
         </div>
         <div class="fm-column-preview">
           <template v-if="columnPreviewItem">
+            <div v-if="columnMedia.loading" class="fm-column-preview-empty">加载预览…</div>
+            <img
+              v-else-if="columnMedia.mode === 'image' && columnMedia.objectUrl"
+              class="fm-column-preview-media"
+              :src="columnMedia.objectUrl"
+              :alt="displayName(columnPreviewItem)"
+            >
+            <iframe
+              v-else-if="columnMedia.mode === 'pdf' && columnMedia.objectUrl"
+              class="fm-column-preview-pdf"
+              :src="columnMedia.objectUrl"
+              title="PDF 预览"
+            />
+            <pre v-else-if="columnMedia.mode === 'text'" class="fm-column-preview-text">{{ columnMedia.text }}</pre>
             <FileVisualIcon
+              v-else
               :kind="columnPreviewItem.is_folder || !columnPreviewItem.format ? 'folder' : 'file'"
               :extension="columnPreviewItem.format || ''"
               :size="72"
@@ -343,8 +358,15 @@ const galleryPreview = reactive({
   objectUrl: '',
   truncated: false,
 })
+const columnMedia = reactive({
+  loading: false,
+  mode: 'idle' as GalleryPreviewMode,
+  text: '',
+  objectUrl: '',
+})
 const stripThumbs = reactive<Record<number, string>>({})
 let galleryToken = 0
+let columnToken = 0
 let stripToken = 0
 
 function extOf(item: FileEntry) {
@@ -491,6 +513,85 @@ async function loadStripThumbs(items: FileEntry[]) {
   }
 }
 
+function revokeColumnUrl() {
+  if (columnMedia.objectUrl) {
+    URL.revokeObjectURL(columnMedia.objectUrl)
+    columnMedia.objectUrl = ''
+  }
+}
+function resetColumnMedia() {
+  revokeColumnUrl()
+  columnMedia.loading = false
+  columnMedia.mode = 'idle'
+  columnMedia.text = ''
+}
+
+async function loadColumnMedia(item: FileEntry | null) {
+  const token = ++columnToken
+  resetColumnMedia()
+  if (!item || item.is_folder) {
+    columnMedia.mode = 'fallback'
+    return
+  }
+  columnMedia.loading = true
+  const ext = extOf(item)
+  try {
+    const data = await fetchFilePreview(item.id)
+    if (token !== columnToken) return
+    if (!isRecord(data)) throw new Error('invalid preview')
+    const content = asString(data.content)
+    if (content) {
+      columnMedia.mode = 'text'
+      columnMedia.text = content
+      return
+    }
+    const mime = asString(data.mime_type).toLowerCase()
+    if (mime.startsWith('image/') || IMAGE_EXTS.has(ext)) {
+      const blob = await resolveMediaBlob(data, item.id, true)
+      if (token !== columnToken) return
+      columnMedia.objectUrl = URL.createObjectURL(blob)
+      columnMedia.mode = 'image'
+      return
+    }
+    if (mime === 'application/pdf' || ext === 'pdf') {
+      const blob = await resolveMediaBlob(data, item.id, false)
+      if (token !== columnToken) return
+      columnMedia.objectUrl = URL.createObjectURL(blob)
+      columnMedia.mode = 'pdf'
+      return
+    }
+    if (TEXT_EXTS.has(ext)) {
+      columnMedia.mode = 'text'
+      columnMedia.text = content || '(空文件)'
+      return
+    }
+    columnMedia.mode = 'fallback'
+  } catch {
+    if (token !== columnToken) return
+    try {
+      if (IMAGE_EXTS.has(ext)) {
+        const blob = await fetchDownloadBlob(item.id)
+        if (token !== columnToken) return
+        columnMedia.objectUrl = URL.createObjectURL(blob)
+        columnMedia.mode = 'image'
+        return
+      }
+      if (ext === 'pdf') {
+        const blob = await fetchDownloadBlob(item.id)
+        if (token !== columnToken) return
+        columnMedia.objectUrl = URL.createObjectURL(blob)
+        columnMedia.mode = 'pdf'
+        return
+      }
+    } catch {
+      // fallback icon
+    }
+    columnMedia.mode = 'fallback'
+  } finally {
+    if (token === columnToken) columnMedia.loading = false
+  }
+}
+
 watch(
   () => [props.viewMode, selected.value?.id, selected.value?.format, selected.value?.is_folder] as const,
   () => {
@@ -537,6 +638,19 @@ const columnPreviewItem = computed(() => {
   }
   return selected.value
 })
+
+watch(
+  () => [props.viewMode, columnPreviewItem.value?.id, columnPreviewItem.value?.format, columnPreviewItem.value?.is_folder] as const,
+  () => {
+    if (props.viewMode !== 'column') {
+      columnToken += 1
+      resetColumnMedia()
+      return
+    }
+    void loadColumnMedia(columnPreviewItem.value)
+  },
+  { immediate: true },
+)
 
 // mac Finder icon view proportions (reference FileIcon ~39×50 paper inside ~64×54.5 hit target)
 const gridIconSize = computed(() => Math.max(28, Math.round(props.iconSize * 0.78)))
@@ -684,8 +798,10 @@ onBeforeUnmount(() => {
   onColumnResizeEnd()
   clearPendingDrag()
   galleryToken += 1
+  columnToken += 1
   stripToken += 1
   resetGalleryPreview()
+  resetColumnMedia()
   clearStripThumbs()
 })
 
@@ -884,6 +1000,37 @@ function formatListDate(raw?: string | null) {
   padding: 24px;
   background: #fbfbfd;
   color: #1d1d1f;
+}
+.fm-column-preview-media {
+  max-width: min(280px, 90%);
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+.fm-column-preview-pdf {
+  width: min(300px, 92%);
+  height: 220px;
+  border: 0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+.fm-column-preview-text {
+  width: min(300px, 92%);
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.06);
+  color: #1d1d1f;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
 }
 
 .fm-column-preview-name {

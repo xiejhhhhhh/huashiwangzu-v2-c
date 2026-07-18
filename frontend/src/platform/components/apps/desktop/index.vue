@@ -171,6 +171,7 @@ import { useCreatableFormats } from '@/shared/composables/use-creatable-formats'
 import { hasContent } from '@/desktop/clipboard/clipboard-state'
 import { restoreRecycleBinEntry, permanentlyDeleteEntry, emptyRecycleBinRequest } from '@/shared/api/desktop'
 import { openAppById } from '@/desktop/app-registry/app-opener'
+import { windowManager } from '@/desktop/window-manager/window-manager'
 import FmNavigationBar from './file-manager/fm-navigation-bar.vue'
 import FmNavPane from './file-manager/fm-nav-pane.vue'
 import FmPathBar from './file-manager/fm-path-bar.vue'
@@ -478,6 +479,39 @@ function handleKeydown(e: KeyboardEvent) {
       folderId: state.currentFolderId.value || 0,
       folderName: state.breadcrumb.value[state.breadcrumb.value.length - 1]?.name || '桌面',
     })
+    return
+  }
+  if (meta && key === 'd') {
+    if (state.canWrite.value && (state.selectedItems.value.length || state.selectedItem.value)) {
+      e.preventDefault()
+      void state.handleAction('duplicate', state.selectedItem.value)
+    }
+    return
+  }
+  if (meta && key === 'i') {
+    if (state.selectedItem.value) {
+      e.preventDefault()
+      void state.handleAction('details', state.selectedItem.value)
+    }
+    return
+  }
+  if (meta && key === 'f') {
+    e.preventDefault()
+    const input = rootRef.value?.querySelector('.fm-search-input') as HTMLInputElement | null
+    input?.focus()
+    input?.select()
+    return
+  }
+  if (meta && key === 'o') {
+    if (state.selectedItem.value) {
+      e.preventDefault()
+      handleItemOpen(state.selectedItem.value)
+    }
+    return
+  }
+  if (meta && key === 'w') {
+    e.preventDefault()
+    if (props.windowId) windowManager.closeWindow(props.windowId)
     return
   }
 

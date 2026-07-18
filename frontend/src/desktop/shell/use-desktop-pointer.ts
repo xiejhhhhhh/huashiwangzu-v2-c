@@ -4,6 +4,7 @@ import { startBoxSelection, updateBoxSelection, endBoxSelection, selectionRect }
 import { clearSelection, setSelection } from '@/desktop/selection/desktop-selection-state'
 import { updateDragOffset, enterFolder, leaveFolder, endDrag, dragState, setDragCopyMode } from '@/desktop/drag-drop/drag-state'
 import { clampIconPosition, commitDropOverlayBatch } from '@/desktop/drag-drop/drag-tool'
+import { openAppById } from '@/desktop/app-registry/app-opener'
 
 function hitTestSelection(sel: { x: number; y: number; w: number; h: number }, e: MouseEvent) {
   const ids: string[] = []
@@ -16,15 +17,55 @@ function hitTestSelection(sel: { x: number; y: number; w: number; h: number }, e
   setSelection(ids, e.ctrlKey)
 }
 
+/** Spring-loading: hover a folder long enough while dragging to open it. */
+const SPRING_LOAD_MS = 800
+let springTimer: ReturnType<typeof setTimeout> | null = null
+let springTargetId: string | null = null
+
+function clearSpringLoad() {
+  if (springTimer) {
+    clearTimeout(springTimer)
+    springTimer = null
+  }
+  springTargetId = null
+}
+
+function scheduleSpringLoad(folderId: string) {
+  if (springTargetId === folderId) return
+  clearSpringLoad()
+  springTargetId = folderId
+  springTimer = setTimeout(() => {
+    springTimer = null
+    // Finder spring-load: open/focus the folder window so drop target becomes its body.
+    const idNum = Number(folderId)
+    if (!Number.isFinite(idNum)) return
+    openAppById('desktop', { folderId: idNum, folderName: '文件夹' })
+  }, SPRING_LOAD_MS)
+}
+
 function detectHoveredFolder(e: MouseEvent) {
   const el = document.elementFromPoint(e.clientX, e.clientY)
   const folder = el?.closest?.('[data-folder]') as HTMLElement | null
-  if (!folder) { leaveFolder(); return }
+  if (!folder) {
+    leaveFolder()
+    clearSpringLoad()
+    return
+  }
   const id = folder.getAttribute('data-folder')
-  if (!id) { leaveFolder(); return }
+  if (!id) {
+    leaveFolder()
+    clearSpringLoad()
+    return
+  }
   // Don't highlight when hovering the item being dragged
-  if (dragState.draggedIds.some(did => did.endsWith(`:${id}`))) { leaveFolder(); return }
+  if (dragState.draggedIds.some(did => did.endsWith(`:${id}`))) {
+    leaveFolder()
+    clearSpringLoad()
+    return
+  }
   enterFolder(id)
+  if (dragState.isDragging) scheduleSpringLoad(id)
+  else clearSpringLoad()
 }
 
 function snapDraggedIcons(e: MouseEvent) {
@@ -86,6 +127,7 @@ export function useDesktopPointer() {
 
   function handleDesktopMouseUp(e: MouseEvent) {
     if (dragState.isDragging) {
+      clearSpringLoad()
       setDragCopyMode(Boolean(e.altKey))
       const copy = Boolean(e.altKey || dragState.copyMode)
       const el = document.elementFromPoint(e.clientX, e.clientY)
@@ -116,6 +158,7 @@ export function useDesktopPointer() {
     window.addEventListener('mouseup', handleDesktopMouseUp)
   })
   onUnmounted(() => {
+    clearSpringLoad()
     window.removeEventListener('mousemove', handleDesktopMouseMove)
     window.removeEventListener('mouseup', handleDesktopMouseUp)
   })
