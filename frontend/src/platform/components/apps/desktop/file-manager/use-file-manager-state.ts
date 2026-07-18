@@ -6,6 +6,7 @@ import { computed } from 'vue'
 interface UseFileManagerStateOptions {
   folderId: () => number | undefined
   folderName: () => string | undefined
+  windowId?: () => string | undefined
 }
 
 export function useFileManagerState(options: UseFileManagerStateOptions) {
@@ -35,6 +36,8 @@ export function useFileManagerState(options: UseFileManagerStateOptions) {
     breadcrumb: state.breadcrumb,
     viewMode: state.viewMode,
     activeNamed: state.activeNamed,
+    locations: state.locations,
+    columnStack: state.columnStack,
     selectedId: state.selectedId,
     sortColumn: state.sortColumn,
     sortDirection: state.sortDirection,
@@ -69,6 +72,11 @@ export function useFileManagerState(options: UseFileManagerStateOptions) {
     openItem: state.openItem,
     openRecycle: state.openRecycle,
     openNamedLocation: state.openNamedLocation,
+    ensureLocations: state.ensureLocations,
+    resetColumnStack: state.resetColumnStack,
+    selectInColumn: state.selectInColumn,
+    pushColumnFromFolder: state.pushColumnFromFolder,
+    syncWindowTitle: state.syncWindowTitle,
     formatSize: state.formatSize,
     showProperties: state.showProperties,
     closeProperties: state.closeProperties,

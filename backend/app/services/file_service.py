@@ -104,6 +104,67 @@ async def create_folder(db: AsyncSession, name: str, parent_id: int | None, owne
     return folder
 
 
+# Finder special locations (user-scoped real folders under desktop root parent_id=NULL)
+USER_LOCATION_SPECS: tuple[tuple[str, str], ...] = (
+    ("documents", "文稿"),
+    ("downloads", "下载"),
+)
+
+
+async def _get_or_create_root_folder_by_name(
+    db: AsyncSession,
+    *,
+    owner_id: int,
+    name: str,
+) -> Folder:
+    """Idempotently ensure a root folder with exact name exists for the user."""
+    existing = await db.execute(
+        select(Folder)
+        .where(
+            Folder.owner_id == owner_id,
+            Folder.parent_id.is_(None),
+            Folder.deleted.is_(False),
+            Folder.name == name,
+        )
+        .limit(1)
+    )
+    folder = existing.scalar_one_or_none()
+    if folder is not None:
+        return folder
+
+    await _lock_folder_namespace(db, owner_id, None)
+    existing = await db.execute(
+        select(Folder)
+        .where(
+            Folder.owner_id == owner_id,
+            Folder.parent_id.is_(None),
+            Folder.deleted.is_(False),
+            Folder.name == name,
+        )
+        .limit(1)
+    )
+    folder = existing.scalar_one_or_none()
+    if folder is not None:
+        return folder
+
+    folder = Folder(name=name, parent_id=None, owner_id=owner_id)
+    db.add(folder)
+    await db.commit()
+    await db.refresh(folder)
+    return folder
+
+
+async def ensure_user_locations(db: AsyncSession, owner_id: int) -> dict:
+    """Ensure Finder locations (文稿/下载) exist; desktop remains virtual id 0."""
+    locations: dict[str, dict] = {
+        "desktop": {"key": "desktop", "id": 0, "name": "桌面"},
+    }
+    for key, name in USER_LOCATION_SPECS:
+        folder = await _get_or_create_root_folder_by_name(db, owner_id=owner_id, name=name)
+        locations[key] = {"key": key, "id": int(folder.id), "name": name}
+    return locations
+
+
 async def get_file_list(db: AsyncSession, folder_id: int, owner_id: int, page: int = 1, page_size: int = 50):
     if folder_id < 0:
         source_id = abs(folder_id)

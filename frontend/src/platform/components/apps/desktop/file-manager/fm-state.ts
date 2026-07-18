@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
-import { fetchFileList, fetchRecycleBinList } from '@/shared/api/desktop'
+import { fetchFileList, fetchFinderLocations, fetchRecycleBinList } from '@/shared/api/desktop'
+import type { FinderLocation } from '@/shared/api/desktop'
 import type { RecycleBinEntry } from '@/shared/api/types'
 import { openFileByRecord } from '@/desktop/app-registry/app-opener'
 import { useDesktopEventBus } from '@/desktop/events/use-desktop-event-bus'
@@ -7,10 +8,12 @@ import type { FileEntry } from '@/shared/api/types'
 import { formatFileDisplayName } from '@/shared/files/display-name'
 import type { DesktopFileManagerBreadcrumbItem, NavigationEntry } from './types'
 import { createLoadState, failLoading, finishLoading, startLoading } from '@/shared/composables/use-load-state'
+import { windowManager } from '@/desktop/window-manager/window-manager'
 
 interface CreateFileManagerStateOptions {
   folderId: () => number | undefined
   folderName: () => string | undefined
+  windowId?: () => string | undefined
 }
 
 export function createFileManagerState(options: CreateFileManagerStateOptions) {
@@ -24,7 +27,12 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
   const breadcrumb = ref<DesktopFileManagerBreadcrumbItem[]>([{ id: null, name: '桌面' }])
   const viewMode = ref<'grid' | 'list' | 'column'>('grid')
   const activeNamed = ref<'documents' | 'downloads' | null>(null)
+  const locations = ref<Record<string, FinderLocation>>({
+    desktop: { key: 'desktop', id: 0, name: '桌面' },
+  })
   const selectedId = ref<number | null>(null)
+  /** Miller Columns: stack of folder columns (folderId + items + selection) */
+  const columnStack = ref<Array<{ folderId: number; name: string; items: FileEntry[]; selectedId: number | null }>>([])
 
   const sortColumn = ref<'name' | 'date' | 'type' | 'size'>('name')
   const sortDirection = ref<'asc' | 'desc'>('asc')
@@ -145,7 +153,71 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     searchKeyword.value = ''
     selectedId.value = null
     currentFolderId.value = folderId
+    if (folderId === 0) activeNamed.value = null
+    else if (locations.value.documents?.id === folderId) activeNamed.value = 'documents'
+    else if (locations.value.downloads?.id === folderId) activeNamed.value = 'downloads'
+    else activeNamed.value = null
     void loadFiles()
+  }
+
+  async function loadFolderItems(folderId: number): Promise<FileEntry[]> {
+    const data = await fetchFileList(folderId)
+    return data?.items || []
+  }
+
+  async function resetColumnStack(folderId: number, name: string) {
+    if (viewMode.value !== 'column') {
+      columnStack.value = []
+      return
+    }
+    try {
+      const colItems = await loadFolderItems(folderId)
+      columnStack.value = [{ folderId, name, items: colItems, selectedId: null }]
+    } catch {
+      columnStack.value = [{ folderId, name, items: [], selectedId: null }]
+    }
+  }
+
+  async function pushColumnFromFolder(item: FileEntry, columnIndex: number) {
+    if (!item.is_folder) return
+    const nextStack = columnStack.value.slice(0, columnIndex + 1)
+    if (nextStack[columnIndex]) {
+      nextStack[columnIndex] = { ...nextStack[columnIndex], selectedId: item.id }
+    }
+    try {
+      const colItems = await loadFolderItems(item.id)
+      nextStack.push({ folderId: item.id, name: item.file_name, items: colItems, selectedId: null })
+    } catch {
+      nextStack.push({ folderId: item.id, name: item.file_name, items: [], selectedId: null })
+    }
+    columnStack.value = nextStack
+    // Keep primary state aligned with deepest folder
+    isRecycleBin.value = false
+    breadcrumb.value = [
+      { id: null, name: '桌面' },
+      ...nextStack
+        .filter((col) => col.folderId !== 0)
+        .map((col) => ({ id: col.folderId, name: col.name })),
+    ]
+    if (breadcrumb.value.length === 1 && nextStack[0]?.folderId === 0) {
+      // desktop root only
+    }
+    currentFolderId.value = item.id
+    selectedId.value = null
+    syncWindowTitle(item.file_name)
+  }
+
+  function selectInColumn(item: FileEntry, columnIndex: number) {
+    selectedId.value = item.id
+    const next = columnStack.value.slice()
+    if (!next[columnIndex]) return
+    next[columnIndex] = { ...next[columnIndex], selectedId: item.id }
+    // Selecting a file collapses deeper columns; selecting folder expands
+    if (!item.is_folder) {
+      columnStack.value = next.slice(0, columnIndex + 1)
+      return
+    }
+    void pushColumnFromFolder(item, columnIndex)
   }
 
   function pushHistory(folderId: number, name: string) {
@@ -156,47 +228,64 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     historyIndex.value++
   }
 
+  function syncWindowTitle(folderName: string) {
+    const windowId = options.windowId?.()
+    if (!windowId) return
+    windowManager.updateWindowPayload(windowId, {
+      folderId: currentFolderId.value,
+      folderName,
+    })
+  }
+
+  async function ensureLocations() {
+    try {
+      const data = await fetchFinderLocations()
+      if (data && typeof data === 'object') {
+        locations.value = {
+          desktop: data.desktop || { key: 'desktop', id: 0, name: '桌面' },
+          documents: data.documents,
+          downloads: data.downloads,
+          ...data,
+        }
+      }
+    } catch {
+      // keep defaults; sidebar can still open desktop/recycle
+    }
+  }
+
   async function goRoot() {
     isRecycleBin.value = false
     activeNamed.value = null
     breadcrumb.value = [{ id: null, name: '桌面' }]
     pushHistory(0, '桌面')
     enterFolder(0)
-  }
-
-  function applyNamedFilter(key: 'documents' | 'downloads') {
-    if (key === 'documents') {
-      items.value = items.value.filter((item) => {
-        if (item.is_folder) return true
-        const ext = (item.format || '').toLowerCase()
-        return ['doc', 'docx', 'pdf', 'txt', 'md', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'json'].includes(ext)
-      })
-      return
-    }
-    items.value = items.value.filter((item) => {
-      const name = (item.file_name || '').toLowerCase()
-      const ext = (item.format || '').toLowerCase()
-      return item.is_folder
-        || ['zip', 'rar', '7z', 'dmg', 'pkg'].includes(ext)
-        || name.includes('下载')
-        || name.includes('download')
-    })
+    syncWindowTitle('桌面')
+    void resetColumnStack(0, '桌面')
   }
 
   async function openNamedLocation(key: 'documents' | 'downloads') {
+    await ensureLocations()
+    const loc = locations.value[key]
+    if (!loc || !loc.id) {
+      // fallback: still try ensure once more via API side-effect
+      await ensureLocations()
+    }
+    const resolved = locations.value[key]
+    if (!resolved?.id) return
+
     isRecycleBin.value = false
     activeNamed.value = key
-    const label = key === 'documents' ? '文稿' : '下载'
-    // 当前数据模型以桌面根为统一存储；命名位置先以筛选呈现 Finder 结构
-    breadcrumb.value = [{ id: null, name: '桌面' }, { id: null, name: label }]
-    pushHistory(0, label)
+    const label = resolved.name || (key === 'documents' ? '文稿' : '下载')
+    const folderId = Number(resolved.id)
+    breadcrumb.value = [{ id: null, name: '桌面' }, { id: folderId, name: label }]
+    pushHistory(folderId, label)
     sortColumn.value = 'name'
     sortDirection.value = 'asc'
     searchKeyword.value = ''
     selectedId.value = null
-    currentFolderId.value = 0
-    await loadFiles()
-    applyNamedFilter(key)
+    enterFolder(folderId)
+    syncWindowTitle(label)
+    void resetColumnStack(folderId, label)
   }
 
   async function goUp() {
@@ -205,6 +294,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     const parent = breadcrumb.value[breadcrumb.value.length - 1]
     pushHistory(parent.id ?? 0, parent.name)
     enterFolder(parent.id ?? 0)
+    syncWindowTitle(parent.name)
+    void resetColumnStack(parent.id ?? 0, parent.name)
   }
 
   async function navigateToCrumb(index: number) {
@@ -212,6 +303,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     breadcrumb.value = breadcrumb.value.slice(0, index + 1)
     pushHistory(crumb.id ?? 0, crumb.name)
     enterFolder(crumb.id ?? 0)
+    syncWindowTitle(crumb.name)
+    void resetColumnStack(crumb.id ?? 0, crumb.name)
   }
 
   function goBack() {
@@ -221,6 +314,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     breadcrumb.value = navigationBreadcrumbs.value[historyIndex.value]?.map(item => ({ ...item }))
       || (target.id === 0 ? [{ id: null, name: '桌面' }] : [{ id: null, name: '桌面' }, { id: target.id, name: target.name }])
     enterFolder(target.id)
+    syncWindowTitle(target.name)
+    void resetColumnStack(target.id, target.name)
   }
 
   function goForward() {
@@ -230,6 +325,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     breadcrumb.value = navigationBreadcrumbs.value[historyIndex.value]?.map(item => ({ ...item }))
       || (target.id === 0 ? [{ id: null, name: '桌面' }] : [{ id: null, name: '桌面' }, { id: target.id, name: target.name }])
     enterFolder(target.id)
+    syncWindowTitle(target.name)
+    void resetColumnStack(target.id, target.name)
   }
 
   function displayName(file: FileEntry): string {
@@ -250,6 +347,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
       breadcrumb.value.push({ id: item.id, name: item.file_name })
       pushHistory(item.id, item.file_name)
       enterFolder(item.id)
+      syncWindowTitle(item.file_name)
+      void resetColumnStack(item.id, item.file_name)
       return
     }
     openFileByRecord({ fileId: item.id, fileName: displayName(item), format: item.format || '' })
@@ -261,8 +360,17 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     breadcrumb.value = [{ id: null, name: '回收站' }]
     selectedId.value = null
     searchKeyword.value = ''
+    columnStack.value = []
     void loadFiles()
+    syncWindowTitle('回收站')
   }
+
+  watch(viewMode, (mode) => {
+    if (mode === 'column' && !isRecycleBin.value) {
+      const name = breadcrumb.value[breadcrumb.value.length - 1]?.name || '桌面'
+      void resetColumnStack(currentFolderId.value, name)
+    }
+  })
 
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`
@@ -289,6 +397,8 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     breadcrumb,
     viewMode,
     activeNamed,
+    locations,
+    columnStack,
     selectedId,
     sortColumn,
     sortDirection,
@@ -322,6 +432,11 @@ export function createFileManagerState(options: CreateFileManagerStateOptions) {
     openItem,
     openRecycle,
     openNamedLocation,
+    ensureLocations,
+    resetColumnStack,
+    selectInColumn,
+    pushColumnFromFolder,
+    syncWindowTitle,
     formatSize,
     showProperties,
     closeProperties,

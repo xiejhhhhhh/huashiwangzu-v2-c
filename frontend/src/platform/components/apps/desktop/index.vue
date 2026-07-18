@@ -51,6 +51,7 @@
           :selected-id="state.selectedId.value"
           :view-mode="state.viewMode.value"
           :icon-size="iconSize"
+          :column-stack="state.columnStack.value"
           :loading="state.loading.value"
           :display-name="state.displayName"
           :format-size="state.formatSize"
@@ -63,6 +64,8 @@
           @context-menu="handleItemContextMenu"
           @sort="handleSort"
           @retry="state.loadFiles"
+          @column-select="(item, col) => state.selectInColumn(item, col)"
+          @column-open="(item, col) => state.selectInColumn(item, col)"
         />
       </div>
 
@@ -134,6 +137,7 @@ import emitter from '@/desktop/events'
 const props = defineProps<{
   folderId?: number
   folderName?: string
+  windowId?: string
 }>()
 
 const feedback = useAppFeedback()
@@ -142,6 +146,7 @@ const iconSize = ref(50)
 const state = useFileManagerState({
   folderId: () => props.folderId,
   folderName: () => props.folderName,
+  windowId: () => props.windowId,
 })
 const contextMenu = useContextMenu()
 const { creatableFormats } = useCreatableFormats()
@@ -276,10 +281,13 @@ async function handleContextMenuSelect(key: string) {
   await state.handleAction(key, ctxtFile)
 }
 
-onMounted(() => {
+onMounted(async () => {
   state.uploadInput.value = uploadInputRef.value
+  await state.ensureLocations()
   state.applyInitialFolder()
   void state.loadFiles()
+  const name = state.breadcrumb.value[state.breadcrumb.value.length - 1]?.name || '桌面'
+  state.syncWindowTitle(name)
 })
 </script>
 

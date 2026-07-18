@@ -80,18 +80,22 @@
       </div>
 
       <div v-else-if="viewMode === 'column'" class="fm-content-column">
-        <div class="fm-column-pane">
+        <div
+          v-for="(col, colIndex) in effectiveColumns"
+          :key="`col-${col.folderId}-${colIndex}`"
+          class="fm-column-pane"
+        >
           <button
-            v-for="item in items"
+            v-for="item in col.items"
             :key="`${item.is_folder ? 'folder' : 'file'}-${item.id}`"
             :draggable="false"
             class="fm-column-row"
             :data-selection-key="(item.is_folder ? 'folder' : 'file') + ':' + item.id"
             :data-folder="item.is_folder ? String(item.id) : undefined"
-            :class="{ 'fm-entry-selected': selectedId === item.id }"
+            :class="{ 'fm-entry-selected': col.selectedId === item.id }"
             type="button"
-            @click="handleClick(item, $event)"
-            @dblclick="handleDoubleClick(item, $event)"
+            @click="handleColumnClick(item, colIndex, $event)"
+            @dblclick="handleColumnDoubleClick(item, colIndex, $event)"
             @contextmenu.prevent.stop="$emit('context-menu', item, $event)"
             @mousedown.stop="handleEntryMouseDown(item, $event)"
           >
@@ -99,18 +103,19 @@
             <span class="fm-entry-name">{{ displayName(item) }}</span>
             <span v-if="item.is_folder" class="fm-column-chevron" aria-hidden="true">›</span>
           </button>
+          <div v-if="!col.items.length" class="fm-column-empty">空文件夹</div>
         </div>
         <div class="fm-column-preview">
-          <template v-if="selected">
+          <template v-if="columnPreviewItem">
             <FileVisualIcon
-              :kind="selected.is_folder || !selected.format ? 'folder' : 'file'"
-              :extension="selected.format || ''"
+              :kind="columnPreviewItem.is_folder || !columnPreviewItem.format ? 'folder' : 'file'"
+              :extension="columnPreviewItem.format || ''"
               :size="72"
             />
-            <div class="fm-column-preview-name">{{ displayName(selected) }}</div>
+            <div class="fm-column-preview-name">{{ displayName(columnPreviewItem) }}</div>
             <div class="fm-column-preview-meta">
-              {{ selected.is_folder ? '文件夹' : (selected.format || '文件') }}
-              <template v-if="!selected.is_folder"> · {{ formatSize(selected.file_size) }}</template>
+              {{ columnPreviewItem.is_folder ? '文件夹' : (columnPreviewItem.format || '文件') }}
+              <template v-if="!columnPreviewItem.is_folder"> · {{ formatSize(columnPreviewItem.file_size) }}</template>
             </div>
           </template>
           <div v-else class="fm-column-preview-empty">选择一个项目以预览</div>
@@ -156,11 +161,19 @@ import type { LoadStatus } from '@/shared/composables/use-load-state'
 let suppressNextClick = false
 let pendingDrag: { key: string; startX: number; startY: number } | null = null
 
+export type ColumnStackItem = {
+  folderId: number
+  name: string
+  items: FileEntry[]
+  selectedId: number | null
+}
+
 const props = withDefaults(defineProps<{
   items: FileEntry[]
   selectedId: number | null
   viewMode: 'grid' | 'list' | 'column'
   iconSize?: number
+  columnStack?: ColumnStackItem[]
   loading: boolean
   displayName: (file: FileEntry) => string
   formatSize: (size: number) => string
@@ -170,9 +183,31 @@ const props = withDefaults(defineProps<{
   loadError: ApiErrorInfo | null
 }>(), {
   iconSize: 50,
+  columnStack: () => [],
 })
 
 const selected = computed(() => props.items.find((item) => item.id === props.selectedId) || null)
+
+const effectiveColumns = computed<ColumnStackItem[]>(() => {
+  if (props.columnStack?.length) return props.columnStack
+  return [{
+    folderId: 0,
+    name: '当前',
+    items: props.items,
+    selectedId: props.selectedId,
+  }]
+})
+
+const columnPreviewItem = computed(() => {
+  const cols = effectiveColumns.value
+  for (let i = cols.length - 1; i >= 0; i -= 1) {
+    const col = cols[i]
+    if (col.selectedId == null) continue
+    const hit = col.items.find((item) => item.id === col.selectedId)
+    if (hit) return hit
+  }
+  return selected.value
+})
 
 // mac Finder icon view proportions (reference FileIcon ~39×50 paper inside ~64×54.5 hit target)
 const gridIconSize = computed(() => Math.max(28, Math.round(props.iconSize * 0.78)))
@@ -241,7 +276,34 @@ const emit = defineEmits<{
   (e: 'context-menu', item: FileEntry, event: MouseEvent): void
   (e: 'sort', column: string): void
   (e: 'retry'): void
+  (e: 'column-select', item: FileEntry, columnIndex: number): void
+  (e: 'column-open', item: FileEntry, columnIndex: number): void
 }>()
+
+function handleColumnClick(item: FileEntry, columnIndex: number, e: MouseEvent) {
+  if (suppressNextClick) {
+    e.preventDefault()
+    e.stopPropagation()
+    suppressNextClick = false
+    return
+  }
+  emit('column-select', item, columnIndex)
+  emit('select', item)
+}
+
+function handleColumnDoubleClick(item: FileEntry, columnIndex: number, e: MouseEvent) {
+  if (suppressNextClick) {
+    e.preventDefault()
+    e.stopPropagation()
+    suppressNextClick = false
+    return
+  }
+  if (item.is_folder) {
+    emit('column-open', item, columnIndex)
+    return
+  }
+  emit('open', item)
+}
 </script>
 
 <style scoped>
@@ -302,17 +364,27 @@ const emit = defineEmits<{
 }
 
 .fm-content-column {
-  display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  display: flex;
   height: 100%;
   min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: #fff;
 }
 
 .fm-column-pane {
+  flex: 0 0 240px;
+  width: 240px;
   overflow: auto;
   border-right: 0.5px solid rgba(60, 60, 67, 0.14);
   background: #fff;
   padding: 4px 0;
+}
+
+.fm-column-empty {
+  padding: 16px 12px;
+  color: rgba(60, 60, 67, 0.45);
+  font-size: 12px;
 }
 
 .fm-column-row {
@@ -345,6 +417,8 @@ const emit = defineEmits<{
 }
 
 .fm-column-preview {
+  flex: 1 1 220px;
+  min-width: 200px;
   display: grid;
   place-content: center;
   justify-items: center;

@@ -251,9 +251,11 @@ function normalizeWindowPayload(payload?: unknown): Record<string, unknown> {
 }
 
 function resolveWindowTitle(appKey: string, defaultTitle: string, payload: Record<string, unknown>): string {
-  if (appKey === 'desktop') {
+  // Finder / 文件：标题跟随当前文件夹（标准 macOS Finder 行为）
+  if (appKey === 'desktop' || appKey === 'files') {
     const folderName = typeof payload.folderName === 'string' ? payload.folderName.trim() : ''
-    return folderName ? `${defaultTitle} · ${folderName}` : defaultTitle
+    if (folderName && folderName !== '桌面' && folderName !== defaultTitle) return folderName
+    return defaultTitle || '文件'
   }
   return defaultTitle
 }
@@ -295,7 +297,7 @@ export function useWindowManager() {
     openedWindowCount: computed(() => windows.length),
     taskbarItems,
     openWindow, closeWindow, toggleMinimized, minimizeWindow, restoreWindow, toggleMaximized, activateWindow,
-    updateWindowPosition, updateWindowSize, updateWindowGeometry,
+    updateWindowPosition, updateWindowSize, updateWindowGeometry, updateWindowPayload,
     setContainerSize, restoreWindows, showDesktop, restoreDesktop, toggleDesktopVisibility,
   }
 }
@@ -305,6 +307,6 @@ export const windowManager = {
   get openedWindowCount() { return windows.length },
   taskbarItems,
   openWindow, closeWindow, toggleMinimized, minimizeWindow, restoreWindow, toggleMaximized, activateWindow,
-  updateWindowPosition, updateWindowSize, updateWindowGeometry,
+  updateWindowPosition, updateWindowSize, updateWindowGeometry, updateWindowPayload,
   setContainerSize, restoreWindows, showDesktop, restoreDesktop, toggleDesktopVisibility,
 }

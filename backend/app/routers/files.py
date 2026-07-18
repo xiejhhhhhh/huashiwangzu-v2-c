@@ -76,6 +76,16 @@ async def get_folder_tree(db: AsyncSession = Depends(get_db), user: User = Depen
     return ApiResponse(data=[FolderResponse.model_validate(f) for f in tree])
 
 
+@router.get("/locations")
+async def get_user_locations(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission("viewer")),
+):
+    """Return Finder special locations; creates 文稿/下载 root folders if missing."""
+    data = await file_service.ensure_user_locations(db, user.id)
+    return ApiResponse(data=data)
+
+
 @router.post("/folder")
 async def create_folder(body: CreateFolderRequest, db: AsyncSession = Depends(get_db), user: User = Depends(require_permission("viewer"))):
     folder = await file_service.create_folder(db, body.name, body.parent_id, user.id)

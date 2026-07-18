@@ -30,7 +30,7 @@
       <div class="window-content-padding">
         <template v-if="currentComponent && !loadError">
           <Suspense>
-            <component :is="currentComponent" v-bind="payload || {}" />
+            <component :is="currentComponent" v-bind="{ ...(payload || {}), windowId: id }" />
             <template #fallback>
               <AsyncPaneState :title="`正在启动${title}`" />
             </template>

@@ -130,6 +130,18 @@ export async function createFolderRequest(name: string, parentFolderId?: number 
   return await api.post<unknown, FolderEntry>('/files/folder', { name, parent_id: parentFolderId })
 }
 
+export type FinderLocationKey = 'desktop' | 'documents' | 'downloads'
+
+export interface FinderLocation {
+  key: FinderLocationKey | string
+  id: number
+  name: string
+}
+
+export async function fetchFinderLocations(): Promise<Record<string, FinderLocation>> {
+  return await api.get<unknown, Record<string, FinderLocation>>('/files/locations')
+}
+
 export async function renameEntryRequest(itemType: FileItemType, id: number, newName: string): Promise<Record<string, unknown>> {
   return await api.post<unknown, Record<string, unknown>>('/files/rename', { type: itemType, id, new_name: newName })
 }
