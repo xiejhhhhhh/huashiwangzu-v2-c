@@ -36,9 +36,20 @@
   inset: 0;
   background-size: cover;
   background-position: center;
+  background-repeat: no-repeat;
   z-index: 0;
   transform: scale(1.02);
   filter: saturate(1.08) contrast(1.04);
+  transition: background 280ms ease, filter 180ms ease;
+}
+.desktop-shell-wallpaper.wallpaper-color {
+  background-size: auto;
+  transform: none;
+  filter: none;
+}
+.desktop-shell-wallpaper.wallpaper-gradient {
+  background-size: cover;
+  filter: saturate(1.05) contrast(1.02);
 }
 .desktop-shell-wallpaper::after {
   content: '';
@@ -47,6 +58,12 @@
   background:
     linear-gradient(180deg, rgba(15,23,42,0.02), rgba(15,23,42,0.2)),
     rgba(0,0,0,0.04);
+  pointer-events: none;
+}
+html[data-desktop-focus-mode='1'] .desktop-shell-wallpaper::after {
+  background:
+    linear-gradient(180deg, rgba(15,23,42,0.18), rgba(15,23,42,0.42)),
+    rgba(0,0,0,0.12);
 }
 .desktop-liquid-filter {
   position: absolute;

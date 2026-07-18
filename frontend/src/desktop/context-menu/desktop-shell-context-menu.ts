@@ -25,6 +25,7 @@ export function buildDesktopShellBlankMenu(separatorItems: () => MenuItemConfig[
         { key: 'view-auto-arrange', label: '自动排列图标', icon: '⋮' },
         { key: 'view-free-arrange', label: '自由排列', icon: '▦' },
         { key: 'view-align-grid', label: '对齐到网格', icon: '⌗' },
+        { key: 'toggle-icon-labels', label: '显示图标标签', icon: '🏷' },
       ],
     },
     {
@@ -37,8 +38,20 @@ export function buildDesktopShellBlankMenu(separatorItems: () => MenuItemConfig[
         { key: 'sort-date', label: '修改日期', icon: '' },
       ],
     },
+    {
+      key: 'wallpaper',
+      label: '更换壁纸',
+      icon: '🖼',
+      children: [
+        { key: 'wallpaper-default', label: '默认 macOS', icon: '' },
+        { key: 'wallpaper-gradient-dusk', label: '暮色渐变', icon: '' },
+        { key: 'wallpaper-gradient-ocean', label: '海洋渐变', icon: '' },
+        { key: 'wallpaper-solid-dark', label: '深空黑', icon: '' },
+      ],
+    },
     ...separatorItems(),
     { key: 'new-folder', label: '新建文件夹', icon: '📁' },
+    { key: 'open-desktop-file-manager', label: '打开访达', icon: '📂' },
     { key: 'refresh-desktop', label: '刷新', icon: '↻' },
   ]
 }

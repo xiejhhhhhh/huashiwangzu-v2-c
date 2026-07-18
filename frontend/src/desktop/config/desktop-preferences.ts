@@ -110,13 +110,15 @@ const DEFAULT_CONFIG: DesktopConfig = {
   launcherStyle: 'center-panel',
   launcherWidth: 520,
 
-  wallpaperType: 'gradient',
-  wallpaperValue: 'linear-gradient(135deg, #0f172a 0%, #1d4ed8 50%, #7c3aed 100%)',
+  // default: real macos wallpaper asset (feels like OS, not CSS toy)
+  wallpaperType: 'image',
+  wallpaperValue: '/desktop/wallpaper-macos-default.svg',
 
   enableMicroAnimations: true,
   enableOperationToast: true,
 
-  enableDesktopHotkeys: false,
+  // Web-safe desktop hotkeys on by default (never steal ⌘W/T/R/N)
+  enableDesktopHotkeys: true,
 
   shellSkin: 'macos',
 }

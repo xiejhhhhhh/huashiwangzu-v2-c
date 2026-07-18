@@ -14,25 +14,25 @@
 
     <div v-if="open" class="control-center-panel glass-panel" role="dialog" aria-label="控制中心" @click.stop>
       <div class="cc-grid">
-        <button class="cc-tile" type="button" :class="{ active: wifi }" @click="wifi = !wifi">
-          <Wifi :size="16" />
+        <button class="cc-tile" type="button" :class="{ active: hotkeys }" @click="toggleHotkeys">
+          <Keyboard :size="16" />
           <div>
-            <strong>无线局域网</strong>
-            <small>{{ wifi ? '已连接' : '关闭' }}</small>
+            <strong>桌面快捷键</strong>
+            <small>{{ hotkeys ? '已开启' : '关闭' }}</small>
           </div>
         </button>
-        <button class="cc-tile" type="button" :class="{ active: bluetooth }" @click="bluetooth = !bluetooth">
-          <Bluetooth :size="16" />
+        <button class="cc-tile" type="button" :class="{ active: labels }" @click="toggleLabels">
+          <Tags :size="16" />
           <div>
-            <strong>蓝牙</strong>
-            <small>{{ bluetooth ? '开启' : '关闭' }}</small>
+            <strong>图标标签</strong>
+            <small>{{ labels ? '显示' : '隐藏' }}</small>
           </div>
         </button>
-        <button class="cc-tile" type="button" :class="{ active: airdrop }" @click="airdrop = !airdrop">
-          <Radio :size="16" />
+        <button class="cc-tile" type="button" :class="{ active: autoArrange }" @click="toggleArrange">
+          <LayoutGrid :size="16" />
           <div>
-            <strong>隔空投送</strong>
-            <small>{{ airdrop ? '所有人' : '关闭' }}</small>
+            <strong>自动排列</strong>
+            <small>{{ autoArrange ? '开启' : '自由' }}</small>
           </div>
         </button>
         <button class="cc-tile" type="button" :class="{ active: focus }" @click="focus = !focus">
@@ -46,37 +46,44 @@
 
       <label class="cc-slider">
         <span>显示</span>
-        <input v-model.number="brightness" type="range" min="20" max="100" />
+        <input v-model.number="brightness" type="range" min="40" max="110" @input="applyBrightness" />
         <strong>{{ brightness }}%</strong>
       </label>
-      <label class="cc-slider">
-        <span>声音</span>
-        <input v-model.number="volume" type="range" min="0" max="100" />
-        <strong>{{ volume }}%</strong>
-      </label>
+
+      <div class="cc-wallpaper-row">
+        <span>壁纸</span>
+        <div class="cc-wallpaper-swatches">
+          <button type="button" class="cc-swatch is-image" title="默认" @click="setWallpaper('image', '/desktop/wallpaper-macos-default.svg')" />
+          <button type="button" class="cc-swatch is-dusk" title="暮色" @click="setWallpaper('gradient', 'linear-gradient(145deg, #0f172a 0%, #7c3aed 48%, #f97316 100%)')" />
+          <button type="button" class="cc-swatch is-ocean" title="海洋" @click="setWallpaper('gradient', 'linear-gradient(160deg, #0c4a6e 0%, #0284c7 42%, #67e8f9 100%)')" />
+          <button type="button" class="cc-swatch is-dark" title="深空" @click="setWallpaper('color', '#0b1020')" />
+        </div>
+      </div>
 
       <div class="cc-footer">
         <button type="button" class="cc-link" @click="emit('openSpotlight'); close()">Spotlight</button>
         <button type="button" class="cc-link" @click="emit('openLaunchpad'); close()">Launchpad</button>
       </div>
+      <div class="cc-hotkey-hint">⌃⇧Space 搜索 · ⌃⇧` 切换 · ⌃⇧L Launchpad · ⌃⇧D 桌面</div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
-import { Bluetooth, Moon, Radio, SlidersHorizontal, Wifi } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Keyboard, LayoutGrid, Moon, SlidersHorizontal, Tags } from 'lucide-vue-next'
+import { desktopConfig } from '@/desktop/config/desktop-preferences'
 
 const emit = defineEmits<{ openSpotlight: []; openLaunchpad: [] }>()
 const open = ref(false)
-const wifi = ref(true)
-const bluetooth = ref(true)
-const airdrop = ref(false)
 const focus = ref(false)
-const brightness = ref(78)
-const volume = ref(42)
+const brightness = ref(100)
 const rootRef = ref<HTMLElement | null>(null)
 const triggerRef = ref<HTMLButtonElement | null>(null)
+
+const hotkeys = computed(() => Boolean(desktopConfig.enableDesktopHotkeys))
+const labels = computed(() => Boolean(desktopConfig.showIconLabels))
+const autoArrange = computed(() => desktopConfig.iconLayout === 'auto-arrange')
 
 function toggle() { open.value = !open.value }
 function close() {
@@ -84,9 +91,30 @@ function close() {
   open.value = false
   triggerRef.value?.focus()
 }
+function toggleHotkeys() {
+  desktopConfig.enableDesktopHotkeys = !desktopConfig.enableDesktopHotkeys
+}
+function toggleLabels() {
+  desktopConfig.showIconLabels = !desktopConfig.showIconLabels
+}
+function toggleArrange() {
+  desktopConfig.iconLayout = desktopConfig.iconLayout === 'auto-arrange' ? 'free' : 'auto-arrange'
+}
+function setWallpaper(type: 'image' | 'gradient' | 'color', value: string) {
+  desktopConfig.wallpaperType = type
+  desktopConfig.wallpaperValue = value
+}
+function applyBrightness() {
+  const shell = document.querySelector('.desktop-shell-container') as HTMLElement | null
+  if (!shell) return
+  shell.style.filter = `brightness(${Math.max(0.4, Math.min(1.1, brightness.value / 100))})`
+}
 function onPointerDown(event: PointerEvent) {
   if (!(event.target as HTMLElement | null)?.closest('.control-center-root')) close()
 }
+watch(focus, (v) => {
+  document.documentElement.dataset.desktopFocusMode = v ? '1' : '0'
+})
 onMounted(() => document.addEventListener('pointerdown', onPointerDown))
 onUnmounted(() => document.removeEventListener('pointerdown', onPointerDown))
 </script>
@@ -141,6 +169,27 @@ onUnmounted(() => document.removeEventListener('pointerdown', onPointerDown))
 }
 .cc-slider input { width: 100%; accent-color: var(--desktop-system-blue); }
 .cc-slider strong { text-align: right; color: var(--desktop-ink); font: var(--desktop-font-caption); }
+.cc-wallpaper-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+.cc-wallpaper-swatches { display: flex; gap: 8px; }
+.cc-swatch {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.45), 0 1px 2px rgba(0,0,0,.12);
+}
+.cc-swatch.is-image { background: linear-gradient(135deg, #7dd3fc, #a78bfa 50%, #fde68a); }
+.cc-swatch.is-dusk { background: linear-gradient(145deg, #0f172a, #7c3aed 50%, #f97316); }
+.cc-swatch.is-ocean { background: linear-gradient(160deg, #0c4a6e, #0284c7 50%, #67e8f9); }
+.cc-swatch.is-dark { background: #0b1020; }
 .cc-footer {
   margin-top: 12px;
   display: flex;
@@ -154,5 +203,10 @@ onUnmounted(() => document.removeEventListener('pointerdown', onPointerDown))
   font: var(--desktop-font-caption);
   padding: 0;
   cursor: default;
+}
+.cc-hotkey-hint {
+  margin-top: 8px;
+  color: rgba(60, 60, 67, 0.62);
+  font: 400 10px/1.3 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
 }
 </style>

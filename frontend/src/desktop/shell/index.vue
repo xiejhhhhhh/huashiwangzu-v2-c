@@ -1,6 +1,6 @@
 <template>
   <div ref="desktopContainerRef" class="desktop-shell-container" @contextmenu.prevent="handleDesktopContextMenu" @mousedown="handleDesktopMouseDown" @dragover.prevent="onDragEnter" @dragleave.prevent="onDragLeave" @drop.prevent="onDrop">
-    <div class="desktop-shell-wallpaper" :style="{ backgroundImage: `url(${wallpaper})` }" />
+    <div class="desktop-shell-wallpaper" :class="wallpaperClass" :style="wallpaperStyle" />
     <svg class="desktop-liquid-filter" width="0" height="0" aria-hidden="true" focusable="false">
       <defs>
         <filter id="desktop-liquid-refraction" x="-6%" y="-6%" width="112%" height="112%">
@@ -189,7 +189,27 @@ const desktopUserName = computed(() => userStore.userInfo?.display_name || userS
 const menuClock = ref('')
 let menuClockTimer: ReturnType<typeof window.setInterval> | undefined
 
-const wallpaper = '/desktop/wallpaper-macos-default.svg'
+const { applyCurrentShellSkin, setShellSkin, config: desktopShellConfig } = useDesktopConfig()
+
+const DEFAULT_WALLPAPER_IMAGE = '/desktop/wallpaper-macos-default.svg'
+
+const wallpaperStyle = computed(() => {
+  const type = desktopShellConfig.wallpaperType || 'image'
+  const value = desktopShellConfig.wallpaperValue || DEFAULT_WALLPAPER_IMAGE
+  if (type === 'color') {
+    return { backgroundImage: 'none', backgroundColor: value }
+  }
+  if (type === 'gradient') {
+    return { backgroundImage: value, backgroundColor: 'transparent' }
+  }
+  // image (default): allow raw url or path
+  const url = value.startsWith('url(') ? value : `url(${value})`
+  return {
+    backgroundImage: url,
+    backgroundColor: 'transparent',
+  }
+})
+const wallpaperClass = computed(() => `wallpaper-${desktopShellConfig.wallpaperType || 'image'}`)
 
 function updateMenuClock() {
   const now = new Date()
@@ -201,8 +221,6 @@ function updateMenuClock() {
 
 watch(allAppList, apps => registerAllApps(apps), { immediate: true })
 watch(desktopFileList, files => registerAllFiles(files), { immediate: true })
-
-const { applyCurrentShellSkin, setShellSkin, config: desktopShellConfig } = useDesktopConfig()
 
 onMounted(() => {
   void nextTick(() => applyCurrentShellSkin(desktopContainerRef.value))
@@ -331,19 +349,42 @@ function handleGlobalShortcut(event: KeyboardEvent) {
   if (!desktopShellConfig.enableDesktopHotkeys) return
   if (isEditableTarget(event.target)) return
 
-  // Opt-in only: Ctrl/⌘+Shift+Space → Spotlight (avoids OS/browser ⌘Space)
-  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Space') {
+  const meta = event.metaKey || event.ctrlKey
+
+  // Ctrl/⌘+Shift+Space → Spotlight (avoids OS/browser ⌘Space)
+  if (meta && event.shiftKey && event.code === 'Space') {
     event.preventDefault()
     showAppSwitcher.value = false
     showSpotlight.value ? closeSpotlight() : openSpotlight()
     return
   }
 
-  // Opt-in only: Ctrl/⌘+Shift+` → App Switcher (never raw ⌘Tab)
-  if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.key === '`' || event.code === 'Backquote')) {
+  // Ctrl/⌘+Shift+` → App Switcher (never raw ⌘Tab)
+  if (meta && event.shiftKey && (event.key === '`' || event.code === 'Backquote')) {
     event.preventDefault()
     if (!showAppSwitcher.value) openAppSwitcher()
-    else appSwitcherRef.value?.move(event.shiftKey ? -1 : 1)
+    else appSwitcherRef.value?.move(1)
+    return
+  }
+
+  // Ctrl/⌘+Shift+L → Launchpad
+  if (meta && event.shiftKey && event.key.toLowerCase() === 'l') {
+    event.preventDefault()
+    openLaunchpad()
+    return
+  }
+
+  // F11 or Ctrl/⌘+Shift+D → Show Desktop
+  if (event.key === 'F11' || (meta && event.shiftKey && event.key.toLowerCase() === 'd')) {
+    event.preventDefault()
+    handleShowDesktop()
+    return
+  }
+
+  // Ctrl/⌘+Shift+H → open Finder (desktop files app)
+  if (meta && event.shiftKey && event.key.toLowerCase() === 'h') {
+    event.preventDefault()
+    handleOpenApp('desktop')
   }
 }
 
@@ -613,6 +654,35 @@ async function handleContextMenuSelect(menuKey: string) {
           : '已按修改日期排列',
     )
     refreshDesktop()
+    return
+  }
+  if (menuKey === 'toggle-icon-labels') {
+    desktopShellConfig.showIconLabels = !desktopShellConfig.showIconLabels
+    desktopMessage.success(desktopShellConfig.showIconLabels ? '已显示图标标签' : '已隐藏图标标签')
+    return
+  }
+  if (menuKey === 'wallpaper-default') {
+    desktopShellConfig.wallpaperType = 'image'
+    desktopShellConfig.wallpaperValue = '/desktop/wallpaper-macos-default.svg'
+    desktopMessage.success('已切换默认壁纸')
+    return
+  }
+  if (menuKey === 'wallpaper-gradient-dusk') {
+    desktopShellConfig.wallpaperType = 'gradient'
+    desktopShellConfig.wallpaperValue = 'linear-gradient(145deg, #0f172a 0%, #7c3aed 48%, #f97316 100%)'
+    desktopMessage.success('已切换暮色渐变')
+    return
+  }
+  if (menuKey === 'wallpaper-gradient-ocean') {
+    desktopShellConfig.wallpaperType = 'gradient'
+    desktopShellConfig.wallpaperValue = 'linear-gradient(160deg, #0c4a6e 0%, #0284c7 42%, #67e8f9 100%)'
+    desktopMessage.success('已切换海洋渐变')
+    return
+  }
+  if (menuKey === 'wallpaper-solid-dark') {
+    desktopShellConfig.wallpaperType = 'color'
+    desktopShellConfig.wallpaperValue = '#0b1020'
+    desktopMessage.success('已切换深空黑')
     return
   }
 
