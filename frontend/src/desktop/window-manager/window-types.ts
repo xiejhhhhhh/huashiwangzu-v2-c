@@ -1,4 +1,5 @@
 import type { Component } from 'vue'
+import type { MacAppUiContract } from '@/desktop/app-kit'
 
 export interface TaskbarItem {
   id: string
@@ -38,6 +39,8 @@ export interface FileOpenPayload {
 
 export interface AppRegistryEntry {
   appKey: string
+  /** Product id that owns this entry; legacy aliases point to the same key. */
+  canonicalAppKey?: string
   appName: string
   icon: string
   description: string
@@ -85,4 +88,6 @@ export interface AppRegistryEntry {
   }>
   /** Whether enabled, defaults to enabled */
   enabled?: boolean
+  /** Product App UI Kit contract (when declared by product.json). */
+  uiContract?: MacAppUiContract | null
 }

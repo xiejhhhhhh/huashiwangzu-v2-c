@@ -15,22 +15,30 @@
       <div class="db-card wait"><span class="db-num">{{ s.waiting_documents || 0 }}</span><span class="db-label">等待调度</span></div>
       <div class="db-card err"><span class="db-num">{{ s.failed_documents }}</span><span class="db-label">失败/卡住</span></div>
       <div class="db-card source"><span class="db-num">{{ s.source_unavailable_documents || 0 }}</span><span class="db-label">源文件不可用</span></div>
-      <button class="db-card action-card" type="button" @click="showGovernance = !showGovernance">
+      <button class="db-card action-card" type="button" @click="toggleGovernance">
         <span class="db-num">{{ pendingCount }}</span><span class="db-label">治理待办</span>
       </button>
-      <div class="db-card"><span class="db-num">{{ s.total_entities }}</span><span class="db-label">实体总数</span></div>
-      <div class="db-card"><span class="db-num">{{ s.total_graph_relations }}</span><span class="db-label">图谱关系</span></div>
-      <div class="db-card"><span class="db-num">{{ s.total_file_relations }}</span><span class="db-label">跨文件关联</span></div>
-      <div class="db-card warn"><span class="db-num">{{ s.duplicate_entity_count }}</span><span class="db-label">重复实体</span></div>
+      <template v-if="analyticsLoaded">
+        <div class="db-card"><span class="db-num">{{ s.total_entities }}</span><span class="db-label">实体总数</span></div>
+        <div class="db-card"><span class="db-num">{{ s.total_graph_relations }}</span><span class="db-label">图谱关系</span></div>
+        <div class="db-card"><span class="db-num">{{ s.total_file_relations }}</span><span class="db-label">跨文件关联</span></div>
+        <div class="db-card warn"><span class="db-num">{{ s.duplicate_entity_count }}</span><span class="db-label">重复实体</span></div>
+      </template>
+      <button v-else class="db-card action-card analytics-card" type="button" :disabled="analyticsLoading" @click="loadAnalytics">
+        <span class="analytics-title">{{ analyticsLoading ? '正在加载…' : '加载治理分析' }}</span>
+        <span class="db-label">实体、关系与重复项按需查询</span>
+      </button>
     </div>
 
-    <section class="db-section">
+    <AsyncPaneState v-if="loading" title="正在加载看板" description="仅加载当前页文件进度。" />
+
+    <section v-else class="db-section">
       <h3>各文件分析进度</h3>
       <div class="db-table-wrap">
         <table class="db-table">
           <thead><tr><th>文件名</th><th>原始采集</th><th>页级融合</th><th>画像</th><th>图谱</th><th>关联</th><th>页数</th><th>创建时间</th><th></th></tr></thead>
           <tbody>
-            <tr v-for="d in s.document_progresses" :key="d.id" :class="rowClass(d)">
+            <tr v-for="d in visibleProgresses" :key="d.id" :class="rowClass(d)">
               <td class="cell-name">{{ d.filename }}</td>
               <td><span class="tag" :class="statusClass(displayStatus(d, d.raw_status))">{{ statusText(displayStatus(d, d.raw_status)) }}</span></td>
               <td><span class="tag" :class="statusClass(displayStatus(d, d.fusion_status))">{{ statusText(displayStatus(d, d.fusion_status)) }}</span></td>
@@ -51,6 +59,13 @@
           </tbody>
         </table>
       </div>
+      <footer class="table-pagination">
+        <span>共 {{ progressTotal }} 个文件 · 第 {{ page }} / {{ pageCount }} 页</span>
+        <div>
+          <button type="button" :disabled="page <= 1 || pageLoading" @click="changePage(page - 1)">上一页</button>
+          <button type="button" :disabled="page >= pageCount || pageLoading" @click="changePage(page + 1)">下一页</button>
+        </div>
+      </footer>
     </section>
 
     <div class="db-cols">
@@ -96,7 +111,7 @@
     </section>
 
     <section v-if="s.duplicate_entity_groups.length" class="db-section">
-      <h3>重复实体（待消歧）</h3>
+      <h3>重复实体（待消歧）<span class="section-note">仅显示前 20 条</span></h3>
       <div class="dup-list">
         <div v-for="g in s.duplicate_entity_groups" :key="g.name" class="dup-item">
           <span class="dup-name">{{ g.name }}</span>
@@ -119,6 +134,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import AsyncPaneState from '@/shared/components/async-pane-state.vue'
 import {
   apiDelete, getDashboardStats, getGovernanceCandidates, getPendingCount, startPipeline,
   type DashboardStats, type DocProgressEntry, type GovernanceCandidate,
@@ -137,6 +153,11 @@ const s = ref<DashboardStats>({
   recent_completions: [],
 })
 const loading = ref(true)
+const pageLoading = ref(false)
+const analyticsLoading = ref(false)
+const analyticsLoaded = ref(false)
+const page = ref(1)
+const pageSize = 50
 const loadError = ref('')
 const triggeredSet = ref(new Set<number>())
 const triggeringSet = ref(new Set<number>())
@@ -146,6 +167,14 @@ const governanceCandidatesUnavailable = ref(false)
 const showGovernance = ref(props.initialShowGovernance === true)
 
 const hasCategories = computed(() => Object.keys(s.value.entity_category_distribution).length > 0)
+const progressTotal = computed(() => s.value.document_progress_total ?? s.value.total_documents)
+const pageCount = computed(() => Math.max(1, Math.ceil(progressTotal.value / pageSize)))
+const visibleProgresses = computed(() => {
+  const rows = s.value.document_progresses
+  if (rows.length <= pageSize) return rows
+  const start = (page.value - 1) * pageSize
+  return rows.slice(start, start + pageSize)
+})
 
 function statusClass(st: string): string {
   if (st === 'done') return 'ok'
@@ -204,21 +233,64 @@ function errorMessage(error: unknown, fallback: string): string {
 
 async function refreshStats() {
   const errors: string[] = []
-  try { s.value = await getDashboardStats() } catch (e: unknown) { errors.push(errorMessage(e, '看板统计加载失败')) }
+  try {
+    const next = await getDashboardStats(page.value, pageSize)
+    s.value = analyticsLoaded.value ? {
+      ...next,
+      total_entities: s.value.total_entities,
+      total_graph_relations: s.value.total_graph_relations,
+      total_file_relations: s.value.total_file_relations,
+      duplicate_entity_count: s.value.duplicate_entity_count,
+      duplicate_entity_groups: s.value.duplicate_entity_groups,
+      entity_category_distribution: s.value.entity_category_distribution,
+      analytics_loaded: true,
+    } : next
+  } catch (e: unknown) { errors.push(errorMessage(e, '看板统计加载失败')) }
   try {
     const pending = await getPendingCount()
     pendingCount.value = pending.pending_count
   } catch (e: unknown) { errors.push(errorMessage(e, '治理待办数量加载失败')) }
+  loadError.value = errors.join('；')
+}
+
+async function loadAnalytics() {
+  if (analyticsLoading.value || analyticsLoaded.value) return
+  analyticsLoading.value = true
+  try {
+    const result = await getDashboardStats(page.value, pageSize, true)
+    s.value = result
+    analyticsLoaded.value = true
+  } catch (e: unknown) {
+    loadError.value = errorMessage(e, '治理分析加载失败')
+  } finally {
+    analyticsLoading.value = false
+  }
+}
+
+async function loadGovernanceCandidates() {
+  if (governanceCandidates.value.length || governanceCandidatesUnavailable.value) return
   try {
     governanceCandidatesUnavailable.value = false
     const candidates = await getGovernanceCandidates(5)
     governanceCandidates.value = candidates.items
-  } catch (e: unknown) {
+  } catch {
     governanceCandidates.value = []
     governanceCandidatesUnavailable.value = true
-    errors.push(errorMessage(e, '治理候选加载失败'))
   }
-  loadError.value = errors.join('；')
+}
+
+async function toggleGovernance() {
+  showGovernance.value = !showGovernance.value
+  if (showGovernance.value) await loadGovernanceCandidates()
+}
+
+async function changePage(nextPage: number) {
+  const target = Math.max(1, Math.min(pageCount.value, nextPage))
+  if (target === page.value) return
+  page.value = target
+  pageLoading.value = true
+  try { await refreshStats() }
+  finally { pageLoading.value = false }
 }
 
 async function handleRetrigger(docId: number) {
@@ -264,6 +336,7 @@ function isTriggered(docId: number): boolean {
 
 onMounted(async () => {
   await refreshStats()
+  if (showGovernance.value) await loadGovernanceCandidates()
   loading.value = false
 })
 </script>
@@ -305,6 +378,8 @@ onMounted(async () => {
 .db-card.source { border-color: #ffd0a6; background: #fff7ed; }
 .action-card { cursor: pointer; font: inherit; }
 .action-card:hover { border-color: #2395bc; background: #f0f9fd; }
+.analytics-card { grid-column: span 2; min-height: 82px; }
+.analytics-title { display: block; color: #2395bc; font-size: 14px; font-weight: 700; }
 .db-num { display: block; font-size: 28px; font-weight: 800; color: #1c3a4a; line-height: 1.2; }
 .db-card.ok .db-num { color: #1f9d5b; }
 .db-card.busy .db-num { color: #c5851a; }
@@ -318,6 +393,7 @@ onMounted(async () => {
 .db-section { margin-bottom: 20px; }
 .db-section h3 { margin: 0 0 10px; font-size: 15px; font-weight: 700; color: #1c3a4a; display: flex; align-items: center; gap: 8px; }
 .badge { background: #e5534b; color: #fff; font-size: 11px; padding: 1px 7px; border-radius: 10px; }
+.section-note { color: #8e8e93; font-size: 10px; font-weight: 400; }
 .db-table-wrap { overflow-x: auto; border: 1px solid #e3e9f2; border-radius: 10px; background: #fff; }
 .db-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .db-table th { background: #f6f9fc; padding: 10px 12px; text-align: left; font-weight: 600; color: #46586b; border-bottom: 1px solid #e3e9f2; white-space: nowrap; }
@@ -330,6 +406,10 @@ onMounted(async () => {
 .db-table tr.row-warn td { color: #9a5b12; background: #fff7ed; }
 .db-table tr.row-err td { color: #d4544b; background: #fef0ee; }
 .db-table tr.row-source td { color: #9a5b12; background: #fff7ed; }
+.table-pagination { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; color: #8e8e93; font-size: 11px; }
+.table-pagination div { display: flex; gap: 6px; }
+.table-pagination button { height: 28px; padding: 0 10px; border: .5px solid rgba(60,60,67,.22); border-radius: 7px; background: #fff; color: #007aff; font: inherit; cursor: pointer; }
+.table-pagination button:disabled { color: #aeaeb2; cursor: default; }
 .cell-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-date { white-space: nowrap; font-size: 12px; color: #8aa0b5; }
 .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }

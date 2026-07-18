@@ -49,5 +49,17 @@
   },
   "legacyAppKeys": [
     "knowledge"
-  ]
+  ],
+  "uiContract": {
+    "kit": "mac-app-v1",
+    "layout": "finder",
+    "shell": {
+      "useAppWindowFrame": true,
+      "sidebar": "required",
+      "toolbar": "required",
+      "statusbar": "none"
+    },
+    "feedback": "desktop-kit",
+    "density": "comfortable"
+  }
 }

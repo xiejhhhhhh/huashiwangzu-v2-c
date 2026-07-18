@@ -11,8 +11,9 @@ from pathlib import Path
 from app.config import get_settings
 from app.models.file import File
 from app.models.system import SystemTaskQueue
-from sqlalchemy import exists, func, select
+from sqlalchemy import and_, case, exists, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from ..models import (
     KbDocument,
@@ -170,40 +171,138 @@ def _document_bucket(
     return "partial"
 
 
-async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
+def _dashboard_source_state(file: File | None, parse_error: str) -> tuple[bool, str]:
+    if file is None:
+        return False, "source_file_missing"
+    if file.deleted:
+        return False, "source_file_deleted"
+    if not str(file.storage_path or "").strip():
+        return False, "source_storage_path_missing"
+    if parse_error in NON_CONTENT_FILE_REASONS:
+        return True, parse_error
+    return True, "available"
+
+
+def _dashboard_bucket_expression(
+    latest_task: type[SystemTaskQueue],
+    paused_stages: set[str],
+    paused_lanes: set[str],
+):
+    stage_values = [func.coalesce(field, "pending") for field in DEEP_STAGE_FIELDS]
+    paused_terms = []
+    if paused_stages:
+        paused_terms.append(latest_task.stage_key.in_(tuple(paused_stages)))
+    if paused_lanes:
+        paused_terms.append(latest_task.lane_key.in_(tuple(paused_lanes)))
+    worker_paused = or_(*paused_terms) if paused_terms else false()
+    task_ready = or_(latest_task.ready_status.is_(None), latest_task.ready_status.in_(("", "ready")))
+    source_unavailable = or_(
+        File.id.is_(None),
+        File.deleted.is_(True),
+        func.coalesce(File.storage_path, "") == "",
+    )
+    failed = or_(
+        latest_task.status == "failed",
+        *(value.in_(tuple(FAILED_STAGE_STATUSES)) for value in stage_values),
+    )
+    completed = and_(*(value == "done" for value in stage_values))
+    running = or_(
+        latest_task.status == "running",
+        *(value.in_(tuple(RUNNING_STAGE_STATUSES)) for value in stage_values),
+    )
+    paused = or_(
+        and_(latest_task.status == "pending", worker_paused),
+        *(value.in_(tuple(PAUSED_STAGE_STATUSES)) for value in stage_values),
+    )
+    queued = and_(latest_task.status == "pending", ~worker_paused, task_ready)
+    task_waiting = and_(latest_task.status == "pending", ~task_ready)
+    degraded = or_(*(value.in_(tuple(DEGRADED_STAGE_STATUSES)) for value in stage_values))
+    pending = or_(*(value.in_(tuple(PENDING_STAGE_STATUSES)) for value in stage_values))
+    return case(
+        (source_unavailable, "source_unavailable"),
+        (failed, "failed"),
+        (completed, "completed"),
+        (running, "running"),
+        (paused, "paused"),
+        (queued, "queued"),
+        (task_waiting, "waiting"),
+        (degraded, "partial"),
+        (pending, "waiting"),
+        else_="partial",
+    )
+
+
+def _dashboard_entry(
+    doc: KbDocument,
+    file: File | None,
+    task: SystemTaskQueue | None,
+    paused_stages: set[str],
+    paused_lanes: set[str],
+) -> dict:
+    parse_error = str(doc.parse_error or "")
+    source_available, source_state = _dashboard_source_state(file, parse_error)
+    task_status = _task_display_status(task, paused_stages, paused_lanes)
+    statuses = _stage_statuses(doc, task, task_status)
+    bucket = _document_bucket(statuses, task, task_status, source_available=source_available)
+    return {
+        "id": doc.id, "filename": doc.filename, "total_pages": doc.total_pages,
+        "raw_status": statuses["raw_status"], "fusion_status": statuses["fusion_status"],
+        "profile_status": statuses["profile_status"], "graph_status": statuses["graph_status"],
+        "relation_status": statuses["relation_status"],
+        "parse_status": doc.parse_status, "created_at": str(doc.created_at or ""),
+        "source_available": bool(source_available), "source_state": source_state,
+        "pipeline_status": bucket,
+        "task_status": task.status if task is not None else None,
+        "task_stage": task.stage_key if task is not None else None,
+    }
+
+
+async def get_dashboard_stats(
+    db: AsyncSession,
+    user_id: int,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    include_analytics: bool = False,
+) -> dict:
     live_source_clause = exists(
         select(File.id).where(
             File.id == KbDocument.file_id,
             File.deleted.is_(False),
         )
     )
-    all_docs_result = await db.execute(
-        select(KbDocument, File)
-        .join(File, File.id == KbDocument.file_id, isouter=True)
-        .where(KbDocument.deleted.is_(False), KbDocument.owner_id == user_id)
-        .order_by(KbDocument.id.desc())
-    )
-    doc_rows = all_docs_result.all()
-    docs = [doc for doc, _file in doc_rows]
-    doc_ids = [int(doc.id) for doc in docs]
-    latest_tasks: dict[int, SystemTaskQueue] = {}
-    if doc_ids:
-        latest_task_ids = (
-            select(func.max(SystemTaskQueue.id).label("id"))
-            .where(
-                SystemTaskQueue.module == "knowledge",
-                SystemTaskQueue.task_type == PIPELINE_TASK_TYPE,
-                SystemTaskQueue.document_id.in_(doc_ids),
-            )
-            .group_by(SystemTaskQueue.document_id)
-            .subquery()
-        )
-        tasks = (await db.execute(
-            select(SystemTaskQueue).join(latest_task_ids, SystemTaskQueue.id == latest_task_ids.c.id)
-        )).scalars().all()
-        latest_tasks = _latest_task_by_document(list(tasks))
     paused_stages, paused_lanes = _load_paused_worker_config()
-
+    latest_task_ids = (
+        select(
+            SystemTaskQueue.document_id.label("document_id"),
+            func.max(SystemTaskQueue.id).label("id"),
+        )
+        .where(
+            SystemTaskQueue.module == "knowledge",
+            SystemTaskQueue.task_type == PIPELINE_TASK_TYPE,
+            SystemTaskQueue.document_id.is_not(None),
+            SystemTaskQueue.document_id.in_(
+                select(KbDocument.id).where(
+                    KbDocument.deleted.is_(False),
+                    KbDocument.owner_id == user_id,
+                )
+            ),
+        )
+        .group_by(SystemTaskQueue.document_id)
+        .subquery()
+    )
+    latest_task = aliased(SystemTaskQueue)
+    bucket_expr = _dashboard_bucket_expression(latest_task, paused_stages, paused_lanes)
+    base_filters = (KbDocument.deleted.is_(False), KbDocument.owner_id == user_id)
+    counter_rows = (await db.execute(
+        select(bucket_expr.label("bucket"), func.count(KbDocument.id))
+        .select_from(KbDocument)
+        .outerjoin(File, File.id == KbDocument.file_id)
+        .outerjoin(latest_task_ids, latest_task_ids.c.document_id == KbDocument.id)
+        .outerjoin(latest_task, latest_task.id == latest_task_ids.c.id)
+        .where(*base_filters)
+        .group_by(bucket_expr)
+    )).all()
     counters = {
         "completed": 0,
         "failed": 0,
@@ -214,36 +313,41 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
         "waiting": 0,
         "source_unavailable": 0,
     }
-    doc_progresses = []
-    stuck_docs = []
-    for d, file in doc_rows:
-        source_available, source_state = _source_state(file)
-        task = latest_tasks.get(int(d.id))
-        task_status = _task_display_status(task, paused_stages, paused_lanes)
-        statuses = _stage_statuses(d, task, task_status)
-        bucket = _document_bucket(statuses, task, task_status, source_available=source_available)
-        counters[bucket] += 1
-        parse_error = str(d.parse_error or "")
-        if parse_error in NON_CONTENT_FILE_REASONS:
-            source_state = parse_error
-        elif parse_error in SOURCE_UNAVAILABLE_REASONS and source_available:
-            source_state = "available"
-        entry = {
-            "id": d.id, "filename": d.filename, "total_pages": d.total_pages,
-            "raw_status": statuses["raw_status"], "fusion_status": statuses["fusion_status"],
-            "profile_status": statuses["profile_status"], "graph_status": statuses["graph_status"],
-            "relation_status": statuses["relation_status"],
-            "parse_status": d.parse_status, "created_at": str(d.created_at or ""),
-            "source_available": bool(source_available), "source_state": source_state,
-            "pipeline_status": bucket,
-            "task_status": task.status if task is not None else None,
-            "task_stage": task.stage_key if task is not None else None,
-        }
-        doc_progresses.append(entry)
-        if bucket in {"failed", "source_unavailable"}:
-            stuck_docs.append(entry)
+    for bucket, count in counter_rows:
+        counters[str(bucket)] = int(count or 0)
+    page_rows = (await db.execute(
+        select(KbDocument, File, latest_task)
+        .select_from(KbDocument)
+        .outerjoin(File, File.id == KbDocument.file_id)
+        .outerjoin(latest_task_ids, latest_task_ids.c.document_id == KbDocument.id)
+        .outerjoin(latest_task, latest_task.id == latest_task_ids.c.id)
+        .where(*base_filters)
+        .order_by(KbDocument.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )).all()
+    doc_progresses = [
+        _dashboard_entry(doc, file, task, paused_stages, paused_lanes)
+        for doc, file, task in page_rows
+    ]
+    stuck_rows = []
+    if counters["failed"] or counters["source_unavailable"]:
+        stuck_rows = (await db.execute(
+            select(KbDocument, File, latest_task)
+            .select_from(KbDocument)
+            .outerjoin(File, File.id == KbDocument.file_id)
+            .outerjoin(latest_task_ids, latest_task_ids.c.document_id == KbDocument.id)
+            .outerjoin(latest_task, latest_task.id == latest_task_ids.c.id)
+            .where(*base_filters, bucket_expr.in_(("failed", "source_unavailable")))
+            .order_by(KbDocument.id.desc())
+            .limit(20)
+        )).all()
+    stuck_docs = [
+        _dashboard_entry(doc, file, task, paused_stages, paused_lanes)
+        for doc, file, task in stuck_rows
+    ]
 
-    total = len(docs)
+    total = sum(counters.values())
     completed = counters["completed"]
     failed = counters["failed"]
     partial = counters["partial"]
@@ -253,35 +357,37 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
     waiting = counters["waiting"]
     source_unavailable = counters["source_unavailable"]
 
-    entity_count = (await db.execute(
-        select(func.count(KbEntityDictionary.id)).where(KbEntityDictionary.owner_id == user_id)
-    )).scalar() or 0
-
-    relation_count = (await db.execute(
-        select(func.count(KbGraphEdge.id)).where(KbGraphEdge.owner_id == user_id)
-    )).scalar() or 0
-
-    file_relation_count = (await db.execute(
-        select(func.count(KbFileRelation.id)).where(KbFileRelation.owner_id == user_id)
-    )).scalar() or 0
-
+    entity_count = 0
+    relation_count = 0
+    file_relation_count = 0
     duplicate_entities = 0
-    dup_rows = await db.execute(
-        select(KbEntityDictionary.name, func.count(KbEntityDictionary.id))
-        .where(KbEntityDictionary.owner_id == user_id, KbEntityDictionary.status != "merged")
-        .group_by(KbEntityDictionary.name)
-        .having(func.count(KbEntityDictionary.id) > 1)
-    )
-    dup_groups = dup_rows.all()
-    duplicate_entities = sum(cnt for _, cnt in dup_groups)
-
-    cat_rows = await db.execute(
-        select(KbEntityDictionary.category, func.count(KbEntityDictionary.id))
-        .where(KbEntityDictionary.owner_id == user_id)
-        .group_by(KbEntityDictionary.category)
-        .order_by(func.count(KbEntityDictionary.id).desc())
-    )
-    entity_category_distribution = {cat: cnt for cat, cnt in cat_rows.all()}
+    dup_groups = []
+    entity_category_distribution = {}
+    if include_analytics:
+        entity_count = (await db.execute(
+            select(func.count(KbEntityDictionary.id)).where(KbEntityDictionary.owner_id == user_id)
+        )).scalar() or 0
+        relation_count = (await db.execute(
+            select(func.count(KbGraphEdge.id)).where(KbGraphEdge.owner_id == user_id)
+        )).scalar() or 0
+        file_relation_count = (await db.execute(
+            select(func.count(KbFileRelation.id)).where(KbFileRelation.owner_id == user_id)
+        )).scalar() or 0
+        dup_rows = await db.execute(
+            select(KbEntityDictionary.name, func.count(KbEntityDictionary.id))
+            .where(KbEntityDictionary.owner_id == user_id, KbEntityDictionary.status != "merged")
+            .group_by(KbEntityDictionary.name)
+            .having(func.count(KbEntityDictionary.id) > 1)
+        )
+        dup_groups = dup_rows.all()
+        duplicate_entities = sum(cnt for _, cnt in dup_groups)
+        cat_rows = await db.execute(
+            select(KbEntityDictionary.category, func.count(KbEntityDictionary.id))
+            .where(KbEntityDictionary.owner_id == user_id)
+            .group_by(KbEntityDictionary.category)
+            .order_by(func.count(KbEntityDictionary.id).desc())
+        )
+        entity_category_distribution = {cat: cnt for cat, cnt in cat_rows.all()}
 
     recent = (await db.execute(
         select(KbDocument).where(
@@ -315,9 +421,13 @@ async def get_dashboard_stats(db: AsyncSession, user_id: int) -> dict:
         "total_graph_relations": relation_count,
         "total_file_relations": file_relation_count,
         "duplicate_entity_count": duplicate_entities,
-        "duplicate_entity_groups": [{"name": name, "count": cnt} for name, cnt in dup_groups],
+        "duplicate_entity_groups": [{"name": name, "count": cnt} for name, cnt in dup_groups[:20]],
         "entity_category_distribution": entity_category_distribution,
         "document_progresses": doc_progresses,
+        "document_progress_total": total,
+        "document_progress_page": page,
+        "document_progress_page_size": page_size,
         "stuck_documents": stuck_docs,
         "recent_completions": recent_completions,
+        "analytics_loaded": include_analytics,
     }

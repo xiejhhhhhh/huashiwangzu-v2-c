@@ -1,25 +1,24 @@
 <template>
   <div class="taskbar-notifications-wrapper" ref="notificationContainer">
-    <el-badge :value="feedbackSignalCount" :hidden="feedbackSignalCount === 0" class="taskbar-notifications-badge">
-      <button
-        ref="notificationButton"
-        class="taskbar-notifications-button"
-        :class="buttonStatusClass"
-        type="button"
-        :title="buttonTitle"
-        aria-label="打开反馈中心"
-        :aria-expanded="showNotificationPanel ? 'true' : 'false'"
-        aria-controls="taskbar-notifications-panel"
-        @click.stop="handleToggleNotificationPanel"
-      >
-        <Bell :size="14" :stroke-width="2" />
-      </button>
-    </el-badge>
+    <button
+      ref="notificationButton"
+      class="taskbar-notifications-button"
+      :class="buttonStatusClass"
+      type="button"
+      :title="buttonTitle"
+      aria-label="打开通知中心"
+      :aria-expanded="showNotificationPanel ? 'true' : 'false'"
+      aria-controls="taskbar-notifications-panel"
+      @click.stop="handleToggleNotificationPanel"
+    >
+      <Bell :size="14" :stroke-width="2" />
+      <span v-if="feedbackSignalCount > 0" class="taskbar-notifications-count">{{ feedbackSignalCount > 99 ? '99+' : feedbackSignalCount }}</span>
+    </button>
     <div
       v-if="showNotificationPanel"
       id="taskbar-notifications-panel"
       ref="notificationPanel"
-      class="taskbar-notifications-panel"
+      class="taskbar-notifications-panel glass-panel"
       tabindex="-1"
       @click.stop
       @keydown.esc.stop.prevent="closeNotificationPanel"
@@ -79,16 +78,16 @@ const notificationButton = ref<HTMLButtonElement | null>(null)
 const notificationPanel = ref<HTMLElement | null>(null)
 
 const buttonTitle = computed(() => {
-  if (hasFeedbackLoadError.value) return '反馈中心加载失败'
-  if (hasStaleFeedbackData.value) return '反馈中心数据可能不是最新'
+  if (hasFeedbackLoadError.value) return '通知中心加载失败'
+  if (hasStaleFeedbackData.value) return '通知中心数据可能不是最新'
   const workflow = agentWorkflowSummary.value
   const tasks = taskDebtSummary.value
-  if (workflow && workflow.needs_confirmation_count > 0) return '有事项需要确认'
-  if (workflow && workflow.failed_count + workflow.partial_count > 0) return '有 Agent 工作需要查看'
-  if (tasks && tasks.summary.failed + tasks.recent_failed_count + tasks.historical_debt_total > 0) return '有后台任务失败'
-  if (tasks && tasks.summary.running + tasks.summary.pending > 0) return '后台任务处理中'
+  if (workflow && (workflow.needs_confirmation_count || 0) > 0) return '有事项需要确认'
+  if (workflow && ((workflow.failed_count || 0) + (workflow.partial_count || 0)) > 0) return '有 Agent 工作需要查看'
+  if (tasks && ((tasks.summary?.failed || 0) + (tasks.recent_failed_count || 0) + (tasks.historical_debt_total || 0)) > 0) return '有后台任务失败'
+  if (tasks && ((tasks.summary?.running || 0) + (tasks.summary?.pending || 0)) > 0) return '后台任务处理中'
   if (unreadCount.value > 0) return '有未读通知'
-  return '反馈中心'
+  return '通知中心'
 })
 
 const buttonStatusClass = computed(() => {
@@ -96,12 +95,12 @@ const buttonStatusClass = computed(() => {
   if (hasStaleFeedbackData.value) return 'status-partial'
   const workflow = agentWorkflowSummary.value
   const tasks = taskDebtSummary.value
-  if ((workflow && workflow.failed_count > 0) || (tasks && tasks.summary.failed + tasks.recent_failed_count > 0)) {
+  if ((workflow && (workflow.failed_count || 0) > 0) || (tasks && ((tasks.summary?.failed || 0) + (tasks.recent_failed_count || 0)) > 0)) {
     return 'status-failed'
   }
-  if (workflow && workflow.needs_confirmation_count > 0) return 'status-confirm'
-  if ((workflow && workflow.partial_count > 0) || (tasks && tasks.historical_debt_total > 0)) return 'status-partial'
-  if ((workflow && workflow.active_count > 0) || (tasks && tasks.summary.running + tasks.summary.pending > 0)) return 'status-processing'
+  if (workflow && (workflow.needs_confirmation_count || 0) > 0) return 'status-confirm'
+  if ((workflow && (workflow.partial_count || 0) > 0) || (tasks && (tasks.historical_debt_total || 0) > 0)) return 'status-partial'
+  if ((workflow && (workflow.active_count || 0) > 0) || (tasks && ((tasks.summary?.running || 0) + (tasks.summary?.pending || 0)) > 0)) return 'status-processing'
   return ''
 })
 
@@ -149,14 +148,6 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
   display: flex;
   align-items: center;
 }
-.taskbar-notifications-badge :deep(.el-badge__content) {
-  font-size: 10px;
-  height: 16px;
-  line-height: 16px;
-  padding: 0 5px;
-  border: none;
-  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.44);
-}
 .taskbar-notifications-button {
   position: relative;
   width: 28px;
@@ -172,16 +163,18 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
   opacity: .86;
   transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, opacity .16s ease, transform .16s ease;
 }
-.taskbar-notifications-button::after {
-  content: '';
+.taskbar-notifications-count {
   position: absolute;
-  right: 5px;
-  bottom: 5px;
-  width: 5px;
-  height: 5px;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
   border-radius: 999px;
-  background: transparent;
-  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.36);
+  background: #ff3b30;
+  color: white;
+  font: 700 9px/14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.28);
 }
 .taskbar-notifications-button:hover {
   background: rgba(255,255,255,.2);
@@ -198,25 +191,21 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
   background: rgba(239, 68, 68, .18);
   box-shadow: inset 0 0 0 1px rgba(248, 113, 113, .18);
 }
-.taskbar-notifications-button.status-failed::after { background: #ef4444; }
 .taskbar-notifications-button.status-confirm {
   color: #fde68a;
   background: rgba(245, 158, 11, .18);
   box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .18);
 }
-.taskbar-notifications-button.status-confirm::after { background: #f59e0b; }
 .taskbar-notifications-button.status-partial {
   color: #fed7aa;
   background: rgba(249, 115, 22, .16);
   box-shadow: inset 0 0 0 1px rgba(251, 146, 60, .18);
 }
-.taskbar-notifications-button.status-partial::after { background: #f97316; }
 .taskbar-notifications-button.status-processing {
   color: #bae6fd;
   background: rgba(14, 165, 233, .16);
   box-shadow: inset 0 0 0 1px rgba(56, 189, 248, .18);
 }
-.taskbar-notifications-button.status-processing::after { background: #38bdf8; }
 .taskbar-notifications-panel {
   position: fixed;
   top: 30px;
@@ -225,11 +214,7 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
   width: min(380px, calc(100vw - 24px));
   max-height: min(560px, calc(100vh - 72px));
   overflow-y: auto;
-  background: var(--desktop-material-popover);
-  border: 1px solid var(--desktop-material-border);
-  border-radius: var(--desktop-radius-popover);
-  box-shadow: var(--desktop-shadow-popover);
-  backdrop-filter: blur(24px) saturate(160%);
+  border-radius: 20px;
   z-index: var(--z-system-popover);
 }
 </style>

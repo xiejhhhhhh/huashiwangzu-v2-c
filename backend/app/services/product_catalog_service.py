@@ -152,6 +152,9 @@ def _to_public(manifest: dict[str, Any], *, catalog_revision: str) -> dict[str, 
     """前端可见字段。绝不下发 Parser/Provider 等非 Product 身份。"""
     icon_set = manifest.get("iconSet") or {}
     window_policy = manifest.get("windowPolicy") or {}
+    ui_contract = manifest.get("uiContract")
+    if not isinstance(ui_contract, dict):
+        ui_contract = None
     return {
         "productId": manifest.get("productId"),
         "version": manifest.get("version"),
@@ -163,6 +166,8 @@ def _to_public(manifest: dict[str, Any], *, catalog_revision: str) -> dict[str, 
         "iconSet": icon_set,
         "entryComponentKey": manifest.get("entryComponentKey"),
         "workspaceKind": manifest.get("workspaceKind"),
+        # App UI Kit contract — frontend only; backend never styles from this.
+        "uiContract": ui_contract,
         "visibility": manifest.get("visibility") or {},
         "permissionPolicy": manifest.get("permissionPolicy") or {},
         "requiredCapabilities": list(manifest.get("requiredCapabilities") or []),

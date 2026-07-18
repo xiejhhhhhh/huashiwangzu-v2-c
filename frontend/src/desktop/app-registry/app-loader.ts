@@ -5,6 +5,9 @@ import type { DesktopProductItem } from '@/shared/api/products'
 import { componentKeyMap } from '@/desktop/app-registry/component-key-map'
 import { setAppRegistry } from '@/desktop/app-registry/desktop-app-state'
 import ComponentRegistrationError from '@/desktop/components/component-registration-error.vue'
+import { MAC_APP_KIT_ID, type MacAppUiContract } from '@/desktop/app-kit'
+
+const VALID_LAYOUTS = new Set(['finder', 'document', 'chat', 'settings', 'dashboard', 'utility'])
 
 function missingComponentLoader(
   appKey: string,
@@ -54,6 +57,32 @@ function extensionsFromAssociations(product: DesktopProductItem): {
   return { supported: [...supported], editable: [...editable] }
 }
 
+/**
+ * Dev-time / soft gate: product should declare mac-app-v1 uiContract.
+ * Does not block loading (catalog may still open legacy shells), but logs loudly.
+ */
+export function validateProductUiContract(
+  product: DesktopProductItem,
+): { ok: boolean; warnings: string[]; contract: MacAppUiContract | null } {
+  const warnings: string[] = []
+  const pid = product.productId || '<unknown>'
+  const raw = product.uiContract as MacAppUiContract | null | undefined
+  if (!raw || typeof raw !== 'object') {
+    warnings.push(`[uiContract] product "${pid}" missing uiContract.kit=mac-app-v1`)
+    return { ok: false, warnings, contract: null }
+  }
+  if (raw.kit !== MAC_APP_KIT_ID) {
+    warnings.push(`[uiContract] product "${pid}" kit="${String(raw.kit)}" expected "${MAC_APP_KIT_ID}"`)
+  }
+  if (!VALID_LAYOUTS.has(String(raw.layout || ''))) {
+    warnings.push(`[uiContract] product "${pid}" invalid layout="${String(raw.layout)}"`)
+  }
+  if (raw.feedback && raw.feedback !== 'desktop-kit') {
+    warnings.push(`[uiContract] product "${pid}" feedback="${String(raw.feedback)}" expected "desktop-kit"`)
+  }
+  return { ok: warnings.length === 0, warnings, contract: raw }
+}
+
 function transformProductToEntry(product: DesktopProductItem, aliasOf?: string): AppRegistryEntry {
   const entryKey = product.entryComponentKey || ''
   const windowPolicy = product.windowPolicy || {}
@@ -75,8 +104,16 @@ function transformProductToEntry(product: DesktopProductItem, aliasOf?: string):
   const showDesktop = isAlias ? false : visibility.desktop !== false
   const showLauncher = isAlias ? false : (visibility.launcher !== false || visibility.dock !== false)
 
+  const uiCheck = validateProductUiContract(product)
+  if (!isAlias && uiCheck.warnings.length) {
+    for (const msg of uiCheck.warnings) {
+      console.warn(msg)
+    }
+  }
+
   return {
     appKey,
+    canonicalAppKey: product.productId,
     appName,
     icon: product.icon || 'Collection',
     description: product.description || '',
@@ -100,6 +137,7 @@ function transformProductToEntry(product: DesktopProductItem, aliasOf?: string):
     windowType: 'normal',
     allowMultiple: product.allowMultiple ?? Boolean(windowPolicy.allowMultiple ?? false),
     enabled: product.enabled ?? true,
+    uiContract: uiCheck.contract,
   }
 }
 
@@ -115,8 +153,11 @@ export async function loadAppRegistry(_role: string): Promise<AppRegistryEntry[]
 
   const entries: AppRegistryEntry[] = []
   const claimed = new Set<string>()
+  let missingUiContract = 0
 
   for (const product of catalog.items) {
+    const check = validateProductUiContract(product)
+    if (!check.ok) missingUiContract += 1
     const main = transformProductToEntry(product)
     entries.push(main)
     claimed.add(main.appKey)
@@ -128,6 +169,12 @@ export async function loadAppRegistry(_role: string): Promise<AppRegistryEntry[]
       entries.push(transformProductToEntry(product, key))
       claimed.add(key)
     }
+  }
+
+  if (missingUiContract > 0 && import.meta.env.DEV) {
+    console.warn(
+      `[app-registry] ${missingUiContract}/${catalog.items.length} products missing valid uiContract.kit=${MAC_APP_KIT_ID}`,
+    )
   }
 
   setAppRegistry(entries)

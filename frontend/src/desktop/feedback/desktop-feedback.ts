@@ -109,6 +109,69 @@ export function showToast(
   }, toast.duration)
 }
 
+/** Element Plus 兼容别名，方便桌面路径逐步去 Element 化 */
+export const desktopMessage = {
+  success(message: string) { showToast(message, { type: 'success' }) },
+  info(message: string) { showToast(message, { type: 'info' }) },
+  warning(message: string) { showToast(message, { type: 'warning' }) },
+  error(message: string) { showToast(message, { type: 'error' }) },
+}
+
+export interface DesktopDialogRequest {
+  title: string
+  message: string
+  mode?: 'alert' | 'confirm'
+  confirmText?: string
+  cancelText?: string
+  tone?: OperationToast['type']
+}
+
+export interface DesktopDialogState extends Required<Pick<DesktopDialogRequest, 'title' | 'message' | 'mode' | 'confirmText' | 'cancelText' | 'tone'>> {
+  id: number
+  resolve: (ok: boolean) => void
+}
+
+const dialogCounter = { value: 0 }
+export const activeDialog = ref<DesktopDialogState | null>(null)
+
+export function showAlert(message: string, title = '提示'): Promise<void> {
+  return openDialog({ title, message, mode: 'alert', confirmText: '好' }).then(() => undefined)
+}
+
+export function showConfirm(message: string, title = '确认', options: { confirmText?: string; cancelText?: string; tone?: OperationToast['type'] } = {}): Promise<boolean> {
+  return openDialog({
+    title,
+    message,
+    mode: 'confirm',
+    confirmText: options.confirmText || '确定',
+    cancelText: options.cancelText || '取消',
+    tone: options.tone || 'warning',
+  })
+}
+
+function openDialog(request: DesktopDialogRequest): Promise<boolean> {
+  if (activeDialog.value) activeDialog.value.resolve(false)
+  return new Promise(resolve => {
+    activeDialog.value = {
+      id: ++dialogCounter.value,
+      title: request.title,
+      message: request.message,
+      mode: request.mode || 'alert',
+      confirmText: request.confirmText || '好',
+      cancelText: request.cancelText || '取消',
+      tone: request.tone || 'info',
+      resolve,
+    }
+  })
+}
+
+export function resolveDialog(ok: boolean): void {
+  const current = activeDialog.value
+  if (!current) return
+  activeDialog.value = null
+  current.resolve(ok)
+}
+
 function getDefaultIcon(type: OperationToast['type']): string {
   switch (type) {
     case 'success': return '✓'

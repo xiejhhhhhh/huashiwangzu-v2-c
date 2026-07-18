@@ -106,5 +106,17 @@
   "legacyAppKeys": [
     "media-intelligence",
     "image-viewer"
-  ]
+  ],
+  "uiContract": {
+    "kit": "mac-app-v1",
+    "layout": "utility",
+    "shell": {
+      "useAppWindowFrame": true,
+      "sidebar": "optional",
+      "toolbar": "optional",
+      "statusbar": "none"
+    },
+    "feedback": "desktop-kit",
+    "density": "comfortable"
+  }
 }

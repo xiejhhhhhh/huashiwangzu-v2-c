@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { desktopMessage } from '@/desktop/feedback/desktop-feedback'
 import { useDesktopEventBus } from '@/desktop/events/use-desktop-event-bus'
 import { collectDraggedFiles, uploadDraggedFiles } from '@/shared/upload/directory-upload'
 
@@ -31,8 +31,8 @@ export function useDesktopShellDropUpload() {
     if (!fileList.length) return
     const result = await uploadDraggedFiles(fileList, null)
     emit('refresh:file-list', { folderId: 0 })
-    if (result.successCount > 0) ElMessage.success(`Uploaded ${result.successCount} items to desktop`)
-    if (result.failCount > 0) ElMessage.warning(`${result.failCount} items failed to upload`)
+    if (result.successCount > 0) desktopMessage.success(`已上传 ${result.successCount} 项到桌面`)
+    if (result.failCount > 0) desktopMessage.warning(`${result.failCount} 项上传失败`)
   }
 
   return { isDragActive, onDragEnter, onDragLeave, onDrop }

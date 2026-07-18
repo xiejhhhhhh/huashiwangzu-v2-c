@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     GPTSTORE_BASE_URL: str = "https://pool.gptstore.club/v1"
     GPTSTORE_PROXY: str = ""
 
+    # grok-4.5 本地中转（openai chat 协议，端口 8317，一千号并发定类/确认用）
+    GROK_API_KEY: str = ""
+
     # ant 协议(Anthropic /v1/messages)备用服务商,不参与常规运行,填了 key 才启用
     DEEPSEEK_ANTHROPIC_KEY: str = ""   # deepseek 官方 anthropic 端点
     JAYCE_CLAUDE_KEY: str = ""         # jayce 中转站 claude(需走代理)

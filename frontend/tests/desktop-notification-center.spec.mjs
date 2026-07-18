@@ -70,6 +70,31 @@ async function mockDesktopShell(page) {
     status: 200,
     json: { success: true, data: mockApps, error: null },
   }))
+  await page.route('**/api/desktop/products', route => route.fulfill({
+    status: 200,
+    json: {
+      success: true,
+      data: {
+        catalogRevision: 'test',
+        count: mockApps.length,
+        kind: 'products',
+        items: mockApps.map((app, index) => ({
+          productId: app.app_id,
+          displayName: app.name,
+          icon: app.icon,
+          description: app.description,
+          entryComponentKey: app.entry_component_key,
+          visibility: { desktop: app.show_on_desktop, launcher: app.show_in_launcher, dock: app.show_on_desktop },
+          windowPolicy: { defaultWidth: app.default_width, defaultHeight: app.default_height, singleton: true, allowMultiple: false },
+          enabled: app.enabled,
+          allowMultiple: false,
+          legacyAppKeys: [app.app_id],
+          sortOrder: (index + 1) * 10,
+        })),
+      },
+      error: null,
+    },
+  }))
   await page.route('**/api/desktop/state', route => route.fulfill({
     status: 200,
     json: {
@@ -155,7 +180,7 @@ async function mockNotificationCenter(page) {
       error: null,
     },
   }))
-  await page.route('**/api/knowledge/dashboard/stats', route => route.fulfill({
+  await page.route('**/api/knowledge/dashboard/stats**', route => route.fulfill({
     status: 200,
     json: {
       success: true,
@@ -215,7 +240,7 @@ test('notification center opens with grouped feedback layers', async ({ page }) 
   await expect(panel).toContainText('主模型 mimo-vl 失败')
   await expect(panel).toContainText('已切到 local_analysis')
 
-  await expect(panel).toHaveCSS('border-radius', '12px')
+  await expect(panel).toHaveCSS('border-radius', '20px')
   const boxShadow = await panel.evaluate(node => getComputedStyle(node).boxShadow)
   expect(boxShadow).not.toBe('none')
 })

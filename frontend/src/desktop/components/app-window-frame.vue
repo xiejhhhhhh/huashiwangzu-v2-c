@@ -1,6 +1,6 @@
 <template>
-  <div class="app-window-frame" :class="layoutClass">
-    <AppToolbar v-if="$slots.toolbar" class="app-window-frame_toolbar">
+  <div class="app-window-frame" :class="[layoutClass, { 'app-window-frame-mac': macChrome }]">
+    <AppToolbar v-if="$slots.toolbar" class="app-window-frame_toolbar" :glass="macChrome">
       <slot name="toolbar" />
     </AppToolbar>
     <div class="app-window-frame_body">
@@ -26,7 +26,6 @@
 import { computed } from 'vue'
 import AppToolbar from './app-toolbar.vue'
 import AppStatusBar from './app-status-bar.vue'
-
 import ComponentErrorBoundary from './component-error-boundary.vue'
 
 const props = withDefaults(defineProps<{
@@ -34,15 +33,16 @@ const props = withDefaults(defineProps<{
   sidebarWidth?: number
   drawerVisible?: boolean
   layout?: 'management' | 'editor' | 'chat' | 'search' | 'file-manager' | 'dashboard'
+  macChrome?: boolean
 }>(), {
   sidebarCollapsed: false,
   sidebarWidth: 260,
   drawerVisible: false,
   layout: 'management',
+  macChrome: true,
 })
 
 const layoutClass = computed(() => `app-window-frame--${props.layout}`)
-
 const sidebarStyle = computed(() => ({
   width: props.sidebarCollapsed ? '0px' : `${props.sidebarWidth}px`,
 }))
@@ -54,6 +54,8 @@ const sidebarStyle = computed(() => ({
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  color: var(--mac-app-text, var(--desktop-ink, #1f2937));
+  background: var(--mac-app-surface, transparent);
 }
 .app-window-frame_toolbar {
   flex-shrink: 0;
@@ -67,7 +69,13 @@ const sidebarStyle = computed(() => ({
   flex-shrink: 0;
   overflow: hidden;
   transition: width 0.22s ease;
-  border-right: 1px solid var(--border-color, #e4e7ed);
+  border-right: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
+  background: var(--mac-app-surface-sidebar, rgba(248, 250, 252, 0.72));
+}
+.app-window-frame-mac .app-window-frame_sidebar {
+  background: var(--mac-app-surface-sidebar, rgba(245, 246, 248, 0.78));
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
 }
 .app-window-frame_sidebar.collapsed {
   border-right: none;
@@ -76,7 +84,7 @@ const sidebarStyle = computed(() => ({
   flex: 1;
   overflow-y: auto;
   padding: 16px;
-  background: linear-gradient(180deg, #fcfcfd, #ffffff);
+  background: var(--mac-app-surface, linear-gradient(180deg, rgba(252,252,253,.98), rgba(255,255,255,1)));
   box-sizing: border-box;
 }
 .app-window-frame_drawer {
@@ -84,7 +92,7 @@ const sidebarStyle = computed(() => ({
   width: 0;
   overflow: hidden;
   transition: width 0.22s ease;
-  border-left: 1px solid var(--border-color, #e4e7ed);
+  border-left: 1px solid rgba(60, 60, 67, 0.12);
 }
 .app-window-frame_drawer.visible {
   width: 30%;
@@ -92,6 +100,8 @@ const sidebarStyle = computed(() => ({
 }
 .app-window-frame_statusbar {
   flex-shrink: 0;
+  border-top: 1px solid rgba(60, 60, 67, 0.1);
+  background: rgba(248, 250, 252, 0.86);
 }
 .app-window-frame--chat .app-window-frame_sidebar {
   border-right: none;
@@ -107,5 +117,9 @@ const sidebarStyle = computed(() => ({
 }
 .app-window-frame--dashboard .app-window-frame_content {
   padding: 16px;
+}
+.app-window-frame--file-manager .app-window-frame_content {
+  padding: 0;
+  background: #fff;
 }
 </style>

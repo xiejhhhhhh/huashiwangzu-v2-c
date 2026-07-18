@@ -1,0 +1,29 @@
+/* App UI Kit tokens — derived from shell skin vars; business pages should prefer these. */
+:root,
+[data-desktop-skin] {
+  --mac-app-surface: color-mix(in srgb, var(--glass-window-bg, #f6f6f8) 92%, white);
+  --mac-app-surface-sidebar: color-mix(in srgb, var(--glass-panel-bg, rgba(246, 246, 250, 0.66)) 88%, #eef0f3);
+  --mac-app-surface-toolbar: color-mix(in srgb, var(--glass-panel-bg, rgba(246, 246, 250, 0.66)) 90%, white);
+  --mac-app-surface-status: color-mix(in srgb, var(--glass-panel-bg, rgba(246, 246, 250, 0.66)) 86%, #f3f4f6);
+  --mac-app-border: rgba(60, 60, 67, 0.12);
+  --mac-app-border-strong: rgba(60, 60, 67, 0.18);
+  --mac-app-text: var(--desktop-ink, rgba(20, 20, 22, 0.88));
+  --mac-app-text-secondary: var(--desktop-ink-muted, rgba(60, 60, 67, 0.62));
+  --mac-app-accent: var(--desktop-system-blue, #0a84ff);
+  --mac-app-selection: color-mix(in srgb, var(--mac-app-accent) 16%, transparent);
+  --mac-app-radius-control: 7px;
+  --mac-app-radius-card: 12px;
+  --mac-app-toolbar-height: 42px;
+  --mac-app-statusbar-height: 26px;
+  --mac-app-sidebar-width: 220px;
+  --mac-app-font: var(--desktop-font-body, 400 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif);
+  --mac-app-font-title: 600 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --mac-app-font-caption: var(--desktop-font-caption, 400 11px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif);
+}
+
+.mac-app-kit {
+  color: var(--mac-app-text);
+  font: var(--mac-app-font);
+  height: 100%;
+  min-height: 0;
+}

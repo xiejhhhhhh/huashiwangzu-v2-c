@@ -20,6 +20,15 @@
       "api_url": "https://opencode.ai/zen/go/v1/chat/completions",
       "api_key_env": "DEEPSEEK_API_KEY"
     },
+    "grok-local-gateway": {
+      "type": "openai_compat",
+      "api_url": "http://127.0.0.1:8317/v1/chat/completions",
+      "api_protocol": "chat",
+      "api_key_env": "GROK_API_KEY",
+      "provider_name": "grok-local-gateway",
+      "timeout_seconds": 120,
+      "description": "本地 Grok 中转站（8317 端口，chat 协议），grok-4.5 批量语义定类专用"
+    },
     "gptstore-local": {
       "type": "openai_compat",
       "api_url": "http://127.0.0.1:50936/v1/responses",
@@ -151,6 +160,21 @@
           "retry_delay_seconds": 30,
           "retry_strategy": "fixed",
           "fallback_policy": "knowledge_text_primary",
+          "price_input": 0,
+          "price_output": 0
+        },
+        "grok-4.5": {
+          "provider": "grok-local-gateway",
+          "model": "grok-4.5",
+          "temperature": 0.2,
+          "max_tokens": 8192,
+          "system_prompt": "You are a precise enterprise knowledge analysis model.",
+          "response_adapter": "openai_compat",
+          "structured_output_mode": "json_object",
+          "context_budget": 256000,
+          "retry_max_attempts": 3,
+          "retry_delay_seconds": 5,
+          "retry_strategy": "fixed",
           "price_input": 0,
           "price_output": 0
         },

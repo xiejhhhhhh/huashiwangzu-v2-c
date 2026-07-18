@@ -1,26 +1,65 @@
 <template>
-  <div class="agent-app agent-theme">
-    <ConversationSidebar
-      :conversations="conversations"
-      :activeConvId="activeConvId"
-      :loading="loading"
-      :collapsed="sidebarCollapsed"
-      :isAdmin="isAdmin"
-      :adminActive="showAdminPanel || undefined"
-      @select="selectConversation"
-      @new="newConversation"
-      @rename="renameConversation"
-      @delete="deleteConversation"
-      @toggle="sidebarCollapsed = !sidebarCollapsed"
-      @admin="toggleAdminPanel"
-    />
+  <div
+    class="agent-app agent-theme"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="chat"
+  >
+    <MacAppShell layout="chat" :sidebar-collapsed="sidebarCollapsed" :sidebar-width="280">
+      <template #sidebar>
+        <ConversationSidebar
+          :conversations="conversations"
+          :activeConvId="activeConvId"
+          :loading="loading"
+          :collapsed="false"
+          :isAdmin="isAdmin"
+          :adminActive="showAdminPanel || undefined"
+          @select="selectConversation"
+          @new="newConversation"
+          @rename="renameConversation"
+          @delete="deleteConversation"
+          @toggle="sidebarCollapsed = !sidebarCollapsed"
+          @admin="toggleAdminPanel"
+        />
+      </template>
 
-    <EnginePanel v-if="showAdminPanel === 'engine'" class="agent-main" />
-    <AgentConfigPanel v-else-if="showAdminPanel === 'config'" class="agent-main" />
-    <ApprovalPanel v-else-if="showAdminPanel === 'approvals'" class="agent-main" />
-    <WorkflowList v-else-if="showAdminPanel === 'workflows'" class="agent-main" :is-admin="isAdmin" @open-approvals="toggleAdminPanel('approvals')" />
+      <template #toolbar>
+        <div class="agent-toolbar">
+          <div class="toolbar-identity">
+            <Bot :size="28" class="assistant-avatar" />
+            <div class="toolbar-copy">
+              <strong>{{ panelTitle }}</strong>
+              <span><i class="status-dot"></i>{{ showAdminPanel ? '管理视图' : 'AI 助手已就绪' }}</span>
+            </div>
+          </div>
+          <nav class="toolbar-actions" aria-label="AI 助手工具">
+            <button v-if="sidebarCollapsed" type="button" title="展开侧栏" aria-label="展开侧栏" @click="sidebarCollapsed = false">
+              <PanelLeftOpen :size="15" />
+            </button>
+            <button :class="{ active: showAdminPanel === 'workflows' }" @click="toggleAdminPanel('workflows')" title="工作流">
+              <Workflow :size="15" />
+              <span>工作流</span>
+            </button>
+            <button v-if="isAdmin" :class="{ active: showAdminPanel === 'approvals' }" @click="toggleAdminPanel('approvals')" title="审批">
+              <BadgeCheck :size="15" />
+              <span>审批</span>
+            </button>
+            <button v-if="isAdmin" :class="{ active: showAdminPanel === 'engine' }" @click="toggleAdminPanel('engine')" title="引擎设置">
+              <Gauge :size="15" />
+            </button>
+            <button v-if="isAdmin" :class="{ active: showAdminPanel === 'config' }" @click="toggleAdminPanel('config')" title="Agent 配置">
+              <SlidersHorizontal :size="15" />
+            </button>
+          </nav>
+        </div>
+      </template>
 
-    <section v-else class="agent-main">
+      <div class="agent-content">
+      <EnginePanel v-if="showAdminPanel === 'engine'" class="agent-main" />
+      <AgentConfigPanel v-else-if="showAdminPanel === 'config'" class="agent-main" />
+      <ApprovalPanel v-else-if="showAdminPanel === 'approvals'" class="agent-main" />
+      <WorkflowList v-else-if="showAdminPanel === 'workflows'" class="agent-main" :is-admin="isAdmin" @open-approvals="toggleAdminPanel('approvals')" />
+
+      <section v-else class="agent-main agent-chat-main">
 	      <!-- 消息区域 -->
       <div class="msg-area" ref="msgArea">
         <div v-if="!activeConvId && !loading" class="msg-empty">
@@ -53,25 +92,31 @@
       <InputArea ref="inputAreaRef" v-model="inputText" :sending="sending" @send="sendMessage" @stop="stopGeneration" />
 
       <p v-if="error" class="error-text">{{ error }}</p>
-    </section>
+      </section>
+      </div>
+    </MacAppShell>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed, defineAsyncComponent } from 'vue'
+import { MacAppShell } from '@/desktop/app-kit'
+import { BadgeCheck, Bot, Gauge, PanelLeftOpen, SlidersHorizontal, Workflow } from '@/shared/icons/lucide'
 import ConversationSidebar from './components/ConversationSidebar.vue'
 import InputArea from './components/InputArea.vue'
 import MessageBubble from './components/MessageBubble.vue'
 import ThinkingCard from './components/ThinkingCard.vue'
 import ToolCallCard from './components/ToolCallCard.vue'
 import WorkTraceGroup from './components/WorkTraceGroup.vue'
-import WorkflowList from './components/WorkflowList.vue'
-import EnginePanel from './admin/EnginePanel.vue'
-import AgentConfigPanel from './admin/AgentConfigPanel.vue'
-import ApprovalPanel from './admin/ApprovalPanel.vue'
 import { useAgentChat } from './composables/useAgentChat'
 import type { AgentEntryProps } from './types'
 import { apiPost } from './api'
 import './components/style-variables.css'
+
+const WorkflowList = defineAsyncComponent(() => import('./components/WorkflowList.vue'))
+const EnginePanel = defineAsyncComponent(() => import('./admin/EnginePanel.vue'))
+const AgentConfigPanel = defineAsyncComponent(() => import('./admin/AgentConfigPanel.vue'))
+const ApprovalPanel = defineAsyncComponent(() => import('./admin/ApprovalPanel.vue'))
 
 // ── 全局前端错误自动上报 ─────────────────────────────────
 function _setupFrontendErrorReporting(): void {
@@ -132,14 +177,38 @@ const {
   stopGeneration,
   error,
 } = useAgentChat(props)
+
+const currentConversationTitle = computed(() => (
+  conversations.value.find(item => item.id === activeConvId.value)?.title || '新对话'
+))
+const panelTitle = computed(() => {
+  if (showAdminPanel.value === 'workflows') return '工作流'
+  if (showAdminPanel.value === 'approvals') return '审批中心'
+  if (showAdminPanel.value === 'engine') return '引擎设置'
+  if (showAdminPanel.value === 'config') return 'Agent 配置'
+  return currentConversationTitle.value
+})
 </script>
 
 <style scoped>
-.agent-app { display: flex; height: 100%; overflow: hidden; }
-.agent-main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; background: var(--ag-bg-page); }
+.agent-app { height: 100%; min-height: 0; overflow: hidden; background: var(--mac-app-surface, rgba(250,250,252,.96)); color: var(--mac-app-text); }
+.agent-content { flex: 1; min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
+.agent-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: color-mix(in srgb, var(--mac-app-surface) 70%, white); }
+.agent-toolbar { width: 100%; min-height: var(--mac-app-toolbar-height, 42px); flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 4px; }
+.toolbar-identity { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.assistant-avatar { width: 30px; height: 30px; padding: 6px; border-radius: 50%; color: #fff; background: linear-gradient(180deg,#0a84ff,#0066d6); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.3), 0 1px 3px rgba(0,0,0,.12); }
+.toolbar-copy { min-width: 0; display: grid; gap: 1px; }
+.toolbar-copy strong { overflow: hidden; color: #1d1d1f; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.toolbar-copy span { display: flex; align-items: center; gap: 5px; color: #8e8e93; font-size: 10px; }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: #30d158; box-shadow: 0 0 0 2px rgba(48,209,88,.12); }
+.toolbar-actions { display: flex; align-items: center; gap: 4px; }
+.toolbar-actions button { min-width: 30px; height: 30px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 8px; background: transparent; color: #636366; font: inherit; font-size: 11px; cursor: pointer; }
+.toolbar-actions button:hover { background: rgba(118,118,128,.10); color: #1d1d1f; }
+.toolbar-actions button.active { background: rgba(10,132,255,.12); color: #007aff; }
+.agent-chat-main { background: #fff; }
 
 /* ── Messages ── */
-.msg-area { flex: 1; overflow-y: auto; padding: var(--ag-space-xl) var(--ag-space-lg); display: flex; flex-direction: column; }
+.msg-area { flex: 1; overflow-y: auto; padding: 24px max(24px, calc((100% - 820px) / 2)); display: flex; flex-direction: column; background: linear-gradient(180deg,#fff 0%,#fbfbfc 100%); }
 .msg-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: var(--ag-text-tertiary); gap: var(--ag-space-sm); }
 .msg-empty-icon { opacity: 0.25; }
 .msg-empty p { margin: 0; font-size: var(--ag-font-size-md); }
@@ -188,4 +257,9 @@ const {
 
 /* ── Error ── */
 .error-text { margin: 0; padding: var(--ag-space-sm) var(--ag-space-lg) var(--ag-space-md); color: var(--ag-error); font-size: var(--ag-font-size-sm); background: var(--ag-bg-base); }
+
+@media (max-width: 760px) {
+  .toolbar-actions button span { display: none; }
+  .msg-area { padding: 18px 14px; }
+}
 </style>

@@ -27,4 +27,3 @@ export type {
   RelationGraphNode,
   SearchResult,
 } from '../api'
-export type { GraphNode } from '../graph3d/types'

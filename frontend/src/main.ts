@@ -14,6 +14,7 @@ import './styles/common-components.css'
 import './styles/notice-panel.css'
 import './desktop/design-system/desktop-design-tokens.css'
 import './styles/desktop-shell.css'
+import './desktop/app-kit/tokens-app.css'
 import './styles/login-page.css'
 
 const app = createApp(App)

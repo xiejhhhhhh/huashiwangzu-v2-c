@@ -59,6 +59,7 @@
     <component :is="desktopTaskbar" :items="unref(windowManager.taskbarItems)" :launcher-open="showLauncher" :app-list="allAppList" @switchWindow="handleSwitchWindow" @openLauncher="openLaunchpad" @openSpotlight="openSpotlight" @openApp="handleOpenApp" @closeWindow="windowManager.closeWindow" />
     <component :is="desktopLauncher" v-if="showLauncher" :show="showLauncher" :app-list="launcherAppList" @openApp="handleLauncherOpen" @execute-command="handleLauncherCommand" @close="closeLaunchpad" />
     <component :is="desktopSpotlight" v-if="showSpotlight" :show="showSpotlight" @close="closeSpotlight" />
+    <DesktopAppSwitcher ref="appSwitcherRef" :show="showAppSwitcher" :windows="windowManager.windows" @close="closeAppSwitcher" @activate="windowManager.activateWindow" />
     <ContextMenu
       :visible="contextMenu.visible.value"
       :x="contextMenu.x.value"
@@ -108,12 +109,19 @@
          <div v-for="n in 6" :key="n" class="skeleton-block" style="width:40px;height:40px;border-radius:10px;" />
        </div>
      </div>
+     <DesktopToastHost />
+     <DesktopDialogHost />
   </div>
 </template>
 
 <script setup lang="ts">
 import { defineAsyncComponent, ref, computed, nextTick, unref, watch, onMounted, onUnmounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { desktopMessage, showAlert, showConfirm } from '@/desktop/feedback/desktop-feedback'
+import DesktopToastHost from '@/desktop/feedback/desktop-toast-host.vue'
+import DesktopDialogHost from '@/desktop/feedback/desktop-dialog-host.vue'
+import { useDesktopConfig } from '@/desktop/config/desktop-preferences'
+import { listDesktopSkins, type DesktopShellSkinId } from '@/desktop/skins'
+import DesktopAppSwitcher from '@/desktop/launcher/desktop-app-switcher.vue'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
 import { useWindowManager } from '@/desktop/window-manager/window-manager'
@@ -169,6 +177,8 @@ const { registerAllApps, registerAllFiles } = useCommandRegistry(handleOpenApp, 
 
 const showLauncher = ref(false)
 const showSpotlight = ref(false)
+const showAppSwitcher = ref(false)
+const appSwitcherRef = ref<{ move: (delta: number) => void; activateSelected: () => void } | null>(null)
 let overlayReturnFocus: HTMLElement | null = null
 const canWrite = computed(() => canBusinessWrite.value)
 const activeWindow = computed(() => windowManager.windows.find(w => w.isActive && !w.minimized))
@@ -177,7 +187,7 @@ const desktopUserName = computed(() => userStore.userInfo?.display_name || userS
 const menuClock = ref('')
 let menuClockTimer: ReturnType<typeof window.setInterval> | undefined
 
-const wallpaper = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000"><defs><linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#082f49"/><stop offset=".42" stop-color="#0f766e"/><stop offset=".72" stop-color="#2563eb"/><stop offset="1" stop-color="#312e81"/></linearGradient><radialGradient id="sun" cx=".18" cy=".22" r=".42"><stop offset="0" stop-color="#fde68a" stop-opacity=".9"/><stop offset=".44" stop-color="#fb923c" stop-opacity=".28"/><stop offset="1" stop-color="#fb923c" stop-opacity="0"/></radialGradient><radialGradient id="water" cx=".72" cy=".62" r=".58"><stop offset="0" stop-color="#67e8f9" stop-opacity=".62"/><stop offset=".54" stop-color="#0ea5e9" stop-opacity=".24"/><stop offset="1" stop-color="#020617" stop-opacity="0"/></radialGradient><filter id="grain"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="8"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="table" tableValues="0 .07"/></feComponentTransfer></filter></defs><rect width="1600" height="1000" fill="url(#sky)"/><rect width="1600" height="1000" fill="url(#sun)"/><rect width="1600" height="1000" fill="url(#water)"/><path d="M0 710 C260 560 440 820 710 640 C980 460 1200 660 1600 520 L1600 1000 L0 1000 Z" fill="#031525" opacity=".38"/><path d="M0 780 C310 700 510 920 780 760 C1050 600 1320 760 1600 620 L1600 1000 L0 1000 Z" fill="#e0f2fe" opacity=".12"/><rect width="1600" height="1000" filter="url(#grain)"/></svg>')
+const wallpaper = '/desktop/wallpaper-macos-default.svg'
 
 function updateMenuClock() {
   const now = new Date()
@@ -190,15 +200,31 @@ function updateMenuClock() {
 watch(allAppList, apps => registerAllApps(apps), { immediate: true })
 watch(desktopFileList, files => registerAllFiles(files), { immediate: true })
 
+const { applyCurrentShellSkin, setShellSkin, config: desktopShellConfig } = useDesktopConfig()
+
 onMounted(() => {
+  void nextTick(() => applyCurrentShellSkin(desktopContainerRef.value))
   updateMenuClock()
   menuClockTimer = window.setInterval(updateMenuClock, 30_000)
-  window.addEventListener('keydown', handleGlobalShortcut)
+  window.addEventListener('keydown', handleGlobalShortcut, true)
+  window.addEventListener('desktop:open-app-switcher', openAppSwitcher)
+  window.addEventListener('desktop:close-app-switcher', closeAppSwitcher)
+  window.__HSWZ_DESKTOP_SHELL__ = {
+    openAppSwitcher,
+    closeAppSwitcher,
+    openSpotlight,
+    openLaunchpad,
+    getShellSkin: () => desktopShellConfig.shellSkin,
+    setShellSkin: (skin: DesktopShellSkinId) => setShellSkin(skin, desktopContainerRef.value),
+    listShellSkins: () => listDesktopSkins(),
+  }
 })
 
 onUnmounted(() => {
   if (menuClockTimer !== undefined) window.clearInterval(menuClockTimer)
-  window.removeEventListener('keydown', handleGlobalShortcut)
+  window.removeEventListener('keydown', handleGlobalShortcut, true)
+  window.removeEventListener('desktop:open-app-switcher', openAppSwitcher)
+  window.removeEventListener('desktop:close-app-switcher', closeAppSwitcher)
 })
 
 function openLaunchpad() {
@@ -208,12 +234,14 @@ function openLaunchpad() {
   }
   rememberOverlayFocus()
   showSpotlight.value = false
+  showAppSwitcher.value = false
   showLauncher.value = true
 }
 
 function openSpotlight() {
   rememberOverlayFocus()
   showLauncher.value = false
+  showAppSwitcher.value = false
   showSpotlight.value = true
 }
 
@@ -241,21 +269,79 @@ function closeSpotlight() {
   restoreOverlayFocus()
 }
 
+function openAppSwitcher() {
+  rememberOverlayFocus()
+  showSpotlight.value = false
+  showLauncher.value = false
+  showAppSwitcher.value = true
+}
+function closeAppSwitcher() {
+  if (!showAppSwitcher.value) return
+  showAppSwitcher.value = false
+  restoreOverlayFocus()
+}
+
 function closeSystemOverlays() {
-  const wasOpen = showLauncher.value || showSpotlight.value
+  const wasOpen = showLauncher.value || showSpotlight.value || showAppSwitcher.value
   showLauncher.value = false
   showSpotlight.value = false
+  showAppSwitcher.value = false
   if (wasOpen) restoreOverlayFocus()
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el) return false
+  if (el.isContentEditable) return true
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(el.closest('[contenteditable="true"]'))
+}
+
+/**
+ * Web-safe shortcuts:
+ * - Escape always closes overlays (does not steal browser keys).
+ * - Optional desktop hotkeys are OFF by default (enableDesktopHotkeys).
+ * - Never capture ⌘/Ctrl+W/T/N/R or system ⌘Space/⌘Tab by default.
+ */
 function handleGlobalShortcut(event: KeyboardEvent) {
-  if ((event.metaKey || event.ctrlKey) && event.code === 'Space') {
+  if (event.key === 'Escape') {
+    if (showLauncher.value || showSpotlight.value || showAppSwitcher.value) {
+      event.preventDefault()
+      closeSystemOverlays()
+    }
+    return
+  }
+
+  // While App Switcher is open, allow in-panel keys only (opened via UI/API).
+  if (showAppSwitcher.value) {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      appSwitcherRef.value?.activateSelected()
+      return
+    }
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault()
+      appSwitcherRef.value?.move(event.key === 'ArrowRight' ? 1 : -1)
+    }
+    return
+  }
+
+  if (!desktopShellConfig.enableDesktopHotkeys) return
+  if (isEditableTarget(event.target)) return
+
+  // Opt-in only: Ctrl/⌘+Shift+Space → Spotlight (avoids OS/browser ⌘Space)
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Space') {
     event.preventDefault()
+    showAppSwitcher.value = false
     showSpotlight.value ? closeSpotlight() : openSpotlight()
     return
   }
-  if (event.key === 'Escape') {
-    closeSystemOverlays()
+
+  // Opt-in only: Ctrl/⌘+Shift+` → App Switcher (never raw ⌘Tab)
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.key === '`' || event.code === 'Backquote')) {
+    event.preventDefault()
+    if (!showAppSwitcher.value) openAppSwitcher()
+    else appSwitcherRef.value?.move(event.shiftKey ? -1 : 1)
   }
 }
 
@@ -296,12 +382,12 @@ on('desktop:move-to-folder', async ({ ids, targetFolderId }) => {
     } catch (e: unknown) {
 	      const err = e as { http_status?: number; response?: { status?: number } } | null
 	      if (err?.http_status === 409 || err?.response?.status === 409) {
-        ElMessage.warning('目标已有同名文件')
+        desktopMessage.warning('目标已有同名文件')
       }
     }
   }
   if (movedCount > 0) {
-    ElMessage.success(movedCount > 1 ? `已移动 ${movedCount} 个项目` : '已移动')
+    desktopMessage.success(movedCount > 1 ? `已移动 ${movedCount} 个项目` : '已移动')
     affectedFolders.forEach(folderId => {
       emit('refresh:file-list', { folderId })
     })
@@ -440,8 +526,8 @@ async function handleContextMenuSelect(menuKey: string) {
     if (menuKey === 'details') { await showFileDetails(file); return }
     if (menuKey === 'rename' && canWrite.value) { await fileOps.renameEntry(file); return }
     if (menuKey === 'delete' && canWrite.value) { await fileOps.deleteEntry(file); return }
-    if (menuKey === 'cut' && canWrite.value) { cutItems([{ id: file.id, type: file.is_folder ? 'folder' as const : 'file' as const, name: file.file_name }]); ElMessage.success('已剪切'); return }
-    if (menuKey === 'copy' && canWrite.value) { copyItems([{ id: file.id, type: file.is_folder ? 'folder' as const : 'file' as const, name: file.file_name }]); ElMessage.success('已复制'); return }
+    if (menuKey === 'cut' && canWrite.value) { cutItems([{ id: file.id, type: file.is_folder ? 'folder' as const : 'file' as const, name: file.file_name }]); desktopMessage.success('已剪切'); return }
+    if (menuKey === 'copy' && canWrite.value) { copyItems([{ id: file.id, type: file.is_folder ? 'folder' as const : 'file' as const, name: file.file_name }]); desktopMessage.success('已复制'); return }
   }
 
   // Folder-specific actions
@@ -468,8 +554,9 @@ async function handleContextMenuSelect(menuKey: string) {
 
   // Recycle actions
   if (menuKey === 'empty-recycle-bin' && canWrite.value) {
-    try { await ElMessageBox.confirm('确定清空回收站？', '确认', { type: 'warning' }) } catch { return }
-    await emptyRecycleBinRequest(); ElMessage.success('回收站已清空'); emit('refresh:file-list', { folderId: 0 }); return
+    const ok = await showConfirm('确定清空回收站？', '确认', { tone: 'warning' })
+    if (!ok) return
+    await emptyRecycleBinRequest(); desktopMessage.success('回收站已清空'); emit('refresh:file-list', { folderId: 0 }); return
   }
 }
 
@@ -483,7 +570,7 @@ async function showFileDetails(file: FileEntry) {
     `ID: ${file.id}`,
   ]
   if (file.created_at) lines.push(`创建时间: ${file.created_at}`)
-  ElMessageBox.alert(lines.join('\n'), '属性')
+  await showAlert(lines.join('\n'), '属性')
 }
 
 function formatSize(bytes: number): string {

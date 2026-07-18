@@ -1,28 +1,42 @@
 <template>
-  <div class="desktop-file-manager" :data-folder="String(state.currentFolderId.value || 0)" @contextmenu.prevent="handleBlankContextMenu">
-    <FmNavigationBar
-      :can-go-back="state.canGoBack.value"
-      :can-go-forward="state.canGoForward.value"
-      :can-go-up="state.canGoUp.value"
-      :breadcrumb="state.breadcrumb.value"
-      :search-keyword="state.searchKeyword.value"
-      @go-back="state.goBack"
-      @go-forward="state.goForward"
-      @go-up="state.goUp"
-      @go-root="state.goRoot"
-      @navigate="state.navigateToCrumb"
-      @update:search-keyword="state.searchKeyword.value = $event"
-    />
+  <div
+    class="desktop-file-manager"
+    :data-folder="String(state.currentFolderId.value || 0)"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="finder"
+    @contextmenu.prevent="handleBlankContextMenu"
+  >
+    <MacAppShell layout="finder" :sidebar-width="200">
+      <template #toolbar>
+        <FmNavigationBar
+          :can-go-back="state.canGoBack.value"
+          :can-go-forward="state.canGoForward.value"
+          :can-go-up="state.canGoUp.value"
+          :breadcrumb="state.breadcrumb.value"
+          :search-keyword="state.searchKeyword.value"
+          @go-back="state.goBack"
+          @go-forward="state.goForward"
+          @go-up="state.goUp"
+          @go-root="state.goRoot"
+          @navigate="state.navigateToCrumb"
+          @update:search-keyword="state.searchKeyword.value = $event"
+        />
+      </template>
 
-    <div class="fm-body">
-      <FmNavPane
-        :current-folder-id="state.currentFolderId.value"
-        :is-recycle-bin="state.isRecycleBin.value"
-        @go-root="state.goRoot"
-        @open-recycle="state.openRecycle"
-      />
+      <template #sidebar>
+        <FmNavPane
+          :current-folder-id="state.currentFolderId.value"
+          :is-recycle-bin="state.isRecycleBin.value"
+          @go-root="state.goRoot"
+          @open-recycle="state.openRecycle"
+        />
+      </template>
 
-      <div class="fm-main" :data-folder="String(state.currentFolderId.value || 0)" :class="{ 'fm-main-drag-over': dragState.dragOverId === String(state.currentFolderId.value) && dragState.isDragging }">
+      <div
+        class="fm-main"
+        :data-folder="String(state.currentFolderId.value || 0)"
+        :class="{ 'fm-main-drag-over': dragState.dragOverId === String(state.currentFolderId.value) && dragState.isDragging }"
+      >
         <FmFileList
           :items="state.sortedItems.value"
           :selected-id="state.selectedId.value"
@@ -41,20 +55,22 @@
           @retry="state.loadFiles"
         />
       </div>
-    </div>
 
-    <FmStatusBar
-      :item-count="state.items.value.length"
-      :folder-count="state.folders.value.length"
-      :file-count="state.files.value.length"
-      :selected-item="state.selectedItem.value"
-      :selected-size="state.selectedItem.value ? state.formatSize(state.selectedItem.value.file_size) : ''"
-      :view-mode="state.viewMode.value"
-      :search-keyword="state.searchKeyword.value"
-      :filtered-count="state.filteredItems.value.length"
-      :display-name="state.displayName"
-      @update:view-mode="state.viewMode.value = $event"
-    />
+      <template #statusbar>
+        <FmStatusBar
+          :item-count="state.items.value.length"
+          :folder-count="state.folders.value.length"
+          :file-count="state.files.value.length"
+          :selected-item="state.selectedItem.value"
+          :selected-size="state.selectedItem.value ? state.formatSize(state.selectedItem.value.file_size) : ''"
+          :view-mode="state.viewMode.value"
+          :search-keyword="state.searchKeyword.value"
+          :filtered-count="state.filteredItems.value.length"
+          :display-name="state.displayName"
+          @update:view-mode="state.viewMode.value = $event"
+        />
+      </template>
+    </MacAppShell>
 
     <FmPropertiesDialog
       :visible="state.propertiesVisible.value"
@@ -84,7 +100,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { MacAppShell, useAppFeedback } from '@/desktop/app-kit'
 import { dragState } from '@/desktop/drag-drop/drag-state'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
@@ -107,6 +123,7 @@ const props = defineProps<{
   folderName?: string
 }>()
 
+const feedback = useAppFeedback()
 const uploadInputRef = ref<HTMLInputElement | null>(null)
 const state = useFileManagerState({
   folderId: () => props.folderId,
@@ -148,7 +165,12 @@ function handleBlankContextMenu(e: MouseEvent) {
     { key: 'refresh', label: '刷新', icon: '↻' },
   ]
   if (state.canWrite.value && creatableFormats.value.length) {
-    items.splice(2, 0, { key: 'new-file', label: '新建文件', icon: '📄', children: creatableFormats.value.map(f => ({ key: `create-file:${f.extension}`, label: f.label, icon: '' })) })
+    items.splice(2, 0, {
+      key: 'new-file',
+      label: '新建文件',
+      icon: '📄',
+      children: creatableFormats.value.map(f => ({ key: `create-file:${f.extension}`, label: f.label, icon: '' })),
+    })
   }
   if (hasContent.value) {
     items.push({ key: 'paste', label: '粘贴', icon: '📌' })
@@ -158,7 +180,7 @@ function handleBlankContextMenu(e: MouseEvent) {
 
 function handleItemOpen(item: FileEntry) {
   if (state.isRecycleBin.value) {
-    ElMessage.info('请先还原再打开文件')
+    feedback.info('请先还原再打开文件')
     return
   }
   state.openItem(item)
@@ -182,7 +204,12 @@ function handleItemContextMenu(item: FileEntry, e: MouseEvent) {
   if (item.is_folder) {
     items = buildFolderMenu(state.canWrite.value, () => [])
     if (state.canWrite.value && creatableFormats.value.length) {
-      items.splice(3, 0, { key: 'new-file', label: '新建文件', icon: '📄', children: creatableFormats.value.map(f => ({ key: `create-file:${f.extension}`, label: f.label, icon: '' })) })
+      items.splice(3, 0, {
+        key: 'new-file',
+        label: '新建文件',
+        icon: '📄',
+        children: creatableFormats.value.map(f => ({ key: `create-file:${f.extension}`, label: f.label, icon: '' })),
+      })
     }
   } else {
     items = buildFileMenu(state.canWrite.value, () => [])
@@ -194,17 +221,31 @@ async function handleRecycleAction(key: string) {
   const item = ctxtFile
   if (key === 'restore' && item) {
     const itemType = item.is_folder ? 'folder' : 'file'
-    try { await restoreRecycleBinEntry(itemType, item.id); ElMessage.success('已还原') }
-    catch { ElMessage.warning('还原失败') }
+    try {
+      await restoreRecycleBinEntry(itemType, item.id)
+      feedback.success('已还原')
+    } catch {
+      feedback.warning('还原失败')
+    }
   } else if (key === 'delete-permanently' && item) {
     const itemType = item.is_folder ? 'folder' : 'file'
-    try { await ElMessageBox.confirm('确定彻底删除？', '确认', { type: 'warning' }) } catch { return }
-    try { await permanentlyDeleteEntry(itemType, item.id); ElMessage.success('已删除') }
-    catch { ElMessage.warning('删除失败') }
+    const ok = await feedback.confirm('确定彻底删除？', '确认', { tone: 'warning' })
+    if (!ok) return
+    try {
+      await permanentlyDeleteEntry(itemType, item.id)
+      feedback.success('已删除')
+    } catch {
+      feedback.warning('删除失败')
+    }
   } else if (key === 'empty-recycle-bin') {
-    try { await ElMessageBox.confirm('确定清空回收站？', '确认', { type: 'warning' }) } catch { return }
-    try { await emptyRecycleBinRequest(); ElMessage.success('已清空') }
-    catch { ElMessage.warning('清空失败') }
+    const ok = await feedback.confirm('确定清空回收站？', '确认', { tone: 'warning' })
+    if (!ok) return
+    try {
+      await emptyRecycleBinRequest()
+      feedback.success('已清空')
+    } catch {
+      feedback.warning('清空失败')
+    }
   } else if (key === 'refresh') {
     void state.loadFiles()
   }
@@ -231,21 +272,15 @@ onMounted(() => {
 <style scoped>
 .desktop-file-manager {
   height: 100%;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  background: rgba(255, 255, 255, 0.96);
-  color: #1d1d1f;
-}
-
-.fm-body {
   min-height: 0;
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
+  position: relative;
+  color: var(--mac-app-text, #1d1d1f);
 }
 
 .fm-main {
   min-width: 0;
   min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
 }
@@ -255,23 +290,21 @@ onMounted(() => {
 }
 
 .fm-main-drag-over {
-  background: rgba(0, 122, 255, 0.06) !important;
-  box-shadow: inset 0 0 0 1.5px var(--desktop-accent, #007aff);
-  border-radius: 4px;
+  background: var(--mac-app-selection, rgba(0, 122, 255, 0.06)) !important;
+  box-shadow: inset 0 0 0 1.5px var(--mac-app-accent, var(--desktop-accent, #007aff));
+  border-radius: 8px;
 }
 
-@media (max-width: 860px) {
-  .fm-body {
-    grid-template-columns: 170px minmax(0, 1fr);
-  }
+:deep(.app-window-frame_toolbar) {
+  padding: 0;
 }
 
-@media (max-width: 700px) {
-  .fm-body {
-    grid-template-columns: 1fr;
-  }
-  .fm-body > :first-child {
-    display: none;
-  }
+:deep(.app-window-frame_sidebar) {
+  border-right: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
+}
+
+:deep(.app-window-frame--file-manager .app-window-frame_content) {
+  padding: 0;
+  background: var(--mac-app-surface, #fff);
 }
 </style>

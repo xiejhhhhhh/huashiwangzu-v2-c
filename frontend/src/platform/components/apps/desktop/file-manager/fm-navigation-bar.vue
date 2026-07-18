@@ -21,12 +21,7 @@
     </div>
 
     <div class="fm-nav-address">
-      <button
-        class="fm-root-btn"
-        type="button"
-        title="桌面"
-        @click="$emit('go-root')"
-      >
+      <button class="fm-root-btn" type="button" title="桌面" @click="$emit('go-root')">
         <Monitor :size="15" :stroke-width="2" />
       </button>
       <span v-for="(crumb, index) in breadcrumb" :key="`crumb-${index}`" class="fm-crumb-segment">
@@ -88,27 +83,30 @@ const parentFolderId = () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 12px;
-  min-height: 42px;
-  border-bottom: 1px solid rgba(60, 60, 67, 0.18);
-  background: rgba(246, 246, 246, 0.88);
-  backdrop-filter: saturate(160%) blur(18px);
+  width: 100%;
+  min-width: 0;
+  padding: 0 10px;
+  min-height: var(--mac-app-toolbar-height, 42px);
+  background: transparent;
 }
 
 .fm-nav-left {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   flex-shrink: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mac-app-border, rgba(60, 60, 67, 0.12)) 55%, transparent);
 }
 
 .fm-icon-button {
   width: 28px;
-  height: 28px;
-  border: 1px solid transparent;
+  height: 26px;
+  border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #343438;
+  color: var(--mac-app-text, #343438);
   line-height: 1;
   cursor: pointer;
   display: flex;
@@ -116,7 +114,7 @@ const parentFolderId = () => {
   justify-content: center;
 }
 .fm-icon-button:hover:not(:disabled) {
-  background: rgba(60, 60, 67, 0.1);
+  background: color-mix(in srgb, white 70%, transparent);
 }
 .fm-icon-button:disabled {
   opacity: 0.35;
@@ -129,11 +127,11 @@ const parentFolderId = () => {
   display: flex;
   align-items: center;
   gap: 1px;
-  padding: 0 7px;
-  height: 29px;
-  border: 1px solid rgba(60, 60, 67, 0.18);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.72);
+  padding: 0 8px;
+  height: 28px;
+  border: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.14));
+  border-radius: 8px;
+  background: color-mix(in srgb, white 72%, transparent);
   overflow: hidden;
 }
 
@@ -144,10 +142,10 @@ const parentFolderId = () => {
   cursor: pointer;
   padding: 0 4px;
   flex-shrink: 0;
-  color: #4b4b50;
+  color: var(--mac-app-text-secondary, #4b4b50);
 }
 .fm-root-btn:hover {
-  color: var(--desktop-accent, #007aff);
+  color: var(--mac-app-accent, #0a84ff);
 }
 
 .fm-crumb-segment {
@@ -158,7 +156,7 @@ const parentFolderId = () => {
 }
 
 .fm-crumb-sep {
-  color: #99999f;
+  color: var(--mac-app-text-secondary, #99999f);
   margin: 0 2px;
   flex-shrink: 0;
 }
@@ -167,21 +165,21 @@ const parentFolderId = () => {
   border: none;
   background: transparent;
   font-size: 12px;
-  color: #55555a;
+  color: var(--mac-app-text-secondary, #55555a);
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 2px 5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 120px;
-  border-radius: 3px;
+  border-radius: 5px;
 }
 .fm-crumb-btn:hover {
-  color: var(--desktop-accent, #007aff);
-  background: rgba(60, 60, 67, 0.08);
+  color: var(--mac-app-accent, #0a84ff);
+  background: var(--mac-app-selection, rgba(10, 132, 255, 0.12));
 }
 .fm-crumb-active {
-  color: #1d1d1f;
+  color: var(--mac-app-text, #1d1d1f);
   font-weight: 600;
 }
 
@@ -195,28 +193,28 @@ const parentFolderId = () => {
   left: 8px;
   top: 50%;
   z-index: 1;
-  color: #8e8e93;
+  color: var(--mac-app-text-secondary, #8e8e93);
   pointer-events: none;
   transform: translateY(-50%);
 }
 
 .fm-search-input {
-  width: 140px;
+  width: 148px;
   height: 28px;
   padding: 0 9px 0 27px;
-  border: 1px solid rgba(60, 60, 67, 0.18);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.14));
+  border-radius: 8px;
+  background: color-mix(in srgb, white 72%, transparent);
   font-size: 12px;
-  color: #1d1d1f;
+  color: var(--mac-app-text, #1d1d1f);
   outline: none;
 }
 .fm-search-input::placeholder {
-  color: #8e8e93;
+  color: var(--mac-app-text-secondary, #8e8e93);
 }
 .fm-search-input:focus {
-  border-color: var(--desktop-accent, #007aff);
-  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.14);
+  border-color: var(--mac-app-accent, #0a84ff);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mac-app-accent, #0a84ff) 18%, transparent);
 }
 
 @media (max-width: 720px) {

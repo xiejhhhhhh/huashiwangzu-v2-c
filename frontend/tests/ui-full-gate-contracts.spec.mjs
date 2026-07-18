@@ -20,7 +20,7 @@ const mockApps = [
   },
   {
     app_id: 'agent',
-    name: 'AI 助手',
+    name: 'AI',
     icon: 'ChatDotRound',
     description: 'Agent workspace',
     entry_component_key: 'agent/index.vue',
@@ -119,9 +119,21 @@ async function mockDesktopShell(page) {
     status: 200,
     json: { success: true, data: { id: 1, username: '何焜华', role: 'admin' }, error: null },
   }))
-  await page.route('**/api/desktop/apps', route => route.fulfill({
+  await page.route('**/api/desktop/products', route => route.fulfill({
     status: 200,
-    json: { success: true, data: mockApps, error: null },
+    json: { success: true, data: {
+      catalogRevision: 'test', count: mockApps.length, kind: 'products', items: mockApps.map(app => ({
+        productId: app.app_id,
+        displayName: app.name,
+        icon: app.icon,
+        description: app.description,
+        entryComponentKey: app.entry_component_key,
+        visibility: { desktop: app.show_on_desktop, launcher: app.show_in_launcher, dock: app.show_on_desktop },
+        windowPolicy: { defaultWidth: app.default_width, defaultHeight: app.default_height, minWidth: app.min_width, minHeight: app.min_height, singleton: !app.allow_multiple, allowMultiple: Boolean(app.allow_multiple) },
+        enabled: app.enabled,
+        allowMultiple: Boolean(app.allow_multiple),
+      })),
+    }, error: null },
   }))
   await page.route('**/api/desktop/state', route => route.fulfill({
     status: 200,
@@ -163,7 +175,7 @@ async function mockDesktopShell(page) {
       json: { success: true, data: { total: 0, items: [] }, error: null },
     })
   })
-  await page.route('**/api/knowledge/dashboard/stats', route => route.fulfill({
+  await page.route('**/api/knowledge/dashboard/stats**', route => route.fulfill({
     status: 200,
     json: { success: true, data: { source_unavailable_documents: 0, stuck_documents: [] }, error: null },
   }))
@@ -201,6 +213,10 @@ async function mockKnowledgeApis(page) {
   await page.route('**/api/knowledge/documents?page=1&page_size=100', route => route.fulfill({
     status: 200,
     json: { success: true, data: { items: [knowledgeDoc], total: 1 }, error: null },
+  }))
+  await page.route('**/api/knowledge/documents/by-files', route => route.fulfill({
+    status: 200,
+    json: { success: true, data: { items: [knowledgeDoc] }, error: null },
   }))
   await page.route('**/api/knowledge/documents/progress-batch', route => {
     const payload = requestJson(route)
@@ -496,10 +512,22 @@ async function mockApiFallback(page) {
         json: { success: true, data: { id: 1, username: '何焜华', role: 'admin' }, error: null },
       })
     }
-    if (pathname === '/api/desktop/apps') {
+    if (pathname === '/api/desktop/products') {
       return route.fulfill({
         status: 200,
-        json: { success: true, data: mockApps, error: null },
+        json: { success: true, data: {
+          catalogRevision: 'test', count: mockApps.length, kind: 'products', items: mockApps.map(app => ({
+            productId: app.app_id,
+            displayName: app.name,
+            icon: app.icon,
+            description: app.description,
+            entryComponentKey: app.entry_component_key,
+            visibility: { desktop: app.show_on_desktop, launcher: app.show_in_launcher, dock: app.show_on_desktop },
+            windowPolicy: { defaultWidth: app.default_width, defaultHeight: app.default_height, minWidth: app.min_width, minHeight: app.min_height, singleton: !app.allow_multiple, allowMultiple: Boolean(app.allow_multiple) },
+            enabled: app.enabled,
+            allowMultiple: Boolean(app.allow_multiple),
+          })),
+        }, error: null },
       })
     }
     if (pathname === '/api/desktop/state') {
@@ -605,9 +633,9 @@ test('agent workflow list and ledger expose evidence-critical counts and records
   await mockDesktopShell(page)
   await mockAgentApis(page)
   await gotoDesktop(page)
-  await openLauncherApp(page, 'AI 助手')
+  await openLauncherApp(page, 'AI')
 
-  const agentWindow = page.locator('.desktop-window').filter({ hasText: 'AI 助手' }).first()
+  const agentWindow = page.locator('.desktop-window').filter({ hasText: 'AI' }).first()
   const detailLoaded = page.waitForResponse(response => (
     response.url().endsWith('/api/agent/workflows/77') && response.status() === 200
   ))

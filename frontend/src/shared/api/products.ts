@@ -1,4 +1,5 @@
 import api from './index'
+import type { MacAppUiContract } from '@/desktop/app-kit'
 
 export interface DesktopProductItem {
   productId: string
@@ -11,6 +12,8 @@ export interface DesktopProductItem {
   iconSet?: Record<string, unknown>
   entryComponentKey: string
   workspaceKind?: string
+  /** App UI Kit contract (mac-app-v1). Backend passthrough only. */
+  uiContract?: MacAppUiContract | null
   visibility?: Record<string, unknown>
   fileAssociations?: Array<Record<string, unknown>>
   createDocumentTypes?: Array<Record<string, unknown>>

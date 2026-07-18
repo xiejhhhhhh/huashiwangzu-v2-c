@@ -2,7 +2,7 @@
   <div
     v-if="windowType !== 'background-service'"
     ref="rootEl"
-    class="desktop-window"
+    class="desktop-window glass-window"
     :class="windowClasses"
     :style="windowStyle"
     :data-window-id="id"
@@ -13,7 +13,7 @@
   >
     <div
       class="window-titlebar"
-      @mousedown.prevent="windowInteraction.startDrag"
+      @mousedown="handleTitlebarMouseDown"
       @dblclick="$emit('maximize', id)"
     >
       <div class="window-title-info">
@@ -26,28 +26,18 @@
         <button v-if="windowType !== 'tool' && windowType !== 'background-service'" class="window-action-btn window-action-maximize" @click.stop="$emit('maximize', id)" title="缩放" aria-label="缩放" />
       </div>
     </div>
-    <div class="window-content" v-show="contentVisible">
+    <div v-if="hasMountedContent" class="window-content" v-show="contentVisible">
       <div class="window-content-padding">
         <template v-if="currentComponent && !loadError">
           <Suspense>
             <component :is="currentComponent" v-bind="payload || {}" />
             <template #fallback>
-              <div class="window-loading">
-                <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-                <span>正在启动...</span>
-              </div>
+              <AsyncPaneState :title="`正在启动${title}`" />
             </template>
           </Suspense>
         </template>
-        <div v-else-if="loadError" class="window-loading">
-          <el-icon :size="48" color="#f56c6c"><WarningFilled /></el-icon>
-          <p>{{ title }} 启动失败</p>
-          <small>{{ loadError }}</small>
-        </div>
-        <div v-else class="window-loading">
-          <el-icon :size="48" color="#909399"><WarningFilled /></el-icon>
-          <p>应用未找到或暂不支持此操作</p>
-        </div>
+        <AsyncPaneState v-else-if="loadError" :title="`${title}启动失败`" :error="loadError" @retry="retryLoad" />
+        <AsyncPaneState v-else title="应用不可用" description="应用未找到或暂不支持此操作。" />
       </div>
     </div>
     <div v-for="direction in windowInteraction.resizeDirections" v-if="resizable && !maximized" :key="direction" :class="['resize-handle', `resize-handle-${direction}`]" @mousedown.stop="windowInteraction.startResize(direction, $event)" />
@@ -62,11 +52,11 @@
 </template>
 <script setup lang="ts">
 import { computed, ref, defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
-import { Loading, WarningFilled } from '@element-plus/icons-vue'
 import { getApp } from '@/desktop/app-registry/app-registry'
 import { useWindowInteraction } from './use-window-interaction'
 import { desktopConfig } from '@/desktop/config/desktop-preferences'
 import AppIcon from '@/desktop/components/app-icon.vue'
+import AsyncPaneState from '@/shared/components/async-pane-state.vue'
 
 type WindowGeometry = { x: number; y: number; width: number; height: number }
 
@@ -98,12 +88,14 @@ const emit = defineEmits<{
 }>()
 
 const loadError = ref('')
+const loadAttempt = ref(0)
 const entered = ref(false)
 const closing = ref(false)
 const minimizing = ref(false)
 const restoring = ref(false)
 const openingFromOrigin = ref(false)
 const contentVisible = ref(!props.minimized)
+const hasMountedContent = ref(!props.minimized)
 let enterFrame = 0
 let closeTimer: ReturnType<typeof window.setTimeout> | null = null
 let minimizeTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -129,6 +121,7 @@ watch(() => props.minimized, (minimized, oldMinimized) => {
   } else if (!minimized && oldMinimized) {
     // 从最小化还原 → 播放还原动画
     contentVisible.value = true
+    hasMountedContent.value = true
     restoring.value = true
     applyMinimizeTargetVars()
     restoreTimer = window.setTimeout(() => {
@@ -136,6 +129,7 @@ watch(() => props.minimized, (minimized, oldMinimized) => {
     }, animDuration.value)
   } else {
     contentVisible.value = !minimized
+    if (!minimized) hasMountedContent.value = true
   }
 }, { immediate: true })
 
@@ -173,7 +167,14 @@ function handleMinimize() {
   emit('minimize', props.id)
 }
 
+function handleTitlebarMouseDown(event: MouseEvent) {
+  if ((event.target as HTMLElement).closest('.window-action-buttons')) return
+  event.preventDefault()
+  windowInteraction.startDrag(event)
+}
+
 const currentComponent = computed(() => {
+  loadAttempt.value
   const app = getApp(props.appKey)
   if (!app) return null
   return defineAsyncComponent({
@@ -185,6 +186,11 @@ const currentComponent = computed(() => {
     },
   })
 })
+
+function retryLoad() {
+  loadError.value = ''
+  loadAttempt.value += 1
+}
 
 const windowStyle = computed(() => {
   const style: Record<string, string> = {
@@ -324,36 +330,45 @@ onUnmounted(() => {
     transform var(--window-anim-duration, 200ms) cubic-bezier(0.5, 0, 0.75, 0);
 }
 
-/* ═══ 最小化动画 - 飞入 Dock ═══ */
+/* ═══ 最小化动画 - genie 近似（飞入 Dock + 纵向压缩） ═══ */
 .desktop-window-minimizing {
   opacity: 0;
-  transform: translate(var(--minimize-target-x, 0), var(--minimize-target-y, 0)) scale(0.15);
+  transform: translate(var(--minimize-target-x, 0), var(--minimize-target-y, 0)) scale(0.12, 0.04);
+  filter: blur(1.2px);
   pointer-events: none;
+  transform-origin: 50% 100%;
   transition:
-    opacity var(--window-anim-duration, 200ms) cubic-bezier(0.5, 0, 0.75, 0),
-    transform var(--window-anim-duration, 200ms) cubic-bezier(0.5, 0, 0.75, 0);
+    opacity var(--window-anim-duration, 280ms) cubic-bezier(0.55, 0.05, 0.8, 0.15),
+    transform var(--window-anim-duration, 280ms) cubic-bezier(0.55, 0.05, 0.8, 0.15),
+    filter var(--window-anim-duration, 280ms) ease;
 }
 
 /* ═══ 从 Dock 还原动画 ═══ */
 .desktop-window-restoring {
-  animation: window-restore-keyframes var(--window-anim-duration, 200ms) cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: window-restore-keyframes var(--window-anim-duration, 280ms) cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes window-restore-keyframes {
   from {
     opacity: 0;
-    transform: translate(var(--minimize-target-x, 0), var(--minimize-target-y, 0)) scale(0.15);
+    transform: translate(var(--minimize-target-x, 0), var(--minimize-target-y, 0)) scale(0.12, 0.04);
+    filter: blur(1.2px);
+  }
+  70% {
+    opacity: 1;
+    filter: blur(0);
   }
   to {
     opacity: 1;
     transform: translate(0, 0) scale(1);
+    filter: none;
   }
 }
 
 /* ═══ 已最小化（动画结束后的静态状态） ═══ */
 .desktop-window-minimized {
   opacity: 0;
-  transform: translate(var(--minimize-target-x, 0), var(--minimize-target-y, 0)) scale(0.15);
+  transform: translate(var(--minimize-target-x, 0), var(--minimize-target-y, 0)) scale(0.12, 0.04);
   pointer-events: none;
 }
 

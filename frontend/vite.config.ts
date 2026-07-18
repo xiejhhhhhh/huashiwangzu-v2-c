@@ -126,10 +126,15 @@ export default defineConfig({
           if (id.includes('node_modules/@element-plus/icons-vue')) return 'element-icons'
           if (id.includes('node_modules/element-plus/es/components/table')) return 'element-table'
           if (id.includes('node_modules/element-plus/es/components/dialog') || id.includes('node_modules/element-plus/es/components/message')) return 'element-overlay'
-          if (id.includes('node_modules/element-plus/es/components')) return 'element-components'
+          if (id.includes('node_modules/element-plus/es/components/')) {
+            const componentPath = id.split('node_modules/element-plus/es/components/')[1]
+            const componentName = componentPath.split('/')[0]
+            return `element-${componentName}`
+          }
           if (id.includes('node_modules/element-plus') || id.includes('node_modules/@element-plus')) return 'element-core'
           if (id.includes('node_modules/pdfjs-dist')) return 'pdf'
-          if (id.includes('node_modules/highlight.js') || id.includes('node_modules/marked')) return 'editor'
+          if (id.includes('node_modules/highlight.js')) return 'highlight'
+          if (id.includes('node_modules/marked')) return 'marked'
         },
       },
     },

@@ -457,10 +457,14 @@ export interface DashboardStats {
   duplicate_entity_groups: Array<{ name: string; count: number }>
   entity_category_distribution: Record<string, number>
   document_progresses: DocProgressEntry[]
+  document_progress_total?: number
+  document_progress_page?: number
+  document_progress_page_size?: number
   stuck_documents: DocProgressEntry[]
   recent_completions: Array<{ id: number; filename: string; completed_at: string }>
+  analytics_loaded?: boolean
 }
 
-export function getDashboardStats(): Promise<DashboardStats> {
-  return apiGet<DashboardStats>('/knowledge/dashboard/stats')
+export function getDashboardStats(page = 1, pageSize = 50, includeAnalytics = false): Promise<DashboardStats> {
+  return apiGet<DashboardStats>(`/knowledge/dashboard/stats?page=${page}&page_size=${pageSize}&include_analytics=${includeAnalytics ? 'true' : 'false'}`)
 }

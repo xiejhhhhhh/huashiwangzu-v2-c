@@ -15,6 +15,7 @@ export interface GeneratedProductEntry {
   activationPolicy: Record<string, unknown>
   visibility: Record<string, unknown>
   description: string
+  uiContract: { kit: string; layout: string; shell?: unknown; feedback?: string; density?: string } | null
 }
 
 export const productCatalog: GeneratedProductEntry[] = [
@@ -45,7 +46,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "智能体对话与工具编排"
+    "description": "智能体对话与工具编排",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "chat",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "required",
+        "toolbar": "required",
+        "statusbar": "none"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "content-studio",
@@ -78,7 +91,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "内容创作与发布编排入口"
+    "description": "内容创作与发布编排入口",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "document",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "none",
+        "toolbar": "required",
+        "statusbar": "none"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "files",
@@ -126,7 +151,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "桌面文件管理与资源浏览"
+    "description": "桌面文件管理与资源浏览",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "finder",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "required",
+        "toolbar": "required",
+        "statusbar": "required"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "knowledge",
@@ -155,7 +192,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "知识检索、画像与图谱"
+    "description": "知识检索、画像与图谱",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "finder",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "required",
+        "toolbar": "required",
+        "statusbar": "none"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "media",
@@ -239,7 +288,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "图片与音视频浏览/轻分析入口"
+    "description": "图片与音视频浏览/轻分析入口",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "utility",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "optional",
+        "toolbar": "optional",
+        "statusbar": "none"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "messages",
@@ -268,7 +329,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "即时消息与会话工作区"
+    "description": "即时消息与会话工作区",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "chat",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "required",
+        "toolbar": "optional",
+        "statusbar": "none"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "office",
@@ -409,7 +482,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "统一文档/表格/演示工作区"
+    "description": "统一文档/表格/演示工作区",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "document",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "none",
+        "toolbar": "required",
+        "statusbar": "none"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "recycle",
@@ -438,7 +523,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "已删除文件恢复与清理"
+    "description": "已删除文件恢复与清理",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "finder",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "required",
+        "toolbar": "required",
+        "statusbar": "required"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "settings",
@@ -465,7 +562,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "系统与个人偏好设置"
+    "description": "系统与个人偏好设置",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "settings",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "required",
+        "toolbar": "required",
+        "statusbar": "none"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   },
   {
     "productId": "text",
@@ -534,7 +643,19 @@ export const productCatalog: GeneratedProductEntry[] = [
       "launcher": true,
       "dock": true
     },
-    "description": "纯文本与 Markdown 编辑"
+    "description": "纯文本与 Markdown 编辑",
+    "uiContract": {
+      "kit": "mac-app-v1",
+      "layout": "document",
+      "shell": {
+        "useAppWindowFrame": true,
+        "sidebar": "none",
+        "toolbar": "required",
+        "statusbar": "optional"
+      },
+      "feedback": "desktop-kit",
+      "density": "comfortable"
+    }
   }
 ]
 

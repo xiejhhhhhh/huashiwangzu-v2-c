@@ -1,6 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useUserStore } from '@/platform/stores/user'
-import MainLayout from '@/app-entry/layouts/main-layout.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -11,16 +10,10 @@ const router = createRouter({
       component: () => import('@/app-entry/pages/login/index.vue'),
     },
     {
-      path: '/',
-      component: MainLayout,
+      path: '/desktop',
+      name: 'desktop',
       meta: { requiresAuth: true },
-      children: [
-        {
-          path: 'desktop',
-          name: 'desktop',
-          component: () => import('@/desktop/shell/index.vue'),
-        },
-      ],
+      component: () => import('@/desktop/shell/index.vue'),
     },
     {
       path: '/:pathMatch(.*)*',

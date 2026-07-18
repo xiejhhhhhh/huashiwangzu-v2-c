@@ -173,7 +173,8 @@ const emit = defineEmits<{
 .fm-file-list {
   min-height: 0;
   overflow: auto;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--mac-app-surface, rgba(255, 255, 255, 0.96));
+  color: var(--mac-app-text, #1d1d1f);
 }
 
 .fm-view-list {
@@ -195,8 +196,10 @@ const emit = defineEmits<{
   top: 0;
   z-index: 1;
   height: 28px;
-  border-bottom: 1px solid rgba(60, 60, 67, 0.14);
-  background: rgba(246, 246, 246, 0.94);
+  border-bottom: 1px solid var(--mac-app-border, rgba(60, 60, 67, 0.12));
+  background: color-mix(in srgb, var(--mac-app-surface-toolbar, rgba(246, 246, 250, 0.9)) 92%, white);
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(20px) saturate(150%));
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(20px) saturate(150%));
 }
 
 .fm-list-header button {
@@ -207,14 +210,14 @@ const emit = defineEmits<{
   padding: 0 4px;
   border: 0;
   background: transparent;
-  color: #6e6e73;
+  color: var(--mac-app-text-secondary, #6e6e73);
   font-size: 12px;
   font-weight: 500;
   text-align: left;
   cursor: pointer;
 }
 
-.fm-list-header button:hover { color: #1d1d1f; }
+.fm-list-header button:hover { color: var(--mac-app-text, #1d1d1f); }
 .fm-col-icon { pointer-events: none; }
 
 .fm-content-grid {
@@ -240,9 +243,9 @@ const emit = defineEmits<{
 .fm-entry {
   min-width: 0;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 7px;
   background: transparent;
-  color: #242426;
+  color: var(--mac-app-text, #242426);
   cursor: pointer;
   user-select: none;
   text-align: left;
@@ -257,12 +260,12 @@ const emit = defineEmits<{
   padding: 8px 6px;
 }
 
-.fm-entry:hover { background: rgba(60, 60, 67, 0.07); }
+.fm-entry:hover { background: color-mix(in srgb, var(--mac-app-text, #242426) 6%, transparent); }
 
 .fm-entry-selected {
-  border-color: var(--desktop-accent, #007aff);
-  background: var(--desktop-accent, #007aff);
-  color: #fff;
+  border-color: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 35%, transparent);
+  background: var(--mac-app-selection, rgba(10, 132, 255, 0.16));
+  color: var(--mac-app-text, #1d1d1f);
 }
 
 .fm-entry-name {
@@ -289,7 +292,7 @@ const emit = defineEmits<{
 .fm-entry-date,
 .fm-entry-kind,
 .fm-entry-size {
-  color: #77777c;
+  color: var(--mac-app-text-secondary, #77777c);
   font-size: 12px;
 }
 
@@ -298,7 +301,7 @@ const emit = defineEmits<{
 
 .fm-entry-selected .fm-entry-date,
 .fm-entry-selected .fm-entry-kind,
-.fm-entry-selected .fm-entry-size { color: rgba(255, 255, 255, 0.86); }
+.fm-entry-selected .fm-entry-size { color: var(--mac-app-text-secondary, #555); }
 
 .fm-state {
   display: grid;

@@ -91,5 +91,17 @@
   },
   "legacyAppKeys": [
     "text-editor"
-  ]
+  ],
+  "uiContract": {
+    "kit": "mac-app-v1",
+    "layout": "document",
+    "shell": {
+      "useAppWindowFrame": true,
+      "sidebar": "none",
+      "toolbar": "required",
+      "statusbar": "optional"
+    },
+    "feedback": "desktop-kit",
+    "density": "comfortable"
+  }
 }

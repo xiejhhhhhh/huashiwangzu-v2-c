@@ -2,7 +2,7 @@
   <Teleport to="body">
     <Transition name="spotlight-fade">
       <div v-if="show" class="spotlight-overlay" @mousedown.self="emit('close')">
-        <section class="spotlight-panel" role="dialog" aria-label="Spotlight">
+        <section class="spotlight-panel glass-spotlight" role="dialog" aria-label="Spotlight">
           <div class="spotlight-search-row">
             <Search :size="24" />
             <input ref="inputRef" v-model="searchText" class="spotlight-input" type="search" placeholder="Spotlight 搜索" aria-label="Spotlight 搜索" @keydown.escape="emit('close')" @keydown.down.prevent="moveSelection(1)" @keydown.up.prevent="moveSelection(-1)" @keydown.enter.prevent="executeSelected" />
@@ -60,7 +60,7 @@ function resultKindLabel(type: SearchResultItem['type']) { return type === 'app'
 
 <style scoped>
 .spotlight-overlay{position:fixed;inset:0;z-index:var(--z-spotlight);display:flex;justify-content:center;align-items:flex-start;padding-top:min(18vh,160px);background:rgba(4,9,18,.08)}
-.spotlight-panel{width:min(680px,calc(100vw - 32px));overflow:hidden;border:1px solid var(--desktop-material-border);border-radius:18px;background:var(--desktop-material-popover);box-shadow:0 28px 90px rgba(0,0,0,.38),inset 0 1px 0 rgba(255,255,255,.45);backdrop-filter:blur(34px) saturate(170%);-webkit-backdrop-filter:blur(34px) saturate(170%);color:var(--desktop-ink)}
+.spotlight-panel{width:min(680px,calc(100vw - 32px));overflow:hidden;color:var(--desktop-ink)}
 .spotlight-search-row{height:64px;display:flex;align-items:center;gap:13px;padding:0 18px;border-bottom:1px solid var(--desktop-divider)}.spotlight-input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:inherit;font-size:22px;font-family:inherit}.spotlight-input::placeholder{color:var(--desktop-ink-muted)}.spotlight-search-row kbd{padding:2px 6px;border:1px solid var(--desktop-divider);border-radius:5px;color:var(--desktop-ink-muted);font:var(--desktop-font-caption)}
 .spotlight-results{padding:7px;max-height:min(480px,60vh);overflow:auto}.spotlight-result{width:100%;height:54px;display:flex;align-items:center;gap:11px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:inherit;text-align:left}.spotlight-result.is-selected{background:var(--desktop-selection);color:white}.spotlight-system-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:8px;background:rgba(60,60,67,.1);flex:0 0 34px}.spotlight-result.is-selected .spotlight-system-icon{background:rgba(255,255,255,.2)}.spotlight-result-copy{min-width:0;flex:1;display:flex;flex-direction:column}.spotlight-result-copy strong{font:var(--desktop-font-body);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.spotlight-result-copy small{font:var(--desktop-font-caption);opacity:.68;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.spotlight-kind{font:var(--desktop-font-caption);opacity:.7}.spotlight-empty{padding:34px;text-align:center;color:var(--desktop-ink-muted);font:var(--desktop-font-body)}
 .spotlight-fade-enter-active,.spotlight-fade-leave-active{transition:opacity var(--desktop-duration-standard) var(--desktop-ease-standard)}.spotlight-fade-enter-from,.spotlight-fade-leave-to{opacity:0}.spotlight-fade-enter-active .spotlight-panel{transition:transform var(--desktop-duration-standard) var(--desktop-ease-standard),opacity var(--desktop-duration-fast)}.spotlight-fade-enter-from .spotlight-panel{transform:scale(.96) translateY(-10px);opacity:0}

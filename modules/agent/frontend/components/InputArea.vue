@@ -19,9 +19,7 @@
           @click="handleSend"
           title="停止生成"
         >
-          <svg viewBox="0 0 14 14" fill="currentColor" width="14" height="14">
-            <rect x="2" y="2" width="10" height="10" rx="1.5"/>
-          </svg>
+          <Square :size="12" fill="currentColor" />
           停止
         </button>
         <button
@@ -31,10 +29,7 @@
           @click="handleSend"
           title="发送"
         >
-          <svg viewBox="0 0 18 18" fill="currentColor" width="16" height="16">
-            <path d="M2 2l14 7L2 16V2z"/>
-            <path d="M7 9h7" stroke="#fff" stroke-width="1.5"/>
-          </svg>
+          <ArrowUp :size="17" :stroke-width="2.4" />
         </button>
       </div>
     </div>
@@ -43,6 +38,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { ArrowUp, Square } from '@/shared/icons/lucide'
 
 const props = defineProps<{
   modelValue: string
@@ -94,29 +90,29 @@ watch(() => props.modelValue, () => autoResize())
 
 <style scoped>
 .input-area {
-  padding: 12px 20px 14px;
-  background: var(--ag-bg-base);
-  border-top: 1px solid var(--ag-border-light);
+  padding: 10px 20px 16px;
+  background: rgba(255,255,255,.92);
+  border-top: .5px solid rgba(60,60,67,.14);
   flex-shrink: 0;
 }
 
 .input-container {
-  max-width: 760px;
+  max-width: 820px;
   margin: 0 auto;
   display: flex;
   gap: 10px;
   align-items: flex-end;
-  background: var(--ag-bg-base);
-  border: 1.5px solid rgba(148, 163, 184, 0.18);
-  border-radius: 14px;
-  padding: 6px 6px 6px 18px;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+  background: rgba(248,248,250,.96);
+  border: .5px solid rgba(60,60,67,.24);
+  border-radius: 18px;
+  padding: 5px 5px 5px 14px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), inset 0 1px 0 rgba(255,255,255,.8);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .input-container:focus-within {
-  border-color: var(--ag-primary);
-  box-shadow: 0 0 0 3px rgba(0, 134, 168, 0.1), 0 4px 16px rgba(15, 23, 42, 0.06);
+  border-color: rgba(10,132,255,.7);
+  box-shadow: 0 0 0 3px rgba(10,132,255,.10), 0 2px 8px rgba(0,0,0,.05);
 }
 
 .input-box {
@@ -125,7 +121,7 @@ watch(() => props.modelValue, () => autoResize())
   outline: none;
   background: transparent;
   font-family: var(--ag-font-family);
-  font-size: var(--ag-font-size-md);
+  font-size: 13px;
   line-height: 1.55;
   color: var(--ag-text-primary);
   resize: none;
@@ -158,11 +154,11 @@ watch(() => props.modelValue, () => autoResize())
 }
 
 .btn-send {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border: none;
-  border-radius: 10px;
-  background: var(--ag-primary);
+  border-radius: 50%;
+  background: #0a84ff;
   color: #fff;
   cursor: pointer;
   display: flex;
@@ -173,8 +169,8 @@ watch(() => props.modelValue, () => autoResize())
 }
 
 .btn-send:hover:not(:disabled) {
-  background: var(--ag-primary-dark);
-  transform: scale(1.04);
+  background: #0077ed;
+  transform: scale(1.03);
 }
 
 .btn-send:disabled {

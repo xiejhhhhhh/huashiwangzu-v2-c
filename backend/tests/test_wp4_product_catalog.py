@@ -67,6 +67,27 @@ async def test_catalog_returns_products_only():
         assert "app_id" not in item
 
 
+@pytest.mark.asyncio
+async def test_first_party_products_declare_mac_app_ui_contract():
+    manifests = list_product_manifests()
+    by_id = {m["productId"]: m for m in manifests}
+    for pid in FIRST_PARTY_PRODUCT_IDS:
+        uc = (by_id.get(pid) or {}).get("uiContract")
+        assert isinstance(uc, dict), f"{pid} missing uiContract"
+        assert uc.get("kit") == "mac-app-v1", f"{pid} kit != mac-app-v1"
+        assert uc.get("layout") in {
+            "finder", "document", "chat", "settings", "dashboard", "utility",
+        }, f"{pid} invalid layout"
+
+    user = await _user()
+    async with AsyncSessionLocal() as db:
+        catalog = await list_effective_products(db, user)
+    for item in catalog["items"]:
+        uc = item.get("uiContract")
+        assert isinstance(uc, dict), f"catalog missing uiContract for {item.get('productId')}"
+        assert uc.get("kit") == "mac-app-v1"
+
+
 def test_extension_associations_prefer_office_and_text():
     docx = find_associations_for_extension("docx")
     assert docx, "docx should map to a product"

@@ -26,7 +26,6 @@ import {
   type ProgressStage,
   type SearchResult,
 } from '../api'
-import type { GraphNode } from '../graph3d/types'
 import type { KnowledgeEntryProps } from '../types'
 
 export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
@@ -152,8 +151,6 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     return flatten(fileTree.value, 0)
   })
 
-  // ── 全局知识网络（由 WorkspaceGraph 接管） ──
-
   function openWorkspace() {
     showWorkspace.value = true
     showDashboard.value = false
@@ -179,25 +176,6 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
       const doc = documents.value.find(d => d.id === Number(runningId))
       if (doc) openDocument(doc)
     }
-  }
-
-  /** Handle node selection from 3D graph */
-  async function handleGraphSelect(node: GraphNode) {
-    const nodeId = node.id
-    const doc = await ensureDocument(nodeId)
-    if (doc) {
-      openDocument(doc)
-      return
-    }
-    // For entity-graph nodes, try by entity_id or graph node id
-    // Fallback: try node.label match in document filenames
-    const docByName = documents.value.find(d => d.filename.includes(node.label))
-    if (docByName) {
-      openDocument(docByName)
-      return
-    }
-    // Last resort: log and ignore
-    console.log('[kb] graph node selected (no document match):', nodeId, node.label)
   }
 
   // ── 进度/分析 ──
@@ -287,7 +265,19 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
   function stageLabel(stage: string): string { const labels: Record<string, string> = { source: '源文件', parse: '解析', vector: '索引', raw: '原始采集', fusion: '页级融合', profile: '画像', graph: '图谱', relation: '关联', complete: '完成' }; return labels[stage] || stage }
   function sourceStateText(state: string): string { const labels: Record<string, string> = { source_file_deleted: '原始文件已删除或进入回收站。', source_file_missing: '原始文件路径不可用。', permission_denied: '当前账号没有访问原始文件的权限。', source_unavailable: '原始文件不可用。' }; return labels[state] || '原始文件不可用。' }
   function readableFailure(message: string): string { return message.replace(/^Document source file unavailable:\s*/i, '源文件不可用：') }
-  function errorMessage(error: unknown, fallback: string): string { return error instanceof Error && error.message ? error.message : fallback }
+  function errorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) return error.message
+    if (typeof error === 'string' && error.trim()) return error
+    if (error && typeof error === 'object') {
+      const value = error as { message?: unknown; error?: unknown; detail?: unknown; response?: { data?: { error?: unknown; message?: unknown } } }
+      const nested = value.response?.data
+      const message = value.message || value.error || value.detail || nested?.message || nested?.error
+      if (typeof message === 'string' && message.trim()) return message
+      try { return JSON.stringify(error) }
+      catch { return fallback }
+    }
+    return fallback
+  }
   function stepCount(s: ProgressStage): string { if (s.key === 'graph') return s.count ? `${s.count} 个实体` : (s.status === 'done' ? '完成' : '—'); if (s.key === 'relation') return s.count ? `${s.count} 条关联` : (s.status === 'done' ? '完成' : '—'); if (s.total <= 1) return s.status === 'done' ? '完成' : (s.status === 'running' ? '进行中' : '—'); return `${s.done}/${s.total}` }
   function confClass(c?: number): string { const v = c || 0; if (v >= 0.9) return 'high'; if (v >= 0.75) return 'mid'; return 'low' }
   function relPct(r: FileRelation): number { return Math.round((r.similarity_score || 0) * 100) }
@@ -297,6 +287,23 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
       return lp?.overall_status === 'done' || (!lp && deriveDocumentStatus(d) === 'done')
     }).length
   })
+  const failedDocumentCount = computed(() => documents.value.filter(doc => {
+    const status = liveProgressMap.value[doc.id]?.overall_status || deriveDocumentStatus(doc)
+    return status === 'failed' || status === 'source_unavailable'
+  }).length)
+  const pendingDocumentCount = computed(() => Math.max(0, documents.value.length - analyzedDocCount.value - runningCount.value - failedDocumentCount.value))
+  const recentDocuments = computed(() => documents.value.slice(-8).reverse())
+  function documentStatus(doc: KnowledgeDocument): string {
+    return liveProgressMap.value[doc.id]?.overall_status || deriveDocumentStatus(doc)
+  }
+  function documentStatusText(doc: KnowledgeDocument): string {
+    const status = documentStatus(doc)
+    if (status === 'done') return '分析完成'
+    if (status === 'running') return '分析中'
+    if (status === 'failed' || status === 'source_unavailable') return '需要处理'
+    if (status === 'degraded' || status === 'paused') return '部分完成'
+    return '待分析'
+  }
   const pendingPageRef = ref<number | undefined>(undefined)
   function escapeHtml(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -733,7 +740,6 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     openDashboard,
     loadUserRole,
     jumpToFirstRunning,
-    handleGraphSelect,
 	    progress,
 	    ingestStatus,
     fusions,
@@ -775,6 +781,11 @@ export function useKnowledgeWorkspace(props: KnowledgeEntryProps) {
     confClass,
     relPct,
     analyzedDocCount,
+    failedDocumentCount,
+    pendingDocumentCount,
+    recentDocuments,
+    documentStatus,
+    documentStatusText,
     highlightText,
     openSearchSource,
     downloadSearchSource,

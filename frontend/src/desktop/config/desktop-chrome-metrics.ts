@@ -1,8 +1,23 @@
-export const DESKTOP_MENU_BAR_HEIGHT = 24
+import { getActiveDesktopSkinMetrics, type DesktopSkinMetrics } from '@/desktop/skins'
+
+export type { DesktopSkinMetrics }
+
+/** @deprecated Prefer getDesktopChromeMetrics().menuBarHeight — kept for gradual migration. */
+export function getMenuBarHeight(): number {
+  return getActiveDesktopSkinMetrics().menuBarHeight
+}
+
+/** Live chrome metrics from the active shell skin. */
+export function getDesktopChromeMetrics(): DesktopSkinMetrics {
+  return getActiveDesktopSkinMetrics()
+}
+
+/** Compatibility constants — values follow the active skin at call time via getters below. */
+export const DESKTOP_MENU_BAR_HEIGHT = 28
 export const DESKTOP_DOCK_ICON_SIZE = 48
-export const DESKTOP_DOCK_PADDING = 7
-export const DESKTOP_DOCK_HEIGHT = DESKTOP_DOCK_ICON_SIZE + DESKTOP_DOCK_PADDING * 2
-export const DESKTOP_DOCK_BOTTOM_GAP = 10
+export const DESKTOP_DOCK_PADDING = 9
+export const DESKTOP_DOCK_HEIGHT = 66
+export const DESKTOP_DOCK_BOTTOM_GAP = 12
 export const DESKTOP_WINDOW_EDGE_GAP = 8
 
 export interface DesktopWorkArea {
@@ -20,17 +35,19 @@ export interface DesktopWindowGeometry {
 }
 
 export function getDesktopWorkArea(containerWidth: number, containerHeight: number): DesktopWorkArea {
+  const metrics = getActiveDesktopSkinMetrics()
   const width = Math.max(0, containerWidth)
+  const menuBarHeight = metrics.menuBarHeight
   const dockTop = Math.max(
-    DESKTOP_MENU_BAR_HEIGHT,
-    containerHeight - DESKTOP_DOCK_HEIGHT - DESKTOP_DOCK_BOTTOM_GAP,
+    menuBarHeight,
+    containerHeight - metrics.dockHeight - metrics.dockBottomGap,
   )
-  const bottom = Math.max(DESKTOP_MENU_BAR_HEIGHT, dockTop - DESKTOP_WINDOW_EDGE_GAP)
+  const bottom = Math.max(menuBarHeight, dockTop - metrics.windowEdgeGap)
   return {
     x: 0,
-    y: DESKTOP_MENU_BAR_HEIGHT,
+    y: menuBarHeight,
     width,
-    height: Math.max(0, bottom - DESKTOP_MENU_BAR_HEIGHT),
+    height: Math.max(0, bottom - menuBarHeight),
   }
 }
 

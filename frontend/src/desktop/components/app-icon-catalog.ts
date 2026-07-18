@@ -32,12 +32,16 @@ import {
   Wrench,
 } from 'lucide-vue-next'
 
+export type AppIconMaterial = 'glass' | 'metal' | 'paper' | 'plastic'
+
 export interface AppIconProfile {
   key: string
   glyph: Component
   from: string
   to: string
   accent: string
+  material?: AppIconMaterial
+  depth?: string
 }
 
 const FALLBACK_PROFILE: AppIconProfile = {
@@ -46,40 +50,50 @@ const FALLBACK_PROFILE: AppIconProfile = {
   from: '#64748b',
   to: '#334155',
   accent: '#dbeafe',
+  material: 'plastic',
+  depth: 'rgba(15,23,42,.28)',
 }
 
 const APP_PROFILES: Record<string, AppIconProfile> = {
-  desktop: { key: 'finder', glyph: FolderOpen, from: '#36a9ff', to: '#0877e6', accent: '#e5f5ff' },
-  recycle: { key: 'trash', glyph: Trash2, from: '#f5f7fa', to: '#aab4c2', accent: '#ffffff' },
-  agent: { key: 'ai-assistant', glyph: Bot, from: '#7758f6', to: '#3730a3', accent: '#e9e5ff' },
-  knowledge: { key: 'knowledge', glyph: BookOpen, from: '#20b996', to: '#087d70', accent: '#ddfff6' },
-  memory: { key: 'memory', glyph: Brain, from: '#ec4899', to: '#9d174d', accent: '#ffe4f2' },
-  'model-router': { key: 'model-router', glyph: Route, from: '#27364b', to: '#111827', accent: '#67e8f9' },
-  'douyin-delivery': { key: 'content-studio', glyph: Video, from: '#ff416c', to: '#161a2c', accent: '#67e8f9' },
-  'image-viewer': { key: 'image-viewer', glyph: Image, from: '#0ea5e9', to: '#2563eb', accent: '#e0f2fe' },
-  'image-vision': { key: 'image-vision', glyph: ScanSearch, from: '#14b8a6', to: '#0f766e', accent: '#ccfbf1' },
-  'image-gen': { key: 'image-generation', glyph: WandSparkles, from: '#f472b6', to: '#7c3aed', accent: '#fce7f3' },
-  'pdf-viewer': { key: 'pdf-viewer', glyph: FileText, from: '#ef4444', to: '#b91c1c', accent: '#fee2e2' },
-  'doc-viewer': { key: 'document-viewer', glyph: FileText, from: '#3b82f6', to: '#1d4ed8', accent: '#dbeafe' },
-  'text-editor': { key: 'text-editor', glyph: FilePenLine, from: '#738195', to: '#39475b', accent: '#f8fafc' },
-  'excel-engine': { key: 'spreadsheet', glyph: Table2, from: '#22a86b', to: '#087443', accent: '#dcfce7' },
-  'ppt-viewer': { key: 'presentation', glyph: Presentation, from: '#f97316', to: '#c2410c', accent: '#ffedd5' },
-  im: { key: 'messages', glyph: MessageCircle, from: '#30c66b', to: '#138a46', accent: '#dcfce7' },
-  'docs-open': { key: 'docs-open', glyph: Braces, from: '#0891b2', to: '#155e75', accent: '#cffafe' },
-  'wechat-writer': { key: 'wechat-writer', glyph: PenLine, from: '#22c55e', to: '#047857', accent: '#dcfce7' },
-  'media-intelligence': { key: 'media-intelligence', glyph: Headphones, from: '#8b5cf6', to: '#4338ca', accent: '#ede9fe' },
-  'media-asr': { key: 'media-asr', glyph: Headphones, from: '#6366f1', to: '#3730a3', accent: '#e0e7ff' },
-  'terminal-tools': { key: 'terminal', glyph: SquareTerminal, from: '#334155', to: '#0f172a', accent: '#a7f3d0' },
-  'browser-tools': { key: 'browser', glyph: Compass, from: '#38bdf8', to: '#0369a1', accent: '#e0f2fe' },
-  'web-tools': { key: 'web-search', glyph: Search, from: '#06b6d4', to: '#0e7490', accent: '#cffafe' },
-  'github-search': { key: 'code-search', glyph: Search, from: '#475569', to: '#111827', accent: '#e2e8f0' },
-  scheduler: { key: 'scheduler', glyph: Clock3, from: '#f59e0b', to: '#b45309', accent: '#fef3c7' },
-  codemap: { key: 'codemap', glyph: Network, from: '#6366f1', to: '#312e81', accent: '#e0e7ff' },
-  'desktop-tools': { key: 'desktop-tools', glyph: Wrench, from: '#64748b', to: '#334155', accent: '#f1f5f9' },
-  'email-parser': { key: 'email', glyph: Mail, from: '#0ea5e9', to: '#1d4ed8', accent: '#dbeafe' },
-  'office-gen': { key: 'office-generator', glyph: Sparkles, from: '#0ea5e9', to: '#4338ca', accent: '#e0f2fe' },
-  'structured-parser': { key: 'structured-data', glyph: Database, from: '#14b8a6', to: '#0f766e', accent: '#ccfbf1' },
-  'desktop-settings': { key: 'settings', glyph: Settings, from: '#94a3b8', to: '#475569', accent: '#f8fafc' },
+  desktop: { key: 'finder', glyph: FolderOpen, from: '#5ec0ff', to: '#0a74e8', accent: '#eff8ff', material: 'glass', depth: 'rgba(8,70,150,.28)' },
+  files: { key: 'files', glyph: FolderOpen, from: '#5ec0ff', to: '#0a74e8', accent: '#eff8ff', material: 'glass', depth: 'rgba(8,70,150,.28)' },
+  recycle: { key: 'trash', glyph: Trash2, from: '#f8fafc', to: '#94a3b8', accent: '#ffffff', material: 'metal', depth: 'rgba(51,65,85,.25)' },
+  agent: { key: 'ai-assistant', glyph: Bot, from: '#8b6cff', to: '#3b2bb5', accent: '#f0ecff', material: 'glass', depth: 'rgba(55,48,163,.32)' },
+  ai: { key: 'ai-product', glyph: Bot, from: '#8b6cff', to: '#3b2bb5', accent: '#f0ecff', material: 'glass', depth: 'rgba(55,48,163,.32)' },
+  knowledge: { key: 'knowledge', glyph: BookOpen, from: '#34d3aa', to: '#0b8f7d', accent: '#e7fff8', material: 'paper', depth: 'rgba(6,95,70,.28)' },
+  memory: { key: 'memory', glyph: Brain, from: '#f472b6', to: '#9d174d', accent: '#ffe4f2', material: 'glass' },
+  office: { key: 'office', glyph: FileText, from: '#60a5fa', to: '#1d4ed8', accent: '#eff6ff', material: 'paper', depth: 'rgba(30,64,175,.28)' },
+  text: { key: 'text', glyph: FilePenLine, from: '#94a3b8', to: '#334155', accent: '#f8fafc', material: 'paper' },
+  media: { key: 'media', glyph: Video, from: '#fb7185', to: '#7c3aed', accent: '#ffe4e6', material: 'glass' },
+  messages: { key: 'messages-product', glyph: MessageCircle, from: '#4ade80', to: '#15803d', accent: '#ecfdf5', material: 'glass' },
+  settings: { key: 'settings-product', glyph: Settings, from: '#cbd5e1', to: '#475569', accent: '#f8fafc', material: 'metal' },
+  'content-studio': { key: 'content-studio-product', glyph: Layers3, from: '#38bdf8', to: '#4338ca', accent: '#e0f2fe', material: 'glass' },
+  'model-router': { key: 'model-router', glyph: Route, from: '#27364b', to: '#111827', accent: '#67e8f9', material: 'metal' },
+  'douyin-delivery': { key: 'content-studio', glyph: Video, from: '#ff416c', to: '#161a2c', accent: '#67e8f9', material: 'glass' },
+  'image-viewer': { key: 'image-viewer', glyph: Image, from: '#38bdf8', to: '#2563eb', accent: '#e0f2fe', material: 'glass' },
+  'image-vision': { key: 'image-vision', glyph: ScanSearch, from: '#2dd4bf', to: '#0f766e', accent: '#ccfbf1', material: 'glass' },
+  'image-gen': { key: 'image-generation', glyph: WandSparkles, from: '#f472b6', to: '#7c3aed', accent: '#fce7f3', material: 'glass' },
+  'pdf-viewer': { key: 'pdf-viewer', glyph: FileText, from: '#f87171', to: '#b91c1c', accent: '#fee2e2', material: 'paper' },
+  'doc-viewer': { key: 'document-viewer', glyph: FileText, from: '#60a5fa', to: '#1d4ed8', accent: '#dbeafe', material: 'paper' },
+  'text-editor': { key: 'text-editor', glyph: FilePenLine, from: '#94a3b8', to: '#334155', accent: '#f8fafc', material: 'paper' },
+  'excel-engine': { key: 'spreadsheet', glyph: Table2, from: '#34d399', to: '#047857', accent: '#dcfce7', material: 'paper' },
+  'ppt-viewer': { key: 'presentation', glyph: Presentation, from: '#fb923c', to: '#c2410c', accent: '#ffedd5', material: 'paper' },
+  im: { key: 'messages', glyph: MessageCircle, from: '#4ade80', to: '#15803d', accent: '#dcfce7', material: 'glass' },
+  'docs-open': { key: 'docs-open', glyph: Braces, from: '#22d3ee', to: '#155e75', accent: '#cffafe', material: 'metal' },
+  'wechat-writer': { key: 'wechat-writer', glyph: PenLine, from: '#4ade80', to: '#047857', accent: '#dcfce7', material: 'paper' },
+  'media-intelligence': { key: 'media-intelligence', glyph: Headphones, from: '#a78bfa', to: '#4338ca', accent: '#ede9fe', material: 'glass' },
+  'media-asr': { key: 'media-asr', glyph: Headphones, from: '#818cf8', to: '#3730a3', accent: '#e0e7ff', material: 'glass' },
+  'terminal-tools': { key: 'terminal', glyph: SquareTerminal, from: '#475569', to: '#0f172a', accent: '#a7f3d0', material: 'metal' },
+  'browser-tools': { key: 'browser', glyph: Compass, from: '#38bdf8', to: '#0369a1', accent: '#e0f2fe', material: 'glass' },
+  'web-tools': { key: 'web-search', glyph: Search, from: '#22d3ee', to: '#0e7490', accent: '#cffafe', material: 'glass' },
+  'github-search': { key: 'code-search', glyph: Search, from: '#64748b', to: '#111827', accent: '#e2e8f0', material: 'metal' },
+  scheduler: { key: 'scheduler', glyph: Clock3, from: '#fbbf24', to: '#b45309', accent: '#fef3c7', material: 'plastic' },
+  codemap: { key: 'codemap', glyph: Network, from: '#818cf8', to: '#312e81', accent: '#e0e7ff', material: 'glass' },
+  'desktop-tools': { key: 'desktop-tools', glyph: Wrench, from: '#94a3b8', to: '#334155', accent: '#f1f5f9', material: 'metal' },
+  'email-parser': { key: 'email', glyph: Mail, from: '#38bdf8', to: '#1d4ed8', accent: '#dbeafe', material: 'paper' },
+  'office-gen': { key: 'office-generator', glyph: Sparkles, from: '#38bdf8', to: '#4338ca', accent: '#e0f2fe', material: 'glass' },
+  'structured-parser': { key: 'structured-data', glyph: Database, from: '#2dd4bf', to: '#0f766e', accent: '#ccfbf1', material: 'metal' },
+  'desktop-settings': { key: 'settings', glyph: Settings, from: '#cbd5e1', to: '#475569', accent: '#f8fafc', material: 'metal' },
 }
 
 const ICON_PROFILES: Record<string, AppIconProfile> = {
@@ -105,7 +119,13 @@ const ICON_PROFILES: Record<string, AppIconProfile> = {
 }
 
 export function getAppIconProfile(appKey?: string, icon?: string): AppIconProfile {
-  if (appKey && APP_PROFILES[appKey]) return APP_PROFILES[appKey]
-  if (icon && ICON_PROFILES[icon]) return ICON_PROFILES[icon]
+  if (appKey && APP_PROFILES[appKey]) {
+    const profile = APP_PROFILES[appKey]
+    return { material: 'plastic', depth: 'rgba(15,23,42,.22)', ...profile }
+  }
+  if (icon && ICON_PROFILES[icon]) {
+    const profile = ICON_PROFILES[icon]
+    return { material: 'plastic', depth: 'rgba(15,23,42,.22)', ...profile }
+  }
   return FALLBACK_PROFILE
 }

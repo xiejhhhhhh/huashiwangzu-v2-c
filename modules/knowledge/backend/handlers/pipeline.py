@@ -326,11 +326,20 @@ async def api_progress_batch(
 
 @sub_router.get("/dashboard/stats")
 async def api_dashboard_stats(
+    page: int = 1,
+    page_size: int = 50,
+    include_analytics: bool = False,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission("viewer")),
 ):
     """知识库看板统计。"""
-    result = await get_dashboard_stats(db, user.id)
+    result = await get_dashboard_stats(
+        db,
+        user.id,
+        page=max(1, page),
+        page_size=max(10, min(page_size, 100)),
+        include_analytics=include_analytics,
+    )
     return ApiResponse(data=result)
 
 
@@ -349,4 +358,3 @@ async def api_chunk_document(
         max_chars=payload.max_chars,
     )
     return ApiResponse(data=result)
-

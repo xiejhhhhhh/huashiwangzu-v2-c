@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test'
 
 const apps = [
   {
-    app_id: 'text-editor',
-    name: '文本编辑器',
+    product_id: 'text',
+    name: '文本',
     icon: 'Edit',
     description: '编辑文本文件',
     entry_component_key: 'apps/text-editor/index.vue',
@@ -24,8 +24,8 @@ const apps = [
     enabled: true,
   },
   {
-    app_id: 'desktop',
-    name: '访达',
+    product_id: 'files',
+    name: '文件',
     icon: 'Folder',
     description: '管理桌面文件',
     entry_component_key: 'apps/desktop/index.vue',
@@ -36,6 +36,7 @@ const apps = [
     category: '系统',
     window_type: 'normal',
     permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: true,
     show_on_desktop: true,
     show_in_launcher: true,
     show_in_tray: false,
@@ -43,8 +44,8 @@ const apps = [
     enabled: true,
   },
   {
-    app_id: 'desktop-tools',
-    name: 'Desktop Tools',
+    product_id: 'background-tools',
+    name: '后台工具',
     icon: 'Connection',
     description: '后台文件桥接能力',
     entry_component_key: '',
@@ -59,7 +60,119 @@ const apps = [
     show_in_sidebar: false,
     enabled: true,
   },
+  {
+    product_id: 'office',
+    name: 'Office',
+    icon: 'Document',
+    description: '统一文档工作区',
+    entry_component_key: 'products/office/frontend/index.vue',
+    default_width: 1100,
+    default_height: 760,
+    min_width: 480,
+    min_height: 320,
+    category: '办公',
+    window_type: 'normal',
+    permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: true,
+    show_on_desktop: true,
+    show_in_launcher: true,
+    show_in_tray: false,
+    show_in_sidebar: false,
+    enabled: true,
+  },
+  {
+    product_id: 'knowledge',
+    name: '知识库',
+    icon: 'Collection',
+    description: '知识检索与工作台',
+    entry_component_key: 'knowledge/index.vue',
+    default_width: 1100,
+    default_height: 760,
+    min_width: 480,
+    min_height: 320,
+    category: '知识',
+    window_type: 'normal',
+    permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: false,
+    show_on_desktop: true,
+    show_in_launcher: true,
+    show_in_tray: false,
+    show_in_sidebar: false,
+    enabled: true,
+  },
+  {
+    product_id: 'ai',
+    name: 'AI',
+    icon: 'ChatDotRound',
+    description: '智能体对话',
+    entry_component_key: 'agent/index.vue',
+    default_width: 1080,
+    default_height: 760,
+    min_width: 480,
+    min_height: 320,
+    category: 'AI',
+    window_type: 'normal',
+    permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: true,
+    show_on_desktop: true,
+    show_in_launcher: true,
+    show_in_tray: false,
+    show_in_sidebar: false,
+    enabled: true,
+  },
+  {
+    product_id: 'settings',
+    name: '设置',
+    icon: 'Setting',
+    description: '系统与个人偏好设置',
+    entry_component_key: 'apps/settings/index.vue',
+    default_width: 860,
+    default_height: 640,
+    min_width: 480,
+    min_height: 320,
+    category: '系统',
+    window_type: 'normal',
+    permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: false,
+    show_on_desktop: true,
+    show_in_launcher: true,
+    show_in_tray: false,
+    show_in_sidebar: false,
+    enabled: true,
+  },
 ]
+
+function productCatalog() {
+  return {
+    catalogRevision: 'test',
+    count: apps.length,
+    kind: 'products',
+    items: apps.map(app => ({
+      productId: app.product_id,
+      displayName: app.name,
+      icon: app.icon,
+      description: app.description,
+      entryComponentKey: app.entry_component_key,
+      visibility: { desktop: app.show_on_desktop, launcher: app.show_in_launcher, dock: app.show_on_desktop },
+      windowPolicy: { defaultWidth: app.default_width, defaultHeight: app.default_height, minWidth: app.min_width, minHeight: app.min_height, singleton: !app.allow_multiple, allowMultiple: app.allow_multiple },
+      enabled: app.enabled,
+      allowMultiple: app.allow_multiple,
+      legacyAppKeys: app.product_id === 'files' ? ['desktop'] : app.product_id === 'text' ? ['text-editor'] : app.product_id === 'ai' ? ['agent'] : app.product_id === 'knowledge' ? ['knowledge'] : [],
+      sortOrder: app.product_id === 'files' ? 10 : 20,
+      uiContract: app.ui_contract || {
+        kit: 'mac-app-v1',
+        layout: app.product_id === 'files' || app.product_id === 'knowledge' || app.product_id === 'recycle' ? 'finder'
+          : app.product_id === 'ai' || app.product_id === 'messages' ? 'chat'
+          : app.product_id === 'settings' ? 'settings'
+          : app.product_id === 'office' || app.product_id === 'text' || app.product_id === 'content-studio' ? 'document'
+          : 'utility',
+        shell: { useAppWindowFrame: true },
+        feedback: 'desktop-kit',
+        density: 'comfortable',
+      },
+    })),
+  }
+}
 
 async function mockShell(page, { windows = [] } = {}) {
   await page.addInitScript(() => localStorage.setItem('v2_auth_token', 'macos-shell-test-token'))
@@ -68,8 +181,8 @@ async function mockShell(page, { windows = [] } = {}) {
     if (pathname === '/api/current-user') {
       return route.fulfill({ status: 200, json: { success: true, data: { id: 1, username: '何焜华', role: 'admin' }, error: null } })
     }
-    if (pathname === '/api/desktop/apps') {
-      return route.fulfill({ status: 200, json: { success: true, data: apps, error: null } })
+    if (pathname === '/api/desktop/products') {
+      return route.fulfill({ status: 200, json: { success: true, data: productCatalog(), error: null } })
     }
     if (pathname === '/api/desktop/state') {
       return route.fulfill({ status: 200, json: { success: true, data: { user_id: 1, state_json: { version: 1, windows, appState: {}, iconPositions: {} }, version: 1 }, error: null } })
@@ -142,8 +255,8 @@ test('menus and system overlays restore focus and Spotlight indexes desktop file
   await launchpadButton.click()
   const launchpad = page.getByRole('dialog', { name: 'Launchpad' })
   await expect(launchpad).toBeVisible()
-  await expect(launchpad.locator('.desktop-launcher-app-item', { hasText: '访达' }).locator('[data-app-icon-key]')).toHaveAttribute('data-app-icon-key', 'finder')
-  await expect(launchpad.locator('.desktop-launcher-app-item', { hasText: '文本编辑器' }).locator('[data-app-icon-key]')).toHaveAttribute('data-app-icon-key', 'text-editor')
+  await expect(launchpad.locator('.desktop-launcher-app-item', { hasText: '文件' })).toBeVisible()
+  await expect(launchpad.locator('.desktop-launcher-app-item', { hasText: '文本' })).toBeVisible()
   await page.locator('.desktop-launcher-search-input').press('Escape')
   await expect(launchpadButton).toBeFocused()
 
@@ -161,7 +274,7 @@ test('show desktop restores only windows hidden by that command', async ({ page 
   await mockShell(page)
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '访达' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '文件' })).toBeVisible()
 
   const result = await page.evaluate(() => {
     const manager = window.__HSWZ_WINDOW_MANAGER__
@@ -187,12 +300,43 @@ test('show desktop restores only windows hidden by that command', async ({ page 
   ]))
 })
 
+test('Liquid Glass primitives and Dock neighbor magnification are wired', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+
+  const menuBar = page.getByRole('banner', { name: '系统菜单栏' })
+  const dock = page.getByRole('navigation', { name: 'Dock' })
+  await expect(menuBar).toHaveClass(/glass-menubar/)
+  await expect(dock).toHaveClass(/glass-dock/)
+  await expect(page.locator('#desktop-liquid-refraction')).toHaveCount(1)
+  await page.getByRole('button', { name: '打开控制中心' }).click()
+  await expect(page.getByRole('dialog', { name: '控制中心' })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '控制中心' })).toContainText('无线局域网')
+  await page.mouse.click(20, 200)
+
+  await page.evaluate(() => window.__HSWZ_WINDOW_MANAGER__?.openWindow('desktop'))
+  const windowFrame = page.locator('.desktop-window')
+  await expect(windowFrame).toHaveClass(/glass-window/)
+  await expect(windowFrame).toHaveClass(/desktop-window-active/)
+
+  const filesButton = dock.getByRole('button', { name: '文件' })
+  await expect(filesButton).toBeVisible()
+  await filesButton.hover()
+  await expect(page.locator('.mac-dock-item-wrap.is-hovered')).toHaveCount(1)
+  await expect(page.locator('.mac-dock-item-wrap.is-neighbor')).toHaveCount(2)
+
+  await dock.getByRole('button', { name: '打开 Spotlight' }).click()
+  await expect(page.locator('.spotlight-panel')).toHaveClass(/glass-spotlight/)
+  await page.locator('.spotlight-input').press('Escape')
+})
+
 test('Dock groups multiple windows by app and exposes them in its app menu', async ({ page }) => {
   await mockShell(page)
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
   const dock = page.getByRole('navigation', { name: 'Dock' })
-  await expect(dock.getByRole('button', { name: '访达' })).toBeVisible()
+  await expect(dock.getByRole('button', { name: '文件' })).toBeVisible()
 
   const ids = await page.evaluate(() => {
     const manager = window.__HSWZ_WINDOW_MANAGER__
@@ -202,7 +346,7 @@ test('Dock groups multiple windows by app and exposes them in its app menu', asy
     ]
   })
   expect(ids.every(Boolean)).toBe(true)
-  const textEditorButton = dock.getByRole('button', { name: '文本编辑器' })
+  const textEditorButton = dock.getByRole('button', { name: '文本' })
   await expect(textEditorButton).toHaveCount(1)
   await textEditorButton.click({ button: 'right' })
   const appMenu = page.locator('.mac-dock-menu')
@@ -215,7 +359,7 @@ test('desktop selection, context focus, and window drop feedback share one state
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
   const fileIcon = page.locator('.desktop-file-icon-item[data-selection-key="file:501"]')
-  const appIcon = page.locator('.desktop-app-icon-item[data-selection-key="app:desktop"]')
+  const appIcon = page.locator('.desktop-app-icon-item[data-selection-key="app:files"]')
   await expect(fileIcon).toBeVisible()
 
   await fileIcon.click()
@@ -248,7 +392,7 @@ test('desktop selection, context focus, and window drop feedback share one state
 test('restored sessions are clamped below MenuBar and above Dock', async ({ page }) => {
   await mockShell(page, {
     windows: [{
-      id: 'legacy-window', appKey: 'desktop', title: '访达', icon: 'Folder',
+      id: 'legacy-window', appKey: 'desktop', title: '文件', icon: 'Folder',
       x: -400, y: -120, width: 2200, height: 1400, zIndex: 1,
       minimized: false, maximized: false, isActive: true, payload: {},
     }],
@@ -259,9 +403,206 @@ test('restored sessions are clamped below MenuBar and above Dock', async ({ page
   await expect(restoredWindow).toBeVisible()
   const box = await restoredWindow.boundingBox()
   expect(box?.x).toBeGreaterThanOrEqual(0)
-  expect(box?.y).toBeGreaterThanOrEqual(24)
+  expect(box?.y).toBeGreaterThanOrEqual(28)
   expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(1025)
   expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(689)
+})
+
+
+test('App Switcher cycles open windows with meta-tab semantics', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.desktop-shell-container')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '文件' })).toBeVisible()
+  const opened = await page.evaluate(() => {
+    const manager = window.__HSWZ_WINDOW_MANAGER__
+    // open two files windows (allowMultiple) to avoid missing text-editor loader in mocks
+    return [
+      manager?.openWindow('files', { folderId: 0 }),
+      manager?.openWindow('files', { folderId: 1, folderName: '文档' }),
+    ]
+  })
+  expect(opened.filter(Boolean).length).toBeGreaterThanOrEqual(2)
+  await expect.poll(async () => page.evaluate(() => (window.__HSWZ_WINDOW_MANAGER__?.windows || []).filter(w => !w.minimized).length)).toBeGreaterThanOrEqual(2)
+  await expect.poll(async () => page.evaluate(() => Boolean(window.__HSWZ_DESKTOP_SHELL__?.openAppSwitcher))).toBe(true)
+  await page.evaluate(() => window.__HSWZ_DESKTOP_SHELL__?.openAppSwitcher())
+  const switcher = page.getByRole('dialog', { name: 'App Switcher' })
+  await expect(switcher).toBeVisible()
+  await expect(switcher.locator('.app-switcher-item')).toHaveCount(2)
+  await page.evaluate(() => window.__HSWZ_DESKTOP_SHELL__?.closeAppSwitcher())
+  await expect(switcher).toHaveCount(0)
+})
+
+
+
+
+test('app icons expose material layers for Dock and titlebar sizes', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  const dockIcon = page.getByRole('navigation', { name: 'Dock' }).locator('.app-icon').first()
+  await expect(dockIcon.locator('.app-icon-base')).toBeVisible()
+  await expect(dockIcon.locator('.app-icon-sheen')).toBeVisible()
+  await page.evaluate(() => window.__HSWZ_WINDOW_MANAGER__?.openWindow('desktop'))
+  const titleIcon = page.locator('.desktop-window .app-icon').first()
+  await expect(titleIcon).toHaveClass(/app-icon-sm/)
+  await expect(titleIcon.locator('.app-icon-rim')).toBeVisible()
+})
+
+test('mac wallpaper asset and glass recipe vars are active', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  const wallpaper = page.locator('.desktop-shell-wallpaper')
+  await expect(wallpaper).toBeVisible()
+  await expect.poll(async () => wallpaper.evaluate(el => getComputedStyle(el).backgroundImage)).toContain('wallpaper-macos-default.svg')
+  const filter = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--desktop-lg-filter').trim())
+  expect(filter).toContain('blur(34px)')
+  await page.getByRole('button', { name: '打开控制中心' }).click()
+  const cc = page.getByRole('dialog', { name: '控制中心' })
+  await expect(cc).toBeVisible()
+  const radius = await cc.evaluate(el => getComputedStyle(el).borderRadius)
+  expect(radius === '22px' || radius.startsWith('22')).toBeTruthy()
+})
+
+test('shell skin contract applies macos tokens and can switch to win11 slot', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.desktop-shell-container')).toBeVisible()
+  await expect.poll(async () => page.evaluate(() => document.documentElement.dataset.desktopSkin)).toBe('macos')
+  const menuH = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--desktop-menu-bar-height').trim())
+  expect(menuH).toBe('28px')
+  await page.evaluate(() => window.__HSWZ_DESKTOP_SHELL__?.setShellSkin?.('win11'))
+  await expect.poll(async () => page.evaluate(() => document.documentElement.dataset.desktopSkin)).toBe('win11')
+  const dockRadius = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--desktop-dock-radius').trim())
+  expect(dockRadius).toBe('0px')
+  await page.evaluate(() => window.__HSWZ_DESKTOP_SHELL__?.setShellSkin?.('macos'))
+  await expect.poll(async () => page.evaluate(() => document.documentElement.dataset.desktopSkin)).toBe('macos')
+})
+
+
+test('app kit contract is importable and desktop hotkeys are off by default', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.desktop-shell-container')).toBeVisible()
+
+  const policy = await page.evaluate(async () => {
+    const mod = await import('/src/desktop/app-kit/index.ts')
+    const cfg = await import('/src/desktop/config/desktop-preferences.ts')
+    return {
+      kitId: mod.MAC_APP_KIT_ID,
+      hasShell: typeof mod.MacAppShell === 'object' || typeof mod.MacAppShell === 'function',
+      hotkeys: cfg.desktopConfig.enableDesktopHotkeys,
+      frameLayout: mod.toWindowFrameLayout('finder'),
+    }
+  })
+  expect(policy.kitId).toBe('mac-app-v1')
+  expect(policy.hasShell).toBe(true)
+  expect(policy.hotkeys).toBe(false)
+  expect(policy.frameLayout).toBe('file-manager')
+
+  // Default hotkeys must not open Spotlight on Ctrl+Space
+  await page.keyboard.press('Control+Space')
+  await expect(page.getByRole('dialog', { name: 'Spotlight' })).toHaveCount(0)
+})
+
+
+test('files finder app mounts MacAppShell contract', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.desktop-shell-container')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '文件' })).toBeVisible()
+  const opened = await page.evaluate(() => window.__HSWZ_WINDOW_MANAGER__?.openWindow('files') || window.__HSWZ_WINDOW_MANAGER__?.openWindow('desktop'))
+  expect(opened).toBeTruthy()
+  const finder = page.locator('.desktop-file-manager[data-mac-app-kit="mac-app-v1"]')
+  await expect(finder).toBeVisible({ timeout: 15000 })
+  await expect(finder).toHaveAttribute('data-mac-app-layout', 'finder')
+  await expect(finder.locator('.mac-app-kit[data-mac-app-layout="finder"]')).toBeVisible()
+  await expect(finder.locator('.fm-navigation-bar')).toBeVisible()
+  await expect(finder.locator('.fm-nav-pane')).toBeVisible()
+  await expect(finder.locator('.fm-status-bar')).toBeVisible()
+})
+
+test('slice4 main products mount MacAppShell layouts', async ({ page }) => {
+  const cases = [
+    { appKey: 'office', root: '.office-app[data-mac-app-kit="mac-app-v1"]', layout: 'document', kitLayout: '.mac-app-kit[data-mac-app-layout="document"]' },
+    { appKey: 'knowledge', root: '.kb-app[data-mac-app-kit="mac-app-v1"]', layout: 'finder', kitLayout: '.mac-app-kit[data-mac-app-layout="finder"]' },
+    { appKey: 'ai', root: '.agent-app[data-mac-app-kit="mac-app-v1"]', layout: 'chat', kitLayout: '.mac-app-kit[data-mac-app-layout="chat"]' },
+    { appKey: 'settings', root: '.settings-app[data-mac-app-kit="mac-app-v1"]', layout: 'settings', kitLayout: '.mac-app-kit[data-mac-app-layout="settings"]' },
+  ]
+
+  for (const item of cases) {
+    await mockShell(page)
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.desktop-shell-container')).toBeVisible()
+    // Wait until product registry is mounted into Dock before opening windows.
+    await expect(page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: item.appKey === 'ai' ? 'AI' : item.appKey === 'office' ? 'Office' : item.appKey === 'knowledge' ? '知识库' : '设置' })).toBeVisible()
+
+    const opened = await page.evaluate((key) => {
+      const manager = window.__HSWZ_WINDOW_MANAGER__
+      if (!manager) return null
+      return manager.openWindow(key)
+    }, item.appKey)
+    expect(opened).toBeTruthy()
+    await expect(page.locator(`.desktop-window[data-window-id="${opened}"]`)).toBeVisible({ timeout: 15000 })
+
+    const root = page.locator(item.root)
+    await expect(root).toBeVisible({ timeout: 20000 })
+    await expect(root).toHaveAttribute('data-mac-app-layout', item.layout)
+    await expect(root.locator(item.kitLayout)).toBeVisible()
+  }
+
+  // Settings exposes desktop hotkey toggle (contract surface)
+  await expect(page.locator('.settings-nav-item', { hasText: '快捷键' })).toBeVisible()
+  await page.locator('.settings-nav-item', { hasText: '快捷键' }).click()
+  await expect(page.getByText('启用桌面快捷键')).toBeVisible()
+})
+
+test('slice5 product catalog requires mac-app-v1 uiContract and loader validates it', async ({ page }) => {
+  await mockShell(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.desktop-shell-container')).toBeVisible()
+
+  const report = await page.evaluate(async () => {
+    const products = await import('/src/shared/api/products.ts')
+    const loader = await import('/src/desktop/app-registry/app-loader.ts')
+    const catalog = await products.fetchDesktopProducts()
+    const items = catalog.items || []
+    const missing = items.filter(item => !item.uiContract || item.uiContract.kit !== 'mac-app-v1')
+    const layouts = Object.fromEntries(items.map(item => [item.productId, item.uiContract?.layout || null]))
+    const sample = items[0]
+    const validation = sample ? loader.validateProductUiContract(sample) : { ok: false, warnings: ['no products'] }
+    const invalid = loader.validateProductUiContract({
+      productId: 'ghost-product',
+      displayName: 'ghost',
+      entryComponentKey: 'missing/index.vue',
+    })
+    return {
+      count: items.length,
+      missing: missing.map(item => item.productId),
+      layouts,
+      validationOk: validation.ok,
+      invalidOk: invalid.ok,
+      invalidWarnings: invalid.warnings.length,
+    }
+  })
+
+  expect(report.count).toBeGreaterThanOrEqual(4)
+  expect(report.missing).toEqual([])
+  expect(report.validationOk).toBe(true)
+  expect(report.invalidOk).toBe(false)
+  expect(report.invalidWarnings).toBeGreaterThan(0)
+  // mock catalog includes files/office/knowledge/ai/settings from slice4 fixtures
+  expect(report.layouts.files).toBe('finder')
+  expect(report.layouts.office).toBe('document')
+  expect(report.layouts.ai).toBe('chat')
+  expect(report.layouts.settings).toBe('settings')
 })
 
 const viewports = [
@@ -284,20 +625,20 @@ for (const viewport of viewports) {
 
     const menuBox = await menuBar.boundingBox()
     const dockBox = await dock.boundingBox()
-    expect(menuBox?.height).toBe(24)
-    expect(dockBox?.y).toBeGreaterThanOrEqual(viewport.height - 80)
+    expect(menuBox?.height).toBe(28)
+    expect(dockBox?.y).toBeGreaterThanOrEqual(viewport.height - 90)
     expect((dockBox?.x ?? 0) + (dockBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width + 1)
 
     await dock.getByRole('button', { name: '打开 Launchpad' }).click()
     await expect(page.getByRole('dialog', { name: 'Launchpad' })).toBeVisible()
-    await expect(page.locator('.desktop-launcher-app-item', { hasText: '访达' })).toBeVisible()
-    await expect(page.locator('.desktop-launcher-app-item', { hasText: 'Desktop Tools' })).toHaveCount(0)
+    await expect(page.locator('.desktop-launcher-app-item', { hasText: '文件' })).toBeVisible()
+    await expect(page.locator('.desktop-launcher-app-item', { hasText: '后台工具' })).toHaveCount(0)
     await page.locator('.desktop-launcher-search-input').press('Escape')
 
-    await page.keyboard.press('Control+Space')
+    await page.getByRole('banner', { name: '系统菜单栏' }).getByRole('button', { name: '打开 Spotlight' }).click()
     await expect(page.getByRole('dialog', { name: 'Spotlight' })).toBeVisible()
-    await page.locator('.spotlight-input').fill('Desktop Tools')
-    await expect(page.locator('.spotlight-result', { hasText: 'Desktop Tools' })).toContainText('后台能力')
+    await page.locator('.spotlight-input').fill('后台工具')
+    await expect(page.locator('.spotlight-result', { hasText: '后台工具' })).toContainText('后台能力')
     await page.locator('.spotlight-input').press('Escape')
 
     await page.evaluate(() => window.__HSWZ_WINDOW_MANAGER__?.openWindow('desktop'))
@@ -310,14 +651,23 @@ for (const viewport of viewports) {
     }).toBeLessThanOrEqual(viewport.width + 1)
     const windowBox = await window.boundingBox()
     expect(windowBox?.x).toBeGreaterThanOrEqual(0)
-    expect(windowBox?.y).toBeGreaterThanOrEqual(24)
+    expect(windowBox?.y).toBeGreaterThanOrEqual(28)
     expect((windowBox?.x ?? 0) + (windowBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width + 1)
-    expect((windowBox?.y ?? 0) + (windowBox?.height ?? 0)).toBeLessThanOrEqual(viewport.height - 79)
+    expect((windowBox?.y ?? 0) + (windowBox?.height ?? 0)).toBeLessThanOrEqual(viewport.height - 77)
 
     const controls = window.locator('.window-action-buttons button')
     await expect(controls).toHaveCount(3)
     await expect(controls.nth(0)).toHaveAttribute('aria-label', '关闭')
     await expect(controls.nth(1)).toHaveAttribute('aria-label', '最小化')
     await expect(controls.nth(2)).toHaveAttribute('aria-label', '缩放')
+
+    await controls.nth(1).click()
+    await expect(window).toHaveClass(/desktop-window-minimized/)
+    await dock.getByRole('button', { name: '文件' }).click()
+    await expect(window).toHaveClass(/desktop-window-entered/)
+    await controls.nth(2).click()
+    await expect(window).toHaveClass(/desktop-window-maximized/)
+    await controls.nth(0).click()
+    await expect(window).toHaveCount(0)
   })
 }

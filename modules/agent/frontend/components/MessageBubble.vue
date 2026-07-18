@@ -92,7 +92,16 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import hljs from 'highlight.js'
+import hljs from 'highlight.js/lib/core'
+import bash from 'highlight.js/lib/languages/bash'
+import css from 'highlight.js/lib/languages/css'
+import javascript from 'highlight.js/lib/languages/javascript'
+import json from 'highlight.js/lib/languages/json'
+import markdown from 'highlight.js/lib/languages/markdown'
+import python from 'highlight.js/lib/languages/python'
+import sql from 'highlight.js/lib/languages/sql'
+import typescript from 'highlight.js/lib/languages/typescript'
+import xml from 'highlight.js/lib/languages/xml'
 import GeneratedImageStrip, { type GeneratedImageEntry } from './GeneratedImageStrip.vue'
 import { openDesktopFileUrl } from '../utils/desktopFileOpen'
 import type { MsgItem } from '../types'
@@ -102,6 +111,21 @@ import {
   referenceOpenTarget,
   uniqueRefs,
 } from '../utils/resourceReferences'
+
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('js', javascript)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('markdown', markdown)
+hljs.registerLanguage('md', markdown)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('py', python)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('ts', typescript)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('html', xml)
 	
 const props = defineProps<{ message: MsgItem; editingId?: number | null; streaming?: boolean }>()
 const emit = defineEmits<{
@@ -290,10 +314,10 @@ function formatTime(iso?: string | null): string {
 .msg-row {
   flex-shrink: 0;
   display: flex;
-  gap: var(--ag-space-md);
-  margin-bottom: var(--ag-space-xl);
-  animation: msgSlideUp 0.25s ease-out;
-  max-width: 85%;
+  gap: 8px;
+  margin-bottom: 12px;
+  animation: msgSlideUp 0.2s ease-out;
+  max-width: min(82%, 720px);
 }
 .msg-row.user { flex-direction: row-reverse; align-self: flex-end; }
 .msg-row.assistant { flex-direction: row; align-self: flex-start; }
@@ -306,13 +330,13 @@ function formatTime(iso?: string | null): string {
 /* Avatar */
 .msg-avatar {
   flex-shrink: 0;
-  width: 32px; height: 32px;
+  width: 28px; height: 28px;
   border-radius: var(--ag-radius-full);
   display: flex; align-items: center; justify-content: center;
   margin-top: 2px;
 }
-.msg-avatar.user { background: var(--ag-bg-user-msg); color: var(--ag-text-white); }
-.msg-avatar.assistant { background: var(--ag-primary-light); color: var(--ag-primary); }
+.msg-avatar.user { background: linear-gradient(180deg,#8e8e93,#636366); color: #fff; }
+.msg-avatar.assistant { background: linear-gradient(180deg,#0a84ff,#0066d6); color: #fff; }
 
 /* Card */
 .msg-card { display: flex; flex-direction: column; gap: var(--ag-space-xs); min-width: 0; }
@@ -321,9 +345,9 @@ function formatTime(iso?: string | null): string {
 
 /* Bubble */
 .msg-bubble {
-  padding: var(--ag-space-md) var(--ag-space-lg);
-  line-height: var(--ag-line-height-relaxed);
-  font-size: var(--ag-font-size-md);
+  padding: 8px 12px;
+  line-height: 1.45;
+  font-size: 13px;
   word-break: break-word;
   overflow-wrap: break-word;
 }
@@ -332,15 +356,15 @@ function formatTime(iso?: string | null): string {
   margin-top: var(--ag-space-sm);
 }
 .msg-bubble.user {
-  background: var(--ag-bg-user-msg);
-  color: var(--ag-text-white);
-  border-radius: var(--ag-radius-xl) var(--ag-radius-sm) var(--ag-radius-xl) var(--ag-radius-xl);
+  background: linear-gradient(180deg,#0a84ff,#087cf0);
+  color: #fff;
+  border-radius: 17px 17px 5px 17px;
 }
 .msg-bubble.assistant {
-  background: var(--ag-bg-assistant-msg);
-  border: 1px solid var(--ag-border-light);
-  border-radius: var(--ag-radius-sm) var(--ag-radius-xl) var(--ag-radius-xl) var(--ag-radius-xl);
-  box-shadow: var(--ag-shadow-sm);
+  background: #e9e9eb;
+  border: 0;
+  border-radius: 17px 17px 17px 5px;
+  box-shadow: inset 0 0 0 .5px rgba(60,60,67,.08);
 }
 
 /* Markdown content */

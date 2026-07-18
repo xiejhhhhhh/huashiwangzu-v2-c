@@ -12,14 +12,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 24px;
-  min-height: 24px;
+  height: var(--mac-app-statusbar-height, 26px);
+  min-height: var(--mac-app-statusbar-height, 26px);
   padding: 0 12px;
-  font-size: 11px;
-  color: var(--text-info, #909399);
-  border-top: 1px solid var(--border-color, #e4e7ed);
+  font: var(--mac-app-font-caption, 400 11px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif);
+  color: var(--mac-app-text-secondary, var(--text-info, #909399));
+  border-top: 1px solid var(--mac-app-border, var(--border-color, #e4e7ed));
   box-sizing: border-box;
-  background: transparent;
+  background: var(--mac-app-surface-status, transparent);
   flex-shrink: 0;
 }
 </style>

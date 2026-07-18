@@ -16,6 +16,10 @@ let nextId = 1
 const desktopContainerSize = reactive({ width: window.innerWidth, height: window.innerHeight })
 const showDesktopWindowIds = new Set<string>()
 
+function canonicalAppKey(appKey: string): string {
+  return getApp(appKey)?.canonicalAppKey || appKey
+}
+
 function generateId(): string { return `win_${Date.now()}_${nextId++}` }
 
 function generateZIndex(): number { return nextZIndex++ }
@@ -44,7 +48,7 @@ function openWindow(appKey: string, payload?: unknown, originRect?: WindowGeomet
   }
 
   if (!app.allowMultiple) {
-    const existingWindow = windows.find(w => w.appKey === appKey)
+    const existingWindow = windows.find(w => canonicalAppKey(w.appKey) === canonicalAppKey(appKey))
     if (existingWindow) {
       updateWindowPayload(existingWindow.id, payload)
       activateWindow(existingWindow.id)
@@ -278,7 +282,7 @@ function restoreWindows(snapshot: DesktopWindowSnapshot[], currentRole?: string)
   for (const w of restoredWindows) {
     const app = getApp(w.appKey)
     if (app && !app.allowMultiple) {
-      const existingWindow = windows.find(x => x.appKey === w.appKey && x.minimized === w.minimized)
+      const existingWindow = windows.find(x => canonicalAppKey(x.appKey) === canonicalAppKey(w.appKey) && x.minimized === w.minimized)
       if (existingWindow) { activateWindow(existingWindow.id); continue }
     }
     windows.push(w)

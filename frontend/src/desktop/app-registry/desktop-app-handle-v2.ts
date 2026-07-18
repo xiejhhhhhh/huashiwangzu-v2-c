@@ -1,10 +1,11 @@
-import { ElMessage } from 'element-plus'
+import { desktopMessage } from '@/desktop/feedback/desktop-feedback'
 import api from '@/shared/api'
 import { windowManager } from '@/desktop/window-manager/window-manager'
 import { getApp } from '@/desktop/app-registry/app-registry'
 import emitter from '@/desktop/events'
 import { useUserStore } from '@/platform/stores/user'
 import { getOpenWindowFailureMessage } from './app-visibility'
+import { openFileByRecord } from './content-file-opener'
 import { registerActionHandler, unregisterAppHandlers, routeRequest, getRegisteredAppIds, getRegisteredActions } from './action-registry'
 import { standardActionDef } from './types-app-handle-v2'
 import { generateRequestId, registerPendingRequest } from './request-response-channel'
@@ -15,11 +16,11 @@ export function useDesktopAppHandleV2() {
 
   function checkPermission(appId: appId): appId | null {
     const app = getApp(appId)
-    if (!app) { ElMessage.warning(`应用「${appId}」不存在`); return null }
-    if (app.enabled === false) { ElMessage.warning(`应用「${app.appName}」已停用`); return null }
+    if (!app) { desktopMessage.warning(`应用「${appId}」不存在`); return null }
+    if (app.enabled === false) { desktopMessage.warning(`应用「${app.appName}」已停用`); return null }
     const currentRole = userStore.userInfo?.role?.toLowerCase()
     if (app.allowedRoles && currentRole && !app.allowedRoles.includes(currentRole)) {
-      ElMessage.warning(`您无权访问应用「${app.appName}」`)
+      desktopMessage.warning(`您无权访问应用「${app.appName}」`)
       return null
     }
     return appId
@@ -40,13 +41,12 @@ export function useDesktopAppHandleV2() {
     const ok = checkPermission(appId)
     if (!ok) return null
     const windowId = windowManager.openWindow(appId, params)
-    if (!windowId) ElMessage.info(getOpenWindowFailureMessage(getApp(appId)))
+    if (!windowId) desktopMessage.info(getOpenWindowFailureMessage(getApp(appId)))
     return windowId
   }
 
   async function openFile(fileId: number, format?: string, options?: CommandOptions): Promise<WindowHandle | null> {
     // 正式路径：只走 Content Open Resolver
-    const { openFileByRecord } = await import('@/desktop/app-registry/app-opener')
     openFileByRecord({ fileId, fileName: '', format: format || '' })
     return { windowId: '', appId: '' }
   }
@@ -88,11 +88,11 @@ export function useDesktopAppHandleV2() {
   }
 
   function notifyUser(payload: NotificationPayload): void {
-    ElMessage({
-      type: payload.type || 'info',
-      message: payload.message,
-      duration: payload.duration || 3000,
-    })
+    const kind = payload.type || 'info'
+    if (kind === 'success') desktopMessage.success(payload.message)
+    else if (kind === 'warning') desktopMessage.warning(payload.message)
+    else if (kind === 'error') desktopMessage.error(payload.message)
+    else desktopMessage.info(payload.message)
     if (payload.targetApp) {
       emitter.emit('app:notification' as never, payload as never)
     }

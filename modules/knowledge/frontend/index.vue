@@ -1,12 +1,20 @@
 <template>
-  <div class="kb-app">
+  <div
+    class="kb-app"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="finder"
+  >
+    <MacAppShell layout="finder" :sidebar-width="220">
+      <template #sidebar>
     <!-- 左侧：工作台入口 + 文件树 -->
     <aside class="kb-side">
-      <button class="ws-btn" @click="openWorkspace">
-        🏠 工作台
+      <button class="ws-btn" :class="{ active: showWorkspace }" @click="openWorkspace">
+        <LayoutDashboard :size="15" />
+        工作台
       </button>
       <button v-if="isAdminOrEditor" class="ws-btn" @click="openDashboard" :class="{ active: showDashboard }">
-        📊 看板
+        <ChartNoAxesCombined :size="15" />
+        看板
       </button>
 
       <input v-model="keyword" class="search-mini" placeholder="筛选文件…" />
@@ -38,13 +46,79 @@
         </button>
       </div>
     </aside>
+      </template>
+
+      <template #toolbar>
+        <div class="kb-toolbar">
+          <div class="kb-toolbar-copy">
+            <strong>知识库</strong>
+            <span>资料检索 · 画像 · 工作台</span>
+          </div>
+        </div>
+      </template>
 
     <!-- 右侧主区 -->
     <main class="kb-main">
-      <!-- 工作台：3D 深空星图 -->
-      <template v-if="showWorkspace && !active">
-        <WorkspaceGraph @select="handleGraphSelect" />
-      </template>
+      <section v-if="showWorkspace && !active" class="workspace-overview">
+        <header class="workspace-head workspace-head-glass">
+          <div>
+            <h1>知识库工作台</h1>
+            <p>查看资料处理状态并继续最近的工作。</p>
+          </div>
+          <button v-if="runningCount" class="ghost-btn" @click="jumpToFirstRunning">
+            <LoaderCircle :size="15" class="spin" />
+            查看分析任务
+          </button>
+        </header>
+
+        <div class="workspace-stats">
+          <article class="stat-item">
+            <Files :size="18" />
+            <strong>{{ documents.length }}</strong>
+            <span>已收录</span>
+          </article>
+          <article class="stat-item is-success">
+            <CircleCheck :size="18" />
+            <strong>{{ analyzedDocCount }}</strong>
+            <span>已完成</span>
+          </article>
+          <article class="stat-item is-running">
+            <LoaderCircle :size="18" :class="{ spin: runningCount > 0 }" />
+            <strong>{{ runningCount }}</strong>
+            <span>处理中</span>
+          </article>
+          <article class="stat-item is-warning">
+            <TriangleAlert :size="18" />
+            <strong>{{ failedDocumentCount }}</strong>
+            <span>需要处理</span>
+          </article>
+        </div>
+
+        <section class="recent-section">
+          <div class="section-title">
+            <div>
+              <h2>最近资料</h2>
+              <span v-if="pendingDocumentCount">{{ pendingDocumentCount }} 个资料等待分析</span>
+            </div>
+          </div>
+          <div v-if="recentDocuments.length" class="recent-list">
+            <button v-for="doc in recentDocuments" :key="doc.id" class="recent-row" @click="openDocument(doc)">
+              <span class="recent-icon">{{ fileIcon(doc.extension) }}</span>
+              <span class="recent-copy">
+                <strong>{{ doc.filename }}</strong>
+                <small>{{ doc.total_pages || 0 }} 页 · {{ doc.total_chunks || 0 }} 个内容块</small>
+              </span>
+              <span class="document-state" :class="documentStatus(doc)">{{ documentStatusText(doc) }}</span>
+              <ChevronRight :size="15" />
+            </button>
+          </div>
+          <div v-else class="workspace-empty">
+            <FolderSearch :size="34" />
+            <strong>还没有可用资料</strong>
+            <span>从桌面拖入文件后会显示在这里。</span>
+          </div>
+        </section>
+      </section>
 
       <!-- 看板 -->
       <template v-else-if="showDashboard && !active">
@@ -226,18 +300,23 @@
         </div>
       </div>
     </div>
+    </MacAppShell>
   </div>
 </template>
 
 <script setup lang="ts">
-import WorkspaceGraph from './views/WorkspaceGraph.vue'
-import DashboardView from './views/DashboardView.vue'
+import { defineAsyncComponent } from 'vue'
+import { MacAppShell } from '@/desktop/app-kit'
+import { ChartNoAxesCombined, ChevronRight, CircleCheck, Files, FolderSearch, LayoutDashboard, LoaderCircle, TriangleAlert } from '@/shared/icons/lucide'
 import { useKnowledgeWorkspace } from './composables/useKnowledgeWorkspace'
 import type { KnowledgeEntryProps } from './types'
+
+const DashboardView = defineAsyncComponent(() => import('./views/DashboardView.vue'))
 
 const props = defineProps<KnowledgeEntryProps>()
 
 const {
+  documents,
   active,
   showWorkspace,
   showDashboard,
@@ -254,7 +333,6 @@ const {
   openWorkspace,
   openDashboard,
   jumpToFirstRunning,
-  handleGraphSelect,
   progress,
   ingestStatus,
   fusions,
@@ -296,6 +374,11 @@ const {
   confClass,
   relPct,
   analyzedDocCount,
+  failedDocumentCount,
+  pendingDocumentCount,
+  recentDocuments,
+  documentStatus,
+  documentStatusText,
   highlightText,
   openSearchSource,
   downloadSearchSource,
@@ -304,6 +387,7 @@ const {
   jumpToSearchResult,
   loadFileTree,
   openDocByNode,
+  openDocument,
   startAnalyze,
   handleExport,
   guideSourceRestore,
@@ -319,17 +403,20 @@ const {
 </script>
 
 <style scoped>
-.kb-app { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 640px; background: #f3f6fb; color: #1f2a37; font-family: 苹方,"微软雅黑",宋体,sans-serif; }
+.kb-app { height: 100%; min-height: 0; color: var(--mac-app-text); background: var(--mac-app-surface); font: var(--mac-app-font); }
+.kb-toolbar { display:grid; gap:1px; min-height: var(--mac-app-toolbar-height); align-content:center; padding:0 4px; width:100%; }
+.kb-toolbar-copy strong { font: var(--mac-app-font-title); color: var(--mac-app-text); }
+.kb-toolbar-copy span { font: var(--mac-app-font-caption); color: var(--mac-app-text-secondary); }
 
 /* 左侧 */
-.kb-side { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #fff; border-right: 1px solid #e3e9f2; min-width: 0; }
+.kb-side { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: transparent; min-width: 0; height: 100%; box-sizing: border-box; }
 
-.ws-btn { width: 100%; padding: 10px 12px; border: 1px solid #e3e9f2; border-radius: 10px; background: #fff; cursor: pointer; font-size: 14px; font-weight: 600; color: #46586b; text-align: left; }
-.ws-btn:hover { border-color: #2395bc; color: #2395bc; background: #f7fbfe; }
-.ws-btn.active { border-color: #2395bc; color: #2395bc; background: #eaf6fb; font-weight: 700; }
+.ws-btn { width: 100%; padding: 9px 10px; border: 0; border-radius: var(--mac-app-radius-control); background: transparent; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--mac-app-text-secondary); text-align: left; display: flex; align-items: center; gap: 8px; }
+.ws-btn:hover { color: var(--mac-app-accent); background: color-mix(in srgb, var(--mac-app-accent) 8%, transparent); }
+.ws-btn.active { color: var(--mac-app-accent); background: var(--mac-app-selection); font-weight: 700; }
 
-.search-mini { height: 34px; padding: 0 12px; border: 1px solid #d5dfeb; border-radius: 8px; background: #fff; color: #1f2a37; outline: none; }
-.search-mini:focus { border-color: #2395bc; }
+.search-mini { height: 34px; padding: 0 12px; border: 1px solid var(--mac-app-border-strong); border-radius: var(--mac-app-radius-control); background: #fff; color: var(--mac-app-text); outline: none; }
+.search-mini:focus { border-color: var(--mac-app-accent); }
 
 .running-hint { padding: 8px 10px; margin: 0; border-radius: 8px; background: #fef7e0; border: 1px solid #f0d78c; color: #8b6914; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; user-select: none; }
 .running-hint:hover { background: #fdf0c8; border-color: #e0b84c; }
@@ -355,9 +442,9 @@ const {
   color: inherit;
   cursor: pointer;
 }
-.tree-node { display: flex; align-items: center; gap: 4px; width: 100%; padding: 5px 6px; text-align: left; cursor: pointer; border: none; background: transparent; font-size: 12px; color: #46586b; border-radius: 6px; }
-.tree-node:hover { background: #f0f6fb; }
-.tree-node.active { background: #eaf6fb; color: #2395bc; font-weight: 600; }
+.tree-node { display: flex; align-items: center; gap: 4px; width: 100%; padding: 5px 6px; text-align: left; cursor: pointer; border: none; background: transparent; font-size: 12px; color: var(--mac-app-text-secondary); border-radius: var(--mac-app-radius-control); }
+.tree-node:hover { background: color-mix(in srgb, var(--mac-app-accent) 8%, transparent); }
+.tree-node.active { background: var(--mac-app-selection); color: var(--mac-app-accent); font-weight: 600; }
 .tree-arrow { font-size: 8px; width: 10px; flex: none; color: #8aa0b5; }
 .tree-icon { font-size: 14px; flex: none; }
 .tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
@@ -371,7 +458,52 @@ const {
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* 主区 */
-.kb-main { display: flex; flex-direction: column; min-width: 0; padding: 18px 20px; gap: 14px; overflow: hidden; height: 100%; }
+.kb-main { display: flex; flex-direction: column; min-width: 0; padding: 18px 20px; gap: 14px; overflow: hidden; height: 100%; background: transparent; box-sizing: border-box; }
+
+.workspace-overview { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 18px; }
+.workspace-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 10px 12px; margin-bottom: 4px;
+  border-bottom: .5px solid rgba(60,60,67,.12);
+  background: color-mix(in srgb, var(--glass-panel-bg, rgba(246,246,250,.66)) 88%, white);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.5);
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+}
+.workspace-head h1 { margin: 0; color: #1d1d1f; font-size: 22px; font-weight: 700; }
+.workspace-head p { margin: 4px 0 0; color: #8e8e93; font-size: 12px; }
+.workspace-head .ghost-btn { display: inline-flex; align-items: center; gap: 6px; }
+.workspace-stats { display: grid; grid-template-columns: repeat(auto-fit,minmax(118px,1fr)); gap: 10px; }
+.stat-item { min-height: 92px; display: grid; grid-template-columns: 24px 1fr; grid-template-rows: 1fr auto; align-items: center; gap: 0 8px; padding: 14px; border: .5px solid rgba(60,60,67,.16); border-radius: 8px; background: rgba(255,255,255,.92); color: #636366; }
+.stat-item svg { grid-row: 1 / 3; color: #0a84ff; }
+.stat-item strong { color: #1d1d1f; font-size: 24px; line-height: 1; }
+.stat-item span { color: #8e8e93; font-size: 11px; }
+.stat-item.is-success svg { color: #28a745; }
+.stat-item.is-running svg { color: #ff9f0a; }
+.stat-item.is-warning svg { color: #ff453a; }
+.recent-section { min-height: 0; padding: 0; }
+.section-title { display: flex; align-items: end; justify-content: space-between; margin-bottom: 8px; }
+.section-title h2 { margin: 0; color: #1d1d1f; font-size: 14px; }
+.section-title span { color: #8e8e93; font-size: 11px; }
+.recent-list { overflow: hidden; border: .5px solid rgba(60,60,67,.16); border-radius: 8px; background: #fff; }
+.recent-row { width: 100%; min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 0; border-bottom: .5px solid rgba(60,60,67,.12); background: transparent; text-align: left; cursor: pointer; }
+.recent-row:last-child { border-bottom: 0; }
+.recent-row:hover { background: rgba(10,132,255,.06); }
+.recent-icon { width: 28px; font-size: 20px; text-align: center; }
+.recent-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.recent-copy strong { overflow: hidden; color: #1d1d1f; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.recent-copy small { color: #8e8e93; font-size: 10px; }
+.document-state { flex: none; padding: 3px 7px; border-radius: 999px; background: #f2f2f7; color: #636366; font-size: 10px; }
+.document-state.done { background: rgba(52,199,89,.12); color: #248a3d; }
+.document-state.running { background: rgba(255,159,10,.14); color: #9a6700; }
+.document-state.failed, .document-state.source_unavailable { background: rgba(255,69,58,.12); color: #d70015; }
+.workspace-empty { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: #8e8e93; }
+.workspace-empty strong { color: #3a3a3c; font-size: 13px; }
+.workspace-empty span { font-size: 11px; }
+.spin { animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 
 .main-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 16px; padding-bottom: 12px; border-bottom: 1px solid #e3e9f2; position: relative; }
 .head-left { display: flex; align-items: center; gap: 12px; min-width: 0; }

@@ -38,16 +38,15 @@ defineEmits<{
 
 <style scoped>
 .fm-nav-pane {
-  padding: 13px 9px;
-  border-right: 1px solid rgba(60, 60, 67, 0.16);
-  background: rgba(235, 235, 235, 0.82);
-  backdrop-filter: saturate(150%) blur(18px);
+  height: 100%;
+  padding: 12px 8px;
+  background: transparent;
 }
 
 .fm-nav-section-label {
-  margin: 0 9px 6px;
-  color: #77777c;
-  font-size: 11px;
+  margin: 0 8px 6px;
+  color: var(--mac-app-text-secondary, #77777c);
+  font: var(--mac-app-font-caption, 600 11px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif);
   font-weight: 600;
 }
 
@@ -56,30 +55,30 @@ defineEmits<{
   height: 30px;
   margin-bottom: 2px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 7px;
   background: transparent;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  color: #303034;
+  color: var(--mac-app-text, #303034);
   cursor: pointer;
   text-align: left;
   font-size: 12px;
 }
 
 .fm-nav-item:hover {
-  background: rgba(60, 60, 67, 0.08);
+  background: color-mix(in srgb, var(--mac-app-text, #303034) 6%, transparent);
 }
 
 .fm-nav-item-active {
-  background: rgba(0, 122, 255, 0.14);
-  color: #005ec4;
+  background: var(--mac-app-selection, rgba(10, 132, 255, 0.14));
+  color: color-mix(in srgb, var(--mac-app-accent, #0a84ff) 80%, #001);
 }
 
 .fm-nav-icon {
   flex-shrink: 0;
-  color: var(--desktop-accent, #007aff);
+  color: var(--mac-app-accent, #0a84ff);
 }
 
 .fm-nav-label {

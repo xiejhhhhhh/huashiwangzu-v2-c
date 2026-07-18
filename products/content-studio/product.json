@@ -54,5 +54,17 @@
     "min": "2.0",
     "max": "2.x"
   },
-  "legacyAppKeys": []
+  "legacyAppKeys": [],
+  "uiContract": {
+    "kit": "mac-app-v1",
+    "layout": "document",
+    "shell": {
+      "useAppWindowFrame": true,
+      "sidebar": "none",
+      "toolbar": "required",
+      "statusbar": "none"
+    },
+    "feedback": "desktop-kit",
+    "density": "comfortable"
+  }
 }

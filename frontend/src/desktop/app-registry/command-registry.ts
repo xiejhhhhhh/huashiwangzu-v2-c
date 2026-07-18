@@ -1,5 +1,5 @@
 import type { AppRegistryEntry } from '@/desktop/window-manager/window-types'
-import { ElMessage } from 'element-plus'
+import { desktopMessage } from '@/desktop/feedback/desktop-feedback'
 import { BACKGROUND_CAPABILITY_MESSAGE, isLauncherVisibleApp } from './app-visibility'
 
 export interface IDisposable {
@@ -197,7 +197,7 @@ class CommandRegistry {
       },
       () => {
         if (!canOpenFromLauncher) {
-          ElMessage.info(BACKGROUND_CAPABILITY_MESSAGE)
+          desktopMessage.info(BACKGROUND_CAPABILITY_MESSAGE)
           return null
         }
         const { openApp } = getAppOpener()
@@ -221,7 +221,7 @@ class CommandRegistry {
           },
           (params) => {
             if (!canOpenFromLauncher) {
-              ElMessage.info(BACKGROUND_CAPABILITY_MESSAGE)
+              desktopMessage.info(BACKGROUND_CAPABILITY_MESSAGE)
               return null
             }
             const { executeAction } = getAppOpener()

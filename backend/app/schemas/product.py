@@ -20,6 +20,23 @@ class FileAssociation(BaseModel):
     readOnlyFormats: list[str] = Field(default_factory=list)
 
 
+class ProductUiContractShell(BaseModel):
+    useAppWindowFrame: bool = True
+    sidebar: Literal["required", "optional", "none"] = "optional"
+    toolbar: Literal["required", "optional", "none"] = "required"
+    statusbar: Literal["required", "optional", "none"] = "none"
+
+
+class ProductUiContract(BaseModel):
+    """Frontend App UI Kit contract (mac-app-v1). Backend only stores/passthrough."""
+
+    kit: Literal["mac-app-v1"] = "mac-app-v1"
+    layout: Literal["finder", "document", "chat", "settings", "dashboard", "utility"]
+    shell: ProductUiContractShell | None = None
+    feedback: Literal["desktop-kit"] = "desktop-kit"
+    density: Literal["comfortable", "compact"] = "comfortable"
+
+
 class ProductManifestV1(BaseModel):
     schemaVersion: str = "ProductManifestV1"
     productId: str
@@ -31,6 +48,7 @@ class ProductManifestV1(BaseModel):
     iconSet: dict[str, Any] = Field(default_factory=dict)
     entryComponentKey: str
     workspaceKind: str = "DocumentWorkspace"
+    uiContract: ProductUiContract | None = None
     visibility: dict[str, Any] = Field(default_factory=dict)
     permissionPolicy: dict[str, Any] = Field(default_factory=dict)
     requiredCapabilities: list[dict[str, Any]] = Field(default_factory=list)

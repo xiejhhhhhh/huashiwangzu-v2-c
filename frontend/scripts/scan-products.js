@@ -23,6 +23,34 @@ const REQUIRED_FIELDS = [
   'entryComponentKey', 'workspaceKind',
 ]
 
+const VALID_LAYOUTS = new Set([
+  'finder', 'document', 'chat', 'settings', 'dashboard', 'utility',
+])
+
+function validateUiContract(name, manifest) {
+  const uc = manifest.uiContract
+  if (!uc || typeof uc !== 'object') {
+    errors.push(`${name}: missing uiContract (require kit=mac-app-v1 + layout)`)
+    return null
+  }
+  if (uc.kit !== 'mac-app-v1') {
+    errors.push(`${name}: uiContract.kit must be "mac-app-v1" (got ${JSON.stringify(uc.kit)})`)
+  }
+  if (!VALID_LAYOUTS.has(String(uc.layout || ''))) {
+    errors.push(`${name}: uiContract.layout invalid (got ${JSON.stringify(uc.layout)})`)
+  }
+  if (uc.feedback && uc.feedback !== 'desktop-kit') {
+    errors.push(`${name}: uiContract.feedback must be "desktop-kit" when set`)
+  }
+  return {
+    kit: uc.kit,
+    layout: uc.layout,
+    shell: uc.shell || null,
+    feedback: uc.feedback || 'desktop-kit',
+    density: uc.density || 'comfortable',
+  }
+}
+
 /** @type {Array<Record<string, any>>} */
 const products = []
 /** @type {Array<{key: string, importPath: string}>} */
@@ -54,6 +82,8 @@ if (fs.existsSync(PRODUCTS_DIR)) {
     if (seen.has(pid)) errors.push(`duplicate productId: ${pid}`)
     seen.add(pid)
 
+    const uiContract = validateUiContract(name, manifest)
+
     const entry = String(manifest.entryComponentKey || '')
     if (entry.startsWith('products/')) {
       const local = path.join(ROOT, entry)
@@ -83,6 +113,7 @@ if (fs.existsSync(PRODUCTS_DIR)) {
       activationPolicy: manifest.activationPolicy || {},
       visibility: manifest.visibility || {},
       description: manifest.description || '',
+      uiContract,
     })
   }
 }
@@ -113,6 +144,7 @@ const catalogLines = [
   '  activationPolicy: Record<string, unknown>',
   '  visibility: Record<string, unknown>',
   '  description: string',
+  '  uiContract: { kit: string; layout: string; shell?: unknown; feedback?: string; density?: string } | null',
   '}',
   '',
   'export const productCatalog: GeneratedProductEntry[] = ' + JSON.stringify(products, null, 2),

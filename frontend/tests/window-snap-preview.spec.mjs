@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 const mockApps = [
   {
-    app_id: 'hello-world',
+    product_id: 'hello-world',
     name: 'Hello World',
     icon: 'Box',
     description: 'Window interaction test app',
@@ -22,6 +22,22 @@ const mockApps = [
   },
 ]
 
+function productCatalog() {
+  const app = mockApps[0]
+  return {
+    catalogRevision: 'test', count: 1, kind: 'products', items: [{
+      productId: app.product_id,
+      displayName: app.name,
+      icon: app.icon,
+      description: app.description,
+      entryComponentKey: app.entry_component_key,
+      visibility: { desktop: true, launcher: true, dock: true },
+      windowPolicy: { defaultWidth: app.default_width, defaultHeight: app.default_height, minWidth: app.min_width, minHeight: app.min_height, singleton: false, allowMultiple: true },
+      enabled: true, allowMultiple: true,
+    }],
+  }
+}
+
 async function mockDesktopShell(page) {
   await page.route(/^https?:\/\/[^/]+\/api\/.*/, route => {
     const pathname = new URL(route.request().url()).pathname
@@ -31,10 +47,10 @@ async function mockDesktopShell(page) {
         json: { success: true, data: { id: 1, username: '何焜华', role: 'admin' }, error: null },
       })
     }
-    if (pathname === '/api/desktop/apps') {
+    if (pathname === '/api/desktop/products') {
       return route.fulfill({
         status: 200,
-        json: { success: true, data: mockApps, error: null },
+        json: { success: true, data: productCatalog(), error: null },
       })
     }
     if (pathname === '/api/desktop/state') {

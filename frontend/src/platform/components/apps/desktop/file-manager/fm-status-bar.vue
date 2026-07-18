@@ -59,12 +59,13 @@ defineEmits<{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 29px;
-  padding: 0 14px;
-  border-top: 1px solid rgba(60, 60, 67, 0.16);
-  background: rgba(246, 246, 246, 0.88);
-  font-size: 12px;
-  color: #6e6e73;
+  width: 100%;
+  height: 100%;
+  min-height: var(--mac-app-statusbar-height, 26px);
+  padding: 0 4px;
+  font: var(--mac-app-font-caption, 400 11px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif);
+  color: var(--mac-app-text-secondary, #6e6e73);
+  background: transparent;
 }
 
 .fm-status-left {
@@ -81,8 +82,8 @@ defineEmits<{
   align-items: center;
   gap: 0;
   padding: 2px;
-  border-radius: 6px;
-  background: rgba(60, 60, 67, 0.1);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--mac-app-border, rgba(60, 60, 67, 0.12)) 70%, transparent);
   flex-shrink: 0;
 }
 
@@ -90,9 +91,9 @@ defineEmits<{
   width: 27px;
   height: 21px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 5px;
   background: transparent;
-  color: #626267;
+  color: var(--mac-app-text-secondary, #626267);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -101,13 +102,13 @@ defineEmits<{
 }
 
 .fm-view-btn:hover {
-  background: rgba(255, 255, 255, 0.6);
+  background: color-mix(in srgb, white 70%, transparent);
 }
 
 .fm-view-btn-active {
-  color: #1d1d1f;
-  background: #fff;
-  border-color: rgba(60, 60, 67, 0.1);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  color: var(--mac-app-text, #1d1d1f);
+  background: color-mix(in srgb, white 92%, transparent);
+  border-color: var(--mac-app-border, rgba(60, 60, 67, 0.1));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 </style>

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1600" viewBox="0 0 2560 1600">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#071525"/>
+      <stop offset="28%" stop-color="#0b3b52"/>
+      <stop offset="55%" stop-color="#1d4ed8"/>
+      <stop offset="78%" stop-color="#5b21b6"/>
+      <stop offset="100%" stop-color="#2e1065"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="18%" cy="22%" r="36%">
+      <stop offset="0%" stop-color="#fff4bf" stop-opacity=".95"/>
+      <stop offset="35%" stop-color="#fdba74" stop-opacity=".42"/>
+      <stop offset="100%" stop-color="#fb923c" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="bloom" cx="72%" cy="30%" r="42%">
+      <stop offset="0%" stop-color="#a5f3fc" stop-opacity=".5"/>
+      <stop offset="45%" stop-color="#818cf8" stop-opacity=".22"/>
+      <stop offset="100%" stop-color="#312e81" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="lake" cx="52%" cy="78%" r="50%">
+      <stop offset="0%" stop-color="#67e8f9" stop-opacity=".42"/>
+      <stop offset="50%" stop-color="#0ea5e9" stop-opacity=".18"/>
+      <stop offset="100%" stop-color="#020617" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain">
+      <feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="3" seed="17"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="table" tableValues="0 .07"/></feComponentTransfer>
+    </filter>
+    <filter id="soft"><feGaussianBlur stdDeviation="28"/></filter>
+  </defs>
+  <rect width="2560" height="1600" fill="url(#sky)"/>
+  <rect width="2560" height="1600" fill="url(#sun)"/>
+  <rect width="2560" height="1600" fill="url(#bloom)"/>
+  <ellipse cx="460" cy="320" rx="360" ry="180" fill="#fde68a" opacity=".16" filter="url(#soft)"/>
+  <ellipse cx="1900" cy="380" rx="420" ry="220" fill="#93c5fd" opacity=".14" filter="url(#soft)"/>
+  <path d="M0 980 C420 760 760 1080 1180 860 C1560 660 1880 980 2560 760 L2560 1600 L0 1600 Z" fill="#04111f" opacity=".46"/>
+  <path d="M0 1080 C520 940 860 1240 1280 1040 C1680 860 2040 1120 2560 920 L2560 1600 L0 1600 Z" fill="#0b1b2e" opacity=".55"/>
+  <path d="M0 1180 C560 1060 920 1360 1360 1160 C1760 980 2140 1240 2560 1040 L2560 1600 L0 1600 Z" fill="#e0f2fe" opacity=".08"/>
+  <rect width="2560" height="1600" fill="url(#lake)"/>
+  <rect width="2560" height="1600" filter="url(#grain)"/>
+</svg>

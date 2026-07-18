@@ -1867,6 +1867,179 @@ async def structured_signal_search(
     return scored
 
 
+# 图谱扩展召回:关系/列举型问题的关键。命中主体节点→沿边摸一跳下级实体→回填document_id进融合。
+# 华哥核心诉求"华世王镞有什么品牌":主体命中后必须顺藤摸出下级,而不只是返回提到主体的文本块。
+_GRAPH_RELATION_TYPES = ("拥有", "属于", "产生", "包含", "领导", "生产", "含有", "涉及", "用于")
+
+
+# 关系/列举型问句的措辞信号(直接看原始query,不依赖LLM意图字段——短问句走本地规划intent恒为semantic_search)
+_RELATIONAL_QUERY_MARKERS = (
+    "有什么", "有哪些", "哪些", "什么品牌", "什么产品", "旗下", "下级", "包含哪",
+    "属于", "拥有", "旗下有", "有几个", "都有", "含哪", "分别是", "子品牌", "系列有",
+)
+
+# 图谱遍历主体停用词:疑问词 + 护肤品域通名/类别词。这些是"问句问的目标类别"或噪音,
+# 不能当遍历起点(否则摸出"品牌→拥有→最终解释权""产品→产生→细菌"这类废话)。
+# 专名(华世王镞/俏小喵/娇薇诗)才是起点。换行业只需换这张通名表。
+_GRAPH_SUBJECT_STOPWORDS = {
+    # 疑问/指代
+    "什么", "哪些", "哪个", "怎么", "如何", "多少", "为什么", "是否", "可以", "这个", "那个",
+    # 护肤品域通名/类别(问句里问的过滤目标,非遍历主体)
+    "品牌", "产品", "公司", "顾客", "客户", "化妆品", "护肤品", "系列", "套盒", "成分",
+    "功效", "品类", "原料", "规格", "肤质", "美容院", "门店", "代理商", "厂家", "企业",
+    "东西", "项目", "内容", "活动", "方案", "服务", "团队", "人员",
+}
+
+
+def _should_graph_expand(query_plan: dict | None) -> bool:
+    """门控:能锚到主体节点(有core_entities)且是列举/关系型问句才触发图谱遍历。
+
+    保守设计:普通语义检索不触发,零影响现有召回。只有"有什么/属于谁"这类问题才多走一路。
+    出问题可直接 return False 关掉整条路。
+    """
+    if not query_plan:
+        return False
+    core = query_plan.get("core_entities") or []
+    if not core:
+        return False
+    if query_plan.get("need_document_level_results"):
+        return True
+    answer_shape = str(query_plan.get("answer_shape") or "")
+    if answer_shape in {"list", "table", "catalog"}:
+        return True
+    intent = str(query_plan.get("intent") or "")
+    if any(kw in intent for kw in ("关系", "列举", "拥有", "包含", "下级", "旗下", "属于", "有哪些", "有什么")):
+        return True
+    # 兜底:直接看原始问句措辞(短问句intent恒为semantic_search,靠这个救)
+    raw_query = str(query_plan.get("query") or "")
+    return any(marker in raw_query for marker in _RELATIONAL_QUERY_MARKERS)
+
+
+async def graph_expansion_search(
+    db: AsyncSession, query_plan: dict | None, owner_id: int, top_k: int = 40
+) -> list[dict]:
+    """图谱扩展召回:核心实体→图谱节点→沿关系边摸一跳下级实体→回填文档→结果。
+
+    单跳遍历(BFS depth=1),全程 owner_id 过滤 + limit 防爆。索引齐全(source/target/entity_id 都有btree)。
+    结果对齐现有 chunk 结构,source=graph_expansion,进 RRF 第五路 + verify_and_score 二次校验。
+    """
+    if not query_plan:
+        return []
+    core = query_plan.get("core_entities") or []
+    if not core:
+        return []
+    # 主体选择(关键):IDF对高频核心主体是反的(华世王镞df447权重最低,碎片df低权重反高),
+    # df也区分不了(华世王镞df687>泛词品牌df59)。真正区别在语义:专名(华世王镞/俏小喵)是遍历起点,
+    # 通名/类别词(品牌/产品/公司)是问句里问的"过滤目标"不是起点。用通名停用表挡掉。
+    # 策略:①滤疑问词+通名 ②完整词优先(长度降序) ③图谱节点表当最终过滤器(label=ANY)。
+    candidates = [
+        str(c.get("name")).strip()
+        for c in core
+        if c.get("name")
+        and str(c.get("name")).strip() not in _GRAPH_SUBJECT_STOPWORDS
+        and len(str(c.get("name")).strip()) >= 2
+    ]
+    # 完整词优先(长度降序),去重保序,最多取8个候选喂给图谱匹配
+    seen: set[str] = set()
+    core_names: list[str] = []
+    for nm in sorted(candidates, key=len, reverse=True):
+        if nm not in seen:
+            seen.add(nm)
+            core_names.append(nm)
+    core_names = core_names[:8]
+    if not core_names:
+        return []
+    try:
+        # 一条SQL打通:主体节点(按label命中)→出边+入边(关系型)→下级节点→回填document_id
+        # 出边:主体--关系-->下级;入边:下级--属于-->主体(归属关系常反向建),两向都摸。
+        rows = await db.execute(
+            sa_text(
+                """
+                WITH subject_nodes AS (
+                    SELECT id AS node_id, label AS subject_label, entity_id
+                    FROM kb_graph_nodes
+                    WHERE owner_id = :owner_id AND label = ANY(:names)
+                ),
+                rel_edges AS (
+                    -- 出边:主体 → 下级
+                    SELECT s.subject_label, e.relation, e.target_node_id AS neighbor_node_id, e.weight
+                    FROM kb_graph_edges e
+                    JOIN subject_nodes s ON e.source_node_id = s.node_id
+                    WHERE e.owner_id = :owner_id AND e.relation = ANY(:relations)
+                    UNION ALL
+                    -- 入边:下级 → 主体(反向归属)
+                    SELECT s.subject_label, e.relation, e.source_node_id AS neighbor_node_id, e.weight
+                    FROM kb_graph_edges e
+                    JOIN subject_nodes s ON e.target_node_id = s.node_id
+                    WHERE e.owner_id = :owner_id AND e.relation = ANY(:relations)
+                ),
+                neighbors AS (
+                    SELECT re.subject_label, re.relation, re.weight,
+                           n.entity_id AS neighbor_entity_id, n.label AS neighbor_label, n.category AS neighbor_category
+                    FROM rel_edges re
+                    JOIN kb_graph_nodes n ON n.id = re.neighbor_node_id AND n.owner_id = :owner_id
+                    LIMIT :edge_limit
+                )
+                -- 回填 document_id/chunk_id:下级实体反查 chunk_entities(取每实体最早一条做代表块)
+                SELECT DISTINCT ON (nb.neighbor_entity_id)
+                    nb.subject_label, nb.relation, nb.neighbor_label, nb.neighbor_category, nb.weight,
+                    ce.document_id, ce.chunk_id
+                FROM neighbors nb
+                LEFT JOIN kb_chunk_entities ce
+                    ON ce.entity_id = nb.neighbor_entity_id AND ce.owner_id = :owner_id
+                ORDER BY nb.neighbor_entity_id, ce.document_id
+                """
+            ),
+            {
+                "owner_id": owner_id,
+                "names": core_names,
+                "relations": list(_GRAPH_RELATION_TYPES),
+                "edge_limit": max(50, top_k * 4),
+            },
+        )
+        results: list[dict] = []
+        rank = 0
+        for row in rows.mappings().all():
+            document_id = row["document_id"]
+            if document_id is None:
+                # 下级实体没绑到任何文档块,进不了 verify_and_score,跳过(仍可后续补)
+                continue
+            rank += 1
+            subject = str(row["subject_label"] or "")
+            relation = str(row["relation"] or "相关")
+            neighbor = str(row["neighbor_label"] or "")
+            category = str(row["neighbor_category"] or "")
+            weight = float(row["weight"] or 1.0)
+            # 图谱路 score:边权归一(weight多为1),给个稳定基线便于融合
+            score = min(1.0, 0.5 + weight * 0.1)
+            text = f"{subject} —{relation}→ {neighbor}" + (f"（{category}）" if category else "")
+            results.append({
+                "chunk_id": row["chunk_id"],
+                "document_id": int(document_id),
+                "page": None,
+                "block_type": "图谱扩展",
+                "index_layer": "graph_expansion",
+                "source_stage": "graph",
+                "text": text,
+                "keywords": neighbor,
+                "score": round(score, 4),
+                "rank": rank,
+                "source": "graph_expansion",
+                "query_plan": query_plan,
+                "graph_expansion": {
+                    "subject": subject,
+                    "relation": relation,
+                    "neighbor": neighbor,
+                    "neighbor_category": category,
+                },
+                **_live_source_fields(),
+            })
+        return results
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_expansion_search failed (non-fatal): %s", exc)
+        return []
+
+
 def rrf_fusion(
     keyword_results: list[dict],
     vector_results: list[dict],
@@ -1874,13 +2047,15 @@ def rrf_fusion(
     *,
     document_results: list[dict] | None = None,
     structured_results: list[dict] | None = None,
+    graph_results: list[dict] | None = None,
     dedupe_by_document: bool = False,
     query_plan: dict | None = None,
 ) -> list[dict]:
-    """RRF 融合排序：合并文档候选、关键词和向量检索结果。"""
+    """RRF 融合排序：合并文档候选、结构化信号、图谱扩展、关键词和向量检索结果。"""
     result_groups = [
         ("document_profile", document_results or []),
         ("structured_signal", structured_results or []),
+        ("graph_expansion", graph_results or []),
         ("keyword", keyword_results),
         ("vector", vector_results),
     ]
@@ -1902,8 +2077,8 @@ def rrf_fusion(
             )
             if (
                 dedupe_by_document
-                and item.get("source") in {"document_profile", "structured_signal"}
-                and entry["item"].get("source") not in {"document_profile", "structured_signal"}
+                and item.get("source") in {"document_profile", "structured_signal", "graph_expansion"}
+                and entry["item"].get("source") not in {"document_profile", "structured_signal", "graph_expansion"}
             ):
                 entry["item"] = dict(item)
             elif score > float(entry["item"].get("score") or 0.0):
@@ -1925,8 +2100,10 @@ def rrf_fusion(
             "kw_score": scores.get("keyword", item.get("score")),
             "vec_score": scores.get("vector", item.get("score")),
             "structured_score": scores.get("structured_signal"),
+            "graph_expansion_score": scores.get("graph_expansion"),
             "doc_rank": ranks.get("document_profile"),
             "structured_rank": ranks.get("structured_signal"),
+            "graph_rank": ranks.get("graph_expansion"),
             "kw_rank": ranks.get("keyword"),
             "vec_rank": ranks.get("vector"),
             "query_plan_matched": plan_matched,
@@ -1939,6 +2116,8 @@ def rrf_fusion(
             if item.get("doc_rank") is not None or item.get("source") == "document_profile":
                 return 0
             if item.get("structured_rank") is not None or item.get("source") == "structured_signal":
+                return 1
+            if item.get("graph_rank") is not None or item.get("source") == "graph_expansion":
                 return 1
             if item.get("query_plan_matched"):
                 return 1
@@ -2309,6 +2488,22 @@ async def hybrid_search(
         )
     else:
         diagnostics.skipped("structured_signal_search", "fast_local_plan")
+    # 图谱扩展召回(第五路):关系/列举型问题命中主体→沿边摸下级实体。门控保守,普通检索不触发。
+    graph_results = []
+    if not fast_local_plan and _should_graph_expand(query_plan):
+        stage_started_at = time.perf_counter()
+        graph_results = await graph_expansion_search(db, query_plan, owner_id, top_k=top_k * 4)
+        logger.info("[SEARCH_STAGE] graph_expansion=%dms n=%d", _elapsed_ms(stage_started_at), len(graph_results))
+        diagnostics.stage(
+            "graph_expansion_search",
+            duration_ms=_elapsed_ms(stage_started_at),
+            result_count=len(graph_results),
+        )
+    else:
+        diagnostics.skipped(
+            "graph_expansion_search",
+            "fast_local_plan" if fast_local_plan else "not_relational_intent",
+        )
     stage_started_at = time.perf_counter()
     kw_results = await keyword_search(db, _keyword_query_for_plan(query, query_plan), owner_id, top_k=top_k * 2)
     logger.info("[SEARCH_STAGE] keyword=%dms n=%d", _elapsed_ms(stage_started_at), len(kw_results))
@@ -2338,6 +2533,7 @@ async def hybrid_search(
         top_k=top_k * 2,
         document_results=doc_results,
         structured_results=structured_results,
+        graph_results=graph_results,
         dedupe_by_document=document_intent,
         query_plan=query_plan,
     )

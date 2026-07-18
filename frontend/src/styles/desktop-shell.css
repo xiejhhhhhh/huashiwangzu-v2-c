@@ -3,7 +3,6 @@
   inset: 0;
   overflow: hidden;
   background: linear-gradient(135deg, var(--desktop-bg-gradient-start) 0%, var(--desktop-bg-gradient-middle) 48%, var(--desktop-bg-gradient-end) 100%);
-  /* 禁止桌面壳本身滚动，固定在视口内 */
   overscroll-behavior: none;
   touch-action: none;
   color: var(--desktop-liquid-text-on-wallpaper);
@@ -15,8 +14,10 @@
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 78% 16%, rgba(255,255,255,.2), transparent 18%),
-    radial-gradient(circle at 28% 80%, rgba(20,184,166,.22), transparent 26%),
+    radial-gradient(circle at 18% 22%, rgba(253, 230, 138, .34), transparent 18%),
+    radial-gradient(circle at 78% 18%, rgba(125, 211, 252, .28), transparent 22%),
+    radial-gradient(circle at 62% 72%, rgba(167, 139, 250, .22), transparent 28%),
+    radial-gradient(circle at 28% 80%, rgba(20, 184, 166, .2), transparent 26%),
     var(--desktop-wallpaper-vignette);
   mix-blend-mode: screen;
 }
@@ -26,7 +27,9 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(15,23,42,.2));
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.06), rgba(15,23,42,.24)),
+    radial-gradient(circle at 50% 120%, rgba(15,23,42,.28), transparent 48%);
 }
 .desktop-shell-wallpaper {
   position: absolute;
@@ -34,15 +37,16 @@
   background-size: cover;
   background-position: center;
   z-index: 0;
-  transform: scale(1.015);
+  transform: scale(1.02);
+  filter: saturate(1.08) contrast(1.04);
 }
 .desktop-shell-wallpaper::after {
   content: '';
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(15,23,42,0.04), rgba(15,23,42,0.18)),
-    rgba(0,0,0,0.03);
+    linear-gradient(180deg, rgba(15,23,42,0.02), rgba(15,23,42,0.2)),
+    rgba(0,0,0,0.04);
 }
 .desktop-liquid-filter {
   position: absolute;
@@ -50,6 +54,84 @@
   height: 0;
   pointer-events: none;
 }
+
+/* ===== Shell material primitives (skin-driven via CSS vars) ===== */
+.glass-surface {
+  border: 1px solid var(--desktop-lg-edge, var(--desktop-liquid-hairline));
+  box-shadow: var(--desktop-lg-shadow-soft, var(--desktop-liquid-shadow-soft));
+  -webkit-backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+  backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+}
+.glass-dock {
+  border-radius: var(--desktop-dock-radius, 18px);
+  background: var(--glass-dock-bg);
+  border: 1px solid var(--desktop-lg-edge, var(--desktop-liquid-hairline));
+  box-shadow: var(--desktop-shadow-dock);
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+}
+.glass-menubar {
+  background: var(--glass-menubar-bg);
+  border-bottom: 1px solid rgba(255,255,255,.14);
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+}
+.glass-menu,
+.glass-popover {
+  border-radius: var(--desktop-radius-menu);
+  background: var(--glass-menu-bg);
+  border: 1px solid var(--desktop-lg-edge, var(--desktop-liquid-hairline));
+  box-shadow: var(--desktop-shadow-popover);
+  -webkit-backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+  backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+}
+.glass-panel {
+  border-radius: 20px;
+  background: var(--glass-panel-bg);
+  border: 1px solid var(--desktop-lg-edge, var(--desktop-liquid-hairline));
+  box-shadow: var(--desktop-shadow-popover);
+  -webkit-backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+  backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+}
+.glass-spotlight {
+  border-radius: 20px;
+  background: var(--glass-spotlight-bg);
+  border: 1px solid var(--desktop-lg-edge, var(--desktop-liquid-hairline));
+  box-shadow: var(--desktop-shadow-window), inset 0 1px 0 rgba(255,255,255,.45);
+  -webkit-backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+  backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+}
+.glass-window {
+  background: var(--glass-window-bg);
+  border: 1px solid var(--window-border);
+  border-radius: var(--window-radius);
+  box-shadow: var(--window-shadow);
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+}
+.glass-banner {
+  border-radius: 14px;
+  background: var(--glass-banner-bg);
+  border: 1px solid var(--desktop-lg-edge, var(--desktop-liquid-hairline));
+  box-shadow: var(--desktop-shadow-popover);
+  -webkit-backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+  backdrop-filter: var(--desktop-lg-filter, blur(34px) saturate(182%));
+}
+
+/* Skin host hooks */
+.desktop-shell-container[data-desktop-skin='win11'] .mac-menu-bar {
+  /* Win11 has no top menu bar chrome by default; keep layout host for status if present */
+}
+.desktop-shell-container[data-desktop-skin='win11'] .mac-dock {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: none;
+  max-width: none;
+  border-radius: 0;
+  justify-content: center;
+}
+
 .desktop-shell-icon-layer {
   position: absolute;
   left: 0;
@@ -83,7 +165,7 @@
   border: 1px solid rgba(255,255,255,0.14);
   border-radius: 14px;
   box-shadow: 0 20px 60px rgba(15,23,42,0.36);
-  backdrop-filter: blur(18px);
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
 }
 .desktop-shell-error p {
   margin: 0 0 16px;
@@ -109,7 +191,6 @@
   outline: 2px solid rgba(191,219,254,.9);
   outline-offset: 2px;
 }
-/* ── 首屏骨架屏 ───────────────────────────────────────── */
 .desktop-skeleton-overlay {
   position: absolute;
   inset: 0;
@@ -117,13 +198,12 @@
   display: flex;
   flex-direction: column;
   background: rgba(16,34,45,.2);
-  backdrop-filter: blur(18px);
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
 }
 .desktop-skeleton-menubar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px;
   height: var(--desktop-menu-bar-height);
   padding: 0 12px;
   background: var(--desktop-material-menubar);
@@ -148,13 +228,13 @@
   align-items: center;
   gap: 12px;
   padding: 10px 24px;
-  width:fit-content;
-  align-self:center;
-  margin-bottom:var(--desktop-dock-bottom-gap);
-  height:var(--desktop-dock-height);
-  border:1px solid var(--desktop-material-border);
-  border-radius:24px;
-  background:var(--desktop-material-dock);
+  width: fit-content;
+  align-self: center;
+  margin-bottom: var(--desktop-dock-bottom-gap);
+  height: var(--desktop-dock-height);
+  border: 1px solid var(--desktop-material-border);
+  border-radius: 24px;
+  background: var(--desktop-material-dock);
 }
 .skeleton-block {
   background: linear-gradient(90deg, rgba(255,255,255,.18) 25%, rgba(255,255,255,.34) 50%, rgba(255,255,255,.18) 75%);
@@ -181,8 +261,10 @@
   font-weight: 700;
   pointer-events: none;
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.12), 0 24px 70px rgba(15,23,42,.28);
-  backdrop-filter: blur(16px);
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
 }
+
+/* ===== Window chrome ===== */
 .desktop-window {
   position: absolute;
   box-sizing: border-box;
@@ -194,14 +276,17 @@
   overflow: hidden;
   border: 1px solid var(--window-border);
   color: var(--desktop-ink);
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
   transition: border-color .18s var(--desktop-ease-out-strong), box-shadow .18s var(--desktop-ease-out-strong), transform .18s var(--desktop-ease-out-strong), opacity .18s var(--desktop-ease-out-strong);
 }
 .desktop-window-active {
-  border-color: rgba(0,0,0,.24);
+  border-color: rgba(255,255,255,.42);
   box-shadow: var(--window-shadow-active);
 }
 .desktop-window:not(.desktop-window-active) {
-  filter: saturate(.86);
+  filter: saturate(.9);
+  opacity: .98;
 }
 .desktop-window-drop-target {
   box-shadow: var(--window-shadow-active), 0 0 0 3px rgba(10,132,255,.72) !important;
@@ -222,6 +307,8 @@
   flex-shrink: 0;
   position: relative;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.55);
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
 }
 .desktop-window-active .window-titlebar {
   background: var(--window-titlebar-active-bg);
@@ -253,37 +340,96 @@
   height: auto;
 }
 .window-action-btn {
-  width: 12px;
-  height: 12px;
+  width: var(--window-button-size);
+  height: var(--window-button-size);
   border: 1px solid rgba(0,0,0,0.08);
   border-radius: 50%;
-  background: #d1d5db;
+  background: var(--window-button-inactive);
+  border-color: var(--window-button-inactive-border);
   cursor: pointer;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+  transition: filter .12s ease, transform .12s ease, background .12s ease;
 }
-.window-action-close { background: #ff5f57; border-color: #e0443e; }
-.window-action-minimize { background: #febc2e; border-color: #d5a028; }
-.window-action-maximize { background: #28c840; border-color: #20a934; }
-.window-action-btn:hover { filter: brightness(0.96); transform: scale(0.96); }
+.window-action-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity .12s ease;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 8px 8px;
+}
+.desktop-window-active .window-action-close {
+  background: var(--window-close-color);
+  border-color: var(--window-close-border);
+}
+.desktop-window-active .window-action-minimize {
+  background: var(--window-minimize-color);
+  border-color: var(--window-minimize-border);
+}
+.desktop-window-active .window-action-maximize {
+  background: var(--window-maximize-color);
+  border-color: var(--window-maximize-border);
+}
+.desktop-window-active .window-action-buttons:hover .window-action-close::before {
+  opacity: 1;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.2 3.2l5.6 5.6M8.8 3.2L3.2 8.8' stroke='%234a0002' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+.desktop-window-active .window-action-buttons:hover .window-action-minimize::before {
+  opacity: 1;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.8 6h6.4' stroke='%235a3b00' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+.desktop-window-active .window-action-buttons:hover .window-action-maximize::before {
+  opacity: 1;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.4 7.1V3.4H7.1M8.6 4.9v3.7H4.9' stroke='%23053d12' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E");
+}
+.window-action-btn:hover {
+  filter: brightness(0.96);
+  transform: scale(0.96);
+}
 .window-action-btn:focus-visible {
-  outline: 2px solid rgba(37,99,235,.42);
+  outline: 2px solid rgba(10,132,255,.42);
   outline-offset: 3px;
 }
 .window-content {
   flex: 1;
   overflow: auto;
-  background: linear-gradient(180deg, rgba(252,252,253,0.96) 0%, rgba(255,255,255,0.98) 100%);
+  background: var(--window-content-bg);
 }
+.window-content-padding {
+  height: 100%;
+}
+
 @media (max-width: 760px) {
   .desktop-shell-icon-layer {
     bottom: var(--desktop-work-bottom-inset);
   }
 }
 @media (prefers-reduced-transparency: reduce) {
+  .desktop-window,
+  .glass-dock,
+  .glass-menubar,
+  .glass-menu,
+  .glass-popover,
+  .glass-panel,
+  .glass-spotlight,
+  .glass-banner {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
   .desktop-window { background: #f1f1f3; }
+  .glass-dock { background: rgba(61, 70, 78, 0.96); }
+  .glass-menu,
+  .glass-popover,
+  .glass-panel,
+  .glass-spotlight,
+  .glass-banner { background: #f4f4f6; }
 }
 @media (prefers-reduced-motion: reduce) {
   .desktop-shell-wallpaper,
@@ -292,7 +438,4 @@
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
   }
-}
-.window-content-padding {
-  height: 100%;
 }

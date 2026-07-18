@@ -1,26 +1,36 @@
 <template>
-  <div class="desktop-file-manager" data-folder="recycle" @contextmenu.prevent="handleBlankContextMenu">
-    <FmNavigationBar
-      :can-go-back="state.canGoBack.value"
-      :can-go-forward="state.canGoForward.value"
-      :can-go-up="state.canGoUp.value"
-      :breadcrumb="state.breadcrumb.value"
-      :search-keyword="state.searchKeyword.value"
-      @go-back="state.goBack"
-      @go-forward="state.goForward"
-      @go-up="state.goUp"
-      @go-root="handleGoRoot"
-      @navigate="state.navigateToCrumb"
-      @update:search-keyword="state.searchKeyword.value = $event"
-    />
+  <div
+    class="desktop-file-manager recycle-app"
+    data-folder="recycle"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="finder"
+    @contextmenu.prevent="handleBlankContextMenu"
+  >
+    <MacAppShell layout="finder" :sidebar-width="200">
+      <template #toolbar>
+        <FmNavigationBar
+          :can-go-back="state.canGoBack.value"
+          :can-go-forward="state.canGoForward.value"
+          :can-go-up="state.canGoUp.value"
+          :breadcrumb="state.breadcrumb.value"
+          :search-keyword="state.searchKeyword.value"
+          @go-back="state.goBack"
+          @go-forward="state.goForward"
+          @go-up="state.goUp"
+          @go-root="handleGoRoot"
+          @navigate="state.navigateToCrumb"
+          @update:search-keyword="state.searchKeyword.value = $event"
+        />
+      </template>
 
-    <div class="fm-body">
-      <FmNavPane
-        :current-folder-id="state.currentFolderId.value"
-        :is-recycle-bin="state.isRecycleBin.value"
-        @go-root="handleGoRoot"
-        @open-recycle="state.openRecycle"
-      />
+      <template #sidebar>
+        <FmNavPane
+          :current-folder-id="state.currentFolderId.value"
+          :is-recycle-bin="state.isRecycleBin.value"
+          @go-root="handleGoRoot"
+          @open-recycle="state.openRecycle"
+        />
+      </template>
 
       <div class="fm-main">
         <FmFileList
@@ -41,20 +51,22 @@
           @retry="state.loadFiles"
         />
       </div>
-    </div>
 
-    <FmStatusBar
-      :item-count="state.items.value.length"
-      :folder-count="state.folders.value.length"
-      :file-count="state.files.value.length"
-      :selected-item="state.selectedItem.value"
-      :selected-size="state.selectedItem.value ? state.formatSize(state.selectedItem.value.file_size) : ''"
-      :view-mode="state.viewMode.value"
-      :search-keyword="state.searchKeyword.value"
-      :filtered-count="state.filteredItems.value.length"
-      :display-name="state.displayName"
-      @update:view-mode="state.viewMode.value = $event"
-    />
+      <template #statusbar>
+        <FmStatusBar
+          :item-count="state.items.value.length"
+          :folder-count="state.folders.value.length"
+          :file-count="state.files.value.length"
+          :selected-item="state.selectedItem.value"
+          :selected-size="state.selectedItem.value ? state.formatSize(state.selectedItem.value.file_size) : ''"
+          :view-mode="state.viewMode.value"
+          :search-keyword="state.searchKeyword.value"
+          :filtered-count="state.filteredItems.value.length"
+          :display-name="state.displayName"
+          @update:view-mode="state.viewMode.value = $event"
+        />
+      </template>
+    </MacAppShell>
 
     <ContextMenu
       :visible="contextMenu.visible.value"
@@ -73,7 +85,7 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { MacAppShell, useAppFeedback } from '@/desktop/app-kit'
 import { useContextMenu } from '@/desktop/context-menu/use-context-menu'
 import ContextMenu from '@/desktop/context-menu/context-menu.vue'
 import { restoreRecycleBinEntry, permanentlyDeleteEntry, emptyRecycleBinRequest } from '@/shared/api/desktop'
@@ -86,6 +98,7 @@ import type { FileEntry } from '@/shared/api/types'
 import type { MenuItemConfig } from '@/desktop/context-menu/use-context-menu'
 import emitter from '@/desktop/events'
 
+const feedback = useAppFeedback()
 const state = useFileManagerState({
   folderId: () => undefined,
   folderName: () => undefined,
@@ -125,7 +138,7 @@ function handleBlankContextMenu(e: MouseEvent) {
 
 function handleItemOpen(item: FileEntry) {
   if (state.isRecycleBin.value) {
-    ElMessage.info('请先还原再打开文件')
+    feedback.info('请先还原再打开文件')
     return
   }
   state.openItem(item)
@@ -152,17 +165,31 @@ async function handleContextMenuSelect(key: string) {
     const item = ctxtFile
     if (key === 'restore' && item) {
       const itemType = item.is_folder ? 'folder' : 'file'
-      try { await restoreRecycleBinEntry(itemType, item.id); ElMessage.success('已还原') }
-      catch { ElMessage.warning('还原失败') }
+      try {
+        await restoreRecycleBinEntry(itemType, item.id)
+        feedback.success('已还原')
+      } catch {
+        feedback.warning('还原失败')
+      }
     } else if (key === 'delete-permanently' && item) {
       const itemType = item.is_folder ? 'folder' : 'file'
-      try { await ElMessageBox.confirm('确定彻底删除？', '确认', { type: 'warning' }) } catch { return }
-      try { await permanentlyDeleteEntry(itemType, item.id); ElMessage.success('已删除') }
-      catch { ElMessage.warning('删除失败') }
+      const ok = await feedback.confirm('确定彻底删除？', '确认', { tone: 'warning' }).catch(() => false)
+      if (!ok) return
+      try {
+        await permanentlyDeleteEntry(itemType, item.id)
+        feedback.success('已删除')
+      } catch {
+        feedback.warning('删除失败')
+      }
     } else if (key === 'empty-recycle-bin') {
-      try { await ElMessageBox.confirm('确定清空回收站？', '确认', { type: 'warning' }) } catch { return }
-      try { await emptyRecycleBinRequest(); ElMessage.success('已清空') }
-      catch { ElMessage.warning('清空失败') }
+      const ok = await feedback.confirm('确定清空回收站？', '确认', { tone: 'warning' }).catch(() => false)
+      if (!ok) return
+      try {
+        await emptyRecycleBinRequest()
+        feedback.success('已清空')
+      } catch {
+        feedback.warning('清空失败')
+      }
     } else if (key === 'refresh') {
       void state.loadFiles()
     }
@@ -178,22 +205,15 @@ onMounted(() => {
 <style scoped>
 .desktop-file-manager {
   height: 100%;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  background: #eef3f8;
-  color: #1f2937;
-}
-
-.fm-body {
   min-height: 0;
-  display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  background: var(--mac-app-surface, #f8fafc);
+  color: var(--mac-app-text, #1f2937);
 }
-
 .fm-main {
-  min-width: 0;
+  height: 100%;
   min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
+  overflow: auto;
 }
 </style>

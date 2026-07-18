@@ -1,64 +1,76 @@
 <template>
-  <div class="office-shell">
-    <header class="office-chrome">
-      <div>
-        <h1>Office</h1>
-        <p class="hint">统一文档工作区 · Product Runtime（WP5/WP6）</p>
-      </div>
-      <div class="actions">
-        <button type="button" class="btn primary" :disabled="creating" @click="createDraft('docx')">新建 Word</button>
-        <button type="button" class="btn" :disabled="creating" @click="createDraft('pptx')">新建演示</button>
-        <button type="button" class="btn" :disabled="creating" @click="createDraft('xlsx')">新建表格</button>
-        <button type="button" class="btn ghost" :disabled="loading" @click="loadHome">刷新</button>
-      </div>
-    </header>
-
-    <section v-if="hasOpenMeta" class="open-banner">
-      <strong>已通过 Resolver / 会话打开</strong>
-      <span>fileId={{ fileId ?? '—' }}</span>
-      <span>packageId={{ packageId ?? '—' }}</span>
-      <span>mode={{ mode || 'view' }}</span>
-      <span v-if="adapterId">adapter={{ adapterId }}</span>
-    </section>
-
-    <main class="office-body">
-      <section class="card">
-        <h2>最近内容包</h2>
-        <p v-if="loading" class="muted">加载中…</p>
-        <p v-else-if="!recent.length" class="muted">暂无最近项。点上方「新建」创建草稿（不产生桌面文件）。</p>
-        <ul v-else class="recent-list">
-          <li v-for="item in recent" :key="String(item.packageId)" class="recent-item">
-            <div class="meta">
-              <div class="title">{{ itemTitle(item) }}</div>
-              <div class="sub">
-                #{{ item.packageId }} · {{ item.profile || 'document' }} · {{ item.status }}
-                <template v-if="item.sourceFileId"> · file {{ item.sourceFileId }}</template>
-                <template v-else> · 草稿（无 File）</template>
-              </div>
-            </div>
-            <button type="button" class="btn small" @click="openPackage(item)">打开</button>
-          </li>
-        </ul>
-      </section>
-
-      <section v-if="activePackage" class="card">
-        <h2>当前会话</h2>
-        <p class="muted">package #{{ activePackage.packageId }} · version #{{ activePackage.versionId }}</p>
-        <div class="actions">
-          <button type="button" class="btn" :disabled="saving" @click="autosave">自动保存版本</button>
-          <button type="button" class="btn" :disabled="locking" @click="takeLock">获取编辑租约</button>
-          <button type="button" class="btn" :disabled="exporting" @click="doExport">导出</button>
-          <button type="button" class="btn" :disabled="publishing" @click="doPublish">发布投影</button>
+  <div
+    class="office-app"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="document"
+  >
+    <MacAppShell layout="document">
+      <template #toolbar>
+        <div class="office-toolbar">
+          <div class="office-toolbar-copy">
+            <strong>Office</strong>
+            <span>统一文档工作区 · Product Runtime</span>
+          </div>
+          <div class="office-actions">
+            <button type="button" class="mac-btn primary" :disabled="creating" @click="createDraft('docx')">新建 Word</button>
+            <button type="button" class="mac-btn" :disabled="creating" @click="createDraft('pptx')">新建演示</button>
+            <button type="button" class="mac-btn" :disabled="creating" @click="createDraft('xlsx')">新建表格</button>
+            <button type="button" class="mac-btn ghost" :disabled="loading" @click="loadHome">刷新</button>
+          </div>
         </div>
-        <p v-if="statusText" class="status">{{ statusText }}</p>
-      </section>
-    </main>
+      </template>
+
+      <div class="office-body">
+        <section v-if="hasOpenMeta" class="open-banner">
+          <strong>已通过 Resolver / 会话打开</strong>
+          <span>fileId={{ fileId ?? '—' }}</span>
+          <span>packageId={{ packageId ?? '—' }}</span>
+          <span>mode={{ mode || 'view' }}</span>
+          <span v-if="adapterId">adapter={{ adapterId }}</span>
+        </section>
+
+        <section class="card">
+          <h2>最近内容包</h2>
+          <p v-if="loading" class="muted">加载中…</p>
+          <MacEmptyState
+            v-else-if="!recent.length"
+            title="暂无最近项"
+            description="点上方「新建」创建草稿（不产生桌面文件）。"
+          />
+          <ul v-else class="recent-list">
+            <li v-for="item in recent" :key="String(item.packageId)" class="recent-item">
+              <div class="meta">
+                <div class="title">{{ itemTitle(item) }}</div>
+                <div class="sub">
+                  #{{ item.packageId }} · {{ item.profile || 'document' }} · {{ item.status }}
+                  <template v-if="item.sourceFileId"> · file {{ item.sourceFileId }}</template>
+                  <template v-else> · 草稿（无 File）</template>
+                </div>
+              </div>
+              <button type="button" class="mac-btn small" @click="openPackage(item)">打开</button>
+            </li>
+          </ul>
+        </section>
+
+        <section v-if="activePackage" class="card">
+          <h2>当前会话</h2>
+          <p class="muted">package #{{ activePackage.packageId }} · version #{{ activePackage.versionId }}</p>
+          <div class="office-actions">
+            <button type="button" class="mac-btn" :disabled="saving" @click="autosave">自动保存版本</button>
+            <button type="button" class="mac-btn" :disabled="locking" @click="takeLock">获取编辑租约</button>
+            <button type="button" class="mac-btn" :disabled="exporting" @click="doExport">导出</button>
+            <button type="button" class="mac-btn" :disabled="publishing" @click="doPublish">发布投影</button>
+          </div>
+          <p v-if="statusText" class="status">{{ statusText }}</p>
+        </section>
+      </div>
+    </MacAppShell>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { MacAppShell, MacEmptyState, useAppFeedback } from '@/desktop/app-kit'
 import {
   acquireContentLock,
   createContentDraft,
@@ -83,6 +95,7 @@ const props = defineProps<{
   page?: number
 }>()
 
+const feedback = useAppFeedback()
 const loading = ref(false)
 const creating = ref(false)
 const saving = ref(false)
@@ -114,7 +127,7 @@ async function loadHome() {
     const data = await fetchOfficeHome()
     recent.value = Array.isArray(data.recent) ? data.recent as Array<Record<string, unknown>> : []
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '加载 Office 首页失败')
+    feedback.error(e instanceof Error ? e.message : '加载 Office 首页失败')
   } finally {
     loading.value = false
   }
@@ -134,10 +147,10 @@ async function createDraft(extension: string) {
       versionId: Number(draft.versionId),
     }
     statusText.value = `已建草稿 package=${draft.packageId}（fileId=null）`
-    ElMessage.success('草稿已创建（不产生桌面文件）')
+    feedback.success('草稿已创建（不产生桌面文件）')
     await loadHome()
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '创建草稿失败')
+    feedback.error(e instanceof Error ? e.message : '创建草稿失败')
   } finally {
     creating.value = false
   }
@@ -166,10 +179,10 @@ async function autosave() {
       versionId: Number(result.versionId || activePackage.value.versionId),
     }
     statusText.value = `已自动保存 version=${result.versionId}`
-    ElMessage.success('已新增版本（未物化 File）')
+    feedback.success('已新增版本（未物化 File）')
     await loadHome()
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+    feedback.error(e instanceof Error ? e.message : '保存失败')
   } finally {
     saving.value = false
   }
@@ -188,9 +201,9 @@ async function takeLock() {
       lockToken: String(lease.token || ''),
     }
     statusText.value = `租约已获取，过期 ${lease.expiresAt || ''}`
-    ElMessage.success('编辑租约已获取')
+    feedback.success('编辑租约已获取')
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '获取租约失败')
+    feedback.error(e instanceof Error ? e.message : '获取租约失败')
   } finally {
     locking.value = false
   }
@@ -202,9 +215,9 @@ async function doExport() {
   try {
     const result = await exportContentPackage(activePackage.value.packageId)
     statusText.value = `已导出 file=${result.file_id || result.fileId} name=${result.file_name || result.fileName || ''}`
-    ElMessage.success('导出完成')
+    feedback.success('导出完成')
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '导出失败')
+    feedback.error(e instanceof Error ? e.message : '导出失败')
   } finally {
     exporting.value = false
   }
@@ -216,10 +229,10 @@ async function doPublish() {
   try {
     const result = await publishContentPackage(activePackage.value.packageId)
     statusText.value = `已发布 artifact/file=${JSON.stringify(result).slice(0, 120)}`
-    ElMessage.success('发布完成')
+    feedback.success('发布完成')
     await loadHome()
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '发布失败')
+    feedback.error(e instanceof Error ? e.message : '发布失败')
   } finally {
     publishing.value = false
   }
@@ -237,38 +250,158 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.office-shell { display:flex; flex-direction:column; height:100%; background:#f5f7fa; color:#1f2329; }
-.office-chrome {
-  display:flex; justify-content:space-between; gap:12px; align-items:flex-start;
-  padding:14px 16px; background:#fff; border-bottom:1px solid #e5e7eb;
+.office-app {
+  height: 100%;
+  min-height: 0;
+  color: var(--mac-app-text);
+  background: var(--mac-app-surface);
 }
-.office-chrome h1 { margin:0; font-size:18px; font-weight:650; }
-.hint { margin:4px 0 0; font-size:12px; color:#6b7280; }
-.actions { display:flex; flex-wrap:wrap; gap:8px; }
-.btn {
-  border:1px solid #d1d5db; background:#fff; border-radius:8px; padding:6px 10px;
-  font-size:12px; cursor:pointer;
+
+.office-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: var(--mac-app-toolbar-height);
+  padding: 0 4px;
 }
-.btn:hover { background:#f9fafb; }
-.btn.primary { background:#2563eb; border-color:#2563eb; color:#fff; }
-.btn.primary:hover { background:#1d4ed8; }
-.btn.ghost { background:transparent; }
-.btn.small { padding:4px 8px; }
-.btn:disabled { opacity:.55; cursor:not-allowed; }
+
+.office-toolbar-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.office-toolbar-copy strong {
+  font: var(--mac-app-font-title);
+  color: var(--mac-app-text);
+}
+
+.office-toolbar-copy span {
+  font: var(--mac-app-font-caption);
+  color: var(--mac-app-text-secondary);
+}
+
+.office-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mac-btn {
+  border: 1px solid var(--mac-app-border-strong);
+  background: color-mix(in srgb, var(--mac-app-surface) 88%, white);
+  border-radius: var(--mac-app-radius-control);
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--mac-app-text);
+  cursor: pointer;
+}
+
+.mac-btn:hover {
+  background: color-mix(in srgb, var(--mac-app-accent) 8%, white);
+}
+
+.mac-btn.primary {
+  background: var(--mac-app-accent);
+  border-color: var(--mac-app-accent);
+  color: #fff;
+}
+
+.mac-btn.primary:hover {
+  filter: brightness(0.96);
+}
+
+.mac-btn.ghost {
+  background: transparent;
+}
+
+.mac-btn.small {
+  padding: 4px 8px;
+}
+
+.mac-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.office-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+  box-sizing: border-box;
+}
+
 .open-banner {
-  display:flex; flex-wrap:wrap; gap:10px; padding:8px 16px; background:#eff6ff; color:#1e3a8a; font-size:12px;
-  border-bottom:1px solid #bfdbfe;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--mac-app-radius-control);
+  background: color-mix(in srgb, var(--mac-app-accent) 10%, white);
+  color: color-mix(in srgb, var(--mac-app-accent) 70%, #1d1d1f);
+  font-size: 12px;
+  border: 1px solid color-mix(in srgb, var(--mac-app-accent) 22%, transparent);
 }
-.office-body { flex:1; overflow:auto; padding:16px; display:grid; gap:12px; }
-.card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:14px 16px; }
-.card h2 { margin:0 0 10px; font-size:14px; }
-.muted { color:#6b7280; font-size:12px; }
-.recent-list { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+
+.card {
+  background: color-mix(in srgb, var(--mac-app-surface) 70%, white);
+  border: 1px solid var(--mac-app-border);
+  border-radius: var(--mac-app-radius-card);
+  padding: 14px 16px;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font: var(--mac-app-font-title);
+}
+
+.muted {
+  color: var(--mac-app-text-secondary);
+  font-size: 12px;
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
 .recent-item {
-  display:flex; justify-content:space-between; gap:12px; align-items:center;
-  padding:10px 12px; border:1px solid #eef2f7; border-radius:10px; background:#fafbfc;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--mac-app-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--mac-app-surface) 88%, white);
 }
-.title { font-size:13px; font-weight:600; }
-.sub { font-size:11px; color:#6b7280; margin-top:2px; }
-.status { margin-top:10px; font-size:12px; color:#065f46; }
+
+.recent-item:hover {
+  background: var(--mac-app-selection);
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sub {
+  font-size: 11px;
+  color: var(--mac-app-text-secondary);
+  margin-top: 2px;
+}
+
+.status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #0f766e;
+}
 </style>

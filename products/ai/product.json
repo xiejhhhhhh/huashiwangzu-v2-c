@@ -50,5 +50,17 @@
   },
   "legacyAppKeys": [
     "agent"
-  ]
+  ],
+  "uiContract": {
+    "kit": "mac-app-v1",
+    "layout": "chat",
+    "shell": {
+      "useAppWindowFrame": true,
+      "sidebar": "required",
+      "toolbar": "required",
+      "statusbar": "none"
+    },
+    "feedback": "desktop-kit",
+    "density": "comfortable"
+  }
 }

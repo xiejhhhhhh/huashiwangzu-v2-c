@@ -1,63 +1,33 @@
 <template>
   <aside class="conv-sidebar" :class="{ collapsed }">
     <div class="sidebar-header">
-      <div class="sidebar-brand">
-        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2a10 10 0 0110 10c0 5.523-4.477 10-10 10a10 10 0 01-10-10c0-5.523 4.477-10 10-10z"/>
-          <path d="M8 12h8M12 8v8"/>
-        </svg>
-        <span class="brand-text">AI 助手</span>
-      </div>
-      <button class="sidebar-toggle" @click="$emit('toggle')" :title="collapsed ? '展开侧栏' : '折叠侧栏'">
-        <svg v-if="!collapsed" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16">
-          <path d="M10 3L6 8l4 5"/>
-        </svg>
-        <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16">
-          <path d="M6 3l4 5-4 5"/>
-        </svg>
+      <span class="brand-text">AI 助手</span>
+      <button class="sidebar-toggle" @click="$emit('toggle')" title="折叠侧栏" aria-label="折叠侧栏">
+        <PanelLeftClose :size="16" />
       </button>
     </div>
 
     <div class="sidebar-actions">
-      <button class="btn-workflow-panel" :class="{ active: adminActive === 'workflows' }" @click="$emit('admin', 'workflows')" title="工作流状态">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
-          <path d="M3 3h4v4H3zM9 3h4v4H9zM3 9h4v4H3zM9 9h4v4H9z"/>
-          <path d="M7 5h2M5 7v2M11 7v2"/>
-        </svg>
-        <span>工作流</span>
-      </button>
-      <button v-if="isAdmin" class="btn-admin-panel" :class="{ active: adminActive === 'engine' }" @click="$emit('admin', 'engine')" title="引擎调优面板（仅管理员）">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
-          <path d="M2 12l6-10 6 10H2zM8 7v3M8 12v1"/>
-        </svg>
-        <span>引擎面板</span>
-      </button>
-      <button v-if="isAdmin" class="btn-admin-panel" :class="{ active: adminActive === 'config' }" @click="$emit('admin', 'config')" title="Agent 配置管理（仅管理员）">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
-          <rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/>
-          <rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>
-        </svg>
-        <span>Agent配置</span>
-      </button>
       <button class="btn-new-conv" @click="$emit('new')" :disabled="loading">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
-          <path d="M8 3v10M3 8h10"/>
-        </svg>
+        <SquarePen :size="15" />
         <span>新建对话</span>
       </button>
+      <label class="conversation-search">
+        <Search :size="13" />
+        <input v-model="query" type="search" placeholder="搜索对话" aria-label="搜索对话" />
+      </label>
     </div>
 
     <nav class="conv-list" ref="listRef">
+      <p class="list-label">对话</p>
       <div
-        v-for="c in conversations" :key="c.id"
+        v-for="c in filteredConversations" :key="c.id"
         class="conv-item"
         :class="{ active: c.id === activeConvId }"
         @click="$emit('select', c.id)"
       >
         <div class="conv-content" @dblclick.stop="startEdit(c)">
-          <svg class="conv-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="14" height="14">
-            <path d="M2 3h12v8H6l-4 3V3z"/>
-          </svg>
+          <MessageCircle :size="14" class="conv-icon" />
           <input
             v-if="editingId === c.id"
             :ref="setEditInputRef(c.id)"
@@ -71,25 +41,18 @@
         </div>
         <div class="conv-actions" @click.stop>
           <button class="conv-act-btn" title="重命名" @click.stop="startEdit(c)">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="12" height="12">
-              <path d="M11.5 2.5l2 2L7 11H5V9l6.5-6.5z"/>
-            </svg>
+            <Pencil :size="12" />
           </button>
           <button class="conv-act-btn danger" title="删除" @click.stop="$emit('delete', c)">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" width="12" height="12">
-              <path d="M3 4h10M6 4V3a1 1 0 011-1h2a1 1 0 011 1v1M5 4v9a1 1 0 001 1h4a1 1 0 001-1V4"/>
-            </svg>
+            <Trash2 :size="12" />
           </button>
         </div>
       </div>
 
-      <div v-if="conversations.length === 0 && !loading" class="conv-empty">
-        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1" width="36" height="36" class="empty-icon">
-          <rect x="4" y="8" width="40" height="28" rx="4"/>
-          <path d="M16 36v4h16v-4"/>
-        </svg>
-        <p>暂无对话</p>
-        <span class="empty-hint">点击上方按钮开始</span>
+      <div v-if="filteredConversations.length === 0 && !loading" class="conv-empty">
+        <MessageCircle :size="30" class="empty-icon" />
+        <p>{{ query ? '没有匹配的对话' : '暂无对话' }}</p>
+        <span class="empty-hint">{{ query ? '换个关键词试试' : '新建对话开始工作' }}</span>
       </div>
 
       <div v-if="loading" class="conv-loading">
@@ -107,15 +70,14 @@
     @click="$emit('toggle')"
     title="展开侧栏"
   >
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
-      <path d="M6 3l4 5-4 5"/>
-    </svg>
+    <PanelLeftOpen :size="15" />
   </button>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
+import { MessageCircle, PanelLeftClose, PanelLeftOpen, Pencil, Search, SquarePen, Trash2 } from '@/shared/icons/lucide'
 
 const props = defineProps<{
   conversations: ConvItem[]
@@ -139,7 +101,13 @@ interface ConvItem { id: number; title: string; status?: string }
 
 const editingId = ref<number | null>(null)
 const editTitle = ref('')
+const query = ref('')
 const editInputRefs = new Map<number, HTMLInputElement>()
+const filteredConversations = computed(() => {
+  const keyword = query.value.trim().toLocaleLowerCase()
+  if (!keyword) return props.conversations
+  return props.conversations.filter(item => item.title.toLocaleLowerCase().includes(keyword))
+})
 
 function setEditInputRef(id: number) {
   return (el: Element | ComponentPublicInstance | null) => {
@@ -169,13 +137,13 @@ function finishEdit(c: ConvItem) {
 
 <style scoped>
 .conv-sidebar {
-  width: 260px;
-  min-width: 260px;
-  background: var(--ag-bg-sidebar);
-  border-right: 1px solid var(--ag-border-light);
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  background: transparent;
+  border-right: 0;
   display: flex;
   flex-direction: column;
-  transition: width var(--ag-transition-base), min-width var(--ag-transition-base);
   overflow: hidden;
 }
 .conv-sidebar.collapsed { width: 0; min-width: 0; }
@@ -186,12 +154,12 @@ function finishEdit(c: ConvItem) {
   left: 0;
   top: 50%;
   transform: translateY(-50%);
-  width: 22px;
-  height: 64px;
+  width: 26px;
+  height: 54px;
   border: 1px solid var(--ag-border-light);
   border-left: none;
-  border-radius: 0 8px 8px 0;
-  background: var(--ag-bg-base);
+  border-radius: 0 9px 9px 0;
+  background: rgba(250, 250, 252, 0.92);
   color: var(--ag-text-tertiary);
   cursor: pointer;
   display: flex;
@@ -213,13 +181,11 @@ function finishEdit(c: ConvItem) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--ag-space-lg) var(--ag-space-lg);
-  border-bottom: 1px solid var(--ag-border-light);
+  height: 48px;
+  padding: 0 12px 0 16px;
   flex-shrink: 0;
 }
-.sidebar-brand { display: flex; align-items: center; gap: var(--ag-space-sm); }
-.brand-icon { width: 20px; height: 20px; color: var(--ag-primary); }
-.brand-text { font-size: var(--ag-font-size-lg); font-weight: 600; color: var(--ag-text-primary); }
+.brand-text { font-size: 14px; font-weight: 650; color: var(--ag-text-primary); }
 .sidebar-toggle {
   border: none; background: none; cursor: pointer; color: var(--ag-text-tertiary);
   padding: var(--ag-space-xs); border-radius: var(--ag-radius-sm);
@@ -229,51 +195,44 @@ function finishEdit(c: ConvItem) {
 .sidebar-toggle:hover { color: var(--ag-text-secondary); background: var(--ag-bg-hover); }
 
 /* Actions */
-.sidebar-actions { padding: var(--ag-space-md) var(--ag-space-lg); flex-shrink: 0; }
+.sidebar-actions { padding: 4px 10px 10px; flex-shrink: 0; display: grid; gap: 8px; }
 .btn-new-conv {
   display: flex; align-items: center; gap: var(--ag-space-sm);
-  width: 100%; padding: var(--ag-space-sm) var(--ag-space-md);
-  border: 1px dashed var(--ag-border-base); border-radius: var(--ag-radius-md);
-  background: var(--ag-bg-base); color: var(--ag-primary);
-  cursor: pointer; font-size: var(--ag-font-size-base);
+  width: 100%; height: 34px; padding: 0 10px;
+  border: none; border-radius: 8px;
+  background: rgba(255,255,255,0.72); color: #007aff;
+  box-shadow: inset 0 0 0 0.5px rgba(60,60,67,.16);
+  cursor: pointer; font-size: 12px; font-weight: 550;
   transition: all var(--ag-transition-fast);
 }
-.btn-new-conv:hover { background: var(--ag-primary-light); border-color: var(--ag-primary); }
+.btn-new-conv:hover { background: rgba(0,122,255,.09); }
 .btn-new-conv:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-admin-panel,
-.btn-workflow-panel {
-  display: flex; align-items: center; gap: var(--ag-space-sm);
-  width: 100%; padding: var(--ag-space-sm) var(--ag-space-md);
-  margin-bottom: var(--ag-space-sm);
-  border: 1px solid var(--ag-border-base); border-radius: var(--ag-radius-md);
-  background: var(--ag-bg-base); color: var(--ag-text-secondary);
-  cursor: pointer; font-size: var(--ag-font-size-base);
-  transition: all var(--ag-transition-fast);
-}
-.btn-admin-panel:hover,
-.btn-workflow-panel:hover { background: var(--ag-primary-light); border-color: var(--ag-primary); color: var(--ag-primary); }
-.btn-admin-panel.active,
-.btn-workflow-panel.active { background: var(--ag-primary-light); border-color: var(--ag-primary); color: var(--ag-primary); font-weight: 500; }
+.conversation-search { height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 8px; color: #8e8e93; background: rgba(118,118,128,.12); }
+.conversation-search input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 12px; color: var(--ag-text-primary); }
+.conversation-search input::-webkit-search-cancel-button { display: none; }
 
 /* List */
-.conv-list { flex: 1; overflow-y: auto; padding: 0 var(--ag-space-sm) var(--ag-space-sm); }
+.conv-list { flex: 1; overflow-y: auto; padding: 0 8px 10px; }
+.list-label { margin: 4px 8px 6px; color: #8e8e93; font-size: 10px; font-weight: 650; text-transform: uppercase; }
 .conv-item {
   display: flex; align-items: center; justify-content: space-between;
-  padding: var(--ag-space-sm) var(--ag-space-md);
-  margin: 1px 0;
-  border-radius: var(--ag-radius-md);
+  min-height: 38px; padding: 5px 8px;
+  margin: 2px 0;
+  border-radius: 8px;
   cursor: pointer; transition: background var(--ag-transition-fast);
 }
-.conv-item:hover { background: var(--ag-bg-hover); }
-.conv-item.active { background: var(--ag-primary-light); }
+.conv-item:hover { background: rgba(118,118,128,.10); }
+.conv-item.active { background: #0a84ff; }
 .conv-content { display: flex; align-items: center; gap: var(--ag-space-sm); min-width: 0; flex: 1; }
 .conv-icon { flex-shrink: 0; color: var(--ag-text-tertiary); }
-.conv-item.active .conv-icon { color: var(--ag-primary); }
+.conv-item.active .conv-icon { color: rgba(255,255,255,.9); }
 .conv-title {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-size: var(--ag-font-size-base); color: var(--ag-text-primary);
+  font-size: 12px; color: var(--ag-text-primary);
 }
-.conv-item.active .conv-title { color: var(--ag-primary); font-weight: 500; }
+.conv-item.active .conv-title { color: #fff; font-weight: 550; }
+.conv-item.active .conv-act-btn { color: rgba(255,255,255,.78); }
+.conv-item.active .conv-act-btn:hover { color: #fff; background: rgba(255,255,255,.16); }
 
 .conv-title-edit {
   flex: 1; min-width: 0;

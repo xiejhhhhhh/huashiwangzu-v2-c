@@ -8,12 +8,10 @@
   >
     <div class="notification-panel-header">
       <div class="notification-panel-heading">
-        <span id="notification-panel-title" class="notification-panel-title">反馈中心</span>
+        <span id="notification-panel-title" class="notification-panel-title">通知中心</span>
         <span class="notification-panel-subtitle">主反馈、任务、Agent 与知识库状态</span>
       </div>
-      <el-tag :type="panelTagType" size="small">
-        {{ panelStatusText }}
-      </el-tag>
+      <span class="mac-status-pill" :class="`tone-${panelTagType}`">{{ panelStatusText }}</span>
     </div>
 
     <div v-if="loadIssues.length" class="feedback-load-section" aria-label="加载异常">
@@ -40,7 +38,7 @@
             :aria-label="`复制${issue.label}错误`"
             @click="copyLoadIssue(issue)"
           >
-            <el-icon :size="14"><CopyDocument /></el-icon>
+            <Copy :size="14" />
             <span>复制</span>
           </button>
           <button
@@ -50,7 +48,7 @@
             :aria-label="`打开${issue.label}来源`"
             @click="emit('open-load-source', issue)"
           >
-            <el-icon :size="14"><Position /></el-icon>
+            <MapPin :size="14" />
             <span>来源</span>
           </button>
           <button
@@ -59,13 +57,13 @@
             :aria-label="`重试${issue.label}`"
             @click="emit('retry-load', issue.source)"
           >
-            <el-icon :size="14"><Refresh /></el-icon>
+            <RefreshCw :size="14" />
             <span>重试</span>
           </button>
         </div>
       </div>
       <button v-if="loadIssues.length > 1" class="feedback-load-retry all" type="button" @click="emit('retry-load')">
-        <el-icon :size="14"><Refresh /></el-icon>
+        <RefreshCw :size="14" />
         <span>全部重试</span>
       </button>
     </div>
@@ -99,7 +97,7 @@
           <div class="feedback-action-body">
             <div class="feedback-action-title-row">
               <span class="feedback-action-title">{{ actionItem.title }}</span>
-              <el-tag :type="actionItemTagType(actionItem)" size="small">{{ actionItem.visible_status }}</el-tag>
+              <span class="mac-status-pill" :class="`tone-${actionItemTagType(actionItem)}`">{{ actionItem.visible_status }}</span>
             </div>
             <div class="feedback-action-copy">{{ actionItem.description }}</div>
             <div v-if="actionItem.secondary_actions.length" class="feedback-secondary-actions">
@@ -132,9 +130,9 @@
           <span class="task-debt-title">后台任务</span>
           <div class="task-debt-caption">{{ taskProblemTotal > 0 ? '失败、卡住与历史债务' : '队列运行状态' }}</div>
         </div>
-        <el-tag :type="taskSignalTotal === 0 ? 'success' : taskProblemTotal > 0 ? 'warning' : 'primary'" size="small">
+        <span class="mac-status-pill" :class="`tone-${taskSignalTotal === 0 ? 'success' : taskProblemTotal > 0 ? 'warning' : 'primary'}`">
           {{ taskStatusText }}
-        </el-tag>
+        </span>
       </div>
       <div class="task-debt-metrics">
         <span>等待中 {{ taskDebtSummary.summary.pending }}</span>
@@ -180,7 +178,7 @@
       <div class="notification-item-content">
         <div class="notification-title-row">
           <span class="notification-title" :class="{ 'notification-title-unread': !item.is_read }">{{ item.title }}</span>
-          <el-tag :type="tagType(item.notification_type)" size="small" class="notification-tag">{{ item.notification_type }}</el-tag>
+          <span class="mac-status-pill notification-tag" :class="`tone-${tagType(item.notification_type)}`">{{ item.notification_type }}</span>
         </div>
         <div class="notification-time">{{ item.published_at }}</div>
       </div>
@@ -190,7 +188,7 @@
       </div>
     </div>
     <div v-if="items.length > 0" class="notification-panel-footer">
-      <el-button text size="small" @click="handleMarkAllRead">全部已读</el-button>
+      <button class="feedback-link" type="button" @click="handleMarkAllRead">全部已读</button>
     </div>
   </div>
 </template>
@@ -205,8 +203,8 @@ import type {
   TaskDebtSummary,
 } from '@/shared/composables/use-notifications'
 import { computed } from 'vue'
-import { CopyDocument, Position, Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { Copy, MapPin, RefreshCw } from 'lucide-vue-next'
+import { desktopMessage } from '@/desktop/feedback/desktop-feedback'
 
 const props = defineProps<{
  show: boolean
@@ -391,9 +389,9 @@ function handleMarkAllRead() {
 async function copyLoadIssue(issue: NotificationLoadIssue) {
   try {
     await navigator.clipboard.writeText(issue.copyText)
-    ElMessage.success('错误信息已复制')
+    desktopMessage.success('错误信息已复制')
   } catch {
-    ElMessage.error('复制失败，请手动选择错误信息')
+    desktopMessage.error('复制失败，请手动选择错误信息')
   }
 }
 </script>
@@ -402,10 +400,8 @@ async function copyLoadIssue(issue: NotificationLoadIssue) {
 .notification-panel {
   min-height: 100%;
   padding-bottom: 8px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 248, 251, 0.98)),
-    #f7f9fc;
-  color: var(--text-primary);
+  background: transparent;
+  color: var(--desktop-ink);
 }
 
 .notification-panel-header {
@@ -417,10 +413,26 @@ async function copyLoadIssue(issue: NotificationLoadIssue) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(18px);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: color-mix(in srgb, var(--glass-panel-bg, rgba(246,246,250,.66)) 80%, white);
+  backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
+  -webkit-backdrop-filter: var(--desktop-lg-filter-soft, blur(24px) saturate(160%));
 }
+.mac-status-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font: 600 11px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  background: rgba(60, 60, 67, .08);
+  color: var(--desktop-ink);
+}
+.mac-status-pill.tone-success { background: rgba(40, 200, 64, .16); color: #14833a; }
+.mac-status-pill.tone-warning { background: rgba(255, 188, 46, .2); color: #9a6700; }
+.mac-status-pill.tone-danger { background: rgba(255, 95, 87, .16); color: #c0392b; }
+.mac-status-pill.tone-primary,
+.mac-status-pill.tone-info { background: rgba(10, 132, 255, .14); color: #0a66c2; }
 
 .notification-panel-heading {
   min-width: 0;

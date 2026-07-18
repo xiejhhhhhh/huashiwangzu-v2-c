@@ -9,7 +9,14 @@
  */
 import { reactive, computed, watch } from 'vue'
 import { desktopStateStore, scheduleDesktopStateSave } from '@/desktop/window-manager/desktop-state-store'
-import { DESKTOP_DOCK_HEIGHT, DESKTOP_DOCK_BOTTOM_GAP } from './desktop-chrome-metrics'
+import {
+  applyDesktopSkin,
+  getActiveDesktopSkinMetrics,
+  isDesktopShellSkinId,
+  readStoredDesktopSkin,
+  persistDesktopSkin,
+  type DesktopShellSkinId,
+} from '@/desktop/skins'
 
 // ═══════════════════════════════════════════════════
 // 类型定义
@@ -19,6 +26,7 @@ export type IconSize = 'small' | 'medium' | 'large'
 export type TaskbarPosition = 'bottom' | 'top'
 export type IconLayout = 'auto-arrange' | 'free'
 export type LauncherStyle = 'center-panel' | 'left-panel'
+export type { DesktopShellSkinId }
 
 export interface DesktopConfig {
   // 图标系统
@@ -51,6 +59,17 @@ export interface DesktopConfig {
   // 反馈
   enableMicroAnimations: boolean
   enableOperationToast: boolean
+
+  /**
+   * Desktop hotkeys (Web-safe).
+   * Default false: never steal browser/OS shortcuts.
+   * When true, only non-conflicting or explicitly allowed combos are handled,
+   * and only when focus is not in an editable field.
+   */
+  enableDesktopHotkeys: boolean
+
+  /** Shell visual skin: macos | win11 (behavior runtime stays shared). */
+  shellSkin: DesktopShellSkinId
 }
 
 // ═══════════════════════════════════════════════════
@@ -74,12 +93,12 @@ const DEFAULT_CONFIG: DesktopConfig = {
   showIconLabels: true,
 
   taskbarPosition: 'bottom',
-  taskbarHeight: DESKTOP_DOCK_HEIGHT,
+  taskbarHeight: 66,
   taskbarShowClock: false,
   taskbarShowDate: false,
   taskbarGroupWindows: true,
 
-  windowAnimationDuration: 200,
+  windowAnimationDuration: 280,
   windowSnapThreshold: 28,
   windowMinWidth: 400,
   windowMinHeight: 260,
@@ -92,13 +111,17 @@ const DEFAULT_CONFIG: DesktopConfig = {
 
   enableMicroAnimations: true,
   enableOperationToast: true,
+
+  enableDesktopHotkeys: false,
+
+  shellSkin: 'macos',
 }
 
 // ═══════════════════════════════════════════════════
 // 响应式配置实例
 // ═══════════════════════════════════════════════════
 
-const config = reactive<DesktopConfig>({ ...DEFAULT_CONFIG })
+const config = reactive<DesktopConfig>({ ...DEFAULT_CONFIG, shellSkin: readStoredDesktopSkin() })
 
 // 从 desktopStateStore 恢复偏好
 function loadConfigFromState(): void {
@@ -110,6 +133,9 @@ function loadConfigFromState(): void {
       }
     })
   }
+  if (!isDesktopShellSkinId(config.shellSkin)) config.shellSkin = readStoredDesktopSkin()
+  // taskbar height always follows active skin metrics (not free-form stale values)
+  config.taskbarHeight = getActiveDesktopSkinMetrics().dockHeight
 }
 
 // 持久化到 desktopStateStore
@@ -143,7 +169,16 @@ const iconMetrics = computed(() => {
   }
 })
 
-const taskbarReservedHeight = computed(() => DESKTOP_DOCK_HEIGHT + DESKTOP_DOCK_BOTTOM_GAP)
+const taskbarReservedHeight = computed(() => {
+  const metrics = getActiveDesktopSkinMetrics()
+  return metrics.dockHeight + metrics.dockBottomGap
+})
+
+function syncShellSkin(host?: HTMLElement | null): void {
+  const skin = applyDesktopSkin(config.shellSkin, host)
+  config.taskbarHeight = skin.metrics.dockHeight
+  persistDesktopSkin(skin.id)
+}
 
 // ═══════════════════════════════════════════════════
 // 公共接口
@@ -165,11 +200,27 @@ export function useDesktopConfig() {
           ;(config as Record<string, unknown>)[key] = value
         }
       })
+      if (partial.shellSkin && isDesktopShellSkinId(partial.shellSkin)) {
+        syncShellSkin(document.querySelector('.desktop-shell-container') as HTMLElement | null)
+      }
+    },
+
+    /** Switch shell visual skin (macos | win11). Runtime behavior stays shared. */
+    setShellSkin(skin: DesktopShellSkinId, host?: HTMLElement | null): void {
+      if (!isDesktopShellSkinId(skin)) return
+      config.shellSkin = skin
+      syncShellSkin(host ?? (document.querySelector('.desktop-shell-container') as HTMLElement | null))
+    },
+
+    /** Apply current skin tokens to a host element (call on shell mount). */
+    applyCurrentShellSkin(host?: HTMLElement | null): void {
+      syncShellSkin(host)
     },
 
     /** 重置为默认 */
     resetConfig(): void {
-      Object.assign(config, DEFAULT_CONFIG)
+      Object.assign(config, { ...DEFAULT_CONFIG, shellSkin: readStoredDesktopSkin() })
+      syncShellSkin(document.querySelector('.desktop-shell-container') as HTMLElement | null)
     },
 
     /** 获取图标尺寸数据 */

@@ -41,8 +41,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
+import { useAppFeedback } from '@/desktop/app-kit'
 import { fetchRecycleBinList, emptyRecycleBinRequest } from '@/shared/api/desktop'
 import type { RecycleBinEntry } from '@/shared/api/types'
 import type { FileEntry } from '@/shared/api/types'
@@ -52,6 +52,8 @@ import { createLoadState, failLoading, finishLoading, startLoading } from '@/sha
 import FmFileList from './fm-file-list.vue'
 import FmStatusBar from './fm-status-bar.vue'
 import emitter from '@/desktop/events'
+
+const feedback = useAppFeedback()
 
 const emit = defineEmits<{
   (e: 'context-menu-blank', event: MouseEvent, options: { key: string; label: string; icon?: string; danger?: boolean }[]): void
@@ -146,7 +148,7 @@ function handleSelect(item: FileEntry) {
 }
 
 function handleOpen() {
-  ElMessage.info('请先还原再打开文件')
+  feedback.info('请先还原再打开文件')
 }
 
 function handleSort(column: string) {
@@ -159,9 +161,9 @@ function handleSort(column: string) {
 }
 
 async function emptyTrash() {
-  try { await ElMessageBox.confirm('确定清空回收站？', '确认', { type: 'warning' }) } catch { return }
-  try { await emptyRecycleBinRequest(); ElMessage.success('已清空'); void loadList() }
-  catch { ElMessage.warning('清空失败') }
+  if (!(await feedback.confirm('确定清空回收站？', '确认', { tone: 'warning' }))) return
+  try { await emptyRecycleBinRequest(); feedback.success('已清空'); void loadList() }
+  catch { feedback.warning('清空失败') }
 }
 
 function handleBlankMenu(e: MouseEvent) {
