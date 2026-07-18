@@ -1,5 +1,11 @@
 <template>
-  <section class="im-app">
+  <section
+    class="im-app"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="chat"
+  >
+    <MacAppShell layout="chat" :sidebar-width="280">
+      <template #sidebar>
     <div class="im-sidebar">
       <div class="im-sidebar-header">
         <span class="im-sidebar-title">会话</span>
@@ -27,6 +33,15 @@
         <div v-else-if="!conversations.length && !conversationsError" class="im-conv-empty">暂无会话</div>
       </div>
     </div>
+      </template>
+
+      <template #toolbar>
+        <div class="im-toolbar">
+          <strong>消息</strong>
+          <span>{{ activeConvId ? '会话进行中' : '选择会话开始聊天' }}</span>
+        </div>
+      </template>
+
     <div class="im-main">
       <template v-if="activeConvId">
         <div class="im-messages" ref="messagesRef">
@@ -53,6 +68,8 @@
       <div v-else class="im-no-conv">选择左侧会话开始聊天</div>
     </div>
 
+    </MacAppShell>
+
     <div v-if="showUserPicker" class="im-user-picker-overlay" @click.self="showUserPicker = false">
       <div class="im-user-picker">
         <div class="im-user-picker-header">选择联系人</div>
@@ -76,6 +93,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { MacAppShell } from '@/desktop/app-kit'
 import { initRuntime, platform, apiGet, apiPost } from '../runtime'
 
 interface Conversation {
@@ -296,13 +314,36 @@ onUnmounted(() => {
 
 <style scoped>
 .im-app {
-  display: flex; height: 100%; background: #fff; border-radius: 0; overflow: hidden;
-  font-family: 苹方, "微软雅黑", 宋体, sans-serif;
-  color: #333;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--mac-app-surface, #f8fafc);
+  color: var(--mac-app-text, #1f2937);
 }
+.im-toolbar {
+  display: grid;
+  gap: 1px;
+  min-height: var(--mac-app-toolbar-height, 42px);
+  align-content: center;
+  padding: 0 4px;
+  width: 100%;
+}
+.im-toolbar strong { font: var(--mac-app-font-title, 600 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif); }
+.im-toolbar span { font: var(--mac-app-font-caption, 400 11px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif); color: var(--mac-app-text-secondary, #6b7280); }
 .im-sidebar {
-  width: 280px; min-width: 280px; border-right: 1px solid #e8e8e8;
-  display: flex; flex-direction: column; background: #f8f9fa;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  border-right: 0;
+}
+.im-conv-item-active {
+  background: var(--mac-app-selection, rgba(10,132,255,.16));
+  border-left-color: var(--mac-app-accent, #0a84ff);
 }
 .im-sidebar-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -364,7 +405,7 @@ onUnmounted(() => {
   cursor: pointer;
   font-size: 12px;
 }
-.im-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.im-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: color-mix(in srgb, var(--mac-app-surface, #f8fafc) 70%, white); }
 .im-messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
 .im-msg { margin-bottom: 16px; max-width: 70%; }
 .im-msg-self { margin-left: auto; }

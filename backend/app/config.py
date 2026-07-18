@@ -11,15 +11,17 @@ BACKEND_ENV_FILE = BACKEND_DIR / ".env"
 
 class Settings(BaseSettings):
     # Database（密码必须通过 .env 或环境变量设置）
+    # Prefer PgBouncer (6432, transaction pooling). Direct 5432 only for emergency/debug.
     DB_HOST: str = "127.0.0.1"
-    DB_PORT: int = 5432
+    DB_PORT: int = 6432
     DB_USER: str = "postgres"
     DB_PASSWORD: str = ""
     DB_NAME: str = "华世王镞_v2"
     DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 60000
     DB_USE_NULL_POOL: bool = False
-    DB_POOL_SIZE: int = 20
-    DB_MAX_OVERFLOW: int = 10
+    # App-side pool stays small; real pooling is in PgBouncer.
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 5
     DB_POOL_TIMEOUT: int = 120
     DB_POOL_RECYCLE_SECONDS: int = 1800
 
@@ -29,6 +31,10 @@ class Settings(BaseSettings):
             f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
+
+    @property
+    def db_via_pgbouncer(self) -> bool:
+        return int(self.DB_PORT) == 6432
 
     # JWT（密钥必须通过 .env 或环境变量设置）
     JWT_SECRET: str = ""

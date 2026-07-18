@@ -7,18 +7,24 @@ from app.config import get_settings
 
 settings = get_settings()
 
+# PgBouncer transaction pooling requires statement_cache_size=0 for asyncpg.
+# Safe for direct PG too; prepared statements are not shared across pooled clients.
+_connect_args: dict = {
+    "statement_cache_size": 0,
+    "server_settings": {
+        "idle_in_transaction_session_timeout": str(settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS),
+    },
+}
+
 _engine_kwargs = {
     "echo": settings.APP_DEBUG,
-    "connect_args": {
-        "server_settings": {
-            "idle_in_transaction_session_timeout": str(settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS),
-        },
-    },
+    "connect_args": _connect_args,
 }
 
 # 是否为一次性 executor 子进程(dispatcher 用 `python -m app.task_worker_main --executor-task-id N` 派生)。
 # executor 只跑一个任务就退出,不需要常驻大池;继承后端的 pool_size=120 会导致 N 个并发 executor
 # 各开一个大池 → 瞬间打爆 PG max_connections=300(too many clients)。executor 强制用极小池。
+# 经 PgBouncer(6432) 后应用侧池应保持小；真连接池在 bouncer。
 _IS_EXECUTOR = "--executor-task-id" in sys.argv
 
 if settings.DB_USE_NULL_POOL or "pytest" in sys.modules:

@@ -1,4 +1,10 @@
 <template>
+  <div
+    class="text-editor-app"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="document"
+  >
+  <MacAppShell layout="document">
   <viewer-shell
     :file-name="fileName"
     app-name="文本编辑器"
@@ -32,10 +38,13 @@
       <span>{{ statusText }}</span>
     </template>
   </viewer-shell>
+  </MacAppShell>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
+import { MacAppShell } from '@/desktop/app-kit'
 import viewerShell from '@/shared/components/viewer-shell.vue'
 import { apiPost, downloadText } from './api'
 import type { FileOpenPayload } from '../runtime'
@@ -145,6 +154,13 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.text-editor-app {
+  height: 100%;
+  min-height: 0;
+  background: var(--mac-app-surface, #f8fafc);
+  color: var(--mac-app-text, #1f2937);
+}
+
 .te-container {
   width: 100%;
   height: 100%;

@@ -563,6 +563,96 @@ test('slice4 main products mount MacAppShell layouts', async ({ page }) => {
   await expect(page.getByText('启用桌面快捷键')).toBeVisible()
 })
 
+
+test('remaining products text/messages/media mount MacAppShell layouts', async ({ page }) => {
+  // Ensure mock catalog has messages/media; text already exists in base apps.
+  const ensureApp = (app) => {
+    const idx = apps.findIndex(item => item.product_id === app.product_id)
+    if (idx === -1) apps.push(app)
+    else apps[idx] = { ...apps[idx], ...app }
+  }
+  ensureApp({
+    product_id: 'text',
+    name: '文本',
+    icon: 'EditPen',
+    description: '纯文本编辑',
+    entry_component_key: 'text-editor/index.vue',
+    default_width: 900,
+    default_height: 640,
+    min_width: 480,
+    min_height: 320,
+    category: 'text',
+    window_type: 'normal',
+    permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: true,
+    show_on_desktop: true,
+    show_in_launcher: true,
+    show_in_tray: false,
+    show_in_sidebar: false,
+    enabled: true,
+  })
+  ensureApp({
+    product_id: 'messages',
+    name: '消息',
+    icon: 'ChatLineRound',
+    description: '即时消息',
+    entry_component_key: 'im/index.vue',
+    default_width: 1000,
+    default_height: 720,
+    min_width: 480,
+    min_height: 320,
+    category: 'messages',
+    window_type: 'normal',
+    permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: false,
+    show_on_desktop: true,
+    show_in_launcher: true,
+    show_in_tray: false,
+    show_in_sidebar: false,
+    enabled: true,
+  })
+  ensureApp({
+    product_id: 'media',
+    name: '媒体',
+    icon: 'Picture',
+    description: '媒体分析',
+    entry_component_key: 'media-intelligence/index.vue',
+    default_width: 980,
+    default_height: 700,
+    min_width: 480,
+    min_height: 320,
+    category: 'media',
+    window_type: 'normal',
+    permissions: ['viewer', 'editor', 'admin'],
+    allow_multiple: true,
+    show_on_desktop: true,
+    show_in_launcher: true,
+    show_in_tray: false,
+    show_in_sidebar: false,
+    enabled: true,
+  })
+
+  const cases = [
+    { appKey: 'text', root: '.text-editor-app[data-mac-app-kit="mac-app-v1"]', layout: 'document' },
+    { appKey: 'messages', root: '.im-app[data-mac-app-kit="mac-app-v1"]', layout: 'chat' },
+    { appKey: 'media', root: '.media-intelligence-app[data-mac-app-kit="mac-app-v1"]', layout: 'utility' },
+  ]
+  for (const item of cases) {
+    await mockShell(page)
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/desktop', { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.desktop-shell-container')).toBeVisible()
+    // Wait for registry load via files dock button, then open target by API.
+    await expect(page.getByRole('navigation', { name: 'Dock' }).getByRole('button', { name: '文件' })).toBeVisible()
+    const opened = await page.evaluate((key) => window.__HSWZ_WINDOW_MANAGER__?.openWindow(key), item.appKey)
+    expect(opened).toBeTruthy()
+    const root = page.locator(item.root)
+    await expect(root).toBeVisible({ timeout: 20000 })
+    await expect(root).toHaveAttribute('data-mac-app-layout', item.layout)
+    await expect(root.locator(`.mac-app-kit[data-mac-app-layout="${item.layout}"]`)).toBeVisible()
+  }
+})
+
 test('slice5 product catalog requires mac-app-v1 uiContract and loader validates it', async ({ page }) => {
   await mockShell(page)
   await page.setViewportSize({ width: 1280, height: 800 })

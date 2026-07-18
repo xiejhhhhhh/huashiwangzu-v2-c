@@ -1,5 +1,17 @@
 <template>
-  <div class="media-intelligence-app">
+  <div
+    class="media-intelligence-app"
+    data-mac-app-kit="mac-app-v1"
+    data-mac-app-layout="utility"
+  >
+    <MacAppShell layout="utility">
+      <template #toolbar>
+        <div class="media-toolbar">
+          <strong>媒体</strong>
+          <span>图片与音视频轻分析</span>
+        </div>
+      </template>
+      <div class="media-body">
     <aside class="panel">
       <div class="field">
         <label>Action</label>
@@ -50,11 +62,14 @@
       <div v-if="!resultText" class="empty">Run an action to inspect the media analysis contract.</div>
       <pre v-else>{{ resultText }}</pre>
     </main>
+      </div>
+    </MacAppShell>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { MacAppShell } from '@/desktop/app-kit'
 import { initRuntime, platform } from '../runtime'
 
 type MediaAction =
@@ -119,11 +134,26 @@ async function runAnalysis(): Promise<void> {
 
 <style scoped>
 .media-intelligence-app {
+  height: 100%;
+  min-height: 0;
+  background: var(--mac-app-surface, #f8fafc);
+  color: var(--mac-app-text, #1f2937);
+}
+.media-toolbar {
   display: grid;
-  grid-template-columns: minmax(240px, 300px) 1fr;
-  min-height: 100%;
-  background: #f6f7f9;
-  color: #1f2933;
+  gap: 1px;
+  min-height: var(--mac-app-toolbar-height, 42px);
+  align-content: center;
+  padding: 0 4px;
+  width: 100%;
+}
+.media-toolbar strong { font: var(--mac-app-font-title, 600 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif); }
+.media-toolbar span { font: var(--mac-app-font-caption, 400 11px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif); color: var(--mac-app-text-secondary, #6b7280); }
+.media-body {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
 }
 
 .panel {
@@ -211,7 +241,7 @@ pre {
 }
 
 @media (max-width: 760px) {
-  .media-intelligence-app {
+  .media-body {
     grid-template-columns: 1fr;
   }
 
