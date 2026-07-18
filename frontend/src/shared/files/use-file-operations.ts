@@ -33,22 +33,27 @@ export interface BatchOperationResult {
 
 export type ConflictAction = 'replace' | 'keep_both' | 'skip' | 'cancel'
 
-async function askNameConflict(name: string, mode: 'move' | 'copy'): Promise<ConflictAction> {
+async function askNameConflict(
+  name: string,
+  mode: 'move' | 'copy',
+  opts?: { multi?: boolean },
+): Promise<ConflictAction | 'replace_all' | 'keep_both_all'> {
+  const multiHint = opts?.multi ? '\n（多选冲突：确定=全部替换，取消=全部保留两者）' : ''
   try {
     await ElMessageBox.confirm(
-      `目标已有同名项目「${name}」。\n选择「替换」将把已有项目移入回收站；「保留两者」会自动重命名。`,
+      `目标已有同名项目「${name}」。\n选择「替换」将把已有项目移入回收站；「保留两者」会自动重命名。${multiHint}`,
       mode === 'move' ? '移动冲突' : '复制冲突',
       {
         distinguishCancelAndClose: true,
-        confirmButtonText: '替换',
-        cancelButtonText: '保留两者',
+        confirmButtonText: opts?.multi ? '全部替换' : '替换',
+        cancelButtonText: opts?.multi ? '全部保留两者' : '保留两者',
         type: 'warning',
         showClose: true,
       },
     )
-    return 'replace'
+    return opts?.multi ? 'replace_all' : 'replace'
   } catch (action) {
-    if (action === 'cancel') return 'keep_both'
+    if (action === 'cancel') return opts?.multi ? 'keep_both_all' : 'keep_both'
     return 'cancel'
   }
 }
@@ -264,14 +269,20 @@ export function useFileOperations(options: FileOperationsOptions) {
         result.successCount += 1
       } catch (error: unknown) {
         if (isConflictError(error)) {
-          let action: ConflictAction = applyAll || await askNameConflict(item.name, isCut ? 'move' : 'copy')
+          let action: ConflictAction | 'replace_all' | 'keep_both_all' = applyAll
+            || await askNameConflict(item.name, isCut ? 'move' : 'copy', { multi: items.length > 1 })
           if (action === 'cancel') {
             result.failCount += 1
             result.errors.push({ id: item.id, name: item.name, message: '已取消' })
             break
           }
-          if (items.length > 1 && !applyAll && action !== 'skip') {
-            // subsequent conflicts reuse last choice for speed
+          if (action === 'replace_all') {
+            applyAll = 'replace'
+            action = 'replace'
+          } else if (action === 'keep_both_all') {
+            applyAll = 'keep_both'
+            action = 'keep_both'
+          } else if (items.length > 1 && !applyAll && action !== 'skip') {
             applyAll = action
           }
           if (action === 'skip') {
@@ -289,7 +300,7 @@ export function useFileOperations(options: FileOperationsOptions) {
             })
             result.successCount += 1
             const newId = Number((resolved as { new_id?: number })?.new_id)
-            if (Number.isFinite(newId) && !isCut) result.created.push({ id: newId, type: item.type })
+            if (Number.isFinite(newId) && !isCut) result.created!.push({ id: newId, type: item.type })
           } catch (e2: unknown) {
             result.failCount += 1
             result.errors.push({ id: item.id, name: item.name, message: errorMessage(e2) })

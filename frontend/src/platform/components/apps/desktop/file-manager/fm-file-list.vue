@@ -231,16 +231,28 @@
           @mousedown.stop="handleEntryMouseDown(item, $event)"
         >
           <FileVisualIcon :kind="item.is_folder || !item.format ? 'folder' : 'file'" :extension="item.format || ''" :size="18" />
-          <span class="fm-entry-name">
-            {{ displayName(item) }}
-            <span v-if="itemTags(item).length" class="fm-entry-tags inline">
-              <i v-for="tag in itemTags(item)" :key="tag" class="fm-entry-tag-dot" :style="{ background: tagColor(tag) }" />
-            </span>
+          <span class="fm-entry-name" @click.stop="maybeStartInlineRename(item, $event)">
+            <input
+              v-if="renamingId === item.id"
+              class="fm-inline-rename"
+              :value="renameDraft"
+              @mousedown.stop
+              @click.stop
+              @keydown.enter.prevent="commitInlineRename(item)"
+              @keydown.esc.prevent="cancelInlineRename"
+              @blur="commitInlineRename(item)"
+            >
+            <template v-else>
+              {{ displayName(item) }}
+              <span v-if="itemTags(item).length" class="fm-entry-tags inline">
+                <i v-for="tag in itemTags(item)" :key="tag" class="fm-entry-tag-dot" :style="{ background: tagColor(tag) }" />
+              </span>
+            </template>
           </span>
           <span class="fm-entry-spacer" aria-hidden="true" />
           <span class="fm-entry-date">{{ formatListDate(item.updated_at || item.created_at) }}</span>
           <span class="fm-entry-spacer" aria-hidden="true" />
-          <span class="fm-entry-kind">{{ item.is_folder ? '文件夹' : ((item.format || '文件').toUpperCase()) }}</span>
+          <span class="fm-entry-kind">{{ item.is_folder ? '文件夹' : kindLabel(item) }}</span>
           <span class="fm-entry-spacer" aria-hidden="true" />
           <span class="fm-entry-size">{{ item.is_folder ? '—' : formatSize(item.file_size) }}</span>
           <span class="fm-entry-spacer" aria-hidden="true" />
@@ -329,7 +341,12 @@ function isSelected(id: number) {
 
 function isDropTarget(item: FileEntry) {
   if (!item.is_folder || !dragState.isDragging || !dragState.dragOverId) return false
-  return dragState.dragOverId === String(item.id)
+  if (dragState.dragOverId !== String(item.id)) return false
+  // cannot drop onto self / currently dragged folder
+  if (dragState.draggedIds.some((key) => key === `folder:${item.id}` || key.endsWith(`:${item.id}`))) {
+    return false
+  }
+  return true
 }
 
 function itemTags(item: FileEntry) {
@@ -741,10 +758,95 @@ const emit = defineEmits<{
   (e: 'context-menu', item: FileEntry, event: MouseEvent): void
   (e: 'sort', column: string): void
   (e: 'update:columnWidths', value: Required<ListColumnWidths>): void
+  (e: 'rename-inline', item: FileEntry, nextName: string): void
   (e: 'retry'): void
   (e: 'column-select', item: FileEntry, columnIndex: number): void
   (e: 'column-open', item: FileEntry, columnIndex: number): void
 }>()
+
+const renamingId = ref<number | null>(null)
+const renameDraft = ref('')
+let renameClickTimer: ReturnType<typeof setTimeout> | null = null
+let lastRenameClickId: number | null = null
+
+function kindLabel(item: FileEntry) {
+  if (item.is_folder) return '文件夹'
+  const ext = String(item.format || '').toLowerCase()
+  if (!ext) return '文件'
+  const map: Record<string, string> = {
+    pdf: 'PDF 文稿',
+    png: 'PNG 图像',
+    jpg: 'JPEG 图像',
+    jpeg: 'JPEG 图像',
+    gif: 'GIF 图像',
+    webp: 'WebP 图像',
+    svg: 'SVG 图像',
+    txt: '纯文本',
+    md: 'Markdown',
+    json: 'JSON',
+    csv: 'CSV',
+    zip: 'ZIP 归档',
+    mp4: 'MPEG-4 影片',
+    mov: 'QuickTime 影片',
+    mp3: 'MP3 音频',
+    wav: 'WAV 音频',
+    doc: 'Word 文稿',
+    docx: 'Word 文稿',
+    xls: 'Excel 表格',
+    xlsx: 'Excel 表格',
+    ppt: 'PowerPoint',
+    pptx: 'PowerPoint',
+    js: 'JavaScript',
+    ts: 'TypeScript',
+    vue: 'Vue 源码',
+    py: 'Python 源码',
+    php: 'PHP 源码',
+  }
+  return map[ext] || `${ext.toUpperCase()} 文件`
+}
+
+function maybeStartInlineRename(item: FileEntry, e: MouseEvent) {
+  if (!isSelected(item.id)) return
+  // second click on already-selected name starts rename (Finder-like slow double click)
+  if (lastRenameClickId === item.id) {
+    if (renameClickTimer) clearTimeout(renameClickTimer)
+    renameClickTimer = null
+    lastRenameClickId = null
+    startInlineRename(item)
+    e.preventDefault()
+    return
+  }
+  lastRenameClickId = item.id
+  if (renameClickTimer) clearTimeout(renameClickTimer)
+  renameClickTimer = setTimeout(() => {
+    lastRenameClickId = null
+    renameClickTimer = null
+  }, 900)
+}
+
+function startInlineRename(item: FileEntry) {
+  renamingId.value = item.id
+  renameDraft.value = item.file_name
+  requestAnimationFrame(() => {
+    const el = document.querySelector('.fm-inline-rename') as HTMLInputElement | null
+    el?.focus()
+    el?.select()
+  })
+}
+
+function cancelInlineRename() {
+  renamingId.value = null
+  renameDraft.value = ''
+}
+
+function commitInlineRename(item: FileEntry) {
+  if (renamingId.value !== item.id) return
+  const next = renameDraft.value.trim()
+  renamingId.value = null
+  renameDraft.value = ''
+  if (!next || next === item.file_name) return
+  emit('rename-inline', item, next)
+}
 
 const resolvedColumnWidths = computed(() => ({
   name: props.columnWidths?.name ?? DEFAULT_COLUMN_WIDTHS.name,
@@ -930,6 +1032,20 @@ function formatListDate(raw?: string | null) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.fm-inline-rename {
+  width: 100%;
+  min-width: 80px;
+  height: 20px;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid var(--mac-app-accent, #0a84ff);
+  border-radius: 4px;
+  outline: none;
+  background: #fff;
+  color: #1d1d1f;
+  font: 400 12px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mac-app-accent, #0a84ff) 25%, transparent);
+}
 
 .fm-content-grid {
   display: grid;
@@ -948,9 +1064,12 @@ function formatListDate(raw?: string | null) {
 }
 
 .fm-column-pane {
-  flex: 0 0 240px;
-  width: 240px;
+  flex: 0 0 var(--fm-miller-col-width, 240px);
+  width: var(--fm-miller-col-width, 240px);
+  min-width: 160px;
+  max-width: 420px;
   overflow: auto;
+  resize: horizontal;
   border-right: 0.5px solid rgba(60, 60, 67, 0.14);
   background: #fff;
   padding: 4px 0;

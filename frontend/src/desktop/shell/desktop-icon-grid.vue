@@ -79,6 +79,7 @@ import {
   computeGridMetrics,
   cellToPixel,
   autoArrangePositions,
+  sortDesktopIconKeys,
   findNearestFreeCell,
 } from '@/desktop/config/icon-grid-model'
 import { useIconGridDrag, type DragResult } from './use-icon-grid-drag'
@@ -171,12 +172,30 @@ const allIconKeys = computed(() => {
   return keys
 })
 
+function sortedIconKeys(): string[] {
+  const appMap = new Map(props.appList.map((a) => [a.appKey, a.appName || a.appKey]))
+  const fileMap = new Map((props.fileList || []).map((f) => [f.id, f]))
+  return sortDesktopIconKeys(allIconKeys.value, desktopConfig.iconSort || 'name', {
+    appTitle: (appKey) => appMap.get(appKey) || appKey,
+    fileMeta: (fileId) => {
+      const f = fileMap.get(fileId)
+      if (!f) return null
+      return {
+        name: f.file_name || '',
+        isFolder: Boolean(f.is_folder),
+        format: f.format || '',
+        date: f.updated_at || f.created_at || '',
+      }
+    },
+  })
+}
+
 /** 确保所有图标都有位置 */
 function ensureAllPositioned(): void {
   const m = metrics.value
   if (!m) return
   if (desktopConfig.iconLayout === 'auto-arrange') {
-    setPositions(autoArrangePositions(allIconKeys.value, m))
+    setPositions(autoArrangePositions(sortedIconKeys(), m))
     return
   }
   const unpositioned: string[] = []
@@ -196,16 +215,20 @@ watch(allIconKeys, () => {
   nextTick(() => ensureAllPositioned())
 })
 
-// 监听图标尺寸变化：重算网格度量，重排位置
-watch(() => desktopConfig.iconSize, () => {
-  updateMetrics()
-  nextTick(() => {
-    if (desktopConfig.iconLayout === 'auto-arrange' && metrics.value) {
-      const arranged = autoArrangePositions(allIconKeys.value, metrics.value)
-      setPositions(arranged)
-    }
-  })
-})
+// 监听图标尺寸/布局/排序变化：重算网格度量，重排位置
+watch(
+  () => [desktopConfig.iconSize, desktopConfig.iconLayout, desktopConfig.iconSort] as const,
+  () => {
+    updateMetrics()
+    nextTick(() => {
+      if (desktopConfig.iconLayout === 'auto-arrange' && metrics.value) {
+        setPositions(autoArrangePositions(sortedIconKeys(), metrics.value))
+      } else {
+        ensureAllPositioned()
+      }
+    })
+  },
+)
 
 // ═══════════════════════════════════════════════════
 // 位置样式计算

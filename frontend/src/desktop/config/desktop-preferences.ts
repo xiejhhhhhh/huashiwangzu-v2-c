@@ -25,6 +25,7 @@ import {
 export type IconSize = 'small' | 'medium' | 'large'
 export type TaskbarPosition = 'bottom' | 'top'
 export type IconLayout = 'auto-arrange' | 'free'
+export type DesktopIconSort = 'name' | 'type' | 'date'
 export type LauncherStyle = 'center-panel' | 'left-panel'
 export type { DesktopShellSkinId }
 
@@ -32,6 +33,8 @@ export interface DesktopConfig {
   // 图标系统
   iconSize: IconSize
   iconLayout: IconLayout
+  /** desktop icon sort when auto-arrange is on */
+  iconSort: DesktopIconSort
   iconGridGap: number
   showIconLabels: boolean
 
@@ -89,6 +92,7 @@ export const ICON_SIZE_MAP: Record<IconSize, { width: number; height: number; im
 const DEFAULT_CONFIG: DesktopConfig = {
   iconSize: 'medium',
   iconLayout: 'auto-arrange',
+  iconSort: 'name',
   iconGridGap: 4,
   showIconLabels: true,
 

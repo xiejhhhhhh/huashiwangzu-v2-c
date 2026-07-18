@@ -86,6 +86,7 @@
             @context-menu="handleItemContextMenu"
             @sort="handleSort"
             @update:column-widths="setListColumnWidths"
+            @rename-inline="handleInlineRename"
             @retry="state.loadFiles"
             @column-select="(item, col) => state.selectInColumn(item, col)"
             @column-open="(item, col) => state.selectInColumn(item, col)"
@@ -111,6 +112,7 @@
           :file-count="state.files.value.length"
           :selected-item="state.selectedItem.value"
           :selected-size="selectedTotalSize || (state.selectedItem.value && !state.selectedItem.value.is_folder ? state.formatSize(state.selectedItem.value.file_size) : '')"
+          :selected-breakdown="selectedBreakdown"
           :selected-count="state.selectedIds.value.length"
           :view-mode="state.viewMode.value"
           :search-keyword="state.searchKeyword.value"
@@ -170,7 +172,14 @@ import { buildArrangeMenu, buildFileMenu, buildFolderMenu, buildMultiSelectMenu 
 import { canUndo, undoLast } from './file-manager/finder-undo-stack'
 import { useCreatableFormats } from '@/shared/composables/use-creatable-formats'
 import { hasContent } from '@/desktop/clipboard/clipboard-state'
-import { restoreRecycleBinEntry, permanentlyDeleteEntry, emptyRecycleBinRequest } from '@/shared/api/desktop'
+import {
+  restoreRecycleBinEntry,
+  permanentlyDeleteEntry,
+  emptyRecycleBinRequest,
+  fetchItemPathRequest,
+  renameEntryRequest,
+} from '@/shared/api/desktop'
+import { pushUndo } from './file-manager/finder-undo-stack'
 import { openAppById } from '@/desktop/app-registry/app-opener'
 import { windowManager } from '@/desktop/window-manager/window-manager'
 import FmNavigationBar from './file-manager/fm-navigation-bar.vue'
@@ -328,6 +337,17 @@ const selectedTotalSize = computed(() => {
   const total = items.reduce((sum, item) => sum + (item.is_folder ? 0 : (item.file_size || 0)), 0)
   if (!total) return items.length > 1 ? `${items.length} 项` : ''
   return state.formatSize(total)
+})
+
+const selectedBreakdown = computed(() => {
+  const items = state.selectedItems.value
+  if (items.length <= 1) return ''
+  const folders = items.filter((i) => i.is_folder).length
+  const files = items.length - folders
+  const parts: string[] = []
+  if (folders) parts.push(`${folders} 个文件夹`)
+  if (files) parts.push(`${files} 个文件`)
+  return parts.join(' · ')
 })
 
 const contextMenu = useContextMenu()
@@ -724,7 +744,74 @@ function handleItemOpen(item: FileEntry) {
     feedback.info('请先还原再打开文件')
     return
   }
+  // search hit on a file: open enclosing folder first (Finder "show in enclosing folder" lite)
+  const searching = Boolean(state.searchKeyword.value.trim() && state.searchResults.value)
+  if (searching && !item.is_folder) {
+    void revealInEnclosingFolder(item)
+    return
+  }
   state.openItem(item)
+}
+
+async function revealInEnclosingFolder(item: FileEntry) {
+  try {
+    const path = await fetchItemPathRequest(item.is_folder ? 'folder' : 'file', item.id)
+    const crumbs = path.items || []
+    // last folder before file, or last item if folder
+    let parentId = 0
+    let parentName = '桌面'
+    if (item.is_folder) {
+      const last = crumbs[crumbs.length - 1]
+      parentId = Number(last?.id || 0) || 0
+      parentName = last?.name || item.file_name
+    } else {
+      const folders = crumbs.filter((c) => c.type === 'folder' || (c.id != null && c.type !== 'root'))
+      const parent = folders[folders.length - 1]
+      parentId = parent?.id != null ? Number(parent.id) : (item.parent_folder_id || 0)
+      parentName = parent?.name || '文件夹'
+    }
+    // navigate current window to parent and select item
+    if (parentId && parentId !== state.currentFolderId.value) {
+      state.breadcrumb.value = [
+        { id: null, name: '桌面' },
+        ...crumbs
+          .filter((c) => c.type === 'folder' && c.id != null)
+          .map((c) => ({ id: Number(c.id), name: c.name })),
+      ]
+      if (!item.is_folder) {
+        // breadcrumb should end at parent folder
+        state.breadcrumb.value = state.breadcrumb.value.filter((c) => c.id !== item.id)
+      }
+      state.enterFolder(parentId)
+      state.syncWindowTitle(parentName)
+    }
+    // wait list load then select
+    window.setTimeout(() => {
+      const hit = state.sortedItems.value.find((x) => x.id === item.id)
+      if (hit) state.selectItem(hit)
+      if (!item.is_folder) state.openItem(item)
+    }, 280)
+  } catch {
+    // fallback: open directly
+    state.openItem(item)
+  }
+}
+
+async function handleInlineRename(item: FileEntry, nextName: string) {
+  try {
+    await renameEntryRequest(item.is_folder ? 'folder' : 'file', item.id, nextName)
+    pushUndo({
+      kind: 'rename',
+      itemType: item.is_folder ? 'folder' : 'file',
+      id: item.id,
+      prevName: item.file_name,
+      nextName,
+    })
+    feedback.success('已重命名')
+    void state.loadFiles()
+  } catch {
+    feedback.warning('重命名失败')
+  }
 }
 
 function handleItemContextMenu(item: FileEntry, e: MouseEvent) {
@@ -817,6 +904,10 @@ async function handleContextMenuSelect(key: string) {
   if (key === 'selection-info') return
   if (key === 'open-in-new-window') {
     openFolderInNewWindow(ctxtFile)
+    return
+  }
+  if (key === 'reveal' && ctxtFile) {
+    void revealInEnclosingFolder(ctxtFile)
     return
   }
   if (key.startsWith('group-by:')) {

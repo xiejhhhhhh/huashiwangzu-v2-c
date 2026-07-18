@@ -605,8 +605,8 @@ async function handleContextMenuSelect(menuKey: string) {
     return
   }
   if (menuKey === 'sort-name' || menuKey === 'sort-type' || menuKey === 'sort-date') {
-    // sorting is realized by re-auto-arranging; keep layout mode auto
     desktopShellConfig.iconLayout = 'auto-arrange'
+    desktopShellConfig.iconSort = menuKey === 'sort-name' ? 'name' : menuKey === 'sort-type' ? 'type' : 'date'
     desktopMessage.success(
       menuKey === 'sort-name' ? '已按名称排列'
         : menuKey === 'sort-type' ? '已按类型排列'

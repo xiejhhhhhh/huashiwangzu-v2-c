@@ -149,6 +149,7 @@ export function findNearestFreeCell(
 
 /**
  * 自动排列：从右上开始，按列从上到下，再向左换列。
+ * keys 的顺序即排列顺序（调用方负责按名称/类型/日期排序）。
  */
 export function autoArrangePositions(keys: string[], metrics: GridMetrics): Record<string, GridCell> {
   const result: Record<string, GridCell> = {}
@@ -164,6 +165,49 @@ export function autoArrangePositions(keys: string[], metrics: GridMetrics): Reco
     }
   }
   return result
+}
+
+export type DesktopIconSortMode = 'name' | 'type' | 'date'
+
+/** Sort desktop icon keys: apps first (by title), then files/folders by mode. */
+export function sortDesktopIconKeys(
+  keys: string[],
+  mode: DesktopIconSortMode,
+  meta: {
+    appTitle: (appKey: string) => string
+    fileMeta: (fileId: number) => { name: string; isFolder: boolean; format: string; date: string } | null
+  },
+): string[] {
+  const apps: string[] = []
+  const files: string[] = []
+  for (const key of keys) {
+    if (key.startsWith('app:')) apps.push(key)
+    else files.push(key)
+  }
+  apps.sort((a, b) => meta.appTitle(a.slice(4)).localeCompare(meta.appTitle(b.slice(4)), 'zh-CN'))
+  files.sort((a, b) => {
+    const ia = Number(a.split(':')[1])
+    const ib = Number(b.split(':')[1])
+    const ma = meta.fileMeta(ia)
+    const mb = meta.fileMeta(ib)
+    if (!ma && !mb) return 0
+    if (!ma) return 1
+    if (!mb) return -1
+    // folders first
+    if (ma.isFolder !== mb.isFolder) return ma.isFolder ? -1 : 1
+    if (mode === 'type') {
+      const ta = ma.isFolder ? 'folder' : (ma.format || 'file')
+      const tb = mb.isFolder ? 'folder' : (mb.format || 'file')
+      const c = ta.localeCompare(tb, 'zh-CN')
+      if (c !== 0) return c
+    }
+    if (mode === 'date') {
+      const c = (ma.date || '').localeCompare(mb.date || '')
+      if (c !== 0) return -c // newer first
+    }
+    return ma.name.localeCompare(mb.name, 'zh-CN')
+  })
+  return [...apps, ...files]
 }
 
 // ═══════════════════════════════════════════════════

@@ -7,7 +7,11 @@
       </template>
       <template v-else>
         <span>{{ itemCount }} 个项目</span>
-        <span v-if="selectedCount > 1">· 已选择 {{ selectedCount }} 项<span v-if="selectedSize">（{{ selectedSize }}）</span></span>
+        <span v-if="selectedCount > 1">
+          · 已选择 {{ selectedCount }} 项
+          <span v-if="selectedBreakdown">（{{ selectedBreakdown }}）</span>
+          <span v-if="selectedSize"> · {{ selectedSize }}</span>
+        </span>
         <span v-else-if="selectedItem">· 已选择 {{ displayName(selectedItem) }}</span>
         <span v-if="selectedCount <= 1 && selectedItem && !selectedItem.is_folder && selectedSize">（{{ selectedSize }}）</span>
       </template>
@@ -37,6 +41,7 @@ withDefaults(defineProps<{
   fileCount: number
   selectedItem: FileEntry | null
   selectedSize: string
+  selectedBreakdown?: string
   selectedCount?: number
   viewMode: 'grid' | 'list' | 'column' | 'gallery'
   searchKeyword: string
@@ -47,6 +52,7 @@ withDefaults(defineProps<{
   iconSize: number
 }>(), {
   selectedCount: 0,
+  selectedBreakdown: '',
   searchScope: 'folder',
   searchLoading: false,
 })

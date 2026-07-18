@@ -36,9 +36,21 @@ function scheduleSpringLoad(folderId: string) {
   springTargetId = folderId
   springTimer = setTimeout(() => {
     springTimer = null
-    // Finder spring-load: open/focus the folder window so drop target becomes its body.
     const idNum = Number(folderId)
     if (!Number.isFinite(idNum)) return
+    // Prefer navigating an already open Finder window under pointer; fallback open/focus window.
+    const under = document.elementFromPoint(
+      // last known pointer approx: use drag ghost position origin
+      dragState.originX,
+      dragState.originY,
+    )
+    const fm = under?.closest?.('.desktop-file-manager') as HTMLElement | null
+    if (fm) {
+      // dispatch a soft navigation event the finder window listens via refresh path
+      // openAppById reuses same folder window when allowMultiple+same folderId
+      openAppById('desktop', { folderId: idNum, folderName: '文件夹' })
+      return
+    }
     openAppById('desktop', { folderId: idNum, folderName: '文件夹' })
   }, SPRING_LOAD_MS)
 }

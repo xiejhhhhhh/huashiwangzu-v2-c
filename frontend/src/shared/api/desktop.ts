@@ -382,6 +382,15 @@ export async function searchFilesRequest(
   return toFileListPage(data)
 }
 
+export async function fetchItemPathRequest(
+  itemType: FileItemType,
+  itemId: number,
+): Promise<{ items: Array<{ id: number | null; name: string; type: string }> }> {
+  return await api.get<unknown, { items: Array<{ id: number | null; name: string; type: string }> }>(
+    `/files/path/${itemType}/${itemId}`,
+  )
+}
+
 export async function fetchFileDetail(fileId: number): Promise<FileDetail> {
   return await api.get<unknown, FileDetail>(`/files/detail/${fileId}`)
 }

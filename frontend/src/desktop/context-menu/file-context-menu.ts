@@ -31,6 +31,7 @@ export function buildFileMenu(
 ): MenuItemConfig[] {
   return [
     { key: 'open', label: '打开', icon: '↗' },
+    { key: 'reveal', label: '显示所在文件夹', icon: '⌖' },
     { key: 'download', label: '下载到本地', icon: '⬇' },
     ...(opts?.canDecompress ? [{ key: 'decompress', label: '解压', icon: '📂' }] : []),
     ...separatorItems(),
