@@ -315,7 +315,8 @@ const props = withDefaults(defineProps<{
 }>(), {
   iconSize: 50,
   columnStack: () => [],
-  columnWidths: () => ({ ...DEFAULT_COLUMN_WIDTHS }),
+  // defineProps defaults are hoisted — cannot close over setup locals
+  columnWidths: () => ({ name: 220, date: 132, type: 88, size: 72 }),
   selectedIds: () => [],
   tagsOf: () => [],
   tagRevision: 0,
