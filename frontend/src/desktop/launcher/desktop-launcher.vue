@@ -1,156 +1,169 @@
 <template>
   <Teleport to="body">
-    <Transition name="launchpad-fade">
+    <Transition name="apps-panel-fade">
       <div
         v-if="show"
-        ref="overlayRef"
-        class="launchpad-overlay"
-        role="dialog"
-        aria-label="Launchpad"
+        class="apps-panel-overlay"
         @mousedown.self="emit('close')"
         @keydown="onKeydown"
       >
-        <!-- 顶部搜索：现代 macOS 是居中深色胶囊，不是白玻璃条 -->
-        <div class="launchpad-search-wrap">
-          <div class="launchpad-search">
-            <Search class="launchpad-search-icon" :size="13" :stroke-width="2.2" />
-            <input
-              ref="searchInputRef"
-              v-model="searchText"
-              class="launchpad-search-input"
-              type="search"
-              placeholder="搜索"
-              aria-label="搜索"
-              autocomplete="off"
-              spellcheck="false"
-              @keydown.escape.prevent="handleEscape"
-            >
-          </div>
-        </div>
-
-        <!-- 分页网格：无分组标题，纯图标墙 -->
-        <div
-          ref="pagesRef"
-          class="launchpad-pages"
-          @pointerdown="onPagePointerDown"
-          @pointermove="onPagePointerMove"
-          @pointerup="onPagePointerUp"
-          @pointercancel="onPagePointerUp"
-          @wheel.prevent="onWheel"
+        <!-- 新版 macOS 应用程序：居中圆角玻璃弹窗，不是全屏 Launchpad -->
+        <section
+          ref="panelRef"
+          class="apps-panel"
+          role="dialog"
+          aria-label="应用程序"
+          tabindex="-1"
         >
-          <div
-            class="launchpad-pages-track"
-            :style="trackStyle"
-          >
-            <div
-              v-for="(page, pageIndex) in pages"
-              :key="pageIndex"
-              class="launchpad-page"
-            >
-              <div class="launchpad-grid">
-                <button
-                  v-for="app in page"
-                  :key="app.appKey"
-                  class="launchpad-app"
-                  type="button"
-                  :aria-label="app.appName"
-                  @click="openApp(app.appKey)"
-                >
-                  <AppIcon :icon="app.icon" :app-key="app.appKey" :size="iconSize" />
-                  <span class="launchpad-app-name">{{ app.appName }}</span>
-                </button>
-              </div>
+          <header class="apps-panel-header">
+            <div class="apps-panel-title-row">
+              <span class="apps-panel-brand" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M8 4h3.2v6.4H8V4Zm4.8 0H16v6.4h-3.2V4ZM8 13.6h3.2V20H8v-6.4Zm4.8 0H16V20h-3.2v-6.4Z" fill="currentColor" opacity=".9" />
+                  <path d="M4.5 3.5h15A1.5 1.5 0 0 1 21 5v14a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19V5A1.5 1.5 0 0 1 4.5 3.5Z" stroke="currentColor" stroke-width="1.4" opacity=".55" />
+                </svg>
+              </span>
+              <h2 class="apps-panel-title">应用程序</h2>
+              <button
+                class="apps-panel-more"
+                type="button"
+                aria-label="更多"
+                title="更多"
+                @click.stop
+              >
+                <MoreHorizontal :size="18" :stroke-width="2" />
+              </button>
             </div>
+
+            <div class="apps-panel-search">
+              <Search class="apps-panel-search-icon" :size="14" :stroke-width="2.1" />
+              <input
+                ref="searchInputRef"
+                v-model="searchText"
+                class="apps-panel-search-input"
+                type="search"
+                placeholder="搜索"
+                aria-label="搜索应用"
+                autocomplete="off"
+                spellcheck="false"
+                @keydown.escape.prevent="handleEscape"
+              >
+            </div>
+
+            <div v-if="categoryChips.length > 1" class="apps-panel-chips" role="tablist" aria-label="应用分类">
+              <button
+                v-for="chip in categoryChips"
+                :key="chip.key"
+                class="apps-panel-chip"
+                type="button"
+                role="tab"
+                :aria-selected="activeCategory === chip.key"
+                :class="{ 'is-active': activeCategory === chip.key }"
+                @click="activeCategory = chip.key"
+              >
+                {{ chip.label }}
+              </button>
+            </div>
+          </header>
+
+          <div class="apps-panel-body">
+            <div v-if="visibleApps.length" class="apps-panel-grid">
+              <button
+                v-for="app in visibleApps"
+                :key="app.appKey"
+                class="apps-panel-item"
+                type="button"
+                :aria-label="app.appName"
+                @click="openApp(app.appKey)"
+              >
+                <AppIcon :icon="app.icon" :app-key="app.appKey" :size="52" />
+                <span class="apps-panel-item-name">{{ app.appName }}</span>
+              </button>
+            </div>
+            <div v-else class="apps-panel-empty">没有匹配的应用</div>
           </div>
-        </div>
-
-        <div v-if="!filteredApps.length" class="launchpad-empty">没有匹配的应用</div>
-
-        <!-- 底部分页点 -->
-        <div v-if="pages.length > 1 && !searchText.trim()" class="launchpad-dots" role="tablist" aria-label="Launchpad 页面">
-          <button
-            v-for="(_, pageIndex) in pages"
-            :key="pageIndex"
-            class="launchpad-dot"
-            type="button"
-            role="tab"
-            :aria-selected="pageIndex === currentPage"
-            :class="{ 'is-active': pageIndex === currentPage }"
-            :aria-label="`第 ${pageIndex + 1} 页`"
-            @click="goPage(pageIndex)"
-          />
-        </div>
+        </section>
       </div>
     </Transition>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import { Search } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import { MoreHorizontal, Search } from 'lucide-vue-next'
 import type { AppRegistryEntry } from '@/desktop/window-manager/window-types'
 import AppIcon from '@/desktop/components/app-icon.vue'
 
-/** 每页约 5 行 × 7 列，接近现代 Launchpad 密度 */
-const COLS = 7
-const ROWS = 5
-const PER_PAGE = COLS * ROWS
+/** 分类展示名：内部 category 可能是英文 key，映射成更像系统的中文 chip */
+const CATEGORY_LABELS: Record<string, string> = {
+  ai: 'AI',
+  content: '内容',
+  files: '文件',
+  knowledge: '知识',
+  media: '媒体',
+  messages: '消息',
+  office: '效率',
+  system: '系统',
+  text: '文本',
+  tools: '工具',
+  utility: '工具',
+  developer: '开发',
+  dev: '开发',
+  entertainment: '娱乐',
+  creative: '创意',
+  social: '社交',
+  finance: '财务',
+  other: '其他',
+  '其他': '其他',
+  '应用': '应用',
+}
 
 const props = defineProps<{ show: boolean; appList: AppRegistryEntry[] }>()
 const emit = defineEmits<{ openApp: [appKey: string]; close: []; executeCommand: [command: string] }>()
 
 const searchText = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
-const overlayRef = ref<HTMLElement | null>(null)
-const pagesRef = ref<HTMLElement | null>(null)
-const currentPage = ref(0)
-const dragOffset = ref(0)
-const dragging = ref(false)
-const iconSize = ref(72)
+const panelRef = ref<HTMLElement | null>(null)
+const activeCategory = ref('all')
 
-let pointerStartX = 0
-let pointerActive = false
-let reducedMotion = false
-
-const filteredApps = computed(() => {
-  const query = searchText.value.trim().toLocaleLowerCase()
-  return props.appList
-    .filter(app => (
-      app.windowType !== 'background-service'
-      && (!query || `${app.appName} ${app.description || ''} ${app.appKey}`.toLocaleLowerCase().includes(query))
-    ))
-    .slice()
-    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.appName.localeCompare(b.appName, 'zh-CN'))
-})
-
-/** 搜索时单页展示全部结果；否则按页切片 */
-const pages = computed(() => {
-  const apps = filteredApps.value
-  if (!apps.length) return [[]] as AppRegistryEntry[][]
-  if (searchText.value.trim()) return [apps]
-  const result: AppRegistryEntry[][] = []
-  for (let i = 0; i < apps.length; i += PER_PAGE) {
-    result.push(apps.slice(i, i + PER_PAGE))
-  }
-  return result.length ? result : [[]]
-})
-
-const trackStyle = computed(() => {
-  const page = currentPage.value
-  const offset = dragOffset.value
-  const x = `calc(${-page * 100}% + ${offset}px)`
-  return {
-    transform: `translate3d(${x}, 0, 0)`,
-    transition: dragging.value || reducedMotion ? 'none' : 'transform 320ms cubic-bezier(.22, 1, .36, 1)',
-  }
-})
-
-function goPage(index: number) {
-  const max = Math.max(0, pages.value.length - 1)
-  currentPage.value = Math.max(0, Math.min(max, index))
-  dragOffset.value = 0
-  dragging.value = false
+function normalizeCategory(raw?: string): string {
+  const key = (raw || '其他').trim() || '其他'
+  return key
 }
+
+function categoryLabel(raw: string): string {
+  const lower = raw.toLocaleLowerCase()
+  return CATEGORY_LABELS[raw] || CATEGORY_LABELS[lower] || raw
+}
+
+const launcherApps = computed(() => (
+  props.appList
+    .filter(app => app.windowType !== 'background-service')
+    .slice()
+    .sort((a, b) => (a.sortOrder ?? 100) - (b.sortOrder ?? 100) || a.appName.localeCompare(b.appName, 'zh-CN'))
+))
+
+const categoryChips = computed(() => {
+  const counts = new Map<string, number>()
+  for (const app of launcherApps.value) {
+    const key = normalizeCategory(app.category)
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  const chips = [...counts.entries()]
+    .map(([key, count]) => ({ key, label: categoryLabel(key), count }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
+  return [{ key: 'all', label: '全部', count: launcherApps.value.length }, ...chips]
+})
+
+const visibleApps = computed(() => {
+  const query = searchText.value.trim().toLocaleLowerCase()
+  return launcherApps.value.filter(app => {
+    const cat = normalizeCategory(app.category)
+    if (activeCategory.value !== 'all' && cat !== activeCategory.value) return false
+    if (!query) return true
+    return `${app.appName} ${app.description || ''} ${app.appKey} ${cat}`.toLocaleLowerCase().includes(query)
+  })
+})
 
 function openApp(appKey: string) {
   emit('openApp', appKey)
@@ -158,348 +171,298 @@ function openApp(appKey: string) {
 }
 
 function handleEscape() {
-  if (searchText.value) searchText.value = ''
-  else emit('close')
+  if (searchText.value) {
+    searchText.value = ''
+    return
+  }
+  emit('close')
 }
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     handleEscape()
-    return
   }
-  if (searchText.value.trim()) return
-  if (event.key === 'ArrowRight') {
-    event.preventDefault()
-    goPage(currentPage.value + 1)
-  } else if (event.key === 'ArrowLeft') {
-    event.preventDefault()
-    goPage(currentPage.value - 1)
-  }
-}
-
-function onPagePointerDown(event: PointerEvent) {
-  if (searchText.value.trim() || pages.value.length <= 1) return
-  if ((event.target as HTMLElement | null)?.closest('button.launchpad-app')) return
-  pointerActive = true
-  pointerStartX = event.clientX
-  dragging.value = true
-  dragOffset.value = 0
-  pagesRef.value?.setPointerCapture?.(event.pointerId)
-}
-
-function onPagePointerMove(event: PointerEvent) {
-  if (!pointerActive) return
-  dragOffset.value = event.clientX - pointerStartX
-}
-
-function onPagePointerUp(event: PointerEvent) {
-  if (!pointerActive) return
-  pointerActive = false
-  const delta = dragOffset.value
-  dragging.value = false
-  dragOffset.value = 0
-  try { pagesRef.value?.releasePointerCapture?.(event.pointerId) } catch { /* ignore */ }
-  if (Math.abs(delta) > 64) {
-    goPage(currentPage.value + (delta < 0 ? 1 : -1))
-  }
-}
-
-function onWheel(event: WheelEvent) {
-  if (searchText.value.trim() || pages.value.length <= 1) return
-  // 触控板横向 / 明显横向滚轮切页
-  if (Math.abs(event.deltaX) > Math.abs(event.deltaY) && Math.abs(event.deltaX) > 18) {
-    goPage(currentPage.value + (event.deltaX > 0 ? 1 : -1))
-  }
-}
-
-function updateIconSize() {
-  const w = window.innerWidth
-  if (w < 700) iconSize.value = 56
-  else if (w < 1100) iconSize.value = 64
-  else iconSize.value = 72
 }
 
 watch(() => props.show, (show) => {
   if (!show) {
     searchText.value = ''
-    currentPage.value = 0
-    dragOffset.value = 0
-    dragging.value = false
+    activeCategory.value = 'all'
     return
   }
   searchText.value = ''
-  currentPage.value = 0
-  updateIconSize()
+  activeCategory.value = 'all'
   nextTick(() => {
+    panelRef.value?.focus({ preventScroll: true })
     searchInputRef.value?.focus({ preventScroll: true })
-    overlayRef.value?.focus?.()
   })
 })
 
-watch(searchText, () => {
-  currentPage.value = 0
-})
-
-watch(pages, (list) => {
-  if (currentPage.value >= list.length) currentPage.value = Math.max(0, list.length - 1)
-})
-
-function onResize() {
-  updateIconSize()
-}
-
-if (typeof window !== 'undefined') {
-  reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false
-  window.addEventListener('resize', onResize)
-}
-
-onUnmounted(() => {
-  if (typeof window !== 'undefined') window.removeEventListener('resize', onResize)
+watch(categoryChips, (chips) => {
+  if (!chips.some(c => c.key === activeCategory.value)) activeCategory.value = 'all'
 })
 </script>
 
 <style scoped>
-/* 全屏 Launchpad：毛玻璃盖住桌面，不是居中面板 */
-.launchpad-overlay {
+.apps-panel-overlay {
   position: fixed;
   inset: 0;
   z-index: var(--z-launchpad);
+  display: grid;
+  place-items: center;
+  padding: 28px 20px;
+  background: rgba(18, 28, 48, 0.18);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  backdrop-filter: blur(10px) saturate(120%);
+}
+
+/* 圆角大玻璃卡片：对标新版「应用程序」浮层 */
+.apps-panel {
+  width: min(920px, calc(100vw - 40px));
+  height: min(640px, calc(100vh - 72px));
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding:
-    max(52px, calc(var(--desktop-menu-bar-height, 28px) + 28px))
-    24px
-    28px;
-  color: #fff;
-  background: rgba(20, 22, 28, 0.28);
-  -webkit-backdrop-filter: blur(28px) saturate(140%);
-  backdrop-filter: blur(28px) saturate(140%);
+  border-radius: 22px;
+  overflow: hidden;
+  color: rgba(20, 28, 42, 0.92);
+  background:
+    linear-gradient(165deg, rgba(255, 255, 255, 0.62) 0%, rgba(214, 230, 255, 0.48) 42%, rgba(196, 214, 248, 0.42) 100%);
+  border: 0.5px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    0 28px 80px rgba(15, 30, 60, 0.28),
+    0 8px 24px rgba(15, 30, 60, 0.14),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.75);
+  -webkit-backdrop-filter: blur(40px) saturate(160%);
+  backdrop-filter: blur(40px) saturate(160%);
   outline: none;
-  user-select: none;
 }
 
-.launchpad-search-wrap {
+.apps-panel-header {
   flex: 0 0 auto;
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  margin-bottom: 28px;
+  padding: 16px 18px 10px;
+  border-bottom: 0.5px solid rgba(60, 80, 120, 0.1);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.06));
 }
 
-/* 现代 macOS：小而扁的深色搜索胶囊 */
-.launchpad-search {
-  width: min(240px, 72vw);
+.apps-panel-title-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 32px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.apps-panel-brand {
+  width: 28px;
   height: 28px;
+  display: grid;
+  place-items: center;
+  color: rgba(40, 56, 88, 0.78);
+}
+.apps-panel-title {
+  margin: 0;
+  font: 600 17px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  letter-spacing: -0.02em;
+  color: rgba(22, 30, 48, 0.92);
+}
+.apps-panel-more {
+  width: 32px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(40, 56, 88, 0.62);
+  display: grid;
+  place-items: center;
+  cursor: default;
+}
+.apps-panel-more:hover {
+  background: rgba(255, 255, 255, 0.42);
+  color: rgba(22, 30, 48, 0.88);
+}
+
+.apps-panel-search {
+  height: 32px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 0.5px solid rgba(255, 255, 255, 0.14);
-  background: rgba(0, 0, 0, 0.22);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
-  -webkit-backdrop-filter: blur(16px) saturate(120%);
-  backdrop-filter: blur(16px) saturate(120%);
+  gap: 7px;
+  padding: 0 11px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.48);
+  border: 0.5px solid rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.7);
 }
-.launchpad-search-icon {
+.apps-panel-search-icon {
   flex: 0 0 auto;
-  opacity: 0.72;
-  color: rgba(255, 255, 255, 0.88);
+  color: rgba(60, 72, 96, 0.55);
 }
-.launchpad-search-input {
+.apps-panel-search-input {
   min-width: 0;
   flex: 1;
   height: 100%;
   border: 0;
   outline: 0;
   background: transparent;
-  color: rgba(255, 255, 255, 0.96);
+  color: rgba(22, 30, 48, 0.92);
   font: 400 13px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
-  letter-spacing: -0.01em;
 }
-.launchpad-search-input::placeholder {
-  color: rgba(255, 255, 255, 0.55);
+.apps-panel-search-input::placeholder {
+  color: rgba(60, 72, 96, 0.45);
 }
-.launchpad-search-input::-webkit-search-cancel-button {
+.apps-panel-search-input::-webkit-search-cancel-button {
   -webkit-appearance: none;
   appearance: none;
 }
 
-.launchpad-pages {
-  width: min(1100px, 100%);
+/* 顶部分类 chip：圆角浅胶囊 */
+.apps-panel-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.apps-panel-chips::-webkit-scrollbar { display: none; }
+.apps-panel-chip {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  color: rgba(36, 48, 72, 0.78);
+  font: 500 12px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: default;
+  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+.apps-panel-chip:hover {
+  background: rgba(255, 255, 255, 0.62);
+}
+.apps-panel-chip.is-active {
+  background: rgba(255, 255, 255, 0.86);
+  color: rgba(20, 28, 42, 0.92);
+  box-shadow: 0 1px 3px rgba(30, 50, 90, 0.1);
+}
+.apps-panel-chip:focus-visible {
+  outline: 2px solid rgba(10, 132, 255, 0.55);
+  outline-offset: 2px;
+}
+
+.apps-panel-body {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
-  touch-action: pan-y;
-  cursor: default;
-}
-.launchpad-pages-track {
-  height: 100%;
-  display: flex;
-  will-change: transform;
-}
-.launchpad-page {
-  flex: 0 0 100%;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding: 4px 8px 12px;
-  box-sizing: border-box;
+  overflow: auto;
+  padding: 16px 18px 20px;
 }
 
-/* 固定 7 列网格，无分组标题 */
-.launchpad-grid {
-  width: 100%;
-  max-width: 1040px;
+.apps-panel-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-auto-rows: minmax(112px, auto);
   gap: 18px 10px;
   align-content: start;
-  justify-items: center;
 }
 
-.launchpad-app {
-  width: 100%;
-  max-width: 112px;
+.apps-panel-item {
+  min-width: 0;
   border: 0;
-  padding: 6px 4px 2px;
+  padding: 8px 4px 4px;
+  border-radius: 14px;
   background: transparent;
-  color: #fff;
+  color: inherit;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  border-radius: 12px;
   cursor: default;
-  transition: transform 140ms cubic-bezier(.22, 1, .36, 1), background 120ms ease;
+  transition: background 120ms ease, transform 140ms cubic-bezier(.22, 1, .36, 1);
 }
-.launchpad-app:hover {
-  transform: scale(1.06);
+.apps-panel-item:hover {
+  background: rgba(255, 255, 255, 0.38);
+  transform: translateY(-1px);
 }
-.launchpad-app:active {
-  transform: scale(0.94);
+.apps-panel-item:active {
+  transform: scale(0.97);
+  background: rgba(255, 255, 255, 0.5);
 }
-.launchpad-app:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.85);
-  outline-offset: 4px;
+.apps-panel-item:focus-visible {
+  outline: 2px solid rgba(10, 132, 255, 0.55);
+  outline-offset: 2px;
 }
-.launchpad-app-name {
+.apps-panel-item-name {
   max-width: 100%;
   padding: 0 2px;
   font: 400 12px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
   letter-spacing: -0.01em;
+  color: rgba(28, 36, 52, 0.9);
   text-align: center;
-  color: rgba(255, 255, 255, 0.96);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.launchpad-empty {
-  position: absolute;
-  left: 50%;
-  top: 46%;
-  transform: translate(-50%, -50%);
-  color: rgba(255, 255, 255, 0.72);
-  font: 400 15px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
-  pointer-events: none;
+.apps-panel-empty {
+  height: 100%;
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  color: rgba(40, 52, 72, 0.55);
+  font: 400 14px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
 }
 
-/* 底部分页点 */
-.launchpad-dots {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 22px;
-  margin-top: 8px;
+.apps-panel-fade-enter-active,
+.apps-panel-fade-leave-active {
+  transition: opacity 180ms ease;
 }
-.launchpad-dot {
-  width: 7px;
-  height: 7px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.32);
-  cursor: default;
-  transition: background 140ms ease, transform 140ms ease;
+.apps-panel-fade-enter-active .apps-panel,
+.apps-panel-fade-leave-active .apps-panel {
+  transition: transform 220ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease;
 }
-.launchpad-dot.is-active {
-  background: rgba(255, 255, 255, 0.92);
-  transform: scale(1.08);
-}
-.launchpad-dot:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.8);
-  outline-offset: 3px;
-}
-
-.launchpad-fade-enter-active,
-.launchpad-fade-leave-active {
-  transition: opacity 220ms cubic-bezier(.22, 1, .36, 1);
-}
-.launchpad-fade-enter-from,
-.launchpad-fade-leave-to {
+.apps-panel-fade-enter-from,
+.apps-panel-fade-leave-to {
   opacity: 0;
 }
-
-@media (max-width: 1100px) {
-  .launchpad-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 16px 8px;
-  }
+.apps-panel-fade-enter-from .apps-panel,
+.apps-panel-fade-leave-to .apps-panel {
+  opacity: 0;
+  transform: scale(0.96) translateY(8px);
 }
-@media (max-width: 860px) {
-  .launchpad-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-  .launchpad-overlay {
-    padding-inline: 16px;
-  }
+
+@media (max-width: 900px) {
+  .apps-panel-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .apps-panel { height: min(620px, calc(100vh - 48px)); }
 }
 @media (max-width: 640px) {
-  .launchpad-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-auto-rows: minmax(100px, auto);
-  }
-  .launchpad-app-name {
-    font-size: 11px;
-  }
+  .apps-panel-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px 8px; }
+  .apps-panel { border-radius: 18px; width: calc(100vw - 20px); }
+  .apps-panel-header { padding-inline: 14px; }
+  .apps-panel-body { padding-inline: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .launchpad-fade-enter-active,
-  .launchpad-fade-leave-active,
-  .launchpad-app,
-  .launchpad-pages-track {
+  .apps-panel-fade-enter-active,
+  .apps-panel-fade-leave-active,
+  .apps-panel-fade-enter-active .apps-panel,
+  .apps-panel-fade-leave-active .apps-panel,
+  .apps-panel-item {
     transition: none !important;
   }
-  .launchpad-app:hover,
-  .launchpad-app:active {
-    transform: none;
-  }
+  .apps-panel-item:hover,
+  .apps-panel-item:active { transform: none; }
 }
-@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
-  .launchpad-overlay {
-    background: rgba(18, 20, 26, 0.94);
+@media (prefers-reduced-transparency: reduce) {
+  .apps-panel-overlay {
+    background: rgba(18, 28, 48, 0.45);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
-  .launchpad-search {
-    background: rgba(0, 0, 0, 0.45);
+  .apps-panel {
+    background: #e8eef8;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-  }
-}
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .launchpad-overlay {
-    background: rgba(18, 20, 26, 0.94);
   }
 }
 </style>
