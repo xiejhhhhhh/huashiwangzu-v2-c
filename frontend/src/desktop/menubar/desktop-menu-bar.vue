@@ -1,47 +1,104 @@
 <template>
-  <header ref="menuBarRef" class="mac-menu-bar glass-menubar" :class="{ 'is-solid': solid }" aria-label="系统菜单栏" @mousedown.stop>
+  <header
+    ref="menuBarRef"
+    class="mac-menu-bar"
+    :class="{ 'is-solid': solid, 'has-open-menu': Boolean(openMenu) }"
+    aria-label="系统菜单栏"
+    @mousedown.stop
+  >
     <nav class="mac-menu-bar-primary" aria-label="应用菜单">
-      <button class="mac-menu-trigger mac-menu-brand" data-menu-key="brand" type="button" aria-label="华世王镞菜单" :aria-expanded="openMenu === 'brand'" @click="toggleMenu('brand', $event)" @mouseenter="switchOpenMenu('brand', $event)" @keydown="handleTriggerKeydown('brand', $event)">
-        <Command :size="15" :stroke-width="2.4" />
+      <button
+        class="mac-menu-trigger mac-menu-brand"
+        data-menu-key="brand"
+        type="button"
+        aria-label="华世王镞菜单"
+        :aria-expanded="openMenu === 'brand'"
+        :class="{ 'is-open': openMenu === 'brand' }"
+        @click="toggleMenu('brand', $event)"
+        @mouseenter="switchOpenMenu('brand', $event)"
+        @keydown="handleTriggerKeydown('brand', $event)"
+      >
+        <span class="mac-menu-brand-mark" aria-hidden="true">⌘</span>
       </button>
-      <button class="mac-menu-trigger mac-menu-app-title" data-menu-key="app" type="button" :aria-expanded="openMenu === 'app'" @click="toggleMenu('app', $event)" @mouseenter="switchOpenMenu('app', $event)" @keydown="handleTriggerKeydown('app', $event)">{{ activeTitle }}</button>
-      <button v-for="menu in menus" :key="menu.key" class="mac-menu-trigger" :data-menu-key="menu.key" type="button" :aria-expanded="openMenu === menu.key" @click="toggleMenu(menu.key, $event)" @mouseenter="switchOpenMenu(menu.key, $event)" @keydown="handleTriggerKeydown(menu.key, $event)">{{ menu.label }}</button>
+      <button
+        class="mac-menu-trigger mac-menu-app-title"
+        data-menu-key="app"
+        type="button"
+        :aria-expanded="openMenu === 'app'"
+        :class="{ 'is-open': openMenu === 'app' }"
+        @click="toggleMenu('app', $event)"
+        @mouseenter="switchOpenMenu('app', $event)"
+        @keydown="handleTriggerKeydown('app', $event)"
+      >{{ activeTitle }}</button>
+      <button
+        v-for="menu in menus"
+        :key="menu.key"
+        class="mac-menu-trigger"
+        :data-menu-key="menu.key"
+        type="button"
+        :aria-expanded="openMenu === menu.key"
+        :class="{ 'is-open': openMenu === menu.key }"
+        @click="toggleMenu(menu.key, $event)"
+        @mouseenter="switchOpenMenu(menu.key, $event)"
+        @keydown="handleTriggerKeydown(menu.key, $event)"
+      >{{ menu.label }}</button>
     </nav>
 
     <div class="mac-menu-bar-status" aria-label="系统状态">
-      <button class="mac-status-button" type="button" title="Spotlight" aria-label="打开 Spotlight" @click="emit('openSpotlight')"><Search :size="14" /></button>
+      <button class="mac-status-button" type="button" title="Spotlight" aria-label="打开 Spotlight" @click="emit('openSpotlight')">
+        <Search :size="13" :stroke-width="2" />
+      </button>
       <DesktopControlCenter @open-spotlight="emit('openSpotlight')" @open-launchpad="emit('openLaunchpad')" />
       <TaskbarNotifications @open-app="(id, payload) => emit('openApp', id, payload)" />
-      <button class="mac-status-button mac-account-trigger" data-menu-key="account" type="button" :title="username" aria-label="账户菜单" :aria-expanded="openMenu === 'account'" @click="toggleMenu('account', $event)" @mouseenter="switchOpenMenu('account', $event)" @keydown="handleTriggerKeydown('account', $event)"><UserRound :size="14" /><span>{{ username }}</span></button>
+      <button
+        class="mac-status-button mac-account-trigger"
+        data-menu-key="account"
+        type="button"
+        :title="username"
+        aria-label="账户菜单"
+        :aria-expanded="openMenu === 'account'"
+        :class="{ 'is-open': openMenu === 'account' }"
+        @click="toggleMenu('account', $event)"
+        @mouseenter="switchOpenMenu('account', $event)"
+        @keydown="handleTriggerKeydown('account', $event)"
+      >
+        <span class="mac-account-name">{{ username }}</span>
+      </button>
       <time class="mac-clock">{{ clock }}</time>
     </div>
 
-    <div v-if="openMenu" ref="popoverRef" class="mac-menu-popover glass-menu" :class="`mac-menu-popover-${openMenu}`" role="menu" @keydown="handlePopoverKeydown">
+    <div
+      v-if="openMenu"
+      ref="popoverRef"
+      class="mac-menu-popover"
+      :class="`mac-menu-popover-${openMenu}`"
+      role="menu"
+      @keydown="handlePopoverKeydown"
+    >
       <template v-if="openMenu === 'brand' || openMenu === 'account'">
-        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('open-profile')"><UserRound :size="14" /><span>个人资料</span></button>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('refresh-desktop')"><RefreshCw :size="14" /><span>刷新桌面</span></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('open-profile')"><span>个人资料</span></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('refresh-desktop')"><span>刷新桌面</span></button>
         <div class="mac-menu-separator" />
-        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('logout')"><LogOut :size="14" /><span>退出登录</span></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('logout')"><span>退出登录</span></button>
       </template>
       <template v-else-if="openMenu === 'app'">
         <template v-if="isFinderFront">
-          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'desktop'); closeMenu()"><FolderOpen :size="14" /><span>新建访达窗口</span></button>
-          <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('new-folder')"><FolderPlus :size="14" /><span>新建文件夹</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'desktop'); closeMenu()"><span>关于访达</span></button>
           <div class="mac-menu-separator" />
-          <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('finder-go-documents')"><FileText :size="14" /><span>前往文稿</span></button>
-          <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('finder-go-downloads')"><Download :size="14" /><span>前往下载</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'desktop'); closeMenu()"><span>新建访达窗口</span><kbd v-if="hotkeysEnabled">⌘N</kbd></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('new-folder')"><span>新建文件夹</span><kbd v-if="hotkeysEnabled">⇧⌘N</kbd></button>
           <div class="mac-menu-separator" />
-          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="closeActive"><X :size="14" /><span>关闭窗口</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="closeActive"><span>关闭窗口</span><kbd v-if="hotkeysEnabled">⌘W</kbd></button>
         </template>
         <template v-else-if="activeAppKey">
-          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', activeAppKey); closeMenu()"><FolderOpen :size="14" /><span>关于 {{ activeTitle }}</span></button>
-          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="minimizeActive"><Minus :size="14" /><span>隐藏 {{ activeTitle }}</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', activeAppKey); closeMenu()"><span>关于 {{ activeTitle }}</span></button>
           <div class="mac-menu-separator" />
-          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="closeActive"><X :size="14" /><span>退出 {{ activeTitle }}</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="minimizeActive"><span>隐藏 {{ activeTitle }}</span><kbd v-if="hotkeysEnabled">⌘H</kbd></button>
+          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="closeActive"><span>退出 {{ activeTitle }}</span><kbd v-if="hotkeysEnabled">⌘Q</kbd></button>
         </template>
         <template v-else>
-          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'desktop'); closeMenu()"><FolderOpen :size="14" /><span>打开访达</span></button>
-          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openLaunchpad'); closeMenu()"><Grid3X3 :size="14" /><span>打开 Launchpad</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'desktop'); closeMenu()"><span>打开访达</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openLaunchpad'); closeMenu()"><span>打开 Launchpad</span></button>
         </template>
       </template>
       <template v-else-if="openMenu === 'file'">
@@ -56,27 +113,23 @@
               :disabled="item.disabled || (item.command === 'close-active' && !activeWindowId)"
               @click="runInjected(item)"
             >
-              <FolderPlus v-if="item.id.includes('folder')" :size="14" />
-              <FolderOpen v-else-if="item.id.includes('window')" :size="14" />
-              <X v-else-if="item.id.includes('close')" :size="14" />
-              <span v-else class="mac-menu-icon-space" />
               <span>{{ item.label }}</span>
               <kbd v-if="item.shortcut && hotkeysEnabled">{{ item.shortcut }}</kbd>
             </button>
           </template>
         </template>
         <template v-else>
-          <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('new-folder')"><FolderPlus :size="14" /><span>新建文件夹</span></button>
-          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'desktop'); closeMenu()"><FolderOpen :size="14" /><span>新建访达窗口</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('new-folder')"><span>新建文件夹</span><kbd v-if="hotkeysEnabled">⇧⌘N</kbd></button>
+          <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'desktop'); closeMenu()"><span>新建访达窗口</span><kbd v-if="hotkeysEnabled">⌘N</kbd></button>
           <div class="mac-menu-separator" />
-          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="closeActive"><X :size="14" /><span>关闭窗口</span></button>
+          <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="closeActive"><span>关闭窗口</span><kbd v-if="hotkeysEnabled">⌘W</kbd></button>
         </template>
       </template>
       <template v-else-if="openMenu === 'go'">
         <template v-for="item in injectedGoItems" :key="item.id">
           <div v-if="item.separator" class="mac-menu-separator" />
           <button v-else class="mac-menu-row" type="button" role="menuitem" @click="runInjected(item)">
-            <FolderOpen :size="14" /><span>{{ item.label }}</span>
+            <span>{{ item.label }}</span>
           </button>
         </template>
       </template>
@@ -89,30 +142,39 @@
             type="button"
             role="menuitem"
             @click="runInjected(item)"
-          ><span class="mac-menu-icon-space" /><span>{{ item.label }}</span></button>
+          ><span>{{ item.label }}</span></button>
           <div class="mac-menu-separator" />
         </template>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openSpotlight'); closeMenu()"><Search :size="14" /><span>Spotlight</span><kbd v-if="hotkeysEnabled">⌃⇧Space</kbd></button>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openLaunchpad'); closeMenu()"><Grid3X3 :size="14" /><span>Launchpad</span><kbd v-if="hotkeysEnabled">⌃⇧L</kbd></button>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('mission-control'); closeMenu()"><PanelsTopLeft :size="14" /><span>调度中心</span><kbd v-if="hotkeysEnabled">⌃⇧M</kbd></button>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('showDesktop'); closeMenu()"><PanelsTopLeft :size="14" /><span>显示桌面</span><kbd v-if="hotkeysEnabled">⌃⇧D</kbd></button>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('refresh-desktop')"><RefreshCw :size="14" /><span>刷新桌面</span></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openSpotlight'); closeMenu()"><span>Spotlight</span><kbd v-if="hotkeysEnabled">⌃⇧Space</kbd></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openLaunchpad'); closeMenu()"><span>Launchpad</span><kbd v-if="hotkeysEnabled">⌃⇧L</kbd></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('mission-control'); closeMenu()"><span>调度中心</span><kbd v-if="hotkeysEnabled">⌃⇧M</kbd></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('showDesktop'); closeMenu()"><span>显示桌面</span><kbd v-if="hotkeysEnabled">⌃⇧D</kbd></button>
+        <div class="mac-menu-separator" />
+        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('refresh-desktop')"><span>刷新桌面</span></button>
       </template>
       <template v-else-if="openMenu === 'window'">
-        <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="minimizeActive"><Minus :size="14" /><span>最小化</span></button>
-        <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="zoomActive"><Maximize2 :size="14" /><span>缩放</span></button>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('presentation-mode'); closeMenu()"><Maximize2 :size="14" /><span>沉浸模式</span><kbd v-if="hotkeysEnabled">⌃⇧F</kbd></button>
-        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('showDesktop'); closeMenu()"><PanelsTopLeft :size="14" /><span>显示桌面</span><kbd v-if="hotkeysEnabled">⌃⇧D / F11</kbd></button>
+        <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="minimizeActive"><span>最小化</span><kbd v-if="hotkeysEnabled">⌘M</kbd></button>
+        <button class="mac-menu-row" type="button" role="menuitem" :disabled="!activeWindowId" @click="zoomActive"><span>缩放</span></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="runCommand('presentation-mode'); closeMenu()"><span>沉浸模式</span><kbd v-if="hotkeysEnabled">⌃⇧F</kbd></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('showDesktop'); closeMenu()"><span>显示桌面</span><kbd v-if="hotkeysEnabled">⌃⇧D</kbd></button>
         <template v-if="windows.length">
           <div class="mac-menu-separator" />
-          <button v-for="windowItem in windows" :key="windowItem.id" class="mac-menu-row" type="button" role="menuitem" @click="emit('activateWindow', windowItem.id); closeMenu()">
-            <Check v-if="windowItem.id === activeWindowId" :size="14" /><span v-else class="mac-menu-icon-space" />
-            <span>{{ windowItem.title }}</span>
+          <button
+            v-for="windowItem in windows"
+            :key="windowItem.id"
+            class="mac-menu-row mac-menu-row-check"
+            type="button"
+            role="menuitem"
+            @click="emit('activateWindow', windowItem.id); closeMenu()"
+          >
+            <span class="mac-menu-check" :class="{ 'is-on': windowItem.id === activeWindowId }" aria-hidden="true">{{ windowItem.id === activeWindowId ? '✓' : '' }}</span>
+            <span class="mac-menu-row-label">{{ windowItem.title }}</span>
           </button>
         </template>
       </template>
       <template v-else-if="openMenu === 'help'">
-        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'agent'); closeMenu()"><CircleHelp :size="14" /><span>打开 AI 助手</span></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'agent'); closeMenu()"><span>华世王镞 帮助</span></button>
+        <button class="mac-menu-row" type="button" role="menuitem" @click="emit('openApp', 'agent'); closeMenu()"><span>打开 AI 助手</span></button>
       </template>
     </div>
   </header>
@@ -120,10 +182,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import {
-  Check, CircleHelp, Command, Download, FileText, FolderOpen, FolderPlus, Grid3X3, LogOut, Maximize2,
-  Minus, PanelsTopLeft, RefreshCw, Search, UserRound, X,
-} from 'lucide-vue-next'
+import { Search } from 'lucide-vue-next'
 import TaskbarNotifications from '@/desktop/taskbar/taskbar-notifications.vue'
 import DesktopControlCenter from '@/desktop/menubar/desktop-control-center.vue'
 import type { WindowState } from '@/desktop/window-manager/window-types'
@@ -265,61 +324,266 @@ onUnmounted(() => document.removeEventListener('pointerdown', onDocumentPointerD
 </script>
 
 <style scoped>
-.mac-menu-bar{
-  position:absolute;inset:0 0 auto 0;height:var(--desktop-menu-bar-height);z-index:var(--z-menu-bar);
-  display:flex;align-items:center;justify-content:space-between;padding:0 10px;
-  color:var(--desktop-wallpaper-ink);
-  font:600 13px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
-  letter-spacing:-0.01em;
-  text-shadow:0 1px 1.5px rgba(0,0,0,.45);
-  user-select:none;
-  transition:background .2s ease,color .2s ease,text-shadow .2s ease,backdrop-filter .2s ease,-webkit-backdrop-filter .2s ease;
+/* ===== 菜单栏本体：系统默认是“贴壁纸的文字条”，不是玻璃卡片 ===== */
+.mac-menu-bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: var(--desktop-menu-bar-height);
+  z-index: var(--z-menu-bar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 10px;
+  color: rgba(255, 255, 255, 0.94);
+  font: 400 13px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  letter-spacing: -0.01em;
+  /* 极轻阴影，仅保证深浅壁纸上都可读；不要做成厚重浮字 */
+  text-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  background: transparent;
+  border-bottom: 0;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transition: background 160ms ease, color 160ms ease, text-shadow 160ms ease, border-color 160ms ease;
 }
-/* 默认：几乎透明，贴在壁纸上（覆盖 glass-menubar 的半透明白底） */
-.mac-menu-bar:not(.is-solid){
-  background:linear-gradient(180deg,rgba(0,0,0,.16),rgba(0,0,0,.03));
-  border-bottom:0.5px solid rgba(255,255,255,.06);
-  -webkit-backdrop-filter:blur(12px) saturate(120%);
-  backdrop-filter:blur(12px) saturate(120%);
+
+/* 窗口顶到菜单栏：轻微实色 + 细底边，字变深 */
+.mac-menu-bar.is-solid {
+  background: rgba(246, 246, 248, 0.72);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+  border-bottom: 0.5px solid rgba(0, 0, 0, 0.08);
+  color: rgba(29, 29, 31, 0.92);
+  text-shadow: none;
 }
-/* 窗口顶到菜单栏：变实，去掉阴影字 */
-.mac-menu-bar.is-solid{
-  background:rgba(246,246,248,.78);
-  -webkit-backdrop-filter:blur(24px) saturate(140%);
-  backdrop-filter:blur(24px) saturate(140%);
-  border-bottom:0.5px solid rgba(0,0,0,.08);
-  text-shadow:none;
-  color:rgba(29,29,31,.92);
+
+/* 有菜单打开时也略实一点，避免下拉与壁纸糊在一起 */
+.mac-menu-bar.has-open-menu:not(.is-solid) {
+  background: rgba(0, 0, 0, 0.08);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  backdrop-filter: blur(10px) saturate(120%);
 }
-.mac-menu-bar-primary,.mac-menu-bar-status{display:flex;align-items:center;height:100%;min-width:0}.mac-menu-bar-status{gap:2px}
-.mac-menu-trigger,.mac-status-button,.mac-clock{
-  height:22px;border:0;border-radius:4px;background:transparent;color:inherit;
-  display:inline-flex;align-items:center;justify-content:center;padding:0 8px;font:inherit;white-space:nowrap;cursor:default
+
+.mac-menu-bar-primary,
+.mac-menu-bar-status {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
 }
-.mac-menu-trigger:hover,.mac-menu-trigger[aria-expanded=true],.mac-status-button:hover,.mac-status-button[aria-expanded=true]{
-  background:rgba(255,255,255,.18)
+.mac-menu-bar-primary { gap: 0; }
+.mac-menu-bar-status { gap: 0; margin-left: 8px; }
+
+/* 触发器：系统是矮胶囊，打开态是系统蓝 */
+.mac-menu-trigger,
+.mac-status-button,
+.mac-clock {
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  font: inherit;
+  white-space: nowrap;
+  cursor: default;
+  transition: background 80ms ease, color 80ms ease;
+}
+.mac-menu-trigger {
+  padding: 0 8px;
+}
+.mac-menu-trigger:hover,
+.mac-status-button:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.mac-menu-trigger.is-open,
+.mac-menu-trigger[aria-expanded='true'],
+.mac-status-button.is-open,
+.mac-status-button[aria-expanded='true'] {
+  background: var(--desktop-selection, #0a84ff);
+  color: #fff;
+  text-shadow: none;
 }
 .mac-menu-bar.is-solid .mac-menu-trigger:hover,
-.mac-menu-bar.is-solid .mac-menu-trigger[aria-expanded=true],
-.mac-menu-bar.is-solid .mac-status-button:hover,
-.mac-menu-bar.is-solid .mac-status-button[aria-expanded=true]{
-  background:rgba(0,0,0,.08)
+.mac-menu-bar.is-solid .mac-status-button:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
-.mac-menu-brand{width:32px;padding:0}.mac-menu-app-title{font-weight:700;max-width:190px;overflow:hidden;text-overflow:ellipsis}.mac-account-trigger{gap:5px}.mac-clock{font-weight:600;font-variant-numeric:tabular-nums}
-.mac-menu-popover{
-  position:absolute;top:calc(var(--desktop-menu-bar-height) - 2px);left:8px;width:236px;padding:6px;
-  color:var(--desktop-ink);text-shadow:none;z-index:var(--z-system-popover);
-  border-radius:10px;
+.mac-menu-bar.is-solid .mac-menu-trigger.is-open,
+.mac-menu-bar.is-solid .mac-menu-trigger[aria-expanded='true'],
+.mac-menu-bar.is-solid .mac-status-button.is-open,
+.mac-menu-bar.is-solid .mac-status-button[aria-expanded='true'] {
+  background: var(--desktop-selection, #0a84ff);
+  color: #fff;
 }
-.mac-menu-popover-app{left:40px}.mac-menu-popover-file{left:140px}.mac-menu-popover-view{left:188px}.mac-menu-popover-window{left:240px}.mac-menu-popover-help{left:296px}.mac-menu-popover-account{left:auto;right:8px}
-.mac-menu-row{
-  width:100%;height:26px;padding:0 8px;border:0;border-radius:5px;background:transparent;color:inherit;
-  display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:center;gap:7px;text-align:left;
-  font:400 13px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;cursor:default
+
+.mac-menu-brand {
+  width: 30px;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 500;
 }
-.mac-menu-row:hover:not(:disabled),.mac-menu-row:focus-visible{background:var(--desktop-selection);color:white;outline:none}
-.mac-menu-row:disabled{opacity:.38}.mac-menu-row kbd{font:inherit;color:var(--desktop-ink-muted);font-size:12px}
-.mac-menu-row:hover kbd{color:rgba(255,255,255,.78)}
-.mac-menu-separator{height:0.5px;margin:5px 8px;background:rgba(60,60,67,.18)}.mac-menu-icon-space{width:14px}
-@media(max-width:760px){.mac-menu-trigger:not(.mac-menu-brand):not(.mac-menu-app-title){display:none}.mac-account-trigger span{display:none}.mac-menu-app-title{max-width:120px}.mac-menu-popover{left:8px!important;right:auto!important}}
+.mac-menu-brand-mark {
+  display: block;
+  line-height: 1;
+  transform: translateY(0.5px);
+}
+.mac-menu-app-title {
+  font-weight: 700;
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 7px;
+  padding-right: 7px;
+}
+.mac-account-trigger {
+  max-width: 110px;
+  padding: 0 7px;
+}
+.mac-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 96px;
+  font-weight: 400;
+}
+.mac-clock {
+  padding: 0 6px 0 8px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  opacity: 0.96;
+}
+.mac-status-button {
+  width: 28px;
+  padding: 0;
+  opacity: 0.96;
+}
+
+/* ===== 下拉：系统菜单是紧凑白底，不是带图标的卡片 ===== */
+.mac-menu-popover {
+  position: absolute;
+  top: calc(var(--desktop-menu-bar-height) - 1px);
+  left: 8px;
+  min-width: 212px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 5px;
+  color: rgba(29, 29, 31, 0.92);
+  text-shadow: none;
+  z-index: var(--z-system-popover);
+  border-radius: 8px;
+  background: rgba(246, 246, 248, 0.92);
+  border: 0.5px solid rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.08),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.65);
+  -webkit-backdrop-filter: blur(40px) saturate(150%);
+  backdrop-filter: blur(40px) saturate(150%);
+  animation: mac-menu-in 90ms ease-out;
+}
+@keyframes mac-menu-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.mac-menu-popover-app { left: 38px; }
+.mac-menu-popover-file { left: 118px; }
+.mac-menu-popover-go { left: 164px; }
+.mac-menu-popover-view { left: 210px; }
+.mac-menu-popover-window { left: 258px; }
+.mac-menu-popover-help { left: 306px; }
+.mac-menu-popover-account { left: auto; right: 8px; }
+
+.mac-menu-row {
+  width: 100%;
+  min-height: 22px;
+  height: 22px;
+  padding: 0 10px 0 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  text-align: left;
+  font: 400 13px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  letter-spacing: -0.01em;
+  cursor: default;
+}
+.mac-menu-row > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mac-menu-row-check {
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 6px;
+  padding-left: 8px;
+}
+.mac-menu-check {
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+}
+.mac-menu-check.is-on { opacity: 1; }
+.mac-menu-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mac-menu-row:hover:not(:disabled),
+.mac-menu-row:focus-visible {
+  background: var(--desktop-selection, #0a84ff);
+  color: #fff;
+  outline: none;
+}
+.mac-menu-row:disabled {
+  opacity: 0.34;
+  color: rgba(60, 60, 67, 0.55);
+}
+.mac-menu-row kbd {
+  font: 400 12px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  color: rgba(60, 60, 67, 0.55);
+  letter-spacing: 0.02em;
+  justify-self: end;
+}
+.mac-menu-row:hover kbd,
+.mac-menu-row:focus-visible kbd {
+  color: rgba(255, 255, 255, 0.78);
+}
+.mac-menu-separator {
+  height: 0.5px;
+  margin: 4px 10px;
+  background: rgba(60, 60, 67, 0.16);
+  border: 0;
+}
+
+@media (max-width: 760px) {
+  .mac-menu-trigger:not(.mac-menu-brand):not(.mac-menu-app-title) { display: none; }
+  .mac-account-name { display: none; }
+  .mac-menu-app-title { max-width: 120px; }
+  .mac-menu-popover { left: 8px !important; right: auto !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mac-menu-popover { animation: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .mac-menu-bar.is-solid,
+  .mac-menu-bar.has-open-menu:not(.is-solid) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .mac-menu-bar.is-solid { background: #f0f0f2; }
+  .mac-menu-popover {
+    background: #f4f4f6;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
 </style>

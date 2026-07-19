@@ -48,7 +48,7 @@ export const macosSkin: DesktopSkinDefinition = {
     '--desktop-lg-shadow-soft': '0 10px 28px rgba(0, 0, 0, 0.22), 0 2px 8px rgba(0, 0, 0, 0.1), inset 0 0.5px 0 rgba(255, 255, 255, 0.42)',
 
     '--glass-dock-bg': 'rgba(255, 255, 255, 0.22)',
-    '--glass-menubar-bg': 'rgba(255, 255, 255, 0.08)',
+    '--glass-menubar-bg': 'transparent',
     '--glass-menu-bg': 'rgba(246, 246, 248, 0.88)',
     '--glass-panel-bg': 'var(--desktop-lg-fill-panel)',
     '--glass-spotlight-bg': 'rgba(246, 246, 248, 0.9)',

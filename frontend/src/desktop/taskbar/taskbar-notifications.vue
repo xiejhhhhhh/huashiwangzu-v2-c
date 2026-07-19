@@ -152,35 +152,36 @@ function handleOpenLoadSource(issue: NotificationLoadIssue) {
   position: relative;
   width: 28px;
   height: 22px;
-  border: 1px solid transparent;
+  border: 0;
   background: transparent;
   color: inherit;
-  cursor: pointer;
-  border-radius: 5px;
+  cursor: default;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: .86;
-  transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, opacity .16s ease, transform .16s ease;
+  opacity: 0.96;
+  transition: background 80ms ease, opacity 80ms ease;
 }
 .taskbar-notifications-count {
   position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 4px;
+  top: -3px;
+  right: -2px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
   border-radius: 999px;
   background: #ff3b30;
   color: white;
-  font: 700 9px/14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.28);
+  font: 600 9px/12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 .taskbar-notifications-button:hover {
-  background: rgba(255,255,255,.2);
-  border-color: rgba(255,255,255,.14);
+  background: rgba(255, 255, 255, 0.14);
   opacity: 1;
-  transform: none;
+}
+:global(.mac-menu-bar.is-solid) .taskbar-notifications-button:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 .taskbar-notifications-button:focus-visible {
   outline: 2px solid rgba(191, 219, 254, .9);

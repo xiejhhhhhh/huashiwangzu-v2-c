@@ -82,10 +82,11 @@ html[data-desktop-focus-mode='1'] .desktop-shell-wallpaper::after {
   backdrop-filter: var(--desktop-lg-filter-soft, blur(28px) saturate(130%));
 }
 .glass-menubar {
-  background: var(--glass-menubar-bg);
-  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
-  -webkit-backdrop-filter: blur(20px) saturate(120%);
-  backdrop-filter: blur(20px) saturate(120%);
+  /* 菜单栏默认不套玻璃底；组件自己控制透明/顶窗变实 */
+  background: transparent;
+  border-bottom: 0;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .glass-menu,
 .glass-popover {

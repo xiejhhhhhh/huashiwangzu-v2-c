@@ -131,16 +131,45 @@ onUnmounted(() => document.removeEventListener('pointerdown', onPointerDown))
 
 <style scoped>
 .control-center-root { position: relative; display: flex; align-items: center; }
+.control-center-trigger {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.control-center-trigger:hover { background: rgba(255, 255, 255, 0.14); }
+.control-center-trigger[aria-expanded='true'] {
+  background: var(--desktop-selection, #0a84ff);
+  color: #fff;
+}
+:global(.mac-menu-bar.is-solid) .control-center-trigger:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+:global(.mac-menu-bar.is-solid) .control-center-trigger[aria-expanded='true'] {
+  background: var(--desktop-selection, #0a84ff);
+  color: #fff;
+}
 .control-center-panel {
   position: absolute;
-  top: calc(var(--desktop-menu-bar-height, 28px) + 8px);
+  top: calc(var(--desktop-menu-bar-height, 28px) + 6px);
   right: 0;
-  width: min(326px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
   padding: 12px;
   color: var(--desktop-ink);
   z-index: var(--z-system-popover);
-  border-radius: 22px;
-  background: linear-gradient(145deg, color-mix(in srgb, var(--glass-panel-bg) 88%, #d2eefc), var(--glass-panel-bg));
+  border-radius: 14px;
+  background: rgba(246, 246, 248, 0.9);
+  border: 0.5px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.24), inset 0 0.5px 0 rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(40px) saturate(150%);
+  backdrop-filter: blur(40px) saturate(150%);
 }
 .cc-grid {
   display: grid;
